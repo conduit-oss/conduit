@@ -103,6 +103,8 @@ conduit packet show ./my-packet/conduit-packet.json
 | `AST_CALL_REWRITE` | Rewrite call callee path |
 | `DEPENDENCY_BUMP` | Bump version in pip/npm/go.mod/Maven/Gradle manifests |
 
+Optional `reason` on any rule explains why it was chosen (endpoint-compat checks, deprecation docs, etc.). PR bodies render these under **Rationale**, with packet `notes` and full `sources`.
+
 Full field docs: [Codemods](codemods.md).
 
 ## Example (shipped sample)

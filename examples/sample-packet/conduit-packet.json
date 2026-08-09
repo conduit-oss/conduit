@@ -8,29 +8,36 @@
     {
       "url": "https://platform.openai.com/docs/deprecations",
       "kind": "docs"
+    },
+    {
+      "url": "https://developers.openai.com/api/docs/models",
+      "kind": "docs"
     }
   ],
-  "notes": "Sample vendor Migration Packet for the demo-consumer (model + param renames).",
+  "notes": "Sample vendor Migration Packet for the demo-consumer (model + param renames).\n\nDecision rationale:\n- gpt-4-0613 → gpt-4o from OpenAI deprecations; gpt-4o supports v1/chat/completions.",
   "rules": [
     {
       "type": "EXACT_STRING_REPLACE",
       "target_files": ["*.py", "*.ts", "*.js", "*.yaml", "*.yml", "*.json", ".env*"],
       "match": "gpt-4-0613",
-      "replace": "gpt-4o"
+      "replace": "gpt-4o",
+      "reason": "Deprecated model gpt-4-0613; documented replacement gpt-4o supports v1/chat/completions. Source: https://platform.openai.com/docs/deprecations"
     },
     {
       "type": "AST_PARAM_RENAME",
       "target_files": ["*.py", "*.ts", "*.js"],
       "function_target": "chat.completions.create",
       "old_param": "max_tokens",
-      "new_param": "max_completion_tokens"
+      "new_param": "max_completion_tokens",
+      "reason": "OpenAI chat.completions.create renamed max_tokens to max_completion_tokens for newer models."
     },
     {
       "type": "DEPENDENCY_BUMP",
       "package": "openai",
       "from_version": "0.28.1",
       "to_version": "1.0.0",
-      "ecosystems": ["pip", "pyproject"]
+      "ecosystems": ["pip", "pyproject"],
+      "reason": "Major SDK bump required for the modern OpenAI Python client."
     }
   ]
 }

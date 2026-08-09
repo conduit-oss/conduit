@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from conduit.detect.models import ChangeSignal
 from conduit.detect.modules.base import DetectContext, DetectModule
+from conduit.detect.modules.openai.endpoint_compat import apply_endpoint_compat
 from conduit.detect.modules.openai.evidence_seeds import (
     OPENAI_EVIDENCE_HOSTS,
     OPENAI_EVIDENCE_SEEDS,
@@ -123,5 +124,13 @@ class OpenAIModule(DetectModule):
                         hints={"event_id": event.event_id, "vendor": event.vendor},
                     )
                 )
+
+        signals, compat_notes = apply_endpoint_compat(
+            signals, client_state=client_state, demo=ctx.demo
+        )
+        if compat_notes:
+            ctx.extra.setdefault("decision_notes", []).extend(compat_notes)
+            for note in compat_notes:
+                verbose_warnings.append(f"openai endpoint compat: {note}")
 
         return signals

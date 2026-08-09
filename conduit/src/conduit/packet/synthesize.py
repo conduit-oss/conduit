@@ -105,6 +105,7 @@ def packet_from_signals(
                     ecosystem = s.ecosystem
                 break
 
+    decision_notes: list[str] = []
     packet = empty_packet(
         package=package,
         ecosystem=ecosystem if ecosystem in {"pypi", "npm", "go", "maven", "other"} else "other",
@@ -115,10 +116,22 @@ def packet_from_signals(
     rules: list[dict[str, Any]] = []
     sources: list[dict[str, str]] = []
     seen_rules: set[str] = set()
+    seen_sources: set[str] = set()
     for s in pkg_signals or signals:
-        if s.source_url:
+        if s.source_url and s.source_url not in seen_sources:
             sources.append({"url": s.source_url, "kind": "other"})
+            seen_sources.add(s.source_url)
+        hint_reason = None
+        if isinstance(s.hints, dict):
+            hint_reason = s.hints.get("endpoint_compat_reason")
+        if s.change_type in {"MODEL_DEPRECATION", "MODEL_REMOVED"} and (
+            s.description or hint_reason
+        ):
+            decision_notes.append(str(hint_reason or s.description))
         for rule in s.suggested_rules:
+            rule = dict(rule)
+            if not rule.get("reason") and (s.description or hint_reason):
+                rule["reason"] = str(hint_reason or s.description)
             key = json.dumps(rule, sort_keys=True)
             if key in seen_rules:
                 continue
@@ -130,11 +143,20 @@ def packet_from_signals(
             and s.affected_pattern
             and s.replacement_pattern
         ):
+            reason = str(
+                hint_reason
+                or s.description
+                or (
+                    f"Replace deprecated/removed model {s.affected_pattern} "
+                    f"with {s.replacement_pattern}."
+                )
+            )
             rule = {
                 "type": "EXACT_STRING_REPLACE",
                 "target_files": ["*.py", "*.ts", "*.js", "*.yaml", "*.yml", "*.json", ".env*"],
                 "match": s.affected_pattern,
                 "replace": s.replacement_pattern,
+                "reason": reason,
             }
             key = json.dumps(rule, sort_keys=True)
             if key not in seen_rules:
@@ -142,6 +164,22 @@ def packet_from_signals(
                 rules.append(rule)
     packet["rules"] = rules
     packet["sources"] = sources
+    if decision_notes:
+        # Deduplicate while preserving order
+        uniq: list[str] = []
+        seen_n: set[str] = set()
+        for note in decision_notes:
+            if note in seen_n:
+                continue
+            seen_n.add(note)
+            uniq.append(note)
+        base_notes = str(packet.get("notes") or "").strip()
+        joined = "\n".join(f"- {n}" for n in uniq)
+        packet["notes"] = (
+            f"{base_notes}\n\nDecision rationale:\n{joined}".strip()
+            if base_notes
+            else f"Decision rationale:\n{joined}"
+        )
     return packet
 
 
@@ -226,6 +264,10 @@ _EVIDENCE_SYSTEM = (
     "If a removed endpoint/param has no stated successor, mention it in notes and do NOT "
     "invent replace/new_callee/new_param. "
     "Do not invent model ids. "
+    "When proposing a model EXACT_STRING_REPLACE, the replacement must support the client "
+    "endpoints implied by detect_signals / evidence (see model Supported endpoints tables). "
+    "Every rule MUST include a short 'reason' string explaining why it was chosen "
+    "(cite the source URL). "
     "Honor any ignore list: do not emit rules whose only effect would be rewriting "
     "ignored contract patterns/files (LEGACY_/FORBIDDEN_ oracles)."
 )
@@ -459,7 +501,12 @@ def load_fixture_openai_packet() -> dict[str, Any]:
                 "kind": "docs",
             }
         ],
-        "notes": "Offline fixture packet for demo-consumer (model + param renames).",
+        "notes": (
+            "Offline fixture packet for demo-consumer (model + param renames).\n\n"
+            "Decision rationale:\n"
+            "- gpt-4-0613 → gpt-4o from OpenAI deprecations; gpt-4o supports "
+            "v1/chat/completions."
+        ),
         "rules": [
             {
                 "type": "EXACT_STRING_REPLACE",
@@ -474,6 +521,11 @@ def load_fixture_openai_packet() -> dict[str, Any]:
                 ],
                 "match": "gpt-4-0613",
                 "replace": "gpt-4o",
+                "reason": (
+                    "Deprecated model gpt-4-0613; documented replacement gpt-4o "
+                    "supports v1/chat/completions. "
+                    "Source: https://platform.openai.com/docs/deprecations"
+                ),
             },
             {
                 "type": "AST_PARAM_RENAME",
@@ -481,6 +533,10 @@ def load_fixture_openai_packet() -> dict[str, Any]:
                 "function_target": "chat.completions.create",
                 "old_param": "max_tokens",
                 "new_param": "max_completion_tokens",
+                "reason": (
+                    "OpenAI chat.completions.create renamed max_tokens to "
+                    "max_completion_tokens for newer models."
+                ),
             },
             {
                 "type": "DEPENDENCY_BUMP",
@@ -488,6 +544,7 @@ def load_fixture_openai_packet() -> dict[str, Any]:
                 "from_version": "0.28.1",
                 "to_version": "1.0.0",
                 "ecosystems": ["pip", "pyproject"],
+                "reason": "Major SDK bump required for the modern OpenAI Python client.",
             },
         ],
     }

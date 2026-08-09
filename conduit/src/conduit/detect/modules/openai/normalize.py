@@ -58,9 +58,30 @@ def _param_function_targets(signal: RawSignal) -> list[str]:
     return []
 
 
+def _rule_reason(signal: RawSignal, *, fallback: str) -> str:
+    extra = signal.extra or {}
+    for key in ("reason", "endpoint_compat_reason"):
+        raw = extra.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    if signal.description and signal.description.strip():
+        return signal.description.strip()
+    if signal.source_url:
+        return f"{fallback} Source: {signal.source_url}"
+    return fallback
+
+
+def _with_reason(rule: dict[str, Any], reason: str) -> dict[str, Any]:
+    out = dict(rule)
+    if reason and not out.get("reason"):
+        out["reason"] = reason
+    return out
+
+
 def default_rules_for(signal: RawSignal) -> list[dict[str, Any]]:
     if signal.suggested_rules:
-        return list(signal.suggested_rules)
+        reason = _rule_reason(signal, fallback="From detect signal")
+        return [_with_reason(dict(r), reason) for r in signal.suggested_rules]
 
     rules: list[dict[str, Any]] = []
 
@@ -70,13 +91,23 @@ def default_rules_for(signal: RawSignal) -> list[dict[str, Any]]:
         ChangeType.MODEL_REMOVED,
     }:
         if signal.replacement_pattern and signal.affected_pattern:
+            reason = _rule_reason(
+                signal,
+                fallback=(
+                    f"Replace deprecated/removed model {signal.affected_pattern} "
+                    f"with {signal.replacement_pattern}."
+                ),
+            )
             rules.append(
-                {
-                    "type": "EXACT_STRING_REPLACE",
-                    "target_files": list(DEFAULT_CODE_GLOBS),
-                    "match": signal.affected_pattern,
-                    "replace": signal.replacement_pattern,
-                }
+                _with_reason(
+                    {
+                        "type": "EXACT_STRING_REPLACE",
+                        "target_files": list(DEFAULT_CODE_GLOBS),
+                        "match": signal.affected_pattern,
+                        "replace": signal.replacement_pattern,
+                    },
+                    reason,
+                )
             )
 
     if signal.change_type == ChangeType.PARAM_RENAME:
@@ -84,29 +115,43 @@ def default_rules_for(signal: RawSignal) -> list[dict[str, Any]]:
         new_param = signal.extra.get("new_param") or signal.replacement_pattern
         targets = _param_function_targets(signal)
         if old_param and new_param and targets:
+            reason = _rule_reason(
+                signal,
+                fallback=f"Rename parameter {old_param} → {new_param}.",
+            )
             for function_target in targets:
                 rules.append(
-                    {
-                        "type": "AST_PARAM_RENAME",
-                        "target_files": list(AST_GLOBS),
-                        "function_target": function_target,
-                        "old_param": old_param,
-                        "new_param": new_param,
-                    }
+                    _with_reason(
+                        {
+                            "type": "AST_PARAM_RENAME",
+                            "target_files": list(AST_GLOBS),
+                            "function_target": function_target,
+                            "old_param": old_param,
+                            "new_param": new_param,
+                        },
+                        reason,
+                    )
                 )
 
     if signal.change_type == ChangeType.SDK_MAJOR_BUMP:
         package = signal.extra.get("package", signal.affected_pattern)
         from_version = signal.extra.get("from_version", "0.0.0")
         to_version = signal.extra.get("to_version") or signal.replacement_pattern or "1.0.0"
+        reason = _rule_reason(
+            signal,
+            fallback=f"Bump {package} dependency {from_version} → {to_version}.",
+        )
         rules.append(
-            {
-                "type": "DEPENDENCY_BUMP",
-                "package": package,
-                "from_version": from_version,
-                "to_version": to_version,
-                "ecosystems": signal.extra.get("ecosystems", ["pip", "npm", "pyproject"]),
-            }
+            _with_reason(
+                {
+                    "type": "DEPENDENCY_BUMP",
+                    "package": package,
+                    "from_version": from_version,
+                    "to_version": to_version,
+                    "ecosystems": signal.extra.get("ecosystems", ["pip", "npm", "pyproject"]),
+                },
+                reason,
+            )
         )
 
     if signal.change_type == ChangeType.API_BREAKING:
@@ -114,13 +159,20 @@ def default_rules_for(signal: RawSignal) -> list[dict[str, Any]]:
         new_path = signal.replacement_pattern
         # Both sides required — do not invent successors.
         if _looks_like_api_path(old_path) and _looks_like_api_path(new_path):
+            reason = _rule_reason(
+                signal,
+                fallback=f"Replace API path {old_path.strip()} → {new_path.strip()}.",
+            )
             rules.append(
-                {
-                    "type": "EXACT_STRING_REPLACE",
-                    "target_files": list(DEFAULT_CODE_GLOBS),
-                    "match": old_path.strip(),
-                    "replace": new_path.strip(),
-                }
+                _with_reason(
+                    {
+                        "type": "EXACT_STRING_REPLACE",
+                        "target_files": list(DEFAULT_CODE_GLOBS),
+                        "match": old_path.strip(),
+                        "replace": new_path.strip(),
+                    },
+                    reason,
+                )
             )
 
     return rules

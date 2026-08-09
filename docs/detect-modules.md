@@ -50,6 +50,8 @@ Discovery: [`conduit/src/conduit/detect/modules/discovery.py`](../conduit/src/co
 | Changelog parser | platform changelog page | — | `fixtures/openai/changelogs/` |
 | SDK release | GitHub releases API | installed openai version + ecosystems | `fixtures/openai/sdk_releases/` |
 
+After workers run, **endpoint compat** checks each model A→B against the replacement’s Supported endpoints on [developers.openai.com/api/docs/models](https://developers.openai.com/api/docs/models) (`.md` pages; demo uses `fixtures/openai/model_docs/`). Client `api_patterns` map to required routes (e.g. `chat.completions` → `v1/chat/completions`). Incompatible replacements are swapped for a catalog alternate that supports those routes, or cleared with a note — never invented. Each decision carries a `reason` onto rules / packet notes for the PR.
+
 Normalize emits apply rules **only when grounded**: model A→B when scrape states both; path replace only when both `/v1/...` sides are known; `AST_PARAM_RENAME` only when the signal carries explicit `function_target`(s). No path-fallback maps and no invented ChatCompletion target lists.
 
 Call-shape / successor gaps are filled by **evidence + LLM packet enrichment** (module seed URLs + web search) when an LLM is configured — see [LLM configuration](llm.md).

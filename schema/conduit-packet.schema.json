@@ -68,6 +68,10 @@
         { "$ref": "#/$defs/ast_call_rewrite" }
       ]
     },
+    "rule_reason": {
+      "type": "string",
+      "description": "Human-readable rationale for why this rule was chosen (shown in PR body)."
+    },
     "exact_string_replace": {
       "type": "object",
       "required": ["type", "target_files", "match", "replace"],
@@ -80,7 +84,8 @@
           "minItems": 1
         },
         "match": { "type": "string" },
-        "replace": { "type": "string" }
+        "replace": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },
     "regex_replace": {
@@ -95,7 +100,8 @@
           "minItems": 1
         },
         "pattern": { "type": "string" },
-        "replace": { "type": "string" }
+        "replace": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },
     "ast_param_rename": {
@@ -117,7 +123,8 @@
         },
         "function_target": { "type": "string" },
         "old_param": { "type": "string" },
-        "new_param": { "type": "string" }
+        "new_param": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },
     "dependency_bump": {
@@ -135,7 +142,8 @@
             "type": "string",
             "enum": ["pip", "npm", "pyproject", "go", "maven", "gradle"]
           }
-        }
+        },
+        "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },
     "ast_import_rewrite": {
@@ -150,7 +158,8 @@
           "minItems": 1
         },
         "old_import": { "type": "string" },
-        "new_import": { "type": "string" }
+        "new_import": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },
     "ast_attr_rename": {
@@ -165,7 +174,8 @@
           "minItems": 1
         },
         "old_attr": { "type": "string" },
-        "new_attr": { "type": "string" }
+        "new_attr": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },
     "ast_call_rewrite": {
@@ -180,7 +190,8 @@
           "minItems": 1
         },
         "old_callee": { "type": "string" },
-        "new_callee": { "type": "string" }
+        "new_callee": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
       }
     }
   }
