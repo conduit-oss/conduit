@@ -24,16 +24,18 @@ class TestResult:
 
 
 def detect_test_command(root: Path) -> tuple[str, list[str]] | None:
+    # Prefer `python -m pytest` so the active interpreter/venv is used.
+    pytest_cmd = ["python", "-m", "pytest", "-q"]
     if (root / "pytest.ini").exists() or (root / "conftest.py").exists():
-        return "pytest", ["pytest", "-q"]
+        return "pytest", list(pytest_cmd)
     if (root / "pyproject.toml").exists():
         text = (root / "pyproject.toml").read_text(encoding="utf-8")
         if "[tool.pytest" in text or "pytest" in text:
-            return "pytest", ["pytest", "-q"]
+            return "pytest", list(pytest_cmd)
     # Look for tests/ with python files
     tests_dir = root / "tests"
     if tests_dir.is_dir() and any(tests_dir.rglob("test_*.py")):
-        return "pytest", ["pytest", "-q"]
+        return "pytest", list(pytest_cmd)
 
     package_json = root / "package.json"
     if package_json.is_dir() is False and package_json.is_file():
@@ -67,9 +69,6 @@ def run_tests(root: Path, *, timeout: float = 300.0) -> TestResult:
         )
 
     runner, command = detected
-    # Prefer python -m pytest when pytest binary may be missing from PATH
-    if runner == "pytest" and not shutil.which("pytest"):
-        command = ["python", "-m", "pytest", "-q"]
 
     try:
         proc = subprocess.run(

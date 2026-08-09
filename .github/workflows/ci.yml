@@ -18,7 +18,7 @@ jobs:
           pip install -e "./conduit[dev,llm,langs]"
           pip install pytest
       - name: Unit tests
-        run: pytest -q conduit/tests
+        run: python -m pytest -q conduit/tests
       - name: Offline demo apply
         run: |
           conduit apply --path ./examples/demo-consumer --packet ./examples/sample-packet/conduit-packet.json --dry-run

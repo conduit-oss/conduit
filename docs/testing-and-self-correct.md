@@ -8,7 +8,7 @@ After apply, Conduit verifies the consumer repo still works.
 
 | Signal | Command |
 |--------|---------|
-| `pytest.ini`, `conftest.py`, `[tool.pytest`, or `tests/test_*.py` | `pytest -q` (or `python -m pytest -q`) |
+| `pytest.ini`, `conftest.py`, `[tool.pytest`, or `tests/test_*.py` | `python -m pytest -q` |
 | `package.json` scripts.test | `npm test --silent` |
 | `go.mod` | `go test ./...` |
 
