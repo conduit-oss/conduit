@@ -42,6 +42,13 @@ class FixAttempt:
     details: list[str] = field(default_factory=list)
 
 
+@dataclass
+class LlmRepairSuggestion:
+    files: dict[str, str] = field(default_factory=dict)
+    search_queries: list[str] = field(default_factory=list)
+    packet_patch: dict[str, Any] = field(default_factory=dict)
+
+
 def _failure_excerpt(test_result: TestResult, *, limit: int = 1500) -> str:
     parts = []
     if test_result.stdout and test_result.stdout.strip():
@@ -131,8 +138,51 @@ def _ids_from_packet(packet: dict[str, Any]) -> list[str]:
     return ids
 
 
+def _error_search_snippets(test_result: TestResult, *, limit: int = 4) -> list[str]:
+    """Turn failure lines into general web-search queries."""
+    text = "\n".join(
+        [test_result.stdout or "", test_result.stderr or ""]
+    )
+    queries: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or len(line) < 12:
+            continue
+        lower = line.lower()
+        if not any(
+            k in lower
+            for k in (
+                "error",
+                "exception",
+                "failed",
+                "traceback",
+                "assert",
+                "typeerror",
+                "attributeerror",
+                "invalid",
+                "deprecated",
+                "not found",
+                "unsupported",
+                "model",
+            )
+        ):
+            continue
+        # Drop noisy pytest chrome
+        if lower.startswith(("=", "-", "___", "platform ", "rootdir")):
+            continue
+        q = re.sub(r"\s+", " ", line)[:180]
+        if q not in queries:
+            queries.append(q)
+        if len(queries) >= limit:
+            break
+    return queries
+
+
 def _extract_research_targets(
-    test_result: TestResult, packet: dict[str, Any]
+    test_result: TestResult,
+    packet: dict[str, Any],
+    *,
+    extra_queries: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Return (seed_urls, search_queries) derived from failure + packet."""
     from conduit.detect.modules.openai.model_docs import (
@@ -160,6 +210,7 @@ def _extract_research_targets(
         ordered_ids.append(mid)
 
     paths = sorted({p.lower() for p in _PATH_RE.findall(blob)})
+    package = str(packet.get("package") or "openai")
 
     seeds = [
         MODELS_CATALOG_URL,
@@ -170,13 +221,19 @@ def _extract_research_targets(
     for mid in ordered_ids[:6]:
         seeds.append(model_doc_url(mid))
 
-    queries = [
-        "openai API migration test failure model endpoint",
+    queries: list[str] = [
+        f"{package} API migration test failure",
+        f"{package} python sdk migration breaking change",
     ]
+    queries.extend(_error_search_snippets(test_result))
     for mid in ordered_ids[:4]:
-        queries.append(f"openai model {mid} supported endpoints")
+        queries.append(f"{package} model {mid} supported endpoints replacement")
     for path in paths[:3]:
-        queries.append(f"openai {path} replacement deprecation")
+        queries.append(f"{package} {path} replacement deprecation")
+    for q in extra_queries or []:
+        q = str(q).strip()
+        if q and q not in queries:
+            queries.append(q)
 
     return seeds, queries
 
@@ -186,18 +243,21 @@ def _research_for_failure(
     packet: dict[str, Any],
     *,
     log: LogFn,
+    extra_queries: list[str] | None = None,
 ) -> tuple[str, list[str]]:
-    """Fetch targeted docs for repair. Returns (evidence_text, warning messages)."""
+    """Fetch docs via seeds + general web search. Returns (evidence_text, warnings)."""
     from conduit.packet.evidence import build_evidence, evidence_as_prompt_text
 
-    seeds, queries = _extract_research_targets(test_result, packet)
+    seeds, queries = _extract_research_targets(
+        test_result, packet, extra_queries=extra_queries
+    )
     allow_hosts = [
         "platform.openai.com",
         "developers.openai.com",
         "github.com",
     ]
     log(
-        "[self-correct] researching docs: "
+        "[self-correct] researching (general search): "
         f"{len(seeds)} seed URL(s), {len(queries)} quer(ies)"
     )
     docs, warnings = build_evidence(
@@ -205,7 +265,8 @@ def _research_for_failure(
         allow_hosts=allow_hosts,
         search_queries=queries,
         max_seed_pages=6,
-        max_search_hits=4,
+        max_search_hits=5,
+        open_search=True,
     )
     for w in warnings:
         log(f"[self-correct] research: {w}")
@@ -215,8 +276,64 @@ def _research_for_failure(
             + ", ".join(d.url for d in docs[:8])
             + ("…" if len(docs) > 8 else "")
         )
-    text = evidence_as_prompt_text(docs, max_total_chars=24_000)
+    text = evidence_as_prompt_text(docs, max_total_chars=28_000)
     return text, warnings
+
+
+def _apply_packet_patch(packet: dict[str, Any], patch: dict[str, Any]) -> list[str]:
+    """Merge LLM packet updates in-place. Returns human-readable change lines."""
+    from conduit.packet.validate import validate_packet
+
+    if not patch:
+        return []
+    details: list[str] = []
+
+    notes = patch.get("notes")
+    if isinstance(notes, str) and notes.strip():
+        _append_packet_note(packet, notes.strip())
+        details.append("updated notes")
+
+    for src in patch.get("sources") or []:
+        if not isinstance(src, dict) or not src.get("url"):
+            continue
+        url = str(src["url"])
+        existing = {str(s.get("url")) for s in (packet.get("sources") or []) if isinstance(s, dict)}
+        if url in existing:
+            continue
+        packet.setdefault("sources", []).append(
+            {"url": url, "kind": str(src.get("kind") or "other")}
+        )
+        details.append(f"source {url}")
+
+    new_rules = patch.get("rules")
+    if isinstance(new_rules, list) and new_rules:
+        rules = list(packet.get("rules") or [])
+        by_exact: dict[str, int] = {}
+        for i, rule in enumerate(rules):
+            if isinstance(rule, dict) and rule.get("type") == "EXACT_STRING_REPLACE":
+                by_exact[str(rule.get("match"))] = i
+        for rule in new_rules:
+            if not isinstance(rule, dict) or not rule.get("type"):
+                continue
+            rule = dict(rule)
+            if rule.get("type") == "EXACT_STRING_REPLACE" and rule.get("match") in by_exact:
+                idx = by_exact[str(rule["match"])]
+                rules[idx] = rule
+                details.append(
+                    f"rule replace {rule.get('match')!r} → {rule.get('replace')!r}"
+                )
+            else:
+                rules.append(rule)
+                details.append(f"rule add {rule.get('type')}")
+        probe = dict(packet)
+        probe["rules"] = rules
+        errs = validate_packet(probe)
+        if errs:
+            details.append(f"packet patch rejected (invalid): {errs[:2]}")
+        else:
+            packet["rules"] = rules
+
+    return details
 
 
 def _heuristic_fix(
@@ -312,48 +429,102 @@ def _llm_suggest_fixes(
     ignore: IgnoreList | None = None,
     evidence: str = "",
     log: LogFn | None = None,
-) -> dict[str, str]:
+) -> LlmRepairSuggestion:
     emit = log or _noop_log
     client = get_llm_client()
     if client is None:
-        return {}
+        return LlmRepairSuggestion()
 
     ignore = ignore or IgnoreList()
     files = {k: v for k, v in files.items() if not ignore.path_ignored(k)}
 
     prompt = {
         "instructions": (
-            "Tests failed after an automatic API migration. "
-            "Fix production and/or test files to match the migration packet and "
-            "grounded vendor docs in evidence. "
-            'Return JSON: {"files": {"relative/path.py": "full new file contents"}}. '
-            "Only include files that need changes. "
-            "Prefer model/endpoint facts from evidence over inventing successors. "
-            "Do NOT modify ignored paths. "
-            "Do NOT rewrite ignored patterns when they appear as LEGACY_/FORBIDDEN_/"
-            "EXPECTED_/ALLOWED_ contract constants — those define the migration oracle."
+            "Tests failed after an automatic API migration. Your job is to make "
+            "the consumer repo pass tests.\n"
+            "The migration packet may be incomplete or wrong — you may fix code "
+            "AND update the packet when needed.\n"
+            "You have web research evidence below. If it is NOT enough to fix the "
+            "failure, request more general search (do not guess).\n"
+            "Return JSON with any of:\n"
+            '  "files": {"relative/path.py": "full new file contents"},\n'
+            '  "packet_patch": {\n'
+            '      "rules": [/* full rule objects to add or replace by match */],\n'
+            '      "notes": "why the packet changed",\n'
+            '      "sources": [{"url": "...", "kind": "docs"|"other"}]\n'
+            "  },\n"
+            '  "search_queries": ["web search queries to run next if evidence is insufficient"]\n'
+            "Rules:\n"
+            "- Prefer grounded facts from evidence; when requesting search_queries, "
+            "be specific (error text, model id, endpoint, SDK version).\n"
+            "- Every new/changed rule should include a short 'reason'.\n"
+            "- Only include files that need changes.\n"
+            "- Do NOT modify ignored paths.\n"
+            "- Do NOT rewrite ignored patterns when they appear as LEGACY_/FORBIDDEN_/"
+            "EXPECTED_/ALLOWED_ contract constants — those define the migration oracle.\n"
+            "- If you can fix with current evidence, return files (and packet_patch if "
+            "the packet should change). If you cannot, return search_queries and "
+            "omit files (or leave files empty)."
         ),
         "ignore": ignore.to_prompt_dict(),
         "error_stdout": test_result.stdout[-6000:],
         "error_stderr": test_result.stderr[-6000:],
         "packet": packet,
         "files": files,
-        "evidence": evidence[:24000] if evidence else "",
+        "evidence": evidence[:28000] if evidence else "",
     }
     try:
         data = client.complete_json(
             system=(
-                "You are a careful migration agent. Reply with JSON only. "
-                "Honor ignore list. Use evidence when present."
+                "You are a migration repair agent with web research. "
+                "Reply with JSON only. Honor ignore list. "
+                "Request search_queries when evidence is insufficient; "
+                "update packet_patch when the migration packet must change."
             ),
             user=json.dumps(prompt),
         )
-        files_out = data.get("files") or {}
-        updates = {str(k): str(v) for k, v in files_out.items() if isinstance(v, str)}
-        return {k: v for k, v in updates.items() if not ignore.path_ignored(k)}
     except Exception as exc:
         emit(f"[self-correct] LLM repair failed: {exc}")
-        return {}
+        return LlmRepairSuggestion()
+
+    if not isinstance(data, dict):
+        return LlmRepairSuggestion()
+
+    files_out = data.get("files") or {}
+    updates = {
+        str(k): str(v)
+        for k, v in files_out.items()
+        if isinstance(v, str) and not ignore.path_ignored(str(k))
+    }
+    queries: list[str] = []
+    for q in data.get("search_queries") or []:
+        if isinstance(q, str) and q.strip():
+            queries.append(q.strip())
+    patch = data.get("packet_patch")
+    if not isinstance(patch, dict):
+        patch = {}
+    return LlmRepairSuggestion(
+        files=updates,
+        search_queries=queries[:8],
+        packet_patch=patch,
+    )
+
+
+def _evidence_url_note(evidence: str, *, limit: int = 5) -> str:
+    if not evidence:
+        return ""
+    urls = re.findall(r"https?://\S+", evidence)
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for u in urls:
+        u = u.rstrip(")")
+        if u in seen:
+            continue
+        seen.add(u)
+        uniq.append(u)
+        if len(uniq) >= limit:
+            break
+    return (" Evidence: " + ", ".join(uniq)) if uniq else ""
 
 
 def verify_with_self_correct(
@@ -382,8 +553,8 @@ def verify_with_self_correct(
             f"patterns={len(ignore.patterns)}"
         )
 
-    cached_evidence: str | None = None
-    cached_failure_key: str | None = None
+    evidence = ""
+    pending_queries: list[str] = []
 
     for attempt in range(1, max_retries + 1):
         emit(f"[self-correct] attempt {attempt}/{max_retries} after test failure")
@@ -398,64 +569,89 @@ def verify_with_self_correct(
             f"{', '.join(sorted(context_files)) or '(none)'}"
         )
 
-        failure_key = (
-            (result.stdout or "")[-2000:] + "\n" + (result.stderr or "")[-2000:]
-        )
-        evidence = ""
+        suggestion = LlmRepairSuggestion()
         if get_llm_client() is not None:
-            if cached_evidence is not None and cached_failure_key == failure_key:
-                evidence = cached_evidence
-                vlog("[self-correct] reusing research evidence from prior attempt")
-            else:
-                evidence, _warnings = _research_for_failure(
-                    result, packet, log=vlog
-                )
-                cached_evidence = evidence
-                cached_failure_key = failure_key
+            # Fresh research each attempt (failure text / packet may have changed),
+            # plus any LLM-requested queries from the previous round.
+            evidence, _warnings = _research_for_failure(
+                result,
+                packet,
+                log=vlog,
+                extra_queries=pending_queries,
+            )
+            pending_queries = []
 
-        updates = _llm_suggest_fixes(
-            test_result=result,
-            packet=packet,
-            files=context_files,
-            ignore=ignore,
-            evidence=evidence,
-            log=vlog,
-        )
-        if updates:
-            changed = _apply_file_updates(root, updates)
+            suggestion = _llm_suggest_fixes(
+                test_result=result,
+                packet=packet,
+                files=context_files,
+                ignore=ignore,
+                evidence=evidence,
+                log=vlog,
+            )
+
+            # Evidence was insufficient — run the model's search queries and ask again.
+            if suggestion.search_queries and not suggestion.files:
+                vlog(
+                    "[self-correct] LLM requested more search: "
+                    + "; ".join(suggestion.search_queries)
+                )
+                more, _w2 = _research_for_failure(
+                    result,
+                    packet,
+                    log=vlog,
+                    extra_queries=suggestion.search_queries,
+                )
+                if more:
+                    evidence = (evidence + "\n\n" + more)[-28000:]
+                suggestion = _llm_suggest_fixes(
+                    test_result=result,
+                    packet=packet,
+                    files=context_files,
+                    ignore=ignore,
+                    evidence=evidence,
+                    log=vlog,
+                )
+                # Carry leftover search needs into the next attempt if still stuck
+                if suggestion.search_queries and not suggestion.files:
+                    pending_queries = list(suggestion.search_queries)
+
+        patch_details: list[str] = []
+        if suggestion.packet_patch:
+            patch_details = _apply_packet_patch(packet, suggestion.packet_patch)
+            if patch_details:
+                vlog(
+                    "[self-correct] packet updated: " + "; ".join(patch_details)
+                )
+
+        if suggestion.files:
+            changed = _apply_file_updates(root, suggestion.files)
             fix = FixAttempt(
                 strategy="llm",
                 files=changed,
-                details=[f"{rel}: rewritten by LLM" for rel in changed],
+                details=[f"{rel}: rewritten by LLM" for rel in changed]
+                + [f"packet: {d}" for d in patch_details],
             )
-            if changed:
-                src_note = ""
-                if evidence:
-                    # Keep a short trail of research for the PR Notes section.
-                    urls = re.findall(r"https?://\S+", evidence)
-                    uniq_urls: list[str] = []
-                    seen_u: set[str] = set()
-                    for u in urls:
-                        u = u.rstrip(")")
-                        if u in seen_u:
-                            continue
-                        seen_u.add(u)
-                        uniq_urls.append(u)
-                        if len(uniq_urls) >= 5:
-                            break
-                    if uniq_urls:
-                        src_note = " Evidence: " + ", ".join(uniq_urls)
+            if changed or patch_details:
                 _append_packet_note(
                     packet,
                     f"- Self-correct (attempt {attempt}): LLM repaired "
-                    f"{', '.join(changed)}.{src_note}",
+                    f"{', '.join(changed) or '(packet only)'}."
+                    f"{_evidence_url_note(evidence)}",
                 )
         else:
-            client = get_llm_client()
-            if client is None:
+            if get_llm_client() is None:
                 vlog("[self-correct] no LLM configured; applying packet heuristic fixes")
+            elif suggestion.search_queries:
+                vlog(
+                    "[self-correct] LLM still needs research; "
+                    "applying heuristic fixes this round"
+                )
             else:
-                vlog("[self-correct] LLM returned no file updates; applying heuristic fixes")
+                vlog(
+                    "[self-correct] LLM returned no file updates; "
+                    "applying heuristic fixes"
+                )
             fix = _heuristic_fix(root, packet, ignore=ignore)
             if fix.files:
                 _append_packet_note(
@@ -463,16 +659,39 @@ def verify_with_self_correct(
                     f"- Self-correct (attempt {attempt}): heuristic packet rules "
                     f"updated {', '.join(fix.files)}.",
                 )
+            # Packet-only LLM update counts as progress even without file edits
+            if not fix.files and patch_details:
+                fix = FixAttempt(
+                    strategy="llm",
+                    files=[],
+                    details=[f"packet: {d}" for d in patch_details],
+                )
+                # Re-run tests after packet-only change won't help files, but
+                # keep going so a later attempt can use the updated packet.
+                # Mark synthetic progress via details; avoid early-stop.
+                fix.files = ["(packet)"]
 
-        corrected_files.extend(fix.files)
+        corrected_files.extend(f for f in fix.files if f != "(packet)")
         if fix.files:
             vlog(
                 f"[self-correct] strategy={fix.strategy}; "
-                f"updated {len(fix.files)} file(s): {', '.join(fix.files)}"
+                f"updated {len([f for f in fix.files if f != '(packet)'])} file(s)"
+                + (
+                    f": {', '.join(f for f in fix.files if f != '(packet)')}"
+                    if any(f != "(packet)" for f in fix.files)
+                    else " (packet patch only)"
+                )
             )
             for detail in fix.details:
                 vlog(f"[self-correct]   {detail}")
         else:
+            # Still have pending search for next attempt — don't stop early.
+            if pending_queries and get_llm_client() is not None and attempt < max_retries:
+                emit(
+                    "[self-correct] no file edits yet; "
+                    "will continue with LLM-requested search next attempt"
+                )
+                continue
             emit(
                 f"[self-correct] strategy={fix.strategy}; "
                 "no file changes produced this attempt"
@@ -490,5 +709,10 @@ def verify_with_self_correct(
             vlog(f"[self-correct] tests passed after attempt {attempt}")
             return result, sorted(set(corrected_files))
         vlog(f"[self-correct] still failing after attempt {attempt}: {result.summary}")
+        # Next attempt should research again with the new failure signature
+        if suggestion.search_queries:
+            pending_queries = list(
+                dict.fromkeys([*pending_queries, *suggestion.search_queries])
+            )
 
     return result, sorted(set(corrected_files))

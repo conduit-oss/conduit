@@ -258,6 +258,8 @@ def test_self_correct_researches_and_passes_evidence(tmp_path: Path, monkeypatch
         def complete_json(self, system: str, user: str):
             payload = json.loads(user)
             assert "evidence" in payload
+            assert "search_queries" in payload["instructions"]
+            assert "packet_patch" in payload["instructions"]
             assert "developers.openai.com" in payload["evidence"]
             return {
                 "files": {
@@ -269,6 +271,7 @@ def test_self_correct_researches_and_passes_evidence(tmp_path: Path, monkeypatch
 
     def fake_build_evidence(**kwargs):
         evidence_calls.append(kwargs)
+        assert kwargs.get("open_search") is True
         return (
             [
                 EvidenceDoc(
@@ -292,3 +295,130 @@ def test_self_correct_researches_and_passes_evidence(tmp_path: Path, monkeypatch
     assert corrected
     assert evidence_calls
     assert "Self-correct" in (packet.get("notes") or "")
+
+
+def test_self_correct_search_then_packet_patch(tmp_path: Path, monkeypatch):
+    from conduit.self_correct import verify_with_self_correct
+    from conduit.test_runner import TestResult as RunnerResult
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text('MODEL = "gpt-4-0613"\n', encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_app.py").write_text(
+        "def test_ok():\n    assert False\n", encoding="utf-8"
+    )
+    packet = {
+        "packet_id": "p",
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.1",
+        "to_version": "1.0",
+        "sources": [],
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "target_files": ["*.py"],
+                "match": "gpt-4-0613",
+                "replace": "gpt-incompat-chat",
+                "reason": "bad initial pick",
+            }
+        ],
+        "notes": "",
+    }
+
+    calls = {"n": 0}
+    llm_calls = {"n": 0}
+
+    def fake_run_tests(root: Path):
+        calls["n"] += 1
+        app = (root / "src" / "app.py").read_text(encoding="utf-8")
+        if "gpt-4o" in app:
+            return RunnerResult(
+                runner="pytest",
+                passed=True,
+                returncode=0,
+                stdout="",
+                stderr="",
+                command=["pytest"],
+            )
+        return RunnerResult(
+            runner="pytest",
+            passed=False,
+            returncode=1,
+            stdout="Error: model gpt-incompat-chat not supported for chat.completions",
+            stderr="",
+            command=["pytest"],
+        )
+
+    class FakeClient:
+        def complete_json(self, system: str, user: str):
+            llm_calls["n"] += 1
+            payload = json.loads(user)
+            if llm_calls["n"] == 1:
+                # First pass: evidence insufficient → ask for search
+                return {
+                    "search_queries": [
+                        "openai gpt-4o chat.completions supported endpoints"
+                    ]
+                }
+            # After search: fix files + correct the packet
+            assert "openai gpt-4o" in " ".join(
+                payload.get("evidence", "").split()
+            ) or "gpt-4o" in payload.get("evidence", "")
+            return {
+                "files": {
+                    "src/app.py": 'MODEL = "gpt-4o"\n',
+                    "tests/test_app.py": "def test_ok():\n    assert True\n",
+                },
+                "packet_patch": {
+                    "rules": [
+                        {
+                            "type": "EXACT_STRING_REPLACE",
+                            "target_files": ["*.py"],
+                            "match": "gpt-4-0613",
+                            "replace": "gpt-4o",
+                            "reason": "gpt-incompat-chat lacks chat.completions; gpt-4o supports it.",
+                        }
+                    ],
+                    "notes": "Corrected model replacement after endpoint research.",
+                    "sources": [
+                        {
+                            "url": "https://developers.openai.com/api/docs/models/gpt-4o",
+                            "kind": "docs",
+                        }
+                    ],
+                },
+            }
+
+    def fake_build_evidence(**kwargs):
+        extra = " ".join(kwargs.get("search_queries") or [])
+        text = "general search results"
+        if "gpt-4o" in extra:
+            text = "gpt-4o chat.completions Supported"
+        return (
+            [
+                EvidenceDoc(
+                    url="https://example.com/search-hit",
+                    title="hit",
+                    text=text,
+                    kind="search",
+                )
+            ],
+            [],
+        )
+
+    monkeypatch.setattr("conduit.self_correct.run_tests", fake_run_tests)
+    monkeypatch.setattr("conduit.self_correct.get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr("conduit.packet.evidence.build_evidence", fake_build_evidence)
+
+    result, corrected = verify_with_self_correct(
+        tmp_path, packet, max_retries=3, verbose=True, log=lambda _m: None
+    )
+    assert result.passed
+    assert "src/app.py" in corrected
+    assert packet["rules"][0]["replace"] == "gpt-4o"
+    assert any(
+        isinstance(s, dict) and "gpt-4o" in str(s.get("url"))
+        for s in packet.get("sources") or []
+    )
+    assert llm_calls["n"] >= 2

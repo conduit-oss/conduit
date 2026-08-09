@@ -101,6 +101,15 @@ def web_search(query: str, *, max_results: int = _MAX_SEARCH_HITS) -> list[str]:
     return urls
 
 
+def _search_host_ok(url: str, allow_hosts: Iterable[str], *, open_search: bool) -> bool:
+    """When open_search=True, accept any http(s) URL from web search results."""
+    if open_search:
+        scheme = (urlparse(url).scheme or "").lower()
+        host = (urlparse(url).hostname or "").lower()
+        return scheme in {"http", "https"} and bool(host)
+    return host_allowed(url, allow_hosts)
+
+
 def build_evidence(
     *,
     seed_urls: list[str],
@@ -108,9 +117,13 @@ def build_evidence(
     search_queries: list[str] | None = None,
     max_seed_pages: int = _MAX_SEED_PAGES,
     max_search_hits: int = _MAX_SEARCH_HITS,
+    open_search: bool = False,
 ) -> tuple[list[EvidenceDoc], list[str]]:
     """
     Fetch seed pages, expand same-allowlist links, run web search.
+
+    When open_search=True, search-hit URLs are not restricted to allow_hosts
+    (seeds/links still are). Useful for repair-time general research.
 
     Returns (docs, warnings).
     """
@@ -160,10 +173,12 @@ def build_evidence(
             if not found:
                 warnings.append(f"evidence search returned 0 for: {query}")
             for href in found:
-                if host_allowed(href, allow_hosts) and href not in seen_urls:
+                if _search_host_ok(href, allow_hosts, open_search=open_search) and href not in seen_urls:
                     search_urls.append(href)
 
-        for href in search_urls[:max_search_hits]:
+        # Allow more search pages when doing open/general research
+        search_cap = max_search_hits * (3 if open_search else 1)
+        for href in search_urls[:search_cap]:
             if href in seen_urls:
                 continue
             doc = _fetch_url(client, href)
