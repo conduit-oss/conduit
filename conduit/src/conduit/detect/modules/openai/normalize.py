@@ -139,7 +139,10 @@ def default_rules_for(signal: RawSignal) -> list[dict[str, Any]]:
         to_version = signal.extra.get("to_version") or signal.replacement_pattern or "1.0.0"
         reason = _rule_reason(
             signal,
-            fallback=f"Bump {package} dependency {from_version} → {to_version}.",
+            fallback=(
+                f"Bump {package} dependency {from_version} → {to_version} "
+                f"(next version step)."
+            ),
         )
         rules.append(
             _with_reason(

@@ -57,7 +57,11 @@ class OpenAIModule(DetectModule):
         for worker_cls in ALL_WORKERS:
             worker = worker_cls()
             try:
-                raw_list = worker.run(demo=ctx.demo, client_state=client_state)
+                raw_list = worker.run(
+                    demo=ctx.demo,
+                    client_state=client_state,
+                    majors_only=ctx.majors_only,
+                )
             except Exception as exc:
                 warnings.append(f"openai worker {worker.name}: {exc}")
                 continue

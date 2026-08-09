@@ -276,7 +276,7 @@ def parse_deprecation_html(html: str, source_url: str) -> list[RawSignal]:
 class DeprecationScraperWorker(Worker):
     name = "DeprecationScraperWorker"
 
-    def run(self, *, demo: bool = False, client_state=None) -> list[RawSignal]:
+    def run(self, *, demo: bool = False, client_state=None, majors_only: bool = True) -> list[RawSignal]:
         if demo:
             fixture = fixtures_dir() / "deprecations" / "openai_deprecations.html"
             html = fixture.read_text(encoding="utf-8")

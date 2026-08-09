@@ -22,11 +22,19 @@ class DetectContext:
     package_states: dict[str, "PackageClientState"] = field(default_factory=dict)
     demo: bool = False  # use offline fixtures; live sources otherwise
     verbose: bool = False
+    majors_only: bool = True  # one major version step at a time
     extra: dict[str, Any] = field(default_factory=dict)
 
 
 class DetectModule(ABC):
-    """Vendor-specific signal source plugged into core detect."""
+    """Vendor-specific signal source plugged into core detect.
+
+    Successor / version policy (shared across modules):
+    - Models/endpoints: prefer intermediate documented steps
+      (``conduit.detect.successor_policy``).
+    - Package/SDK versions: prefer the next major (or next release) rather than
+      jumping to absolute latest (``conduit.detect.version_steps``).
+    """
 
     name: str = "module"
     packages: list[str] = []

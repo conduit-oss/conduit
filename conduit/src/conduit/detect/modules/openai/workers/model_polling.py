@@ -66,6 +66,7 @@ class ModelPollingWorker(Worker):
         *,
         demo: bool = False,
         client_state: PackageClientState | None = None,
+        majors_only: bool = True,
     ) -> list[RawSignal]:
         self.last_skip_reason = None
         used = _client_model_ids(client_state, demo=demo)

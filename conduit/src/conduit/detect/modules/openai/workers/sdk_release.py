@@ -13,6 +13,12 @@ from packaging.version import InvalidVersion, Version
 from conduit.detect.client_state import PackageClientState
 from conduit.detect.modules.openai.models_legacy import ChangeType, RawSignal, Severity
 from conduit.detect.modules.openai.workers.base import Worker, fixtures_dir
+from conduit.detect.version_steps import (
+    list_release_versions,
+    next_version_step,
+    parse_release_version,
+    version_step_reason,
+)
 
 TAG_RE = re.compile(r"^v?(?P<version>\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)$")
 
@@ -30,24 +36,49 @@ DEFAULT_REPOS: dict[str, dict[str, Any]] = {
 
 
 def _parse_version(tag: str) -> Version | None:
-    match = TAG_RE.match(tag.strip())
-    if not match:
-        return None
-    try:
-        return Version(match.group("version"))
-    except InvalidVersion:
-        return None
-
-
-def _is_major_bump(previous: Version, latest: Version) -> bool:
-    return latest.major > previous.major
+    return parse_release_version(tag)
 
 
 def _is_prerelease(tag: str, version: Version) -> bool:
     return bool(version.is_prerelease) or "-rc" in tag.lower() or ".rc" in tag.lower()
 
 
+def _github_release_tags(repo: str, *, per_page: int = 30, max_pages: int = 3) -> list[str]:
+    """List recent release tags (newest first from GitHub)."""
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    tags: list[str] = []
+    try:
+        with httpx.Client(timeout=30.0, headers=headers) as client:
+            for page in range(1, max_pages + 1):
+                url = (
+                    f"https://api.github.com/repos/{repo}/releases"
+                    f"?per_page={per_page}&page={page}"
+                )
+                resp = client.get(url)
+                resp.raise_for_status()
+                payload = resp.json()
+                if not isinstance(payload, list) or not payload:
+                    break
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("draft"):
+                        continue
+                    name = item.get("tag_name")
+                    if name:
+                        tags.append(str(name))
+                if len(payload) < per_page:
+                    break
+    except (httpx.HTTPError, json.JSONDecodeError, OSError):
+        return tags
+    return tags
+
+
 def _github_latest_tag(repo: str) -> str | None:
+    """Fallback single-tag fetch when list endpoint is empty/unavailable."""
     url = f"https://api.github.com/repos/{repo}/releases/latest"
     headers = {"Accept": "application/vnd.github+json"}
     token = os.environ.get("GITHUB_TOKEN", "").strip()
@@ -57,7 +88,7 @@ def _github_latest_tag(repo: str) -> str | None:
         resp = httpx.get(url, headers=headers, timeout=30.0)
         resp.raise_for_status()
         return resp.json().get("tag_name")
-    except (httpx.HTTPError, json.JSONDecodeError):
+    except (httpx.HTTPError, json.JSONDecodeError, OSError):
         return None
 
 
@@ -91,6 +122,24 @@ def _ecosystems_match(meta: dict[str, Any], client_ecosystems: list[str]) -> boo
     return bool(wanted & have)
 
 
+def _tags_for_repo(meta: dict[str, Any], *, demo: bool, repo: str) -> list[str]:
+    if demo:
+        tags = meta.get("tags")
+        if isinstance(tags, list) and tags:
+            return [str(t) for t in tags]
+        # Fall back to previous + latest so single-step fixtures still work
+        out: list[str] = []
+        for key in ("previous_tag", "latest_tag"):
+            if meta.get(key):
+                out.append(str(meta[key]))
+        return out
+    tags = _github_release_tags(repo)
+    if tags:
+        return tags
+    latest = _github_latest_tag(repo)
+    return [latest] if latest else []
+
+
 class SDKReleaseWorker(Worker):
     name = "SDKReleaseWorker"
 
@@ -102,6 +151,7 @@ class SDKReleaseWorker(Worker):
         *,
         demo: bool = False,
         client_state: PackageClientState | None = None,
+        majors_only: bool = True,
     ) -> list[RawSignal]:
         self.last_skip_reason = None
         installed_raw = (
@@ -113,7 +163,6 @@ class SDKReleaseWorker(Worker):
 
         installed_v = _parse_version(installed_raw)
         if installed_v is None:
-            # Allow bare versions like 1.40.0 without v prefix (already handled) or 1.40
             try:
                 installed_v = Version(installed_raw.lstrip("v"))
             except InvalidVersion:
@@ -128,55 +177,76 @@ class SDKReleaseWorker(Worker):
         for repo, meta in repos.items():
             if not _ecosystems_match(meta, client_ecosystems):
                 continue
-            if demo:
-                latest_tag = meta.get("latest_tag")
-            else:
-                latest_tag = _github_latest_tag(repo)
-            if not latest_tag:
+            tags = _tags_for_repo(meta, demo=demo, repo=repo)
+            if not tags:
                 continue
 
-            latest_v = _parse_version(str(latest_tag))
-            if not latest_v:
+            versions = list_release_versions(tags)
+            if not versions:
+                continue
+
+            latest_v = max(versions)
+            chosen = next_version_step(
+                installed_v, versions, majors_only=majors_only
+            )
+            if chosen is None:
+                continue
+            if chosen <= installed_v:
                 continue
 
             package = str(meta.get("package") or repo.split("/")[-1])
             pkg_key = package.lower()
             if pkg_key in seen_packages:
                 continue
-            ecosystems = meta.get("ecosystems", ["pip"])
 
-            major = _is_major_bump(installed_v, latest_v)
-            pre = _is_prerelease(str(latest_tag), latest_v)
-            if not (major or (pre and latest_v > installed_v)):
-                continue
+            ecosystems = meta.get("ecosystems", ["pip"])
+            deferred = latest_v > chosen
+            pre = chosen.is_prerelease
+            severity = (
+                Severity.CRITICAL
+                if chosen.major > installed_v.major
+                else Severity.WARNING
+            )
+            reason = version_step_reason(
+                installed_v,
+                chosen,
+                latest_v,
+                package=package,
+                majors_only=majors_only,
+            )
+            latest_tag = str(meta.get("latest_tag") or f"v{latest_v}")
+            # Prefer a real tag string matching chosen when present
+            chosen_tag = next(
+                (t for t in tags if parse_release_version(t) == chosen),
+                f"v{chosen}",
+            )
 
             seen_packages.add(pkg_key)
-            severity = Severity.CRITICAL if major else Severity.WARNING
             signals.append(
                 RawSignal(
                     vendor="openai",
                     change_type=ChangeType.SDK_MAJOR_BUMP,
                     severity=severity,
                     affected_pattern=package,
-                    replacement_pattern=str(latest_v.base_version),
-                    source_url=f"https://github.com/{repo}/releases/tag/{latest_tag}",
+                    replacement_pattern=str(chosen.base_version),
+                    source_url=f"https://github.com/{repo}/releases/tag/{chosen_tag}",
                     description=(
-                        f"SDK {repo} latest {latest_tag} is ahead of client "
-                        f"installed {installed_raw}"
+                        f"SDK {repo}: {reason}"
                         + (" (prerelease)" if pre else "")
                     ),
                     extra={
                         "package": package,
                         "from_version": str(installed_v.base_version),
-                        "to_version": str(latest_v.base_version),
+                        "to_version": str(chosen.base_version),
                         "ecosystems": ecosystems,
                         "repo": repo,
                         "latest_tag": latest_tag,
+                        "chosen_tag": chosen_tag,
+                        "deferred_latest": str(latest_v.base_version) if deferred else None,
+                        "majors_only": majors_only,
+                        "reason": reason,
                     },
                 )
             )
 
-        if not signals and self.last_skip_reason is None:
-            # Healthy: catalog checked, no major/prerelease ahead of client
-            self.last_skip_reason = None
         return signals

@@ -50,6 +50,7 @@ class Worker(ABC):
         *,
         demo: bool = False,
         client_state: Any | None = None,
+        majors_only: bool = True,
     ) -> list[RawSignal]:
         """Emit signals. Live sources by default; fixtures only when demo=True."""
         raise NotImplementedError

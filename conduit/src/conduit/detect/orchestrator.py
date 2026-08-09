@@ -80,6 +80,7 @@ def run_detect(
             package_states=package_states,
             demo=demo,
             verbose=verbose,
+            majors_only=majors_only,
         )
         for mod in modules:
             if (

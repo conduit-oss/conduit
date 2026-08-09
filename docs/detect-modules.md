@@ -56,7 +56,9 @@ Discovery: [`conduit/src/conduit/detect/modules/discovery.py`](../conduit/src/co
 | Deprecation scraper | `https://platform.openai.com/docs/deprecations` | — | `fixtures/openai/deprecations/` |
 | Model polling | `GET /v1/models` (needs `OPENAI_API_KEY`) | `package_states["openai"].model_ids` | `fixtures/openai/models/` (+ `client_used.json` when no scan) |
 | Changelog parser | platform changelog page | — | `fixtures/openai/changelogs/` |
-| SDK release | GitHub releases API | installed openai version + ecosystems | `fixtures/openai/sdk_releases/` |
+| SDK release | GitHub releases list (stepped) | installed openai version + ecosystems | `fixtures/openai/sdk_releases/` |
+
+SDK release bumps **one major at a time** (or next published release with `--all-bumps`) via [`version_steps.next_version_step`](../conduit/src/conduit/detect/version_steps.py). If newer majors exist, they are noted as deferred in the signal reason.
 
 After workers run, **endpoint compat** checks each model A→B against the replacement’s Supported endpoints on [developers.openai.com/api/docs/models](https://developers.openai.com/api/docs/models) (`.md` pages; demo uses `fixtures/openai/model_docs/`). Client `api_patterns` map to required routes (e.g. `chat.completions` → `v1/chat/completions`). Incompatible replacements are swapped for a catalog alternate that supports those routes, or cleared with a note — never invented. Each decision carries a `reason` onto rules / packet notes for the PR.
 

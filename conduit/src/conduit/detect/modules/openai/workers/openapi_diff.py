@@ -269,7 +269,7 @@ def _run_oasdiff(prev: Path, latest: Path) -> list[RawSignal]:
 class OpenAPIDiffWorker(Worker):
     name = "OpenAPIDiffWorker"
 
-    def run(self, *, demo: bool = False, client_state=None) -> list[RawSignal]:
+    def run(self, *, demo: bool = False, client_state=None, majors_only: bool = True) -> list[RawSignal]:
         fixture_prev = fixtures_dir() / "openapi" / "previous.yaml"
         fixture_latest = fixtures_dir() / "openapi" / "latest.yaml"
 

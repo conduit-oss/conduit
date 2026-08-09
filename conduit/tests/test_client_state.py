@@ -76,8 +76,10 @@ def test_llm_enrich_merges_grounded_tokens_only(tmp_path: Path, monkeypatch):
 
 def test_sdk_release_compares_installed_to_latest(monkeypatch):
     monkeypatch.setattr(
-        "conduit.detect.modules.openai.workers.sdk_release._github_latest_tag",
-        lambda repo: "v1.40.0" if "python" in repo else None,
+        "conduit.detect.modules.openai.workers.sdk_release._github_release_tags",
+        lambda repo, **kwargs: (
+            ["v1.0.0", "v1.40.0", "v2.0.0"] if "python" in repo else []
+        ),
     )
     worker = SDKReleaseWorker()
     state = PackageClientState(
@@ -88,7 +90,9 @@ def test_sdk_release_compares_installed_to_latest(monkeypatch):
     signals = worker.run(demo=False, client_state=state)
     assert len(signals) == 1
     assert signals[0].extra["from_version"] == "0.28.1"
+    # Next major line is 1.x (highest 1.40.0), not latest 2.0.0
     assert signals[0].extra["to_version"] == "1.40.0"
+    assert signals[0].extra.get("deferred_latest") == "2.0.0"
 
 
 def test_sdk_release_skips_without_installed():
@@ -107,3 +111,7 @@ def test_sdk_release_demo_uses_fixture_latest():
     signals = worker.run(demo=True, client_state=state)
     assert signals
     assert signals[0].extra["to_version"] == "1.40.0"
+    assert signals[0].extra.get("deferred_latest") == "2.0.0"
+    assert "deferred" in (signals[0].description or "").lower() or "2.0" in (
+        signals[0].extra.get("reason") or ""
+    )

@@ -31,6 +31,8 @@ Separately, Conduit always parses **currently declared** versions from the same 
 
 By default only **major** bumps are treated as migration candidates (`--majors-only`, on by default). Use `--all-bumps` to include minor/patch.
 
+Vendor SDK release workers prefer the **next intermediate version step** (one major at a time under `--majors-only`), not a jump straight to GitHub latest. Newer majors are recorded as deferred. Shared helper: [`version_steps.py`](../conduit/src/conduit/detect/version_steps.py).
+
 Ecosystem parsers today:
 
 | File | Quality |
