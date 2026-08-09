@@ -30,7 +30,7 @@ Detect upgrade  →  Prune files  →  Apply migration rules  →  Test / fix  �
 git clone https://github.com/xlor1009/conduit.git
 cd conduit
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # Windows: .venv/Scripts/activate
 python -m pip install -e "./conduit[llm,langs,dev]"
 
 conduit run \
