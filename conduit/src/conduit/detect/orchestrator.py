@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from conduit.detect.client_state import scan_package_states
+from conduit.detect.client_state import PackageClientState, scan_package_states
 from conduit.detect.lockfile_diff import detect_lockfile_jumps
 from conduit.detect.manifests import read_installed
 from conduit.detect.models import ChangeSignal
@@ -18,6 +18,7 @@ class DetectResult:
     signals: list[ChangeSignal] = field(default_factory=list)
     installed: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    package_states: dict[str, PackageClientState] = field(default_factory=dict)
 
     @property
     def packages(self) -> set[str]:
@@ -39,6 +40,7 @@ def run_detect(
     installed = read_installed(root)
     signals: list[ChangeSignal] = []
     warnings: list[str] = []
+    package_states: dict[str, PackageClientState] = {}
 
     if not skip_lockfile:
         for jump in detect_lockfile_jumps(
@@ -96,4 +98,9 @@ def run_detect(
             ctx.extra["warnings"] = []
             ctx.extra["verbose_warnings"] = []
 
-    return DetectResult(signals=signals, installed=installed, warnings=warnings)
+    return DetectResult(
+        signals=signals,
+        installed=installed,
+        warnings=warnings,
+        package_states=package_states if not skip_modules else {},
+    )

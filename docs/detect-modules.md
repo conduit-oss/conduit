@@ -27,7 +27,15 @@ Before vendor modules run, Conduit scans the client repo per applicable package:
 
 Empty `model_ids` means **unknown**, not all-clear (env/dynamic construction may hide usage).
 
-See [`conduit/src/conduit/detect/client_state.py`](../conduit/src/conduit/detect/client_state.py).
+This baseline is the **source packet** (in-memory `package_states`, also written to `.conduit/source-packets/<package>.json`). After the migration packet is built, `conduit run` / `conduit detect` print:
+
+1. Source packet (models / api_patterns / files)
+2. Migration packet summary (signals + rules)
+3. **Coverage diff** — each client model/api_pattern as `CAUGHT` or `MISSED`
+
+Use `MISSED` lines to see what the client uses that never got a rule. `-v` adds full JSON dumps.
+
+See [`conduit/src/conduit/detect/client_state.py`](../conduit/src/conduit/detect/client_state.py) and [`coverage.py`](../conduit/src/conduit/detect/coverage.py).
 
 Built-ins register via entry point group:
 

@@ -11,6 +11,11 @@ from rich.console import Console
 from rich.table import Table
 
 from conduit.context.fetch import read_local_text
+from conduit.detect.coverage import (
+    build_coverage_report,
+    format_coverage_report,
+    save_source_packet,
+)
 from conduit.detect.modules.discovery import load_modules
 from conduit.detect.orchestrator import run_detect
 from conduit.export_delta import compute_export_delta, prune_by_export_symbols
@@ -45,6 +50,35 @@ _VERBOSE = False
 def _vprint(message: str) -> None:
     if _VERBOSE:
         console.print(f"[dim][verbose][/dim] {message}")
+
+
+def _print_packet_coverage(
+    *,
+    root: Path,
+    package: str,
+    detected,
+    packet: dict | None = None,
+    persist_source: bool = True,
+) -> None:
+    """Print source packet, migration summary, and caught/missed coverage diff."""
+    state = (detected.package_states or {}).get(package) or (
+        detected.package_states or {}
+    ).get(package.lower())
+    report = build_coverage_report(
+        package=package,
+        state=state,
+        signals=detected.signals,
+        packet=packet,
+    )
+    console.print(format_coverage_report(report, verbose=_VERBOSE))
+    if report.missed:
+        console.print(
+            f"[yellow]Coverage:[/yellow] {len(report.missed)} client item(s) not "
+            "covered by migration signals/rules (see MISSED above)."
+        )
+    if persist_source:
+        path = save_source_packet(root, report.source_packet)
+        _vprint(f"wrote source packet {path}")
 
 
 @app.callback()
@@ -148,7 +182,26 @@ def detect_cmd(
         verbose=_VERBOSE,
     )
     if json_out:
-        console.print_json(json.dumps([s.to_dict() for s in result.signals]))
+        payload = {
+            "signals": [s.to_dict() for s in result.signals],
+            "package_states": {
+                k: v.to_dict() for k, v in (result.package_states or {}).items()
+            },
+        }
+        # Include coverage when a primary package is obvious
+        pkgs = sorted(result.packages | set(result.package_states or {}))
+        if pkgs:
+            from conduit.detect.coverage import build_coverage_report
+
+            pkg0 = "openai" if "openai" in pkgs else pkgs[0]
+            state = (result.package_states or {}).get(pkg0)
+            payload["coverage"] = build_coverage_report(
+                package=pkg0,
+                state=state,
+                signals=result.signals,
+                packet=None,
+            ).to_dict()
+        console.print_json(json.dumps(payload))
         raise typer.Exit(0 if result.signals else 1)
 
     table = Table(title=f"Detect signals in {root}")
@@ -165,6 +218,24 @@ def detect_cmd(
     console.print(f"[bold]{len(result.signals)}[/bold] signal(s).")
     for warning in result.warnings:
         console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+    # Source packet + coverage vs signals (migration packet not built yet on detect)
+    pkgs = sorted(result.packages | set(result.package_states or {}))
+    if pkgs:
+        pkg0 = "openai" if "openai" in {p.lower() for p in pkgs} else pkgs[0]
+        # normalize to actual key
+        for key in result.package_states or {}:
+            if key.lower() == pkg0.lower():
+                pkg0 = key
+                break
+        _print_packet_coverage(
+            root=root,
+            package=pkg0,
+            detected=result,
+            packet=None,
+            persist_source=True,
+        )
+
     raise typer.Exit(0 if result.signals else 1)
 
 
@@ -339,6 +410,15 @@ def run_cmd(
         f"packet from_version={pkt.get('from_version')!r} ({ensured.from_source}) "
         f"to_version={pkt.get('to_version')!r} ({ensured.to_source}) "
         f"ecosystem={pkt.get('ecosystem')!r}"
+    )
+
+    # Always print source packet + migration packet + coverage diff
+    _print_packet_coverage(
+        root=root,
+        package=pkg,
+        detected=detected,
+        packet=pkt,
+        persist_source=True,
     )
 
     files = prune_by_imports(root, [pkg])
