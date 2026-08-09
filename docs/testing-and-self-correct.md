@@ -36,10 +36,10 @@ Generated paths are included in the patch report / PR body.
 2. On failure, up to `--max-retries` (default **5**):
    - Collect traceback file paths + nearby source/tests  
    - Build a **dynamic ignore list** (see below)  
-   - If LLM configured → **general web research** (vendor docs seeds + open web search from the failure text/packet). The model may:
-     - return `files` fixes,
+   - If LLM configured → **Responses agent** (OpenAI: `gpt-5.4-mini`, `reasoning_effort=high`, tools such as `web_search` / `fetch_url` / repo read-write / `run_tests`). Seed URLs and suggested queries are provided; the model chooses tools. Final JSON may:
+     - return `files` fixes (or write via `write_file`),
      - return `packet_patch` (rules/notes/sources) when the migration packet itself must change,
-     - return `search_queries` when evidence is insufficient — Conduit runs those searches and asks again in the same attempt.
+     - return `search_queries` on non-tool providers when evidence is still insufficient — Conduit runs those searches and asks again in the same attempt.
    - Else apply heuristic replaces derived from packet `EXACT_STRING_REPLACE` / `AST_PARAM_RENAME` (skipped on ignored files; contract-constant lines preserved)  
 3. Re-run tests  
 4. If still failing after retries → `conduit run` aborts PR creation (exit code 2)

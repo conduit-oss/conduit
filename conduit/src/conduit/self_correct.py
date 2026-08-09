@@ -423,11 +423,13 @@ def _heuristic_fix(
 
 def _llm_suggest_fixes(
     *,
+    root: Path,
     test_result: TestResult,
     packet: dict[str, Any],
     files: dict[str, str],
     ignore: IgnoreList | None = None,
-    evidence: str = "",
+    seed_urls: list[str] | None = None,
+    suggested_queries: list[str] | None = None,
     log: LogFn | None = None,
 ) -> LlmRepairSuggestion:
     emit = log or _noop_log
@@ -435,8 +437,18 @@ def _llm_suggest_fixes(
     if client is None:
         return LlmRepairSuggestion()
 
+    from conduit.llm.executors import RepoToolExecutor
+    from conduit.llm.tools import agent_tools
+
     ignore = ignore or IgnoreList()
     files = {k: v for k, v in files.items() if not ignore.path_ignored(k)}
+    executor = RepoToolExecutor(
+        root=root,
+        ignore=ignore,
+        allow_writes=True,
+        allow_run_tests=True,
+        log=emit if emit is not _noop_log else _noop_log,
+    )
 
     prompt = {
         "instructions": (
@@ -444,45 +456,50 @@ def _llm_suggest_fixes(
             "the consumer repo pass tests.\n"
             "The migration packet may be incomplete or wrong — you may fix code "
             "AND update the packet when needed.\n"
-            "You have web research evidence below. If it is NOT enough to fix the "
-            "failure, request more general search (do not guess).\n"
-            "Return JSON with any of:\n"
+            "Use tools as needed: web_search, fetch_url, read/write files, run_tests, "
+            "code_interpreter, apply_patch. Do not guess undocumented API successors.\n"
+            "When finished, return JSON with any of:\n"
             '  "files": {"relative/path.py": "full new file contents"},\n'
             '  "packet_patch": {\n'
             '      "rules": [/* full rule objects to add or replace by match */],\n'
             '      "notes": "why the packet changed",\n'
             '      "sources": [{"url": "...", "kind": "docs"|"other"}]\n'
             "  },\n"
-            '  "search_queries": ["web search queries to run next if evidence is insufficient"]\n'
+            '  "search_queries": ["only if tools cannot gather enough evidence"]\n'
             "Rules:\n"
-            "- Prefer grounded facts from evidence; when requesting search_queries, "
-            "be specific (error text, model id, endpoint, SDK version).\n"
+            "- Prefer grounded facts from tool results / docs.\n"
             "- Every new/changed rule should include a short 'reason'.\n"
-            "- Only include files that need changes.\n"
+            "- Only include files that need changes (or rely on write_file tool).\n"
             "- Do NOT modify ignored paths.\n"
             "- Do NOT rewrite ignored patterns when they appear as LEGACY_/FORBIDDEN_/"
             "EXPECTED_/ALLOWED_ contract constants — those define the migration oracle.\n"
-            "- If you can fix with current evidence, return files (and packet_patch if "
-            "the packet should change). If you cannot, return search_queries and "
-            "omit files (or leave files empty)."
+            "- Prefer running tests via the run_tests tool before finalizing."
         ),
         "ignore": ignore.to_prompt_dict(),
         "error_stdout": test_result.stdout[-6000:],
         "error_stderr": test_result.stderr[-6000:],
         "packet": packet,
         "files": files,
-        "evidence": evidence[:28000] if evidence else "",
+        "seed_urls": list(seed_urls or [])[:20],
+        "suggested_queries": list(suggested_queries or [])[:12],
     }
+    system = (
+        "You are a migration repair agent with tools (web search, fetch, repo IO, tests). "
+        "Use tools as you see fit. Reply with a final JSON object only. Honor ignore list. "
+        "Update packet_patch when the migration packet must change."
+    )
     try:
-        data = client.complete_json(
-            system=(
-                "You are a migration repair agent with web research. "
-                "Reply with JSON only. Honor ignore list. "
-                "Request search_queries when evidence is insufficient; "
-                "update packet_patch when the migration packet must change."
-            ),
-            user=json.dumps(prompt),
-        )
+        run_agent = getattr(client, "run_agent", None)
+        if callable(run_agent):
+            data = run_agent(
+                system=system,
+                user=json.dumps(prompt),
+                tools=agent_tools(mode="self_correct"),
+                tool_executor=executor,
+                max_turns=12,
+            )
+        else:
+            data = client.complete_json(system=system, user=json.dumps(prompt))
     except Exception as exc:
         emit(f"[self-correct] LLM repair failed: {exc}")
         return LlmRepairSuggestion()
@@ -496,6 +513,13 @@ def _llm_suggest_fixes(
         for k, v in files_out.items()
         if isinstance(v, str) and not ignore.path_ignored(str(k))
     }
+    # Files already written via tools also count as repairs
+    for rel in executor.written_files:
+        if rel not in updates and not ignore.path_ignored(rel):
+            try:
+                updates[rel] = (root / rel).read_text(encoding="utf-8")
+            except OSError:
+                updates.setdefault(rel, "")
     queries: list[str] = []
     for q in data.get("search_queries") or []:
         if isinstance(q, str) and q.strip():
@@ -571,26 +595,28 @@ def verify_with_self_correct(
 
         suggestion = LlmRepairSuggestion()
         if get_llm_client() is not None:
-            # Fresh research each attempt (failure text / packet may have changed),
-            # plus any LLM-requested queries from the previous round.
-            evidence, _warnings = _research_for_failure(
-                result,
-                packet,
-                log=vlog,
-                extra_queries=pending_queries,
+            seeds, queries = _extract_research_targets(
+                result, packet, extra_queries=pending_queries
             )
             pending_queries = []
+            vlog(
+                "[self-correct] agent seeds/queries: "
+                f"{len(seeds)} URL(s), {len(queries)} quer(ies) "
+                "(model may web_search / fetch_url)"
+            )
 
             suggestion = _llm_suggest_fixes(
+                root=root,
                 test_result=result,
                 packet=packet,
                 files=context_files,
                 ignore=ignore,
-                evidence=evidence,
+                seed_urls=seeds,
+                suggested_queries=queries,
                 log=vlog,
             )
 
-            # Evidence was insufficient — run the model's search queries and ask again.
+            # Fallback providers without tools may still return search_queries.
             if suggestion.search_queries and not suggestion.files:
                 vlog(
                     "[self-correct] LLM requested more search: "
@@ -603,16 +629,22 @@ def verify_with_self_correct(
                     extra_queries=suggestion.search_queries,
                 )
                 if more:
-                    evidence = (evidence + "\n\n" + more)[-28000:]
-                suggestion = _llm_suggest_fixes(
-                    test_result=result,
-                    packet=packet,
-                    files=context_files,
-                    ignore=ignore,
-                    evidence=evidence,
-                    log=vlog,
-                )
-                # Carry leftover search needs into the next attempt if still stuck
+                    evidence = more[-28000:]
+                    # Re-ask with fetched evidence stuffed into suggested context
+                    context_files = dict(context_files)
+                    suggestion = _llm_suggest_fixes(
+                        root=root,
+                        test_result=result,
+                        packet=packet,
+                        files={
+                            **context_files,
+                            "(research_notes.txt)": evidence,
+                        },
+                        ignore=ignore,
+                        seed_urls=seeds,
+                        suggested_queries=suggestion.search_queries,
+                        log=vlog,
+                    )
                 if suggestion.search_queries and not suggestion.files:
                     pending_queries = list(suggestion.search_queries)
 

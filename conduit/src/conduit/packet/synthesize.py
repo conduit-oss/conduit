@@ -391,12 +391,13 @@ def synthesize_from_evidence(
     root: Path | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """
-    Fetch evidence + LLM-author rules; merge onto base packet.
+    LLM-author rules via Responses agent tools (web_search / fetch_url / read_file).
     Returns (packet, warnings).
     """
     from conduit.llm import get_llm_client
-    from conduit.packet.evidence import build_evidence, evidence_as_prompt_text
-    from conduit.repair_ignore import build_ignore_list
+    from conduit.llm.executors import RepoToolExecutor
+    from conduit.llm.tools import agent_tools
+    from conduit.repair_ignore import IgnoreList, build_ignore_list
 
     warnings: list[str] = []
     client = get_llm_client()
@@ -411,20 +412,12 @@ def synthesize_from_evidence(
         )
         return base, warnings
 
-    docs, fetch_warnings = build_evidence(
-        seed_urls=seeds,
-        allow_hosts=hosts or ["platform.openai.com", "developers.openai.com", "github.com"],
-        search_queries=queries,
-    )
-    warnings.extend(fetch_warnings)
-    if not docs:
-        return base, warnings
-
+    ignore = IgnoreList()
     ignore_payload: dict[str, Any] = {}
     if root is not None:
-        ignore_payload = build_ignore_list(root, base).to_prompt_dict()
+        ignore = build_ignore_list(root, base)
+        ignore_payload = ignore.to_prompt_dict()
 
-    evidence_text = evidence_as_prompt_text(docs)
     user_payload = {
         "package": package,
         "from_version": from_version,
@@ -433,13 +426,58 @@ def synthesize_from_evidence(
         "detect_signals": _signal_summary(signals, package),
         "existing_rule_count": len(base.get("rules") or []),
         "ignore": ignore_payload,
-        "evidence": evidence_text,
+        "seed_urls": seeds,
+        "allow_hosts": hosts
+        or ["platform.openai.com", "developers.openai.com", "github.com"],
+        "suggested_queries": queries,
+        "instructions": (
+            "Use tools (web_search, fetch_url, read_file, code_interpreter) to gather "
+            "grounded migration facts from seed_urls / suggested_queries. "
+            "Do not invent path successors or call shapes. "
+            "Emit final JSON with notes, sources, and rules."
+        ),
     }
-    try:
-        data = client.complete_json(
-            system=_EVIDENCE_SYSTEM,
-            user=json.dumps(user_payload),
+    system = (
+        _EVIDENCE_SYSTEM
+        + " Use tools as needed before answering. Final reply must be JSON only."
+    )
+    executor: RepoToolExecutor | None = None
+    if root is not None:
+        executor = RepoToolExecutor(
+            root=root,
+            ignore=ignore,
+            allow_writes=False,
+            allow_run_tests=False,
         )
+
+    def _exec(name: str, args: dict[str, Any]) -> str:
+        if executor is None:
+            if name == "fetch_url":
+                # Allow fetch even without a consumer root
+                tmp = RepoToolExecutor(
+                    root=Path("."),
+                    allow_writes=False,
+                    allow_run_tests=False,
+                )
+                return tmp._fetch_url(args)
+            return json.dumps({"error": f"tool {name!r} requires a consumer repo root"})
+        return executor(name, args)
+
+    try:
+        run_agent = getattr(client, "run_agent", None)
+        if callable(run_agent):
+            data = run_agent(
+                system=system,
+                user=json.dumps(user_payload),
+                tools=agent_tools(mode="enrich"),
+                tool_executor=_exec,
+                max_turns=10,
+            )
+        else:
+            data = client.complete_json(
+                system=system,
+                user=json.dumps(user_payload),
+            )
     except Exception as exc:
         warnings.append(f"LLM packet enrichment failed: {exc}")
         return base, warnings
@@ -472,9 +510,8 @@ def synthesize_from_evidence(
             probe.setdefault("sources", []).append(
                 {"url": str(src["url"]), "kind": str(src.get("kind") or "docs")}
             )
-    for doc in docs:
-        kind = "docs" if doc.kind in {"seed", "link"} else "other"
-        probe.setdefault("sources", []).append({"url": doc.url, "kind": kind})
+    for url in seeds:
+        probe.setdefault("sources", []).append({"url": url, "kind": "docs"})
 
     errs = validate_packet(probe)
     if errs:
@@ -482,7 +519,8 @@ def synthesize_from_evidence(
         return base, warnings
 
     warnings.append(
-        f"LLM packet enrichment added rules from {len(docs)} evidence page(s)"
+        f"LLM packet enrichment added rules via agent tools "
+        f"({len(seeds)} seed URL(s), {len(queries)} quer(ies))"
     )
     return probe, warnings
 

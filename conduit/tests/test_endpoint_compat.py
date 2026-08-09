@@ -257,43 +257,27 @@ def test_self_correct_researches_and_passes_evidence(tmp_path: Path, monkeypatch
     class FakeClient:
         def complete_json(self, system: str, user: str):
             payload = json.loads(user)
-            assert "evidence" in payload
-            assert "search_queries" in payload["instructions"]
+            assert "seed_urls" in payload
+            assert "suggested_queries" in payload
             assert "packet_patch" in payload["instructions"]
-            assert "developers.openai.com" in payload["evidence"]
+            assert any("developers.openai.com" in u for u in payload["seed_urls"])
             return {
                 "files": {
                     "tests/test_app.py": "def test_ok():\n    assert True\n",
                 }
             }
 
-    evidence_calls: list[dict[str, Any]] = []
-
-    def fake_build_evidence(**kwargs):
-        evidence_calls.append(kwargs)
-        assert kwargs.get("open_search") is True
-        return (
-            [
-                EvidenceDoc(
-                    url="https://developers.openai.com/api/docs/models/gpt-4o.md",
-                    title="GPT-4o",
-                    text="Endpoints chat completions Supported",
-                    kind="seed",
-                )
-            ],
-            [],
-        )
+        def run_agent(self, *, system, user, tools=None, tool_executor=None, max_turns=12):
+            return self.complete_json(system, user)
 
     monkeypatch.setattr("conduit.self_correct.run_tests", fake_run_tests)
     monkeypatch.setattr("conduit.self_correct.get_llm_client", lambda: FakeClient())
-    monkeypatch.setattr("conduit.packet.evidence.build_evidence", fake_build_evidence)
 
     result, corrected = verify_with_self_correct(
         tmp_path, packet, max_retries=2, verbose=True, log=lambda _m: None
     )
     assert result.passed
     assert corrected
-    assert evidence_calls
     assert "Self-correct" in (packet.get("notes") or "")
 
 
@@ -355,16 +339,17 @@ def test_self_correct_search_then_packet_patch(tmp_path: Path, monkeypatch):
             llm_calls["n"] += 1
             payload = json.loads(user)
             if llm_calls["n"] == 1:
-                # First pass: evidence insufficient → ask for search
+                # First pass: tools unavailable / insufficient → ask for search
                 return {
                     "search_queries": [
                         "openai gpt-4o chat.completions supported endpoints"
                     ]
                 }
-            # After search: fix files + correct the packet
-            assert "openai gpt-4o" in " ".join(
-                payload.get("evidence", "").split()
-            ) or "gpt-4o" in payload.get("evidence", "")
+            # After fallback research: notes stuffed into context files
+            notes = payload.get("files", {}).get("(research_notes.txt)", "")
+            assert "gpt-4o" in notes or "gpt-4o" in " ".join(
+                payload.get("suggested_queries") or []
+            )
             return {
                 "files": {
                     "src/app.py": 'MODEL = "gpt-4o"\n',
@@ -389,6 +374,9 @@ def test_self_correct_search_then_packet_patch(tmp_path: Path, monkeypatch):
                     ],
                 },
             }
+
+        def run_agent(self, *, system, user, tools=None, tool_executor=None, max_turns=12):
+            return self.complete_json(system, user)
 
     def fake_build_evidence(**kwargs):
         extra = " ".join(kwargs.get("search_queries") or [])
