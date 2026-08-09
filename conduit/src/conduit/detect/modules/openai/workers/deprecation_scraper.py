@@ -112,6 +112,40 @@ def _col_index(headers: list[str], *needles: str) -> int | None:
     return None
 
 
+def _fixture_row_signal(
+    *,
+    legacy: str,
+    replacement: str | None,
+    shutdown: str | None,
+    severity: Severity,
+    source_url: str,
+) -> RawSignal:
+    if _ENDPOINT_RE.match(legacy):
+        return RawSignal(
+            vendor="openai",
+            change_type=ChangeType.API_BREAKING,
+            severity=severity,
+            affected_pattern=legacy,
+            replacement_pattern=replacement,
+            deadline=_normalize_deadline(shutdown),
+            source_url=source_url,
+            description=(
+                f"Endpoint {legacy} deprecated; "
+                f"replace with {replacement or 'see docs'}"
+            ),
+        )
+    return RawSignal(
+        vendor="openai",
+        change_type=ChangeType.MODEL_DEPRECATION,
+        severity=severity,
+        affected_pattern=legacy,
+        replacement_pattern=replacement,
+        deadline=_normalize_deadline(shutdown),
+        source_url=source_url,
+        description=f"Model {legacy} deprecated; replace with {replacement}",
+    )
+
+
 def _signals_from_fixture_rows(soup: BeautifulSoup, source_url: str) -> list[RawSignal]:
     signals: list[RawSignal] = []
     for row in soup.select("tr[data-legacy]"):
@@ -122,15 +156,12 @@ def _signals_from_fixture_rows(soup: BeautifulSoup, source_url: str) -> list[Raw
         if not legacy:
             continue
         signals.append(
-            RawSignal(
-                vendor="openai",
-                change_type=ChangeType.MODEL_DEPRECATION,
+            _fixture_row_signal(
+                legacy=str(legacy),
+                replacement=str(replacement) if replacement else None,
+                shutdown=str(shutdown) if shutdown else None,
                 severity=severity,
-                affected_pattern=legacy,
-                replacement_pattern=replacement,
-                deadline=_normalize_deadline(shutdown),
                 source_url=source_url,
-                description=f"Model {legacy} deprecated; replace with {replacement}",
             )
         )
     if signals:
@@ -143,15 +174,12 @@ def _signals_from_fixture_rows(soup: BeautifulSoup, source_url: str) -> list[Raw
         legacy, replacement, shutdown = cells[0], cells[1], cells[2]
         severity = _parse_severity(cells[3] if len(cells) > 3 else "WARNING")
         signals.append(
-            RawSignal(
-                vendor="openai",
-                change_type=ChangeType.MODEL_DEPRECATION,
+            _fixture_row_signal(
+                legacy=legacy,
+                replacement=replacement or None,
+                shutdown=shutdown,
                 severity=severity,
-                affected_pattern=legacy,
-                replacement_pattern=replacement,
-                deadline=_normalize_deadline(shutdown),
                 source_url=source_url,
-                description=f"Model {legacy} deprecated; replace with {replacement}",
             )
         )
     return signals

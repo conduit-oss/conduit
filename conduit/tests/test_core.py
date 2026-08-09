@@ -537,11 +537,18 @@ def test_exact_replace_skips_model_id_prefixes():
 
 
 def test_parse_fixture_deprecation_still_works():
+    from conduit.detect.modules.openai.models_legacy import ChangeType
     from conduit.detect.modules.openai.workers.deprecation_scraper import DeprecationScraperWorker
 
     signals = DeprecationScraperWorker().run(demo=True)
-    assert len(signals) == 3
+    assert len(signals) == 4
     assert any(s.affected_pattern == "gpt-4-0613" for s in signals)
+    assert any(
+        s.change_type == ChangeType.API_BREAKING
+        and s.affected_pattern == "/v1/completions"
+        and s.replacement_pattern == "/v1/chat/completions"
+        for s in signals
+    )
 
 
 def test_openapi_load_sniffs_yaml_without_suffix(tmp_path: Path):

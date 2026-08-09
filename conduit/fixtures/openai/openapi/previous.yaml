@@ -10,6 +10,28 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/completions:
+    post:
+      operationId: createCompletion
+      summary: Creates a completion for the provided prompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                max_tokens:
+                  type: integer
+                messages:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        "200":
+          description: OK
   /v1/chat/completions:
     post:
       operationId: createChatCompletion

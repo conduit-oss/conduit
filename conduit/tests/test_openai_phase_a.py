@@ -90,7 +90,10 @@ def test_openapi_fixture_diff_emits_engines_and_max_tokens():
     assert default_rules_for(engines[0]) == []
     rename = [s for s in signals if s.affected_pattern == "max_tokens"]
     assert rename
-    assert default_rules_for(rename[0]) == []  # no invented function_targets
+    # Shared-path renames now carry grounded path→SDK function_targets
+    rules = default_rules_for(rename[0])
+    assert any(r.get("type") == "AST_PARAM_RENAME" for r in rules)
+    assert any(r.get("function_target") for r in rules)
 
 
 def test_openapi_demo_worker_uses_fixtures():

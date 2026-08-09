@@ -11,6 +11,7 @@ from conduit.detect.modules.openai.evidence_seeds import (
     openai_evidence_queries,
 )
 from conduit.detect.modules.openai.normalize import default_rules_for, signal_to_event
+from conduit.detect.modules.openai.path_param_compat import apply_path_param_compat
 from conduit.detect.modules.openai.workers import ALL_WORKERS
 from conduit.detect.modules.openai.workers.model_polling import ModelPollingWorker
 from conduit.detect.modules.openai.workers.sdk_release import SDKReleaseWorker
@@ -132,5 +133,17 @@ class OpenAIModule(DetectModule):
             ctx.extra.setdefault("decision_notes", []).extend(compat_notes)
             for note in compat_notes:
                 verbose_warnings.append(f"openai endpoint compat: {note}")
+
+        openapi_cache = ctx.extra.setdefault("openapi_pair_cache", {})
+        signals, path_notes = apply_path_param_compat(
+            signals,
+            client_state=client_state,
+            demo=ctx.demo,
+            openapi_cache=openapi_cache,
+        )
+        if path_notes:
+            ctx.extra.setdefault("decision_notes", []).extend(path_notes)
+            for note in path_notes:
+                verbose_warnings.append(f"openai path param compat: {note}")
 
         return signals

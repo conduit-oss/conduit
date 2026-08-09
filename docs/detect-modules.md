@@ -52,7 +52,9 @@ Discovery: [`conduit/src/conduit/detect/modules/discovery.py`](../conduit/src/co
 
 After workers run, **endpoint compat** checks each model A→B against the replacement’s Supported endpoints on [developers.openai.com/api/docs/models](https://developers.openai.com/api/docs/models) (`.md` pages; demo uses `fixtures/openai/model_docs/`). Client `api_patterns` map to required routes (e.g. `chat.completions` → `v1/chat/completions`). Incompatible replacements are swapped for a catalog alternate that supports those routes, or cleared with a note — never invented. Each decision carries a `reason` onto rules / packet notes for the PR.
 
-Normalize emits apply rules **only when grounded**: model A→B when scrape states both; path replace only when both `/v1/...` sides are known; `AST_PARAM_RENAME` only when the signal carries explicit `function_target`(s). No path-fallback maps and no invented ChatCompletion target lists.
+**Path-param compat** then joins endpoint A→B pairs (deprecation `/v1/old`→`/v1/new`, or OpenAPI removal + documented successor) with OpenAPI request-body schemas (`previous[old]` vs `latest[new]`). A 1:1 property rename becomes `AST_PARAM_RENAME` with grounded `function_target`(s) from client `api_patterns` and the OpenAI path→SDK callee table (e.g. `/v1/chat/completions` → `chat.completions.create`). Shared-path OpenAPI renames (same path in both specs) get the same treatment. Removed props without a 1:1 partner are noted only — never invented.
+
+Normalize emits apply rules **only when grounded**: model A→B when scrape states both; path replace only when both `/v1/...` sides are known; `AST_PARAM_RENAME` only when the signal carries explicit `function_target`(s).
 
 Call-shape / successor gaps are filled by **evidence + LLM packet enrichment** (module seed URLs + web search) when an LLM is configured — see [LLM configuration](llm.md).
 
