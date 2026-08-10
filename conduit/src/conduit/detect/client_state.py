@@ -129,6 +129,7 @@ def _regex_scan_package(
     package: str,
     *,
     installed: dict[str, str],
+    demo: bool = False,
 ) -> PackageClientState:
     packs = PACKAGE_PATTERN_PACKS.get(package.lower(), {})
     model_re = packs.get("model_id")
@@ -153,6 +154,21 @@ def _regex_scan_package(
     api_patterns: set[str] = set()
     import_rels: list[str] = []
 
+    known: set[str] = set()
+    known_err: Exception | None = None
+    if package.lower() == "openai":
+        try:
+            from conduit.detect.modules.openai.known_models import (
+                collect_known_model_ids,
+                extract_model_kwarg_ids,
+                find_known_models_in_text,
+            )
+
+            known = collect_known_model_ids(demo=demo)
+        except Exception as exc:  # noqa: BLE001 — fail soft; regex bootstrap below
+            known = set()
+            known_err = exc
+
     for path in scan_files:
         if _is_docish(path):
             continue
@@ -163,7 +179,17 @@ def _regex_scan_package(
         rel = _rel(path, root)
         if path.suffix.lower() in SCAN_SUFFIXES and path in files:
             import_rels.append(rel)
-        if model_re:
+        if known:
+            model_ids.update(find_known_models_in_text(text, known))
+            model_ids.update(extract_model_kwarg_ids(text, known))
+            if model_re:
+                known_lower = {k.lower(): k for k in known}
+                for tok in _extract_tokens(text, model_re):
+                    canon = known_lower.get(tok.lower())
+                    if canon:
+                        model_ids.add(canon)
+        elif model_re:
+            # Bootstrap only when the dynamic universe is unavailable.
             model_ids.update(_extract_tokens(text, model_re))
         if api_re:
             api_patterns.update(_extract_tokens(text, api_re))
@@ -175,6 +201,10 @@ def _regex_scan_package(
             break
 
     notes: list[str] = []
+    if known_err is not None:
+        notes.append(f"known-model universe unavailable: {known_err}")
+    if package.lower() == "openai" and known:
+        notes.append(f"model discovery grounded on {len(known)} known model ids")
     if not model_ids:
         notes.append(
             "no model ids found in import-pruned / config files "
@@ -290,7 +320,7 @@ def scan_package_state(
 ) -> PackageClientState:
     """Scan one package's client usage (regex always; LLM optional)."""
     installed = installed or {}
-    state = _regex_scan_package(root, package, installed=installed)
+    state = _regex_scan_package(root, package, installed=installed, demo=demo)
     if demo:
         state.source = "demo" if state.source == "regex" else state.source
         return state

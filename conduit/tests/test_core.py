@@ -541,8 +541,9 @@ def test_parse_fixture_deprecation_still_works():
     from conduit.detect.modules.openai.workers.deprecation_scraper import DeprecationScraperWorker
 
     signals = DeprecationScraperWorker().run(demo=True)
-    assert len(signals) == 4
+    assert len(signals) == 5
     assert any(s.affected_pattern == "gpt-4-0613" for s in signals)
+    assert any(s.affected_pattern == "davinci" for s in signals)
     assert any(
         s.change_type == ChangeType.API_BREAKING
         and s.affected_pattern == "/v1/completions"

@@ -41,8 +41,11 @@ def test_parse_endpoints_markdown():
     endpoints = parse_endpoints_markdown(TERRA_LIKE_MD)
     assert endpoints["v1/chat/completions"] is True
     assert endpoints["v1/embeddings"] is False
-    assert model_supports_routes(endpoints, ["v1/chat/completions"])
-    assert not model_supports_routes(endpoints, ["v1/embeddings"])
+    assert model_supports_routes(endpoints, ["v1/chat/completions"]) is True
+    assert model_supports_routes(endpoints, ["v1/embeddings"]) is False
+    assert model_supports_routes(None, ["v1/chat/completions"]) is None
+    assert model_supports_routes({}, ["v1/chat/completions"]) is None
+    assert model_supports_routes(None, []) is True
 
 
 def test_map_api_patterns_to_routes():
@@ -107,6 +110,38 @@ def test_compat_keeps_compatible_replacement_with_reason():
     assert any("gpt-4o" in n for n in notes)
 
 
+def test_compat_keeps_replacement_when_endpoint_docs_unknown():
+    """Missing / unparseable model docs must not clear the scrape replacement."""
+    signals = [
+        ChangeSignal(
+            source="module:openai",
+            package="openai",
+            change_type="MODEL_DEPRECATION",
+            affected_pattern="text-davinci-003",
+            replacement_pattern="gpt-3.5-turbo-instruct",
+            description="Model text-davinci-003 deprecated; replace with gpt-3.5-turbo-instruct",
+            suggested_rules=[
+                {
+                    "type": "EXACT_STRING_REPLACE",
+                    "target_files": ["*.py"],
+                    "match": "text-davinci-003",
+                    "replace": "gpt-3.5-turbo-instruct",
+                }
+            ],
+        )
+    ]
+    state = PackageClientState(
+        package="openai",
+        model_ids=["text-davinci-003"],
+        api_patterns=["Completion.create"],
+    )
+    out, notes = apply_endpoint_compat(signals, client_state=state, demo=True)
+    assert out[0].replacement_pattern == "gpt-3.5-turbo-instruct"
+    assert out[0].suggested_rules[0]["replace"] == "gpt-3.5-turbo-instruct"
+    assert any("docs unavailable" in n.lower() or "skipped endpoint check" in n.lower() for n in notes)
+    assert not any("no replacement emitted" in n for n in notes)
+
+
 def test_compat_swaps_incompatible_replacement():
     signals = [
         ChangeSignal(
@@ -136,6 +171,53 @@ def test_compat_swaps_incompatible_replacement():
     assert out[0].suggested_rules[0]["replace"] == "gpt-4o"
     assert "gpt-incompat-chat" in (out[0].description or "")
     assert any("gpt-incompat-chat" in n and "gpt-4o" in n for n in notes)
+
+
+def test_compat_pick_alternate_skips_unknown_doc_candidates(monkeypatch):
+    """Alternates with unknown docs are skipped; known-compatible still wins."""
+    from conduit.detect.modules.openai import endpoint_compat as ec
+
+    real_load = ec._load_endpoints
+
+    def fake_load(model_id, *, demo, client, cache):
+        if model_id.lower() == "gpt-4o-mini":
+            return None  # unknown — must not be chosen
+        return real_load(model_id, demo=demo, client=client, cache=cache)
+
+    monkeypatch.setattr(ec, "_load_endpoints", fake_load)
+    monkeypatch.setattr(
+        ec,
+        "prefer_catalog_candidates",
+        lambda catalog, **kwargs: ["gpt-4o-mini", "gpt-4o"],
+    )
+
+    signals = [
+        ChangeSignal(
+            source="module:openai",
+            package="openai",
+            change_type="MODEL_DEPRECATION",
+            affected_pattern="gpt-4-0613",
+            replacement_pattern="gpt-incompat-chat",
+            description="bad suggestion",
+            suggested_rules=[
+                {
+                    "type": "EXACT_STRING_REPLACE",
+                    "target_files": ["*.py"],
+                    "match": "gpt-4-0613",
+                    "replace": "gpt-incompat-chat",
+                }
+            ],
+        )
+    ]
+    state = PackageClientState(
+        package="openai",
+        model_ids=["gpt-4-0613"],
+        api_patterns=["chat.completions"],
+    )
+    out, notes = apply_endpoint_compat(signals, client_state=state, demo=True)
+    assert out[0].replacement_pattern == "gpt-4o"
+    assert "gpt-4o-mini" not in (out[0].replacement_pattern or "")
+    assert any("gpt-4o" in n for n in notes)
 
 
 def test_packet_from_signals_carries_reason_and_notes():

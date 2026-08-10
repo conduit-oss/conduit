@@ -97,16 +97,31 @@ def parse_models_catalog(text: str) -> list[str]:
     return out
 
 
-def model_supports_routes(endpoints: dict[str, bool], required: Iterable[str]) -> bool:
+def model_supports_routes(
+    endpoints: dict[str, bool] | None, required: Iterable[str]
+) -> bool | None:
+    """
+    Whether *endpoints* covers every required route.
+
+    Returns:
+      True  — no requirements, or all required routes are Supported
+      False — docs are known and at least one required route is missing/unsupported
+      None  — endpoints unknown (fetch/parse failure); do not treat as unsupported
+    """
     req = [normalize_route(r) for r in required]
     if not req:
         return True
     if not endpoints:
-        return False
+        return None
     return all(endpoints.get(r, False) for r in req)
 
 
-def unsupported_routes(endpoints: dict[str, bool], required: Iterable[str]) -> list[str]:
+def unsupported_routes(
+    endpoints: dict[str, bool] | None, required: Iterable[str]
+) -> list[str]:
+    """Routes from *required* that are missing or Not supported. Empty if docs unknown."""
+    if not endpoints:
+        return []
     missing: list[str] = []
     for r in required:
         route = normalize_route(r)
@@ -151,13 +166,22 @@ def fetch_model_endpoints(
     text: str | None = None,
     client: httpx.Client | None = None,
     base_url: str | None = None,
-) -> dict[str, bool]:
+) -> dict[str, bool] | None:
+    """
+    Load Supported-endpoints map for a model.
+
+    Returns None when the page cannot be fetched or no endpoints table is parsed
+    (unknown — not the same as “supports nothing”).
+    """
     if text is None:
         url = model_doc_url(model_id) if not base_url else urljoin(base_url, f"{model_id}.md")
         text = _fetch_text(url, client=client)
     if text is None:
-        return {}
-    return parse_endpoints_markdown(text)
+        return None
+    parsed = parse_endpoints_markdown(text)
+    if not parsed:
+        return None
+    return parsed
 
 
 def prefer_catalog_candidates(

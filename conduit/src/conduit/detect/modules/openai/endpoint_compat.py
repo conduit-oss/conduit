@@ -48,14 +48,17 @@ def _load_endpoints(
     *,
     demo: bool,
     client: httpx.Client | None,
-    cache: dict[str, dict[str, bool]],
-) -> dict[str, bool]:
+    cache: dict[str, dict[str, bool] | None],
+) -> dict[str, bool] | None:
     key = model_id.lower()
     if key in cache:
         return cache[key]
     if demo:
         text = _demo_text(f"{model_id}.md")
-        endpoints = fetch_model_endpoints(model_id, text=text or "")
+        # Missing fixture → unknown (None), not empty-unsupported.
+        endpoints = (
+            fetch_model_endpoints(model_id, text=text) if text is not None else None
+        )
     else:
         endpoints = fetch_model_endpoints(model_id, client=client)
     cache[key] = endpoints
@@ -102,9 +105,16 @@ def _reason_alternate(
 
 def _reason_cleared(legacy: str, rejected: str | None, missing: list[str], required: list[str]) -> str:
     rej = rejected or "(none)"
+    caps = [c for c in (missing or required) if c]
+    if not caps:
+        return (
+            f"Deprecated/removed model {legacy}; no replacement emitted. "
+            f"Suggested {rej}; endpoint docs/requirements unavailable to validate. "
+            f"Checked catalog {MODELS_CATALOG_URL} for alternates."
+        )
     return (
         f"Deprecated/removed model {legacy}; no replacement emitted. "
-        f"Suggested {rej} missing support for [{', '.join(missing or required)}]. "
+        f"Suggested {rej} missing support for [{', '.join(caps)}]. "
         f"Checked catalog {MODELS_CATALOG_URL} for alternates supporting "
         f"[{', '.join(required)}]."
     )
@@ -116,7 +126,7 @@ def _pick_alternate(
     required: list[str],
     demo: bool,
     client: httpx.Client | None,
-    cache: dict[str, dict[str, bool]],
+    cache: dict[str, dict[str, bool] | None],
 ) -> str | None:
     catalog = _load_catalog(demo=demo, client=client)
     candidates = prefer_catalog_candidates(
@@ -127,7 +137,8 @@ def _pick_alternate(
     )
     for mid in candidates:
         endpoints = _load_endpoints(mid, demo=demo, client=client, cache=cache)
-        if model_supports_routes(endpoints, required):
+        # Skip unknown docs — cannot verify support.
+        if model_supports_routes(endpoints, required) is True:
             return mid
     return None
 
@@ -160,7 +171,7 @@ def apply_endpoint_compat(
     if not model_signals:
         return signals, notes
 
-    cache: dict[str, dict[str, bool]] = {}
+    cache: dict[str, dict[str, bool] | None] = {}
     out: list[ChangeSignal] = []
     touched_ids = {id(s) for s in model_signals}
 
@@ -215,7 +226,26 @@ def apply_endpoint_compat(
             endpoints = _load_endpoints(
                 replacement, demo=demo, client=http, cache=cache
             )
-            if model_supports_routes(endpoints, required):
+            support = model_supports_routes(endpoints, required)
+            # Unknown docs → keep documented replacement (fail-open).
+            if support is None:
+                reason = (
+                    f"Deprecated/removed model {legacy}; "
+                    f"using documented replacement {replacement} "
+                    f"(endpoint docs unavailable — skipped endpoint check). "
+                    f"Source: {source_url or model_doc_url(replacement)}"
+                )
+                notes.append(reason)
+                out.append(
+                    _with_reason(
+                        signal,
+                        replacement,
+                        reason,
+                        source_url or model_doc_url(replacement),
+                    )
+                )
+                continue
+            if support is True:
                 reason = _reason_keep(
                     legacy, replacement, required, source_url=source_url
                 )
