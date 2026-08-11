@@ -28,9 +28,10 @@ Legacy alias: `openai_compatible` → treated as `custom`.
 | `CONDUIT_LLM_PROVIDER` | `openai` \| `anthropic` \| `ollama` \| `custom` |
 | `CONDUIT_LLM_MODEL` | Model id (defaults: `gpt-5.4-mini`, `claude-3-5-haiku-latest`, `llama3.2`) |
 | `CONDUIT_LLM_REASONING_EFFORT` | OpenAI Responses reasoning: `none` \| `low` \| `medium` \| `high` (default) \| `xhigh` |
+| `CONDUIT_LLM_MAX_TURNS` | Max Responses agent tool turns for self-correct / enrich (default **32**, capped at 128) |
 | `CONDUIT_LLM_VECTOR_STORE_IDS` | Comma-separated ids → enable Responses `file_search` |
 | `CONDUIT_LLM_MCP_URL` | MCP server URL → enable Responses `mcp` tool |
-| `CONDUIT_LLM_REMOTE_TOOLS` | `1` / `true` → enable `computer_use` + `hosted_shell` (remote sandbox) |
+| `CONDUIT_LLM_REMOTE_TOOLS` | `1` / `true` → enable `computer_use` + `hosted_shell` (OpenAI **hosted** sandbox — not your consumer repo) |
 | `CONDUIT_LLM_API_KEY` | Generic key (used for any provider if set) |
 | `CONDUIT_LLM_BASE_URL` | Base URL for Ollama override or `custom` |
 | `OPENAI_API_KEY` | Fallback when provider is `openai` |
@@ -96,12 +97,17 @@ When provider is `openai`, Conduit uses the **Responses API** (`/v1/responses`) 
 
 - Default model **`gpt-5.4-mini`**
 - **`reasoning.effort = high`** (override with `CONDUIT_LLM_REASONING_EFFORT`)
-- Built-in tools: `web_search`, `code_interpreter`, `apply_patch` (plus env-gated `file_search` / `mcp` / remote tools)
-- Conduit function tools: `list_files`, `read_file`, `fetch_url`, and for self-correct also `write_file` + `run_tests`
+- Built-in tools: `web_search`, `code_interpreter` (plus env-gated `file_search` / `mcp` / remote tools)
+- Conduit **local** function tools (these mutate / inspect the consumer repo on disk):
+  - Always: `list_files`, `read_file`, `fetch_url`, `grep`
+  - Self-correct: `write_file`, `run_tests`, allowlisted `run_shell` (`pytest`, `python -m pytest`, `python -c`, `pip show`/`list`)
+- Rate-limit **429** responses are retried with backoff (honours “try again in Xs” when present)
 
-Simple one-shot callers still use `complete_json` (Responses, high reasoning, no tools). Packet enrichment and self-correct use `run_agent` so the model can call tools as it sees fit.
+`CONDUIT_LLM_REMOTE_TOOLS` enables OpenAI hosted `computer_use` / `hosted_shell`. Those run in OpenAI’s sandbox and **do not** see your consumer project; keep them off for normal migration repair. Local tools are what fix the lab.
 
-Anthropic / Ollama / `custom` keep Chat Completions; `run_agent` falls back to a single JSON completion without OpenAI built-ins.
+Simple one-shot callers still use `complete_json` (Responses, high reasoning, no tools). Packet enrichment and self-correct use `run_agent` so the model can call tools as it sees fit. Default agent budget is **32** turns (`CONDUIT_LLM_MAX_TURNS`).
+
+Anthropic / Ollama / `custom` keep Chat Completions; `run_agent` falls back to a single JSON completion without OpenAI built-ins (local Conduit tools are still what you’d want if those providers gain a tool loop later).
 
 ## Evidence-grounded packet enrichment
 

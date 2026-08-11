@@ -36,13 +36,17 @@ Generated paths are included in the patch report / PR body.
 2. On failure, up to `--max-retries` (default **5**):
    - Collect traceback file paths + nearby source/tests  
    - Build a **dynamic ignore list** (see below)  
-   - If LLM configured → **Responses agent** (OpenAI: `gpt-5.4-mini`, `reasoning_effort=high`, tools such as `web_search` / `fetch_url` / repo read-write / `run_tests`). Seed URLs and suggested queries are provided; the model chooses tools. Final JSON may:
+   - If LLM configured → **Responses agent** (OpenAI: `gpt-5.4-mini`, `reasoning_effort=high`, tools such as `web_search` / `fetch_url` / local repo read-write / `grep` / `run_tests` / allowlisted `run_shell`). Seed URLs and suggested queries are provided; the model chooses tools. Final JSON may:
      - return `files` fixes (or write via `write_file`),
      - return `packet_patch` (rules/notes/sources) when the migration packet itself must change,
      - return `search_queries` on non-tool providers when evidence is still insufficient — Conduit runs those searches and asks again in the same attempt.
    - Else apply heuristic replaces derived from packet `EXACT_STRING_REPLACE` / `AST_PARAM_RENAME` (skipped on ignored files; contract-constant lines preserved)  
 3. Re-run tests  
 4. If still failing after retries → `conduit run` aborts PR creation (exit code 2)
+
+Repair context seeds pytest short-trace paths (e.g. `openai_text/engines.py:25:`), packet/`import_files`, top-level package dirs, and `tests/` — not only `src/`.
+
+If an LLM attempt produces **no** file edits, Conduit **nudges once** with explicit failing-path instructions (when retries remain) before early-stopping. Configure `CONDUIT_LLM_MAX_TURNS` (default 32) for longer tool loops. 429 rate limits are retried with backoff.
 
 PR bodies include a **Rationale** section (each rule’s `reason`), **Notes** (decision log + self-correct), and full **Sources**.
 
@@ -66,7 +70,7 @@ With `--verbose` / `-v`, each attempt also prints:
 - Files updated and, for heuristics, each `old -> new` replacement
 - When heuristics find nothing left to replace, why (already migrated / no matching rules)
 
-If an attempt produces **no file edits**, Conduit stops early instead of repeating empty retries. Configure an LLM for deeper repairs, or fix remaining failures manually.
+If an attempt produces **no file edits** after the nudge (or with no LLM), Conduit stops early instead of repeating empty retries. Configure an LLM for deeper repairs, or fix remaining failures manually.
 
 ```bash
 conduit run -v --path . --packet openai --skip-pr

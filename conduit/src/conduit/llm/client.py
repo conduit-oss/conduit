@@ -7,7 +7,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
-from conduit.llm.tools import resolve_reasoning_effort
+from conduit.llm.retry import call_with_rate_limit_retry
+from conduit.llm.tools import resolve_max_turns, resolve_reasoning_effort
 
 ToolExecutor = Callable[[str, dict[str, Any]], str]
 
@@ -23,7 +24,7 @@ class LlmClient(Protocol):
         user: str,
         tools: list[dict[str, Any]] | None = None,
         tool_executor: ToolExecutor | None = None,
-        max_turns: int = 12,
+        max_turns: int | None = None,
     ) -> dict[str, Any]:
         """Agent loop with tools; final message parsed as JSON."""
 
@@ -97,6 +98,7 @@ class _OpenAIResponsesClient:
     api_key: str
     base_url: str | None = None
     reasoning_effort: str = "high"
+    log: Callable[[str], None] | None = None
     _client: Any = field(default=None, repr=False, init=False)
 
     def _sdk(self) -> Any:
@@ -114,27 +116,31 @@ class _OpenAIResponsesClient:
         create_kwargs.setdefault("model", self.model)
         if self.reasoning_effort and self.reasoning_effort != "none":
             create_kwargs["reasoning"] = {"effort": self.reasoning_effort}
-        try:
-            return self._sdk().responses.create(**create_kwargs)
-        except Exception as exc:
-            msg = str(exc).lower()
-            if "reasoning" in msg and ("unsupported" in msg or "unknown" in msg):
-                create_kwargs.pop("reasoning", None)
+
+        def _do() -> Any:
+            try:
                 return self._sdk().responses.create(**create_kwargs)
-            if "code_interpreter" in msg and "container" in msg:
-                # Retry without container wrapper if rejected
-                tools = create_kwargs.get("tools")
-                if isinstance(tools, list):
-                    create_kwargs["tools"] = [
-                        (
-                            {"type": "code_interpreter"}
-                            if isinstance(t, dict) and t.get("type") == "code_interpreter"
-                            else t
-                        )
-                        for t in tools
-                    ]
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "reasoning" in msg and ("unsupported" in msg or "unknown" in msg):
+                    create_kwargs.pop("reasoning", None)
                     return self._sdk().responses.create(**create_kwargs)
-            raise
+                if "code_interpreter" in msg and "container" in msg:
+                    tools = create_kwargs.get("tools")
+                    if isinstance(tools, list):
+                        create_kwargs["tools"] = [
+                            (
+                                {"type": "code_interpreter"}
+                                if isinstance(t, dict)
+                                and t.get("type") == "code_interpreter"
+                                else t
+                            )
+                            for t in tools
+                        ]
+                        return self._sdk().responses.create(**create_kwargs)
+                raise
+
+        return call_with_rate_limit_retry(_do, log=self.log)
 
     def complete_json(self, *, system: str, user: str) -> dict[str, Any]:
         resp = self._create(
@@ -155,8 +161,9 @@ class _OpenAIResponsesClient:
         user: str,
         tools: list[dict[str, Any]] | None = None,
         tool_executor: ToolExecutor | None = None,
-        max_turns: int = 12,
+        max_turns: int | None = None,
     ) -> dict[str, Any]:
+        turns = resolve_max_turns(32) if max_turns is None else max(1, max_turns)
         tool_list = list(tools or [])
         input_items: list[Any] = [
             {"role": "system", "content": system},
@@ -172,7 +179,7 @@ class _OpenAIResponsesClient:
         previous_id: str | None = None
         last_text = ""
 
-        for _turn in range(max(1, max_turns)):
+        for _turn in range(turns):
             create_kwargs: dict[str, Any] = {}
             if previous_id:
                 create_kwargs["previous_response_id"] = previous_id
@@ -204,7 +211,9 @@ class _OpenAIResponsesClient:
                     {
                         "type": "function_call_output",
                         "call_id": call["call_id"],
-                        "output": output if isinstance(output, str) else json.dumps(output),
+                        "output": output
+                        if isinstance(output, str)
+                        else json.dumps(output),
                     }
                 )
 
@@ -229,17 +238,21 @@ class _ChatCompletionsClient:
         if self.base_url:
             kwargs["base_url"] = self.base_url
         client = OpenAI(**kwargs)
-        create_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0,
-        }
-        if self.use_json_mode:
-            create_kwargs["response_format"] = {"type": "json_object"}
-        resp = client.chat.completions.create(**create_kwargs)
+
+        def _do() -> Any:
+            create_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": 0,
+            }
+            if self.use_json_mode:
+                create_kwargs["response_format"] = {"type": "json_object"}
+            return client.chat.completions.create(**create_kwargs)
+
+        resp = call_with_rate_limit_retry(_do)
         content = resp.choices[0].message.content or "{}"
         return _parse_json_response(content)
 
@@ -250,7 +263,7 @@ class _ChatCompletionsClient:
         user: str,
         tools: list[dict[str, Any]] | None = None,
         tool_executor: ToolExecutor | None = None,
-        max_turns: int = 12,
+        max_turns: int | None = None,
     ) -> dict[str, Any]:
         # Local OpenAI-compatible servers: no Responses built-ins; one-shot JSON.
         _ = tools, tool_executor, max_turns
@@ -266,13 +279,17 @@ class _AnthropicClient:
         from anthropic import Anthropic
 
         client = Anthropic(api_key=self.api_key)
-        resp = client.messages.create(
-            model=self.model,
-            max_tokens=8192,
-            system=system + "\nReply with a single JSON object only.",
-            messages=[{"role": "user", "content": user}],
-            temperature=0,
-        )
+
+        def _do() -> Any:
+            return client.messages.create(
+                model=self.model,
+                max_tokens=8192,
+                system=system + "\nReply with a single JSON object only.",
+                messages=[{"role": "user", "content": user}],
+                temperature=0,
+            )
+
+        resp = call_with_rate_limit_retry(_do)
         parts: list[str] = []
         for block in resp.content:
             text = getattr(block, "text", None)
@@ -287,7 +304,7 @@ class _AnthropicClient:
         user: str,
         tools: list[dict[str, Any]] | None = None,
         tool_executor: ToolExecutor | None = None,
-        max_turns: int = 12,
+        max_turns: int | None = None,
     ) -> dict[str, Any]:
         _ = tools, tool_executor, max_turns
         return self.complete_json(system=system, user=user)

@@ -464,6 +464,8 @@ def synthesize_from_evidence(
         return executor(name, args)
 
     try:
+        from conduit.llm.tools import resolve_max_turns
+
         run_agent = getattr(client, "run_agent", None)
         if callable(run_agent):
             data = run_agent(
@@ -471,7 +473,7 @@ def synthesize_from_evidence(
                 user=json.dumps(user_payload),
                 tools=agent_tools(mode="enrich"),
                 tool_executor=_exec,
-                max_turns=10,
+                max_turns=min(16, resolve_max_turns(32)),
             )
         else:
             data = client.complete_json(

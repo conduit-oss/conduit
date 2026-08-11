@@ -5,7 +5,7 @@ from __future__ import annotations
 from conduit.llm.client import LlmClient, get_llm_client, resolve_provider
 from conduit.llm.executors import RepoToolExecutor
 from conduit.llm.json_util import extract_json_object, extract_json_payload
-from conduit.llm.tools import agent_tools, resolve_reasoning_effort
+from conduit.llm.tools import agent_tools, resolve_max_turns, resolve_reasoning_effort
 
 __all__ = [
     "LlmClient",
@@ -13,6 +13,7 @@ __all__ = [
     "agent_tools",
     "get_llm_client",
     "resolve_provider",
+    "resolve_max_turns",
     "resolve_reasoning_effort",
     "extract_json_object",
     "extract_json_payload",

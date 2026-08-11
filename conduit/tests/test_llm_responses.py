@@ -31,7 +31,7 @@ def test_builtin_tools_default_no_remote(monkeypatch):
     types = {t["type"] for t in openai_builtin_tools()}
     assert "web_search" in types
     assert "code_interpreter" in types
-    assert "apply_patch" in types
+    assert "apply_patch" not in types
     assert "computer_use" not in types
     assert "hosted_shell" not in types
     assert "file_search" not in types
@@ -62,10 +62,14 @@ def test_agent_tools_modes():
     }
     assert "read_file" in enrich_names
     assert "fetch_url" in enrich_names
+    assert "grep" in enrich_names
     assert "write_file" not in enrich_names
     assert "run_tests" not in enrich_names
+    assert "run_shell" not in enrich_names
     assert "write_file" in repair_names
     assert "run_tests" in repair_names
+    assert "run_shell" in repair_names
+    assert "grep" in repair_names
 
 
 def test_repo_executor_read_write(tmp_path: Path):
@@ -203,3 +207,34 @@ def test_default_openai_model(monkeypatch):
     assert c is not None
     assert getattr(c, "model") == "gpt-5.4-mini"
     assert getattr(c, "reasoning_effort") == "high"
+
+
+def test_repo_executor_grep_and_shell(tmp_path: Path):
+    pkg = tmp_path / "openai_text"
+    pkg.mkdir()
+    (pkg / "engines.py").write_text(
+        'URL = "https://api.openai.com/v1/engines/davinci/completions"\n',
+        encoding="utf-8",
+    )
+    ex = RepoToolExecutor(
+        root=tmp_path, allow_writes=True, allow_run_tests=True, allow_shell=True
+    )
+    grepped = json.loads(ex("grep", {"pattern": "engines/davinci", "glob": "**/*.py"}))
+    assert grepped["count"] >= 1
+    assert grepped["matches"][0]["path"] == "openai_text/engines.py"
+
+    denied = json.loads(ex("run_shell", {"command": "rm -rf /"}))
+    assert "allowlisted" in denied["error"]
+
+    ok = json.loads(ex("run_shell", {"command": "pip list"}))
+    assert "error" not in ok or ok.get("returncode") is not None
+    assert ok.get("returncode") == 0
+
+
+def test_resolve_max_turns(monkeypatch):
+    from conduit.llm.tools import resolve_max_turns
+
+    monkeypatch.delenv("CONDUIT_LLM_MAX_TURNS", raising=False)
+    assert resolve_max_turns() == 32
+    monkeypatch.setenv("CONDUIT_LLM_MAX_TURNS", "8")
+    assert resolve_max_turns() == 8

@@ -61,46 +61,137 @@ def _failure_excerpt(test_result: TestResult, *, limit: int = 1500) -> str:
     return text
 
 
+# pytest short traceback: "openai_text\engines.py:25: in complete_with_engine"
+_PYTEST_PATH_RE = re.compile(
+    r"(?m)^(?P<path>(?:[A-Za-z]:)?[^:\n]+\.(?:py|pyw|ts|js|tsx|jsx|go|java))"
+    r":(?P<line>\d+)(?::|\s)"
+)
+
+
+def _candidate_path(root: Path, raw: str) -> Path | None:
+    raw = raw.strip().strip('"').strip("'")
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        resolved = path.resolve()
+        root_resolved = root.resolve()
+        if resolved.is_file() and (
+            resolved == root_resolved or root_resolved in resolved.parents
+        ):
+            return resolved
+    except OSError:
+        return None
+    return None
+
+
 def _paths_from_traceback(root: Path, text: str, limit: int = 12) -> list[Path]:
     found: list[Path] = []
     for m in re.finditer(r'File "([^"]+)"', text):
-        raw = m.group(1)
-        path = Path(raw)
-        if not path.is_absolute():
-            path = root / path
-        if path.is_file() and str(path.resolve()).startswith(str(root.resolve())):
-            if path not in found:
-                found.append(path)
+        path = _candidate_path(root, m.group(1))
+        if path is not None and path not in found:
+            found.append(path)
+        if len(found) >= limit:
+            return found
+    for m in _PYTEST_PATH_RE.finditer(text or ""):
+        path = _candidate_path(root, m.group("path"))
+        if path is not None and path not in found:
+            found.append(path)
         if len(found) >= limit:
             break
     return found
 
 
-def _collect_context_files(root: Path, test_result: TestResult, limit: int = 12) -> dict[str, str]:
+def _package_dirs(root: Path) -> list[Path]:
+    """Top-level Python package dirs (exclude tests/src special-casing)."""
+    skip = {
+        "tests",
+        "test",
+        "src",
+        "docs",
+        "examples",
+        "scripts",
+        "venv",
+        ".venv",
+        "node_modules",
+        "build",
+        "dist",
+        ".git",
+        ".conduit",
+        "__pycache__",
+    }
+    out: list[Path] = []
+    try:
+        children = sorted(root.iterdir())
+    except OSError:
+        return out
+    for child in children:
+        if not child.is_dir() or child.name in skip or child.name.startswith("."):
+            continue
+        if (child / "__init__.py").is_file():
+            out.append(child)
+    return out
+
+
+def _collect_context_files(
+    root: Path,
+    test_result: TestResult,
+    limit: int = 12,
+    packet: dict[str, Any] | None = None,
+) -> dict[str, str]:
     files: dict[str, str] = {}
+
+    def _add(path: Path) -> None:
+        if len(files) >= limit:
+            return
+        try:
+            rel = str(path.relative_to(root)).replace("\\", "/")
+        except ValueError:
+            return
+        if rel in files:
+            return
+        try:
+            files[rel] = path.read_text(encoding="utf-8")
+        except OSError:
+            return
+
     for path in _paths_from_traceback(
         root, (test_result.stdout or "") + "\n" + (test_result.stderr or "")
     ):
-        try:
-            files[str(path.relative_to(root))] = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
+        _add(path)
+
+    # Source-packet / migration hints: import_files from detect.
+    for key in ("import_files",):
+        for rel in (packet or {}).get(key) or []:
+            if not isinstance(rel, str):
+                continue
+            _add(root / rel.replace("\\", "/"))
+
+    # Also peek at written source packets under .conduit if present.
+    src_pkt = root / ".conduit" / "source-packets"
+    if src_pkt.is_dir():
+        for pkt_file in src_pkt.glob("*.json"):
+            try:
+                data = json.loads(pkt_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            for rel in data.get("import_files") or []:
+                if isinstance(rel, str):
+                    _add(root / rel.replace("\\", "/"))
 
     candidates = list((root / "tests").rglob("*.py")) if (root / "tests").is_dir() else []
     candidates += list(root.glob("test_*.py"))
     src = root / "src"
     if src.is_dir():
         candidates += list(src.rglob("*.py"))[:20]
+    for pkg in _package_dirs(root):
+        candidates += list(pkg.rglob("*.py"))[:30]
     for path in candidates:
         if len(files) >= limit:
             break
-        rel = str(path.relative_to(root))
-        if rel in files:
-            continue
-        try:
-            files[rel] = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
+        _add(path)
     return files
 
 
@@ -431,6 +522,7 @@ def _llm_suggest_fixes(
     seed_urls: list[str] | None = None,
     suggested_queries: list[str] | None = None,
     log: LogFn | None = None,
+    nudge: str | None = None,
 ) -> LlmRepairSuggestion:
     emit = log or _noop_log
     client = get_llm_client()
@@ -438,7 +530,7 @@ def _llm_suggest_fixes(
         return LlmRepairSuggestion()
 
     from conduit.llm.executors import RepoToolExecutor
-    from conduit.llm.tools import agent_tools
+    from conduit.llm.tools import agent_tools, resolve_max_turns
 
     ignore = ignore or IgnoreList()
     files = {k: v for k, v in files.items() if not ignore.path_ignored(k)}
@@ -447,17 +539,27 @@ def _llm_suggest_fixes(
         ignore=ignore,
         allow_writes=True,
         allow_run_tests=True,
+        allow_shell=True,
         log=emit if emit is not _noop_log else _noop_log,
     )
 
+    failing_hint = sorted(files.keys())
     prompt = {
         "instructions": (
             "Tests failed after an automatic API migration. Your job is to make "
-            "the consumer repo pass tests.\n"
+            "the consumer repo pass tests by fixing IMPLEMENTATION code "
+            "(not only tests).\n"
             "The migration packet may be incomplete or wrong — you may fix code "
             "AND update the packet when needed.\n"
-            "Use tools as needed: web_search, fetch_url, read/write files, run_tests, "
-            "code_interpreter, apply_patch. Do not guess undocumented API successors.\n"
+            "Workflow:\n"
+            "1) Inspect failing modules from the traceback / seeded files "
+            "(list_files, read_file, grep).\n"
+            "2) Use web_search / fetch_url for grounded OpenAI migration docs.\n"
+            "3) Edit implementation via write_file (local repo only — hosted "
+            "OpenAI sandboxes do NOT contain this project).\n"
+            "4) run_tests (or allowlisted run_shell) and iterate until green "
+            "or you exhaust useful changes.\n"
+            "Do not guess undocumented API successors.\n"
             "When finished, return JSON with any of:\n"
             '  "files": {"relative/path.py": "full new file contents"},\n'
             '  "packet_patch": {\n'
@@ -470,22 +572,27 @@ def _llm_suggest_fixes(
             "- Prefer grounded facts from tool results / docs.\n"
             "- Every new/changed rule should include a short 'reason'.\n"
             "- Only include files that need changes (or rely on write_file tool).\n"
+            "- Empty files in the final JSON is OK if write_file already saved edits.\n"
             "- Do NOT modify ignored paths.\n"
             "- Do NOT rewrite ignored patterns when they appear as LEGACY_/FORBIDDEN_/"
             "EXPECTED_/ALLOWED_ contract constants — those define the migration oracle.\n"
             "- Prefer running tests via the run_tests tool before finalizing."
         ),
+        "seeded_paths": failing_hint,
+        "nudge": nudge or "",
         "ignore": ignore.to_prompt_dict(),
-        "error_stdout": test_result.stdout[-6000:],
-        "error_stderr": test_result.stderr[-6000:],
+        "error_stdout": (test_result.stdout or "")[-6000:],
+        "error_stderr": (test_result.stderr or "")[-6000:],
         "packet": packet,
         "files": files,
         "seed_urls": list(seed_urls or [])[:20],
         "suggested_queries": list(suggested_queries or [])[:12],
     }
     system = (
-        "You are a migration repair agent with tools (web search, fetch, repo IO, tests). "
-        "Use tools as you see fit. Reply with a final JSON object only. Honor ignore list. "
+        "You are a migration repair agent with local repo tools "
+        "(list/read/grep/write, run_tests, allowlisted run_shell) plus web_search/"
+        "fetch_url. Fix implementation files under the consumer root so tests pass. "
+        "Use tools iteratively. Reply with a final JSON object only. Honor ignore list. "
         "Update packet_patch when the migration packet must change."
     )
     try:
@@ -496,7 +603,7 @@ def _llm_suggest_fixes(
                 user=json.dumps(prompt),
                 tools=agent_tools(mode="self_correct"),
                 tool_executor=executor,
-                max_turns=12,
+                max_turns=resolve_max_turns(32),
             )
         else:
             data = client.complete_json(system=system, user=json.dumps(prompt))
@@ -579,12 +686,13 @@ def verify_with_self_correct(
 
     evidence = ""
     pending_queries: list[str] = []
+    empty_nudge_used = False
 
     for attempt in range(1, max_retries + 1):
         emit(f"[self-correct] attempt {attempt}/{max_retries} after test failure")
         vlog(f"[self-correct] failure summary:\n{_failure_excerpt(result)}")
 
-        context_files = _collect_context_files(root, result)
+        context_files = _collect_context_files(root, result, packet=packet)
         context_files = {
             k: v for k, v in context_files.items() if not ignore.path_ignored(k)
         }
@@ -592,6 +700,15 @@ def verify_with_self_correct(
             f"[self-correct] context files for repair: "
             f"{', '.join(sorted(context_files)) or '(none)'}"
         )
+
+        nudge: str | None = None
+        if empty_nudge_used:
+            nudge = (
+                "Previous attempt made no file edits. You MUST use tools to "
+                "read failing implementation modules from the traceback "
+                f"(seeded_paths={sorted(context_files.keys())}), "
+                "rewrite them with write_file, then run_tests before finishing."
+            )
 
         suggestion = LlmRepairSuggestion()
         if get_llm_client() is not None:
@@ -614,6 +731,7 @@ def verify_with_self_correct(
                 seed_urls=seeds,
                 suggested_queries=queries,
                 log=vlog,
+                nudge=nudge,
             )
 
             # Fallback providers without tools may still return search_queries.
@@ -644,6 +762,7 @@ def verify_with_self_correct(
                         seed_urls=seeds,
                         suggested_queries=suggestion.search_queries,
                         log=vlog,
+                        nudge=nudge,
                     )
                 if suggestion.search_queries and not suggestion.files:
                     pending_queries = list(suggestion.search_queries)
@@ -723,6 +842,20 @@ def verify_with_self_correct(
                     "[self-correct] no file edits yet; "
                     "will continue with LLM-requested search next attempt"
                 )
+                continue
+            # One nudge retry when LLM is configured and produced nothing.
+            if (
+                get_llm_client() is not None
+                and not empty_nudge_used
+                and attempt < max_retries
+            ):
+                empty_nudge_used = True
+                emit(
+                    "[self-correct] no file changes; nudging LLM once with "
+                    "explicit failing-path instructions"
+                )
+                for detail in fix.details:
+                    vlog(f"[self-correct]   {detail}")
                 continue
             emit(
                 f"[self-correct] strategy={fix.strategy}; "

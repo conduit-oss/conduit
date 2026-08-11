@@ -17,12 +17,27 @@ def resolve_reasoning_effort(default: str = "high") -> str:
     return default if default in _REASONING_EFFORTS else "high"
 
 
+def resolve_max_turns(default: int = 32) -> int:
+    """Max Responses agent turns (env ``CONDUIT_LLM_MAX_TURNS``)."""
+    raw = os.environ.get("CONDUIT_LLM_MAX_TURNS", "").strip()
+    if not raw:
+        return max(1, default)
+    try:
+        return max(1, min(int(raw), 128))
+    except ValueError:
+        return max(1, default)
+
+
 def openai_builtin_tools() -> list[dict[str, Any]]:
-    """Built-in Responses tools. Hosted/remote tools are env-gated."""
+    """Built-in Responses tools. Hosted/remote tools are env-gated.
+
+    Note: OpenAI ``apply_patch`` is omitted — Conduit applies consumer-repo
+    edits via local ``write_file`` / ``run_shell``, not the remote sandbox.
+    Hosted ``computer_use`` / ``hosted_shell`` stay opt-in (not the lab on disk).
+    """
     tools: list[dict[str, Any]] = [
         {"type": "web_search"},
         {"type": "code_interpreter", "container": {"type": "auto"}},
-        {"type": "apply_patch"},
     ]
 
     vs_raw = os.environ.get("CONDUIT_LLM_VECTOR_STORE_IDS", "").strip()
@@ -107,13 +122,45 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
             required=["url"],
         ),
     ]
+    # Readonly search is useful for enrich + repair.
+    tools.append(
+        _fn(
+            "grep",
+            "Search file contents under the consumer repo (non-ignored paths). "
+            "Returns matching lines with paths.",
+            {
+                "pattern": {
+                    "type": "string",
+                    "description": "Literal or regex pattern to search for.",
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Optional file glob, e.g. '**/*.py'.",
+                },
+                "directory": {
+                    "type": "string",
+                    "description": "Relative directory to search (default '.').",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max matches to return (default 40).",
+                },
+                "case_insensitive": {
+                    "type": "boolean",
+                    "description": "If true, ignore case (default false).",
+                },
+            },
+            required=["pattern"],
+        )
+    )
     if mode == "self_correct":
         tools.extend(
             [
                 _fn(
                     "write_file",
                     "Write full UTF-8 contents to a relative path in the consumer repo. "
-                    "Ignored oracle/contract paths are rejected.",
+                    "Ignored oracle/contract paths are rejected. Prefer this over "
+                    "remote/hosted sandboxes — only local writes affect the project.",
                     {
                         "path": {"type": "string"},
                         "contents": {"type": "string"},
@@ -125,6 +172,19 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
                     "Run the consumer repo's detected test suite "
                     "(python -m pytest -q when applicable).",
                     {},
+                ),
+                _fn(
+                    "run_shell",
+                    "Run an allowlisted shell command in the consumer repo "
+                    "(pytest, python -m pytest, python -c, pip show/list). "
+                    "Arbitrary commands are rejected.",
+                    {
+                        "command": {
+                            "type": "string",
+                            "description": "Full command string to run.",
+                        },
+                    },
+                    required=["command"],
                 ),
             ]
         )
