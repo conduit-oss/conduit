@@ -9,6 +9,7 @@ from typing import Any, Callable, Protocol
 
 from conduit.llm.retry import call_with_rate_limit_retry
 from conduit.llm.tools import resolve_max_turns, resolve_reasoning_effort
+from conduit.pulse import beat, family_for_tool
 
 ToolExecutor = Callable[[str, dict[str, Any]], str]
 
@@ -143,6 +144,7 @@ class _OpenAIResponsesClient:
         return call_with_rate_limit_retry(_do, log=self.log)
 
     def complete_json(self, *, system: str, user: str) -> dict[str, Any]:
+        beat("think")
         resp = self._create(
             input=[
                 {"role": "system", "content": system},
@@ -180,6 +182,7 @@ class _OpenAIResponsesClient:
         last_text = ""
 
         for _turn in range(turns):
+            beat("think")
             create_kwargs: dict[str, Any] = {}
             if previous_id:
                 create_kwargs["previous_response_id"] = previous_id
@@ -206,6 +209,7 @@ class _OpenAIResponsesClient:
 
             input_items = []
             for call in calls:
+                beat(family_for_tool(call["name"]))
                 output = tool_executor(call["name"], call["arguments"])
                 input_items.append(
                     {
@@ -232,6 +236,7 @@ class _ChatCompletionsClient:
     use_json_mode: bool = False
 
     def complete_json(self, *, system: str, user: str) -> dict[str, Any]:
+        beat("think")
         from openai import OpenAI
 
         kwargs: dict[str, Any] = {"api_key": self.api_key or "local"}
@@ -276,6 +281,7 @@ class _AnthropicClient:
     api_key: str
 
     def complete_json(self, *, system: str, user: str) -> dict[str, Any]:
+        beat("think")
         from anthropic import Anthropic
 
         client = Anthropic(api_key=self.api_key)

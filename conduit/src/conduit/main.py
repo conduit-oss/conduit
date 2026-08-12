@@ -30,6 +30,7 @@ from conduit.packet.validate import validate_packet
 from conduit.patcher import apply_packet
 from conduit.pr_generator import open_pull_request
 from conduit.prune.grep_imports import prune_by_imports
+from conduit.pulse import beat, start_pulse, stop_pulse
 from conduit.run_summary import build_run_summary, format_run_summary, format_run_summary_markdown
 from conduit.scaffold.module_new import scaffold_module
 from conduit.scaffold.packet_init import scaffold_packet
@@ -237,16 +238,21 @@ def detect_cmd(
     """Run lockfile diff + vendor detect modules."""
     root = _resolve_root(path)
     names = [module] if module else None
-    result = run_detect(
-        root,
-        base_ref=base_ref,
-        majors_only=majors_only,
-        module_names=names,
-        skip_modules=skip_modules,
-        skip_lockfile=skip_lockfile,
-        demo=demo,
-        verbose=_VERBOSE,
-    )
+    if not json_out:
+        start_pulse(console, "detect")
+    try:
+        result = run_detect(
+            root,
+            base_ref=base_ref,
+            majors_only=majors_only,
+            module_names=names,
+            skip_modules=skip_modules,
+            skip_lockfile=skip_lockfile,
+            demo=demo,
+            verbose=_VERBOSE,
+        )
+    finally:
+        stop_pulse()
     if json_out:
         payload = {
             "signals": [s.to_dict() for s in result.signals],
@@ -349,9 +355,14 @@ def verify_cmd(
         if packet
         else load_fixture_openai_packet()
     )
-    result, corrected = verify_with_self_correct(
-        root, data, max_retries=max_retries, verbose=_VERBOSE, log=console.print
-    )
+    start_pulse(console, "repair")
+    try:
+        beat("test")
+        result, corrected = verify_with_self_correct(
+            root, data, max_retries=max_retries, verbose=_VERBOSE, log=console.print
+        )
+    finally:
+        stop_pulse()
     for rel in corrected:
         console.print(f"[self-correct] updated {rel}")
     console.print(result.summary)
@@ -398,7 +409,47 @@ def run_cmd(
         _VERBOSE = True
     root = _resolve_root(path)
     packet_file, packet_package = _resolve_packet_arg(packet)
+    start_pulse(console, "awakening")
+    try:
+        _run_pipeline(
+            root=root,
+            packet_file=packet_file,
+            packet_package=packet_package,
+            package=package,
+            module=module,
+            base_ref=base_ref,
+            skip_tests=skip_tests,
+            skip_pr=skip_pr,
+            no_push=no_push,
+            skip_modules=skip_modules,
+            skip_lockfile=skip_lockfile,
+            skip_export_delta=skip_export_delta,
+            max_retries=max_retries,
+            demo=demo,
+            refresh_packet=refresh_packet,
+        )
+    finally:
+        stop_pulse()
 
+
+def _run_pipeline(
+    *,
+    root: Path,
+    packet_file,
+    packet_package,
+    package,
+    module,
+    base_ref,
+    skip_tests: bool,
+    skip_pr: bool,
+    no_push: bool,
+    skip_modules: bool,
+    skip_lockfile: bool,
+    skip_export_delta: bool,
+    max_retries: int,
+    demo: bool,
+    refresh_packet: bool,
+) -> None:
     pkg_hint = package or packet_package
     if package and packet_package and package.lower() != packet_package.lower():
         console.print(
@@ -409,6 +460,7 @@ def run_cmd(
     names = [module] if module else _detect_module_names_for_package(pkg_hint)
     if demo:
         console.print("[dim]Demo mode: using offline detect fixtures[/dim]")
+    beat("detect")
     detected = run_detect(
         root,
         base_ref=base_ref,
@@ -442,6 +494,7 @@ def run_cmd(
         if not pkg:
             console.print("[red]Packet file has no package field.[/red]")
             raise typer.Exit(2)
+        beat("packet")
         ensured = ensure_packet(
             root,
             detected.signals,
@@ -458,6 +511,7 @@ def run_cmd(
             else:
                 console.print("[green]No migration signals found. Nothing to do.[/green]")
                 raise typer.Exit(0)
+        beat("packet")
         ensured = ensure_packet(
             root,
             detected.signals,
@@ -487,6 +541,7 @@ def run_cmd(
         persist_source=True,
     )
 
+    beat("prune")
     files = prune_by_imports(root, [pkg])
     console.print(f"Pruned to {len(files)} file(s) importing {pkg}")
 
@@ -494,6 +549,7 @@ def run_cmd(
         from_v = str(pkt.get("from_version") or "")
         to_v = str(pkt.get("to_version") or "")
         eco = str(pkt.get("ecosystem") or "pypi")
+        beat("export")
         _vprint(f"export delta resolve {pkg} {from_v} -> {to_v} ({eco})")
         delta = compute_export_delta(
             package=pkg,
@@ -518,6 +574,7 @@ def run_cmd(
                 f"changed={len(delta.changed_symbols)}"
             )
 
+    beat("apply")
     report = apply_packet(root, pkt, dry_run=False, file_allowlist=files or None)
     for change in report.changes:
         console.print(f"[{change.rule_type}] {change.path}: {change.detail}")
@@ -536,12 +593,14 @@ def run_cmd(
         generated: list[str] = []
         corrected: list[str] = []
     else:
+        beat("hatch")
         generated = ensure_tests(root, pkt, changed_files=report.files_modified)
         for rel in generated:
             console.print(f"[test-gen] created {rel}")
             if rel not in report.files_modified:
                 report.files_modified.append(rel)
 
+        beat("repair")
         test_result, corrected = verify_with_self_correct(
             root, pkt, max_retries=max_retries, verbose=_VERBOSE, log=console.print
         )
@@ -602,6 +661,7 @@ def run_cmd(
             skip_tests=skip_tests,
         )
     )
+    beat("pr")
     pr = open_pull_request(
         root,
         pkt,
