@@ -112,6 +112,7 @@ def build_pr_body(
     test_result: TestResult,
     *,
     detect_summary: str = "",
+    review_markdown: str = "",
 ) -> str:
     package = packet.get("package", "package")
     from_v = packet.get("from_version", "?")
@@ -141,6 +142,8 @@ def build_pr_body(
         else "\n"
     )
 
+    review_block = f"\n{review_markdown}\n" if review_markdown.strip() else "\n"
+
     return f"""## Conduit migration
 
 **Package:** `{package}` `{from_v}` → `{to_v}`
@@ -148,7 +151,7 @@ def build_pr_body(
 {detect_block}
 ### Changes applied
 {chr(10).join(change_lines)}
-{rationale_block}{notes_block}{sources_block}
+{rationale_block}{notes_block}{sources_block}{review_block}
 ### Verification
 - Tests: {status}
 - Command: `{' '.join(test_result.command) or 'n/a'}`
@@ -173,13 +176,18 @@ def open_pull_request(
     push: bool = True,
     create_pr: bool = True,
     detect_summary: str = "",
+    review_markdown: str = "",
 ) -> PRResult:
     package = str(packet.get("package", "package"))
     to_v = str(packet.get("to_version", "version")).replace("/", "-")
     branch = f"conduit/upgrade-{package}-{to_v}"
     title = build_pr_title(packet)
     body = build_pr_body(
-        packet, report, test_result, detect_summary=detect_summary
+        packet,
+        report,
+        test_result,
+        detect_summary=detect_summary,
+        review_markdown=review_markdown,
     )
 
     if _run(["git", "rev-parse", "--is-inside-work-tree"], root).returncode != 0:

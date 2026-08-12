@@ -12,6 +12,7 @@ from rich.table import Table
 
 from conduit.context.fetch import read_local_text
 from conduit.detect.coverage import (
+    PacketCoverageReport,
     build_coverage_report,
     format_coverage_report,
     save_source_packet,
@@ -29,6 +30,7 @@ from conduit.packet.validate import validate_packet
 from conduit.patcher import apply_packet
 from conduit.pr_generator import open_pull_request
 from conduit.prune.grep_imports import prune_by_imports
+from conduit.run_summary import build_run_summary, format_run_summary, format_run_summary_markdown
 from conduit.scaffold.module_new import scaffold_module
 from conduit.scaffold.packet_init import scaffold_packet
 from conduit.self_correct import verify_with_self_correct
@@ -59,7 +61,7 @@ def _print_packet_coverage(
     detected,
     packet: dict | None = None,
     persist_source: bool = True,
-) -> None:
+) -> PacketCoverageReport:
     """Print source packet, migration summary, and caught/missed coverage diff."""
     state = (detected.package_states or {}).get(package) or (
         detected.package_states or {}
@@ -79,6 +81,70 @@ def _print_packet_coverage(
     if persist_source:
         path = save_source_packet(root, report.source_packet)
         _vprint(f"wrote source packet {path}")
+    return report
+
+
+def _make_run_summary(
+    *,
+    packet: dict,
+    report,
+    test_result,
+    coverage: PacketCoverageReport | None,
+    detected,
+    generated: list[str],
+    corrected: list[str],
+    skip_tests: bool = False,
+    pr_created: bool | None = None,
+    pr_message: str | None = None,
+):
+    package = str(packet.get("package") or "")
+    state = None
+    if detected is not None and package:
+        state = (detected.package_states or {}).get(package) or (
+            detected.package_states or {}
+        ).get(package.lower())
+    return build_run_summary(
+        packet=packet,
+        report=report,
+        test_result=test_result,
+        coverage=coverage,
+        state=state,
+        generated=generated,
+        corrected=corrected,
+        skip_tests=skip_tests,
+        pr_created=pr_created,
+        pr_message=pr_message,
+    )
+
+
+def _print_run_summary(
+    *,
+    packet: dict,
+    report,
+    test_result,
+    coverage: PacketCoverageReport | None,
+    detected,
+    generated: list[str],
+    corrected: list[str],
+    skip_tests: bool = False,
+    pr_created: bool | None = None,
+    pr_message: str | None = None,
+) -> str:
+    """Print the changed / double-check summary. Returns markdown for the PR body."""
+    summary = _make_run_summary(
+        packet=packet,
+        report=report,
+        test_result=test_result,
+        coverage=coverage,
+        detected=detected,
+        generated=generated,
+        corrected=corrected,
+        skip_tests=skip_tests,
+        pr_created=pr_created,
+        pr_message=pr_message,
+    )
+    console.print(format_run_summary(summary))
+    return format_run_summary_markdown(summary)
 
 
 @app.callback()
@@ -413,7 +479,7 @@ def run_cmd(
     )
 
     # Always print source packet + migration packet + coverage diff
-    _print_packet_coverage(
+    coverage = _print_packet_coverage(
         root=root,
         package=pkg,
         detected=detected,
@@ -467,6 +533,7 @@ def run_cmd(
             stderr="",
             command=[],
         )
+        generated: list[str] = []
         corrected: list[str] = []
     else:
         generated = ensure_tests(root, pkt, changed_files=report.files_modified)
@@ -490,16 +557,50 @@ def run_cmd(
             console.print(test_result.stdout[-2000:])
         if test_result.stderr:
             console.print(test_result.stderr[-2000:])
+        _print_run_summary(
+            packet=pkt,
+            report=report,
+            test_result=test_result,
+            coverage=coverage,
+            detected=detected,
+            generated=generated,
+            corrected=corrected,
+            skip_tests=skip_tests,
+        )
         raise typer.Exit(2)
 
     if skip_pr:
         console.print("[green]Patches applied and tests passed (PR skipped).[/green]")
+        _print_run_summary(
+            packet=pkt,
+            report=report,
+            test_result=test_result,
+            coverage=coverage,
+            detected=detected,
+            generated=generated,
+            corrected=corrected,
+            skip_tests=skip_tests,
+            pr_created=None,
+            pr_message="PR skipped (--skip-pr)",
+        )
         raise typer.Exit(0)
 
-    summary = "\n".join(
+    detect_summary = "\n".join(
         f"- [{s.source}] {s.package} {s.change_type}: "
         f"{s.description or s.affected_pattern or ''}"
         for s in detected.signals[:20]
+    )
+    review_markdown = format_run_summary_markdown(
+        _make_run_summary(
+            packet=pkt,
+            report=report,
+            test_result=test_result,
+            coverage=coverage,
+            detected=detected,
+            generated=generated,
+            corrected=corrected,
+            skip_tests=skip_tests,
+        )
     )
     pr = open_pull_request(
         root,
@@ -508,9 +609,22 @@ def run_cmd(
         test_result,
         push=not no_push,
         create_pr=True,
-        detect_summary=summary,
+        detect_summary=detect_summary,
+        review_markdown=review_markdown,
     )
     console.print(pr.message)
+    _print_run_summary(
+        packet=pkt,
+        report=report,
+        test_result=test_result,
+        coverage=coverage,
+        detected=detected,
+        generated=generated,
+        corrected=corrected,
+        skip_tests=skip_tests,
+        pr_created=pr.created,
+        pr_message=pr.message,
+    )
     raise typer.Exit(0 if pr.created or skip_pr else 3)
 
 

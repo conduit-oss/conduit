@@ -57,6 +57,17 @@ class DetectModule(ABC):
         """Web search queries for LLM evidence (override per vendor)."""
         return []
 
+    def review_checklist(
+        self,
+        *,
+        packet: dict[str, Any],
+        report: Any,
+        state: "PackageClientState | None" = None,
+        coverage: Any = None,
+    ) -> list[str]:
+        """Package-specific lines to double-check after apply (empty = nothing extra)."""
+        return []
+
     @abstractmethod
     def run(self, ctx: DetectContext) -> list[ChangeSignal]:
         raise NotImplementedError
