@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from conduit.patcher.engine import PatchReport
 from conduit.test_runner import TestResult
+
+GH_MISSING_MSG = (
+    "gh not found; install it or use --skip-pr. "
+    "GitHub CLI (https://cli.github.com/) installed and on PATH "
+    "(gh --version in the same terminal you use for Conduit)"
+)
 
 
 @dataclass
@@ -21,13 +29,27 @@ class PRResult:
 
 
 def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=127,
+            stdout="",
+            stderr=f"{cmd[0]} not found on PATH: {exc}",
+        )
+
+
+def _resolve_gh() -> str | None:
+    if sys.platform == "win32":
+        return shutil.which("gh.exe") or shutil.which("gh")
+    return shutil.which("gh")
 
 
 def _rule_summary(rule: dict[str, Any]) -> str:
@@ -201,8 +223,18 @@ def open_pull_request(
             message=f"Branch {branch} ready (PR creation skipped).",
         )
 
+    gh = _resolve_gh()
+    if not gh:
+        return PRResult(
+            branch=branch,
+            title=title,
+            url=None,
+            created=False,
+            message=GH_MISSING_MSG,
+        )
+
     pr = _run(
-        ["gh", "pr", "create", "--title", title, "--body", body, "--head", branch],
+        [gh, "pr", "create", "--title", title, "--body", body, "--head", branch],
         root,
     )
     if pr.returncode != 0:
