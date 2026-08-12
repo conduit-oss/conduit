@@ -84,6 +84,29 @@ def _glob_ok(path: Path, patterns: list[str], root: Path) -> bool:
     return False
 
 
+def _net_dependency_bumps(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only the last DEPENDENCY_BUMP per package (opposing bumps cancel)."""
+    last_idx: dict[str, int] = {}
+    for i, rule in enumerate(rules):
+        if not isinstance(rule, dict) or rule.get("type") != "DEPENDENCY_BUMP":
+            continue
+        key = str(rule.get("package") or "").lower() or "_"
+        last_idx[key] = i
+    if not last_idx:
+        return rules
+    keep = set(last_idx.values())
+    out: list[dict[str, Any]] = []
+    for i, rule in enumerate(rules):
+        if (
+            isinstance(rule, dict)
+            and rule.get("type") == "DEPENDENCY_BUMP"
+            and i not in keep
+        ):
+            continue
+        out.append(rule)
+    return out
+
+
 def apply_packet(
     root: Path,
     packet: dict[str, Any],
@@ -111,7 +134,7 @@ def apply_packet(
 
     packet_id = packet.get("packet_id", "packet")
     vendor = packet.get("package", "")
-    rules = packet.get("rules") or []
+    rules = _net_dependency_bumps(list(packet.get("rules") or []))
 
     for rule in rules:
         rule_type = rule.get("type")

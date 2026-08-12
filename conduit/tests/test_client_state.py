@@ -140,7 +140,57 @@ def test_llm_enrich_merges_grounded_tokens_only(tmp_path: Path, monkeypatch):
     )
     assert "gpt-4o-mini" in state.model_ids
     assert "gpt-invented-not-in-snippets" not in state.model_ids
-    assert state.source == "regex+llm"
+    assert state.source == "agent"
+
+
+def test_agent_scan_grounds_usages_and_drops_invented(tmp_path: Path, monkeypatch):
+    (tmp_path / "requirements.txt").write_text("openai==0.28.1\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        "import openai\n"
+        'openai.Edit.create(model="text-davinci-edit-001", input="a", instruction="b")\n',
+        encoding="utf-8",
+    )
+
+    class FakeLLM:
+        def run_agent(self, **kwargs):
+            return {
+                "model_ids": ["text-davinci-edit-001", "gpt-invented"],
+                "api_patterns": ["Edit.create", "TotallyFake.create"],
+                "usages": [
+                    {
+                        "id": "text-davinci-edit-001",
+                        "callees": ["Edit.create"],
+                        "paths": ["/v1/edits"],
+                        "files": ["app.py"],
+                    },
+                    {
+                        "id": "gpt-invented",
+                        "callees": ["Nope.create"],
+                        "paths": [],
+                        "files": ["app.py"],
+                    },
+                ],
+            }
+
+    monkeypatch.setattr("conduit.llm.client.get_llm_client", lambda: FakeLLM())
+    monkeypatch.setattr(
+        "conduit.detect.modules.openai.known_models.collect_known_model_ids",
+        lambda **kwargs: {"text-davinci-edit-001"},
+    )
+    state = scan_package_state(
+        tmp_path,
+        "openai",
+        installed={"openai": "0.28.1"},
+        demo=False,
+        use_llm=True,
+    )
+    assert "text-davinci-edit-001" in state.model_ids
+    assert "gpt-invented" not in state.model_ids
+    assert "Edit.create" in state.api_patterns
+    assert "TotallyFake.create" not in state.api_patterns
+    assert any(u.get("id") == "text-davinci-edit-001" for u in state.usages)
+    assert not any(u.get("id") == "gpt-invented" for u in state.usages)
+    assert state.source == "agent"
 
 
 def test_sdk_release_compares_installed_to_latest(monkeypatch):

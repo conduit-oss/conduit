@@ -14,21 +14,12 @@ from conduit.test_runner import TestResult, run_tests
 
 LogFn = Callable[[str], None]
 
-_MODEL_ID_RE = re.compile(
-    r"\b("
-    r"gpt-[a-z0-9._-]+"
-    r"|o[0-9][a-z0-9._-]*"
-    r"|text-embedding-[a-z0-9._-]+"
-    r"|text-moderation-[a-z0-9._-]+"
-    r"|whisper-[a-z0-9._-]+"
-    r"|tts-[a-z0-9._-]+"
-    r"|dall-e-[0-9]"
-    r"|chatgpt-[a-z0-9._-]+"
-    r"|omni-moderation(?:-[a-z0-9._-]+)?"
-    r")\b",
+_PATH_RE = re.compile(r"/v1/[a-z0-9/_-]+", re.I)
+_QUOTED_ID_RE = re.compile(r"""[`'"]([A-Za-z0-9._/-]{3,})[`'"]""")
+_PYTEST_COUNT_RE = re.compile(
+    r"(?P<failed>\d+)\s+failed|(?P<passed>\d+)\s+passed|(?P<error>\d+)\s+error",
     re.I,
 )
-_PATH_RE = re.compile(r"/v1/[a-z0-9/_-]+", re.I)
 
 
 def _noop_log(_: str) -> None:
@@ -47,6 +38,7 @@ class LlmRepairSuggestion:
     files: dict[str, str] = field(default_factory=dict)
     search_queries: list[str] = field(default_factory=list)
     packet_patch: dict[str, Any] = field(default_factory=dict)
+    snapshots: dict[str, str | None] = field(default_factory=dict)
 
 
 def _failure_excerpt(test_result: TestResult, *, limit: int = 1500) -> str:
@@ -135,41 +127,66 @@ def _package_dirs(root: Path) -> list[Path]:
     return out
 
 
+def _is_test_rel(rel: str) -> bool:
+    posix = rel.replace("\\", "/").lower()
+    name = Path(posix).name
+    return (
+        posix.startswith("tests/")
+        or posix.startswith("test/")
+        or name.startswith("test_")
+        or name == "conftest.py"
+    )
+
+
 def _collect_context_files(
     root: Path,
     test_result: TestResult,
-    limit: int = 12,
+    limit: int = 24,
     packet: dict[str, Any] | None = None,
+    source: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     files: dict[str, str] = {}
 
-    def _add(path: Path) -> None:
+    def _add(path: Path) -> bool:
         if len(files) >= limit:
-            return
+            return False
         try:
             rel = str(path.relative_to(root)).replace("\\", "/")
         except ValueError:
-            return
+            return False
         if rel in files:
-            return
+            return True
         try:
             files[rel] = path.read_text(encoding="utf-8")
         except OSError:
-            return
+            return False
+        return True
 
-    for path in _paths_from_traceback(
+    traceback_paths = _paths_from_traceback(
         root, (test_result.stdout or "") + "\n" + (test_result.stderr or "")
-    ):
+    )
+
+    def _rel_of(path: Path) -> str:
+        try:
+            return str(path.relative_to(root)).replace("\\", "/")
+        except ValueError:
+            return path.name
+
+    impl_trace = [p for p in traceback_paths if not _is_test_rel(_rel_of(p))]
+    test_trace = [p for p in traceback_paths if _is_test_rel(_rel_of(p))]
+    for path in impl_trace:
         _add(path)
+        init = path.parent / "__init__.py"
+        if init.is_file():
+            _add(init)
 
-    # Source-packet / migration hints: import_files from detect.
-    for key in ("import_files",):
-        for rel in (packet or {}).get(key) or []:
-            if not isinstance(rel, str):
-                continue
-            _add(root / rel.replace("\\", "/"))
-
-    # Also peek at written source packets under .conduit if present.
+    import_files: list[str] = []
+    for rel in (source or {}).get("import_files") or []:
+        if isinstance(rel, str):
+            import_files.append(rel.replace("\\", "/"))
+    for rel in (packet or {}).get("import_files") or []:
+        if isinstance(rel, str) and rel.replace("\\", "/") not in import_files:
+            import_files.append(rel.replace("\\", "/"))
     src_pkt = root / ".conduit" / "source-packets"
     if src_pkt.is_dir():
         for pkt_file in src_pkt.glob("*.json"):
@@ -178,33 +195,50 @@ def _collect_context_files(
             except (OSError, json.JSONDecodeError):
                 continue
             for rel in data.get("import_files") or []:
-                if isinstance(rel, str):
-                    _add(root / rel.replace("\\", "/"))
+                if isinstance(rel, str) and rel.replace("\\", "/") not in import_files:
+                    import_files.append(rel.replace("\\", "/"))
 
-    candidates = list((root / "tests").rglob("*.py")) if (root / "tests").is_dir() else []
-    candidates += list(root.glob("test_*.py"))
-    src = root / "src"
-    if src.is_dir():
-        candidates += list(src.rglob("*.py"))[:20]
-    for pkg in _package_dirs(root):
-        candidates += list(pkg.rglob("*.py"))[:30]
-    for path in candidates:
-        if len(files) >= limit:
-            break
+    for rel in import_files:
+        if _is_test_rel(rel):
+            continue
+        _add(root / rel)
+
+    conftest = root / "tests" / "conftest.py"
+    if conftest.is_file():
+        _add(conftest)
+    root_conftest = root / "conftest.py"
+    if root_conftest.is_file():
+        _add(root_conftest)
+
+    for path in test_trace:
         _add(path)
     return files
 
 
-def _apply_file_updates(root: Path, updates: dict[str, str]) -> list[str]:
+def _apply_file_updates(
+    root: Path,
+    updates: dict[str, str],
+    snapshots: dict[str, str | None] | None = None,
+) -> list[str]:
     changed: list[str] = []
     root_resolved = root.resolve()
+    store = snapshots if snapshots is not None else {}
     for rel, content in updates.items():
         path = (root / rel).resolve()
         if not str(path).startswith(str(root_resolved)):
             continue
+        rel_posix = rel.replace("\\", "/")
+        if rel_posix not in store:
+            if path.is_file():
+                try:
+                    store[rel_posix] = path.read_text(encoding="utf-8")
+                except OSError:
+                    store[rel_posix] = None
+            else:
+                store[rel_posix] = None
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        changed.append(rel)
+        changed.append(rel_posix)
     return changed
 
 
@@ -223,10 +257,127 @@ def _ids_from_packet(packet: dict[str, Any]) -> list[str]:
             continue
         if rule.get("type") == "EXACT_STRING_REPLACE":
             for key in ("match", "replace"):
-                val = str(rule.get(key) or "")
-                if _MODEL_ID_RE.fullmatch(val) or _MODEL_ID_RE.search(val):
+                val = str(rule.get(key) or "").strip()
+                if val:
                     ids.append(val)
     return ids
+
+
+def _quoted_identifiers(text: str, *, limit: int = 8) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for match in _QUOTED_ID_RE.finditer(text or ""):
+        token = match.group(1).strip()
+        if token.lower() in seen or len(token) < 3:
+            continue
+        seen.add(token.lower())
+        out.append(token)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _packet_for_prompt(packet: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "packet_id": packet.get("packet_id"),
+        "package": packet.get("package"),
+        "from_version": packet.get("from_version"),
+        "to_version": packet.get("to_version"),
+        "rules": list(packet.get("rules") or []),
+    }
+
+
+def _source_for_prompt(source: dict[str, Any] | None) -> dict[str, Any]:
+    if not source:
+        return {}
+    return {
+        "installed_version": source.get("installed_version"),
+        "model_ids": list(source.get("model_ids") or []),
+        "api_patterns": list(source.get("api_patterns") or []),
+        "usages": list(source.get("usages") or [])[:20],
+        "import_files": list(source.get("import_files") or []),
+    }
+
+
+def _load_source_packet(root: Path, packet: dict[str, Any] | None) -> dict[str, Any]:
+    src_dir = root / ".conduit" / "source-packets"
+    package = str((packet or {}).get("package") or "").strip()
+    candidates: list[Path] = []
+    if src_dir.is_dir():
+        if package:
+            hit = src_dir / f"{package}.json"
+            if hit.is_file():
+                candidates.append(hit)
+        candidates.extend(sorted(src_dir.glob("*.json")))
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
+def _restore_snapshots(root: Path, snapshots: dict[str, str | None]) -> list[str]:
+    restored: list[str] = []
+    for rel, content in snapshots.items():
+        path = root / rel
+        if content is None:
+            if path.is_file():
+                try:
+                    path.unlink()
+                    restored.append(rel)
+                except OSError:
+                    continue
+            continue
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            restored.append(rel)
+        except OSError:
+            continue
+    return restored
+
+
+def _pytest_counts(result: TestResult) -> tuple[int | None, int | None]:
+    text = f"{result.stdout or ''}\n{result.stderr or ''}"
+    failed = passed = None
+    for match in _PYTEST_COUNT_RE.finditer(text):
+        if match.group("failed") is not None:
+            failed = int(match.group("failed"))
+        if match.group("passed") is not None:
+            passed = int(match.group("passed"))
+    return failed, passed
+
+
+def _is_collection_error(result: TestResult) -> bool:
+    text = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+    return (
+        "error collecting" in text
+        or "importerror while loading conftest" in text
+        or "cannot import name" in text
+        or result.returncode in {2, 4}
+    )
+
+
+def _repair_regressed(previous: TestResult, current: TestResult) -> bool:
+    if _is_collection_error(current) and not _is_collection_error(previous):
+        return True
+    prev_fail, prev_pass = _pytest_counts(previous)
+    cur_fail, cur_pass = _pytest_counts(current)
+    if prev_pass and cur_pass is not None and cur_pass < max(1, prev_pass // 2):
+        return True
+    if prev_fail is not None and cur_fail is not None and cur_fail > prev_fail + 4:
+        return True
+    return False
+
+
+def _top_level_names(source: str) -> set[str]:
+    names: set[str] = set()
+    for match in re.finditer(r"(?m)^(def|class)\s+([A-Za-z_][A-Za-z0-9_]*)", source or ""):
+        names.add(match.group(2))
+    return names
 
 
 def _error_search_snippets(test_result: TestResult, *, limit: int = 4) -> list[str]:
@@ -274,6 +425,7 @@ def _extract_research_targets(
     packet: dict[str, Any],
     *,
     extra_queries: list[str] | None = None,
+    source: dict[str, Any] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Return (seed_urls, search_queries) derived from failure + packet."""
     from conduit.detect.modules.openai.model_docs import (
@@ -288,16 +440,17 @@ def _extract_research_targets(
             json.dumps(packet.get("rules") or [])[:4000],
         ]
     )
-    model_ids = sorted({m.lower() for m in _MODEL_ID_RE.findall(blob)})
-    for mid in _ids_from_packet(packet):
-        model_ids.append(mid.lower())
-    # preserve order unique
-    seen: set[str] = set()
     ordered_ids: list[str] = []
-    for mid in model_ids:
-        if mid in seen:
+    seen: set[str] = set()
+    for mid in [
+        *_quoted_identifiers(blob),
+        *_ids_from_packet(packet),
+        *(str(x) for x in (source or {}).get("model_ids") or []),
+    ]:
+        key = mid.lower()
+        if key in seen:
             continue
-        seen.add(mid)
+        seen.add(key)
         ordered_ids.append(mid)
 
     paths = sorted({p.lower() for p in _PATH_RE.findall(blob)})
@@ -318,7 +471,7 @@ def _extract_research_targets(
     ]
     queries.extend(_error_search_snippets(test_result))
     for mid in ordered_ids[:4]:
-        queries.append(f"{package} model {mid} supported endpoints replacement")
+        queries.append(f"{package} {mid} supported endpoints replacement")
     for path in paths[:3]:
         queries.append(f"{package} {path} replacement deprecation")
     for q in extra_queries or []:
@@ -523,6 +676,8 @@ def _llm_suggest_fixes(
     suggested_queries: list[str] | None = None,
     log: LogFn | None = None,
     nudge: str | None = None,
+    source: dict[str, Any] | None = None,
+    coverage_missed: list[dict[str, Any]] | None = None,
 ) -> LlmRepairSuggestion:
     emit = log or _noop_log
     client = get_llm_client()
@@ -546,19 +701,18 @@ def _llm_suggest_fixes(
     failing_hint = sorted(files.keys())
     prompt = {
         "instructions": (
-            "Tests failed after an automatic API migration. Your job is to make "
-            "the consumer repo pass tests by fixing IMPLEMENTATION code "
-            "(not only tests).\n"
-            "The migration packet may be incomplete or wrong — you may fix code "
-            "AND update the packet when needed.\n"
+            "Tests failed after an automatic API migration. Fix IMPLEMENTATION "
+            "code so tests pass. The packet may be incomplete — you may also "
+            "update packet_patch.\n"
             "Workflow:\n"
-            "1) Inspect failing modules from the traceback / seeded files "
-            "(list_files, read_file, grep).\n"
-            "2) Use web_search / fetch_url for grounded OpenAI migration docs.\n"
-            "3) Edit implementation via write_file (local repo only — hosted "
-            "OpenAI sandboxes do NOT contain this project).\n"
-            "4) run_tests (or allowlisted run_shell) and iterate until green "
-            "or you exhaust useful changes.\n"
+            "1) read_file every path you will edit (seeded_paths first).\n"
+            "2) Use web_search / fetch_url for grounded vendor docs.\n"
+            "3) Make the smallest write_file that fixes the traceback. "
+            "Do not rewrite modules that are not in the traceback or seeded "
+            "impl set unless an import forces it.\n"
+            "4) Preserve existing public names (module-level def/class and "
+            "__all__) unless tests require a rename.\n"
+            "5) run_tests and iterate until green or changes are exhausted.\n"
             "Do not guess undocumented API successors.\n"
             "When finished, return JSON with any of:\n"
             '  "files": {"relative/path.py": "full new file contents"},\n'
@@ -583,7 +737,9 @@ def _llm_suggest_fixes(
         "ignore": ignore.to_prompt_dict(),
         "error_stdout": (test_result.stdout or "")[-6000:],
         "error_stderr": (test_result.stderr or "")[-6000:],
-        "packet": packet,
+        "packet": _packet_for_prompt(packet),
+        "source": _source_for_prompt(source),
+        "coverage_missed": list(coverage_missed or []),
         "files": files,
         "seed_urls": list(seed_urls or [])[:20],
         "suggested_queries": list(suggested_queries or [])[:12],
@@ -591,8 +747,8 @@ def _llm_suggest_fixes(
     system = (
         "You are a migration repair agent with local repo tools "
         "(list/read/grep/write, run_tests, allowlisted run_shell) plus web_search/"
-        "fetch_url. Fix implementation files under the consumer root so tests pass. "
-        "Use tools iteratively. Reply with a final JSON object only. Honor ignore list. "
+        "fetch_url. Prefer surgical edits. Preserve public names. "
+        "Reply with a final JSON object only. Honor ignore list. "
         "Update packet_patch when the migration packet must change."
     )
     try:
@@ -638,6 +794,7 @@ def _llm_suggest_fixes(
         files=updates,
         search_queries=queries[:8],
         packet_patch=patch,
+        snapshots=dict(executor.snapshots),
     )
 
 
@@ -665,6 +822,8 @@ def verify_with_self_correct(
     max_retries: int = 5,
     verbose: bool = False,
     log: LogFn | None = None,
+    source: dict[str, Any] | None = None,
+    coverage_missed: list[dict[str, Any]] | None = None,
 ) -> tuple[TestResult, list[str]]:
     """Run tests; on failure, research + LLM/heuristic-fix and retry (default 5)."""
     emit: LogFn = log or print
@@ -675,6 +834,7 @@ def verify_with_self_correct(
     if result.passed:
         return result, corrected_files
 
+    source = source or _load_source_packet(root, packet)
     ignore = build_ignore_list(root, packet)
     if verbose and (ignore.paths or ignore.globs or ignore.patterns):
         vlog(
@@ -687,12 +847,15 @@ def verify_with_self_correct(
     evidence = ""
     pending_queries: list[str] = []
     empty_nudge_used = False
+    pending_nudge: str | None = None
 
     for attempt in range(1, max_retries + 1):
         emit(f"[self-correct] attempt {attempt}/{max_retries} after test failure")
         vlog(f"[self-correct] failure summary:\n{_failure_excerpt(result)}")
 
-        context_files = _collect_context_files(root, result, packet=packet)
+        context_files = _collect_context_files(
+            root, result, packet=packet, source=source
+        )
         context_files = {
             k: v for k, v in context_files.items() if not ignore.path_ignored(k)
         }
@@ -701,8 +864,9 @@ def verify_with_self_correct(
             f"{', '.join(sorted(context_files)) or '(none)'}"
         )
 
-        nudge: str | None = None
-        if empty_nudge_used:
+        nudge: str | None = pending_nudge
+        pending_nudge = None
+        if empty_nudge_used and not nudge:
             nudge = (
                 "Previous attempt made no file edits. You MUST use tools to "
                 "read failing implementation modules from the traceback "
@@ -713,7 +877,7 @@ def verify_with_self_correct(
         suggestion = LlmRepairSuggestion()
         if get_llm_client() is not None:
             seeds, queries = _extract_research_targets(
-                result, packet, extra_queries=pending_queries
+                result, packet, extra_queries=pending_queries, source=source
             )
             pending_queries = []
             vlog(
@@ -732,6 +896,8 @@ def verify_with_self_correct(
                 suggested_queries=queries,
                 log=vlog,
                 nudge=nudge,
+                source=source,
+                coverage_missed=coverage_missed,
             )
 
             # Fallback providers without tools may still return search_queries.
@@ -763,6 +929,8 @@ def verify_with_self_correct(
                         suggested_queries=suggestion.search_queries,
                         log=vlog,
                         nudge=nudge,
+                        source=source,
+                        coverage_missed=coverage_missed,
                     )
                 if suggestion.search_queries and not suggestion.files:
                     pending_queries = list(suggestion.search_queries)
@@ -775,8 +943,9 @@ def verify_with_self_correct(
                     "[self-correct] packet updated: " + "; ".join(patch_details)
                 )
 
+        snapshots = dict(suggestion.snapshots)
         if suggestion.files:
-            changed = _apply_file_updates(root, suggestion.files)
+            changed = _apply_file_updates(root, suggestion.files, snapshots)
             fix = FixAttempt(
                 strategy="llm",
                 files=changed,
@@ -869,10 +1038,37 @@ def verify_with_self_correct(
             )
             break
 
+        previous = result
         result = run_tests(root)
         if result.passed:
             vlog(f"[self-correct] tests passed after attempt {attempt}")
             return result, sorted(set(corrected_files))
+        if snapshots and _repair_regressed(previous, result):
+            restored = _restore_snapshots(root, snapshots)
+            lost_bits: list[str] = []
+            for rel, original in snapshots.items():
+                if not original:
+                    continue
+                lost = _top_level_names(original) - _top_level_names(
+                    suggestion.files.get(rel) or ""
+                )
+                if lost:
+                    lost_bits.append(f"{rel} dropped {sorted(lost)}")
+            emit(
+                "[self-correct] repair regressed tests; restored "
+                f"{len(restored)} file(s)"
+                + (f" ({'; '.join(lost_bits[:4])})" if lost_bits else "")
+            )
+            result = run_tests(root)
+            empty_nudge_used = False
+            pending_nudge = (
+                "Previous write regressed tests (collection/import failure). "
+                "Original files were restored. Preserve public names. "
+                + (" ".join(lost_bits[:6]) if lost_bits else "")
+            )
+            if result.passed:
+                vlog("[self-correct] tests passed after restoring snapshot")
+                return result, sorted(set(corrected_files))
         vlog(f"[self-correct] still failing after attempt {attempt}: {result.summary}")
         # Next attempt should research again with the new failure signature
         if suggestion.search_queries:

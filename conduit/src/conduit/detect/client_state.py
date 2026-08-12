@@ -65,8 +65,9 @@ class PackageClientState:
     model_ids: list[str] = field(default_factory=list)
     import_files: list[str] = field(default_factory=list)
     api_patterns: list[str] = field(default_factory=list)
+    usages: list[dict[str, Any]] = field(default_factory=list)
     ecosystems: list[str] = field(default_factory=list)
-    source: str = "regex"  # regex | regex+llm | demo
+    source: str = "regex"  # regex | regex+llm | agent | demo
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -76,6 +77,7 @@ class PackageClientState:
             "model_ids": list(self.model_ids),
             "import_files": list(self.import_files),
             "api_patterns": list(self.api_patterns),
+            "usages": [dict(u) for u in self.usages],
             "ecosystems": list(self.ecosystems),
             "source": self.source,
             "notes": list(self.notes),
@@ -223,30 +225,61 @@ def _regex_scan_package(
     )
 
 
-def _snippet_budget(files: list[Path], root: Path, *, max_chars: int = 12000) -> str:
+def _file_corpus(files: list[Path]) -> str:
     parts: list[str] = []
-    used = 0
-    for path in files[:40]:
+    for path in files:
         try:
-            text = path.read_text(encoding="utf-8")
+            parts.append(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError):
             continue
-        chunk = text if len(text) <= 2000 else text[:2000] + "\n# ... truncated ..."
-        block = f"----- {_rel(path, root)} -----\n{chunk}\n"
-        if used + len(block) > max_chars:
-            break
-        parts.append(block)
-        used += len(block)
     return "\n".join(parts)
 
 
-def _llm_enrich(
+def _token_in_corpus(token: str, corpus_lower: str) -> bool:
+    tok = (token or "").strip()
+    return bool(tok) and tok.lower() in corpus_lower
+
+
+def _normalize_usage(raw: Any, *, corpus_lower: str, known_files: set[str]) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    ident = str(raw.get("id") or raw.get("model_id") or "").strip()
+    if not ident or not _token_in_corpus(ident, corpus_lower):
+        return None
+    callees = [
+        str(c).strip()
+        for c in (raw.get("callees") or [])
+        if str(c).strip() and _token_in_corpus(str(c).strip(), corpus_lower)
+    ]
+    paths = [
+        str(p).strip()
+        for p in (raw.get("paths") or [])
+        if str(p).strip() and _token_in_corpus(str(p).strip(), corpus_lower)
+    ]
+    files = []
+    for rel in raw.get("files") or []:
+        item = str(rel).strip().replace("\\", "/")
+        if item and item in known_files:
+            files.append(item)
+    return {"id": ident, "callees": callees, "paths": paths, "files": files}
+
+
+def _merge_usage_row(existing: dict[str, Any], incoming: dict[str, Any]) -> None:
+    for key in ("callees", "paths", "files"):
+        seen = {str(x) for x in existing.get(key) or []}
+        for item in incoming.get(key) or []:
+            if item not in seen:
+                existing.setdefault(key, []).append(item)
+                seen.add(str(item))
+
+
+def _agent_enrich(
     state: PackageClientState,
     *,
     root: Path,
     files: list[Path],
 ) -> PackageClientState:
-    """Optional LLM pass; merges only tokens grounded in provided snippets."""
+    """Agent/LLM pass; merge only tokens that appear in the consumer repo."""
     try:
         from conduit.llm.client import get_llm_client
     except ImportError:
@@ -256,53 +289,112 @@ def _llm_enrich(
     if client is None:
         return state
 
-    snippets = _snippet_budget(files, root)
-    if not snippets.strip():
+    corpus_lower = _file_corpus(files).lower()
+    if not corpus_lower.strip():
         return state
 
+    known_files = {_rel(p, root) for p in files}
+    seeded = sorted(state.import_files)[:40]
+    prompt = {
+        "package": state.package,
+        "import_files": seeded,
+        "hint_model_ids": list(state.model_ids),
+        "hint_api_patterns": list(state.api_patterns),
+        "instructions": (
+            "Inventory how this consumer repo uses the named dependency. "
+            "Use list_files / grep / read_file on import_files (and related modules). "
+            "Hints are optional seeds, not a filter — record call surfaces the cheap "
+            "scan missed (e.g. Resource.create, chat.completions, REST /v1/... paths). "
+            "Return JSON only with keys: model_ids (string[]), api_patterns (string[]), "
+            "usages (list of {id, callees, paths, files}). "
+            "Every id/callee/path must appear verbatim in a file you read. "
+            "Do not invent model ids or APIs."
+        ),
+    }
     system = (
-        "You analyze a client repository's usage of one dependency package. "
-        "Return a single JSON object with keys model_ids (string array) and "
-        "api_patterns (string array). Only include values that appear verbatim "
-        "in the provided snippets. Do not invent model ids or APIs."
+        "You map a client repository's real usage of one dependency. "
+        "Prefer tools over guessing. Final reply is JSON only."
     )
-    user = (
-        f"package: {state.package}\n"
-        f"regex_model_ids: {json.dumps(state.model_ids)}\n"
-        f"regex_api_patterns: {json.dumps(state.api_patterns)}\n\n"
-        f"snippets:\n{snippets}"
-    )
+    data: dict[str, Any] | None = None
     try:
-        data = client.complete_json(system=system, user=user)
+        from conduit.llm.executors import RepoToolExecutor
+        from conduit.llm.tools import agent_tools, resolve_max_turns
+
+        run_agent = getattr(client, "run_agent", None)
+        if callable(run_agent):
+            executor = RepoToolExecutor(
+                root=root,
+                allow_writes=False,
+                allow_run_tests=False,
+            )
+            data = run_agent(
+                system=system,
+                user=json.dumps(prompt),
+                tools=agent_tools(mode="enrich"),
+                tool_executor=executor,
+                max_turns=min(16, resolve_max_turns(32)),
+            )
+        else:
+            data = client.complete_json(system=system, user=json.dumps(prompt))
     except Exception as exc:  # noqa: BLE001 — fail soft
         state.notes.append(f"llm enrichment failed: {exc}")
         return state
 
-    snippet_lower = snippets.lower()
+    if not isinstance(data, dict):
+        state.notes.append("llm enrichment returned empty/invalid JSON")
+        return state
+
     added_models = 0
     added_apis = 0
+    added_usages = 0
     for raw in data.get("model_ids") or []:
         token = str(raw).strip()
-        if not token or token.lower() not in snippet_lower:
+        if not _token_in_corpus(token, corpus_lower):
             continue
         if token not in state.model_ids:
             state.model_ids.append(token)
             added_models += 1
     for raw in data.get("api_patterns") or []:
         token = str(raw).strip()
-        if not token or token.lower() not in snippet_lower:
+        if not _token_in_corpus(token, corpus_lower):
             continue
         if token not in state.api_patterns:
             state.api_patterns.append(token)
             added_apis += 1
 
+    by_id = {str(u.get("id")).lower(): u for u in state.usages if isinstance(u, dict)}
+    for raw in data.get("usages") or []:
+        usage = _normalize_usage(raw, corpus_lower=corpus_lower, known_files=known_files)
+        if usage is None:
+            continue
+        key = usage["id"].lower()
+        if key in by_id:
+            _merge_usage_row(by_id[key], usage)
+        else:
+            state.usages.append(usage)
+            by_id[key] = usage
+            added_usages += 1
+        if usage["id"] not in state.model_ids and _token_in_corpus(
+            usage["id"], corpus_lower
+        ):
+            state.model_ids.append(usage["id"])
+            added_models += 1
+        for callee in usage.get("callees") or []:
+            if callee not in state.api_patterns:
+                state.api_patterns.append(callee)
+                added_apis += 1
+        for path in usage.get("paths") or []:
+            if path not in state.api_patterns:
+                state.api_patterns.append(path)
+                added_apis += 1
+
     state.model_ids = sorted(set(state.model_ids))
     state.api_patterns = sorted(set(state.api_patterns))
-    state.source = "regex+llm"
+    state.source = "agent"
     state.notes.append(
-        f"llm enrichment merged model_ids=+{added_models} api_patterns=+{added_apis}"
+        f"agent scan merged model_ids=+{added_models} "
+        f"api_patterns=+{added_apis} usages=+{added_usages}"
     )
-    # Drop the "unknown" note if we now have models
     if state.model_ids:
         state.notes = [
             n for n in state.notes if not n.startswith("no model ids found")
@@ -318,7 +410,7 @@ def scan_package_state(
     demo: bool = False,
     use_llm: bool = True,
 ) -> PackageClientState:
-    """Scan one package's client usage (regex always; LLM optional)."""
+    """Scan one package's client usage (regex bootstrap; agent when LLM is on)."""
     installed = installed or {}
     state = _regex_scan_package(root, package, installed=installed, demo=demo)
     if demo:
@@ -336,7 +428,9 @@ def scan_package_state(
         and not _is_docish(p)
         and p.suffix.lower() in {".env", ".yaml", ".yml", ".toml", ".json", ".ini"}
     ]
-    return _llm_enrich(state, root=root, files=list(dict.fromkeys([*files, *config_files])))
+    return _agent_enrich(
+        state, root=root, files=list(dict.fromkeys([*files, *config_files]))
+    )
 
 
 def scan_package_states(

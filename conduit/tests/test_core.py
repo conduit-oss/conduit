@@ -12,7 +12,13 @@ from conduit.export_delta.diff import diff_exports
 from conduit.export_delta.extract import _python_file_exports
 from conduit.llm.client import resolve_provider
 from conduit.detect.models import ChangeSignal
-from conduit.packet.synthesize import ensure_packet, load_fixture_openai_packet
+from conduit.detect.client_state import PackageClientState
+from conduit.packet.synthesize import (
+    collapse_dependency_bumps,
+    ensure_packet,
+    filter_signals_to_source,
+    load_fixture_openai_packet,
+)
 from conduit.packet.validate import validate_packet
 from conduit.main import _resolve_packet_arg
 from conduit.patcher import apply_packet
@@ -78,6 +84,133 @@ def test_resolve_packet_arg_file(tmp_path: Path):
     path, pkg = _resolve_packet_arg(str(packet_file))
     assert path == packet_file.resolve()
     assert pkg is None
+
+
+def test_ensure_packet_prefers_source_installed_over_signal(tmp_path: Path):
+    signals = [
+        ChangeSignal(
+            source="module:openai",
+            package="openai",
+            change_type="SDK_MAJOR_BUMP",
+            from_version="1.109.1",
+            to_version="0.28.1",
+            suggested_rules=[
+                {
+                    "type": "DEPENDENCY_BUMP",
+                    "package": "openai",
+                    "from_version": "1.109.1",
+                    "to_version": "0.28.1",
+                    "ecosystems": ["pip"],
+                }
+            ],
+        ),
+        ChangeSignal(
+            source="module:openai",
+            package="openai",
+            change_type="SDK_MAJOR_BUMP",
+            from_version="0.28.1",
+            to_version="1.109.1",
+            suggested_rules=[
+                {
+                    "type": "DEPENDENCY_BUMP",
+                    "package": "openai",
+                    "from_version": "0.28.1",
+                    "to_version": "1.109.1",
+                    "ecosystems": ["pip"],
+                }
+            ],
+        ),
+    ]
+    state = PackageClientState(
+        package="openai",
+        installed_version="0.28.1",
+        model_ids=["text-davinci-edit-001"],
+    )
+    result = ensure_packet(
+        tmp_path,
+        signals,
+        package="openai",
+        installed={"openai": "0.28.1"},
+        use_fixture_fallback=False,
+        client_state=state,
+    )
+    assert result.packet["from_version"] == "0.28.1"
+    assert result.from_source == "source"
+    assert result.packet["to_version"] == "1.109.1"
+    bumps = [r for r in result.packet["rules"] if r.get("type") == "DEPENDENCY_BUMP"]
+    assert len(bumps) == 1
+    assert bumps[0]["from_version"] == "0.28.1"
+    assert bumps[0]["to_version"] == "1.109.1"
+
+
+def test_filter_signals_drops_unused_catalog_models():
+    signals = [
+        ChangeSignal(
+            source="module:openai",
+            package="openai",
+            change_type="MODEL_DEPRECATION",
+            affected_pattern="gpt-realtime",
+            replacement_pattern="gpt-realtime-2.1",
+        ),
+        ChangeSignal(
+            source="module:openai",
+            package="openai",
+            change_type="MODEL_DEPRECATION",
+            affected_pattern="text-davinci-edit-001",
+            replacement_pattern="gpt-4o",
+        ),
+        ChangeSignal(
+            source="module:openai",
+            package="openai",
+            change_type="SDK_MAJOR_BUMP",
+            from_version="0.28.1",
+            to_version="1.109.1",
+        ),
+    ]
+    source = {
+        "model_ids": ["text-davinci-edit-001"],
+        "api_patterns": ["Edit.create"],
+        "usages": [
+            {
+                "id": "text-davinci-edit-001",
+                "callees": ["Edit.create"],
+                "paths": ["/v1/edits"],
+                "files": ["edits.py"],
+            }
+        ],
+    }
+    scoped = filter_signals_to_source(signals, source, package="openai")
+    aff = {s.affected_pattern for s in scoped}
+    assert "text-davinci-edit-001" in aff
+    assert "gpt-realtime" not in aff
+    assert any(s.change_type == "SDK_MAJOR_BUMP" for s in scoped)
+
+
+def test_collapse_dependency_bumps_keeps_one():
+    rules = collapse_dependency_bumps(
+        [
+            {
+                "type": "DEPENDENCY_BUMP",
+                "package": "openai",
+                "from_version": "1.109.1",
+                "to_version": "0.28.1",
+            },
+            {"type": "EXACT_STRING_REPLACE", "match": "a", "replace": "b"},
+            {
+                "type": "DEPENDENCY_BUMP",
+                "package": "openai",
+                "from_version": "0.28.1",
+                "to_version": "1.109.1",
+            },
+        ],
+        package="openai",
+        from_version="0.28.1",
+        to_version="1.109.1",
+    )
+    bumps = [r for r in rules if r["type"] == "DEPENDENCY_BUMP"]
+    assert len(bumps) == 1
+    assert bumps[0]["from_version"] == "0.28.1"
+    assert bumps[0]["to_version"] == "1.109.1"
 
 
 def test_ensure_packet_uses_manifest_from_version(tmp_path: Path):
@@ -159,6 +292,41 @@ def test_prune_demo_imports_openai():
     files = prune_by_imports(DEMO, ["openai"])
     rels = {str(p.relative_to(DEMO)).replace("\\", "/") for p in files}
     assert any("ai_client.py" in r for r in rels)
+
+
+def test_apply_packet_nets_opposing_bumps(tmp_path: Path):
+    (tmp_path / "requirements.txt").write_text("openai==1.109.1\n", encoding="utf-8")
+    packet = {
+        "packet_id": "t",
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "1.109.1",
+        "rules": [
+            {
+                "type": "DEPENDENCY_BUMP",
+                "package": "openai",
+                "from_version": "1.109.1",
+                "to_version": "0.28.1",
+                "ecosystems": ["pip"],
+            },
+            {
+                "type": "DEPENDENCY_BUMP",
+                "package": "openai",
+                "from_version": "0.28.1",
+                "to_version": "1.109.1",
+                "ecosystems": ["pip"],
+            },
+        ],
+    }
+    report = apply_packet(tmp_path, packet, dry_run=False, require_context=False)
+    text = (tmp_path / "requirements.txt").read_text(encoding="utf-8")
+    assert "openai==1.109.1" in text
+    assert "0.28.1" not in text
+    bump_changes = [c for c in report.changes if c.rule_type == "DEPENDENCY_BUMP"]
+    assert len(bump_changes) == 1
+    assert "1.109.1" in bump_changes[0].detail
+    assert bump_changes[0].detail.count("->") == 1
 
 
 def test_apply_packet_dry_run_demo(tmp_path: Path):

@@ -15,10 +15,21 @@ _PLACEHOLDER_FROM = "0.0.0"
 _PLACEHOLDER_TO = "1.0.0"
 
 
+def _parse_ver(value: str | None):
+    if not value:
+        return None
+    try:
+        from packaging.version import Version
+
+        return Version(str(value).lstrip("v"))
+    except Exception:
+        return None
+
+
 @dataclass
 class PacketEnsureResult:
     packet: dict[str, Any]
-    from_source: str = "placeholder"  # file | cache | signal | manifest | rule | fixture | placeholder
+    from_source: str = "placeholder"  # file | cache | signal | source | manifest | rule | fixture | placeholder
     to_source: str = "placeholder"
     used_fixture: bool = False
     warnings: list[str] = field(default_factory=list)
@@ -46,6 +57,137 @@ def _to_version_from_rules(rules: list[dict[str, Any]], package: str) -> str | N
         if to_v:
             return str(to_v)
     return None
+
+
+def _source_usage_index(source: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize source packet tokens for in-scope filtering."""
+    models: set[str] = set()
+    paths: set[str] = set()
+    callees: set[str] = set()
+    if not source:
+        return {"models": models, "paths": paths, "callees": callees, "has_usage": False}
+    from conduit.detect.modules.openai.path_callees import (
+        normalize_api_path,
+        path_for_api_pattern,
+    )
+
+    for mid in source.get("model_ids") or []:
+        if mid:
+            models.add(str(mid).lower())
+    for raw in source.get("api_patterns") or []:
+        token = str(raw or "").strip()
+        if not token:
+            continue
+        mapped = path_for_api_pattern(token) or (
+            normalize_api_path(token if token.startswith("/") else f"/{token}")
+        )
+        if mapped:
+            paths.add(mapped.lower())
+        if not token.startswith("/"):
+            callees.add(token.lower())
+    for usage in source.get("usages") or []:
+        if not isinstance(usage, dict):
+            continue
+        ident = str(usage.get("id") or "").strip()
+        if ident:
+            models.add(ident.lower())
+        for callee in usage.get("callees") or []:
+            if callee:
+                callees.add(str(callee).lower())
+                mapped = path_for_api_pattern(str(callee))
+                if mapped:
+                    paths.add(mapped.lower())
+        for path in usage.get("paths") or []:
+            mapped = path_for_api_pattern(str(path)) or normalize_api_path(
+                str(path) if str(path).startswith("/") else f"/{path}"
+            )
+            if mapped:
+                paths.add(mapped.lower())
+    return {
+        "models": models,
+        "paths": paths,
+        "callees": callees,
+        "has_usage": bool(models or paths or callees),
+    }
+
+
+def _signal_in_scope(signal: ChangeSignal, index: dict[str, Any]) -> bool:
+    if signal.change_type in {
+        "DEPENDENCY_BUMP",
+        "SDK_MAJOR_BUMP",
+        "SDK_BUMP",
+        "PARAM_RENAME",
+    }:
+        return True
+    from conduit.detect.modules.openai.path_callees import normalize_api_path
+
+    aff = (signal.affected_pattern or "").strip()
+    repl = (signal.replacement_pattern or "").strip()
+    for token in (aff, repl):
+        if not token:
+            continue
+        low = token.lower()
+        if low in index["models"] or low in index["callees"]:
+            return True
+        mapped = normalize_api_path(token if token.startswith("/") else f"/{token}")
+        if mapped and mapped.lower() in index["paths"]:
+            return True
+    hints = signal.hints or {}
+    for key in ("path", "old_path", "new_path"):
+        mapped = normalize_api_path(str(hints.get(key) or "") or None)
+        if mapped and mapped.lower() in index["paths"]:
+            return True
+    return False
+
+
+def filter_signals_to_source(
+    signals: list[ChangeSignal],
+    source: dict[str, Any] | None,
+    *,
+    package: str,
+) -> list[ChangeSignal]:
+    """Drop vendor catalog signals that do not touch scanned client usage."""
+    index = _source_usage_index(source)
+    if not index["has_usage"]:
+        return list(signals)
+    out: list[ChangeSignal] = []
+    for signal in signals:
+        if signal.package.lower() != package.lower():
+            out.append(signal)
+            continue
+        if _signal_in_scope(signal, index):
+            out.append(signal)
+    return out
+
+
+def collapse_dependency_bumps(
+    rules: list[dict[str, Any]],
+    *,
+    package: str,
+    from_version: str,
+    to_version: str,
+) -> list[dict[str, Any]]:
+    """Keep a single DEPENDENCY_BUMP per package, pinned to packet from/to."""
+    want = package.lower()
+    out: list[dict[str, Any]] = []
+    bump: dict[str, Any] | None = None
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        if str(rule.get("type") or "") != "DEPENDENCY_BUMP":
+            out.append(rule)
+            continue
+        pkg = str(rule.get("package") or want).lower()
+        if pkg != want:
+            out.append(rule)
+            continue
+        bump = dict(rule)
+    if bump and from_version and to_version and from_version != to_version:
+        bump["package"] = package
+        bump["from_version"] = from_version
+        bump["to_version"] = to_version
+        out.insert(0, bump)
+    return out
 
 
 def _apply_versions(
@@ -95,14 +237,21 @@ def packet_from_signals(
 ) -> dict[str, Any]:
     """Assemble a packet from ChangeSignal suggested_rules (deterministic)."""
     pkg_signals = [s for s in signals if s.package.lower() == package.lower()]
-    if pkg_signals:
-        # Prefer lockfile jump versions when present
+    placeholder_from = from_version in {_PLACEHOLDER_FROM, "", None}
+    placeholder_to = to_version in {_PLACEHOLDER_TO, "", None}
+    if pkg_signals and (placeholder_from or placeholder_to):
         for s in pkg_signals:
-            if s.from_version and s.to_version:
+            if s.change_type not in {"SDK_MAJOR_BUMP", "DEPENDENCY_BUMP", "SDK_BUMP"}:
+                continue
+            if placeholder_from and s.from_version:
                 from_version = s.from_version
+                placeholder_from = False
+            if placeholder_to and s.to_version:
                 to_version = s.to_version
-                if s.ecosystem:
-                    ecosystem = s.ecosystem
+                placeholder_to = False
+            if s.ecosystem:
+                ecosystem = s.ecosystem
+            if not placeholder_from and not placeholder_to:
                 break
 
     decision_notes: list[str] = []
@@ -162,7 +311,12 @@ def packet_from_signals(
             if key not in seen_rules:
                 seen_rules.add(key)
                 rules.append(rule)
-    packet["rules"] = rules
+    packet["rules"] = collapse_dependency_bumps(
+        rules,
+        package=package,
+        from_version=str(from_version),
+        to_version=str(to_version),
+    )
     packet["sources"] = sources
     if decision_notes:
         # Deduplicate while preserving order
@@ -269,7 +423,12 @@ _EVIDENCE_SYSTEM = (
     "Every rule MUST include a short 'reason' string explaining why it was chosen "
     "(cite the source URL). "
     "Honor any ignore list: do not emit rules whose only effect would be rewriting "
-    "ignored contract patterns/files (LEGACY_/FORBIDDEN_ oracles)."
+    "ignored contract patterns/files (LEGACY_/FORBIDDEN_ oracles). "
+    "Scope rules to the provided source packet: only models/callees/paths the client "
+    "uses. Prefer AST_CALL_REWRITE / AST_ATTR_RENAME for SDK call surfaces observed "
+    "in source.usages (path-string replaces are not enough when the client calls "
+    "Resource.create). One DEPENDENCY_BUMP only, from_version → to_version. "
+    "Cover every in-scope deprecated usage; if a successor is documented, emit a rule."
 )
 
 
@@ -389,6 +548,8 @@ def synthesize_from_evidence(
     signals: list[ChangeSignal],
     base: dict[str, Any],
     root: Path | None = None,
+    source_packet: dict[str, Any] | None = None,
+    missed_items: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     LLM-author rules via Responses agent tools (web_search / fetch_url / read_file).
@@ -418,22 +579,28 @@ def synthesize_from_evidence(
         ignore = build_ignore_list(root, base)
         ignore_payload = ignore.to_prompt_dict()
 
+    scoped_signals = filter_signals_to_source(signals, source_packet, package=package)
     user_payload = {
         "package": package,
         "from_version": from_version,
         "to_version": to_version,
         "ecosystem": ecosystem,
-        "detect_signals": _signal_summary(signals, package),
+        "source_packet": source_packet or {},
+        "detect_signals": _signal_summary(scoped_signals, package),
         "existing_rule_count": len(base.get("rules") or []),
+        "missed_coverage": missed_items or [],
         "ignore": ignore_payload,
         "seed_urls": seeds,
         "allow_hosts": hosts
         or ["platform.openai.com", "developers.openai.com", "github.com"],
         "suggested_queries": queries,
         "instructions": (
-            "Use tools (web_search, fetch_url, read_file, code_interpreter) to gather "
-            "grounded migration facts from seed_urls / suggested_queries. "
+            "Use tools (web_search, fetch_url, read_file, grep) to gather "
+            "grounded migration facts from seed_urls / suggested_queries "
+            "and the consumer source_packet. "
+            "Only emit rules for source_packet model_ids / usages / api_patterns. "
             "Do not invent path successors or call shapes. "
+            "If missed_coverage is non-empty, those rows are the only required adds. "
             "Emit final JSON with notes, sources, and rules."
         ),
     }
@@ -501,7 +668,12 @@ def synthesize_from_evidence(
         "to_version": base.get("to_version", to_version),
         "sources": list(base.get("sources") or []),
         "notes": base.get("notes"),
-        "rules": merge_packet_rules(list(base.get("rules") or []), llm_rules),
+        "rules": collapse_dependency_bumps(
+            merge_packet_rules(list(base.get("rules") or []), llm_rules),
+            package=package,
+            from_version=from_version,
+            to_version=to_version,
+        ),
     }
     if data.get("notes"):
         note = str(data["notes"])
@@ -599,6 +771,8 @@ def ensure_packet(
     installed: dict[str, str] | None = None,
     use_fixture_fallback: bool = True,
     refresh: bool = False,
+    client_state: Any | None = None,
+    source_packet: dict[str, Any] | None = None,
 ) -> PacketEnsureResult:
     """Load explicit packet, cache, signal-synth, or openai fixture."""
     from conduit.packet.cache import find_cached_packet, cache_path
@@ -611,38 +785,58 @@ def ensure_packet(
             to_source="file",
         )
 
+    source = source_packet
+    if source is None and client_state is not None and hasattr(client_state, "to_dict"):
+        source = client_state.to_dict()
+
     from_v = _PLACEHOLDER_FROM
     to_v = _PLACEHOLDER_TO
     from_source = "placeholder"
     to_source = "placeholder"
     eco = "pypi"
     pkg_signals = [s for s in signals if s.package.lower() == package.lower()]
+    scoped_signals = filter_signals_to_source(pkg_signals, source, package=package)
 
-    for s in pkg_signals:
-        if s.from_version and s.to_version:
-            from_v, to_v = s.from_version, s.to_version
-            from_source = to_source = "signal"
-            eco = s.ecosystem or eco
-            break
-
-    if from_source == "placeholder":
+    src_installed = str((source or {}).get("installed_version") or "").strip()
+    if src_installed:
+        from_v = src_installed
+        from_source = "source"
+    else:
         manifest_v = _installed_version(installed, package)
         if manifest_v:
             from_v = manifest_v
             from_source = "manifest"
 
-    if to_source == "placeholder":
-        for s in pkg_signals:
-            if s.to_version:
-                to_v = s.to_version
-                to_source = "signal"
-                eco = s.ecosystem or eco
-                break
+    bump_signals = [
+        s
+        for s in (scoped_signals or pkg_signals)
+        if s.change_type in {"SDK_MAJOR_BUMP", "DEPENDENCY_BUMP", "SDK_BUMP"}
+        and s.to_version
+    ]
+    chosen = None
+    from_parsed = _parse_ver(from_v) if from_source != "placeholder" else None
+    for s in bump_signals:
+        to_parsed = _parse_ver(s.to_version)
+        if from_parsed is not None and to_parsed is not None and to_parsed > from_parsed:
+            chosen = s
+            break
+    if chosen is None and bump_signals:
+        chosen = bump_signals[-1]
+        to_parsed = _parse_ver(chosen.to_version)
+        if from_parsed is not None and to_parsed is not None and to_parsed < from_parsed:
+            chosen = None
+    if chosen is not None:
+        to_v = str(chosen.to_version)
+        to_source = "signal"
+        eco = chosen.ecosystem or eco
+        if from_source == "placeholder" and chosen.from_version:
+            from_v = chosen.from_version
+            from_source = "signal"
 
     if to_source == "placeholder":
         # DEPENDENCY_BUMP often lives on suggested_rules without signal.to_version
         rule_to = _to_version_from_rules(
-            [r for s in pkg_signals for r in s.suggested_rules],
+            [r for s in (scoped_signals or pkg_signals) for r in s.suggested_rules],
             package,
         )
         if rule_to:
@@ -659,7 +853,11 @@ def ensure_packet(
             )
 
     packet = packet_from_signals(
-        signals, package=package, ecosystem=eco, from_version=from_v, to_version=to_v
+        scoped_signals or pkg_signals,
+        package=package,
+        ecosystem=eco,
+        from_version=from_v,
+        to_version=to_v,
     )
     used_fixture = False
     if not packet.get("rules") and use_fixture_fallback and package.lower() == "openai":
@@ -708,9 +906,10 @@ def ensure_packet(
             from_version=str(packet.get("from_version") or from_v),
             to_version=str(packet.get("to_version") or to_v),
             ecosystem=str(packet.get("ecosystem") or eco),
-            signals=signals,
+            signals=scoped_signals or pkg_signals,
             base=packet,
             root=root,
+            source_packet=source,
         )
         warnings.extend(enrich_warnings)
         _apply_versions(
@@ -719,6 +918,53 @@ def ensure_packet(
             from_version=str(packet.get("from_version") or from_v),
             to_version=str(packet.get("to_version") or to_v),
         )
+        packet["rules"] = collapse_dependency_bumps(
+            list(packet.get("rules") or []),
+            package=package,
+            from_version=str(packet.get("from_version") or from_v),
+            to_version=str(packet.get("to_version") or to_v),
+        )
+        if client_state is not None:
+            from conduit.detect.coverage import build_coverage_report
+
+            report = build_coverage_report(
+                package=package,
+                state=client_state,
+                signals=scoped_signals or pkg_signals,
+                packet=packet,
+            )
+            if report.missed:
+                missed = [
+                    {"kind": i.kind, "value": i.value, "detail": i.detail}
+                    for i in report.missed
+                ]
+                packet, retry_warnings = synthesize_from_evidence(
+                    package=package,
+                    from_version=str(packet.get("from_version") or from_v),
+                    to_version=str(packet.get("to_version") or to_v),
+                    ecosystem=str(packet.get("ecosystem") or eco),
+                    signals=scoped_signals or pkg_signals,
+                    base=packet,
+                    root=root,
+                    source_packet=source,
+                    missed_items=missed,
+                )
+                warnings.extend(retry_warnings)
+                warnings.append(
+                    f"coverage retry for {len(missed)} missed client item(s)"
+                )
+                _apply_versions(
+                    packet,
+                    package=package,
+                    from_version=str(packet.get("from_version") or from_v),
+                    to_version=str(packet.get("to_version") or to_v),
+                )
+                packet["rules"] = collapse_dependency_bumps(
+                    list(packet.get("rules") or []),
+                    package=package,
+                    from_version=str(packet.get("from_version") or from_v),
+                    to_version=str(packet.get("to_version") or to_v),
+                )
 
     save_packet(cache_path(root, package, packet["from_version"], packet["to_version"]), packet)
     return PacketEnsureResult(

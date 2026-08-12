@@ -55,6 +55,7 @@ class RepoToolExecutor:
     max_shell_chars: int = 12_000
     shell_timeout_s: float = 120.0
     written_files: list[str] = field(default_factory=list)
+    snapshots: dict[str, str | None] = field(default_factory=dict)
 
     def __call__(self, name: str, arguments: dict[str, Any]) -> str:
         try:
@@ -142,6 +143,14 @@ class RepoToolExecutor:
         rel_posix = self._rel(path) if path.exists() else rel.replace("\\", "/")
         if self.ignore.path_ignored(rel_posix):
             return json.dumps({"error": f"path ignored: {rel_posix}"})
+        if rel_posix not in self.snapshots:
+            if path.is_file():
+                try:
+                    self.snapshots[rel_posix] = path.read_text(encoding="utf-8")
+                except OSError:
+                    self.snapshots[rel_posix] = None
+            else:
+                self.snapshots[rel_posix] = None
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents, encoding="utf-8")
         written = self._rel(path)

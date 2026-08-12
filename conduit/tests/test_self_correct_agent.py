@@ -10,7 +10,12 @@ from conduit.llm.retry import (
     is_rate_limit_error,
     parse_retry_after_seconds,
 )
-from conduit.self_correct import _collect_context_files, _paths_from_traceback
+from conduit.self_correct import (
+    _collect_context_files,
+    _packet_for_prompt,
+    _paths_from_traceback,
+    _repair_regressed,
+)
 from conduit.test_runner import TestResult as RunnerResult
 
 
@@ -58,6 +63,55 @@ def test_collect_context_includes_package_and_import_files(tmp_path: Path):
     assert "openai_text/engines.py" in files or "openai_text\\engines.py" in files
     # Normalized keys use forward slashes from _add
     assert any(k.replace("\\", "/") == "openai_text/engines.py" for k in files)
+
+
+def test_collect_context_keeps_source_impl_over_test_flood(tmp_path: Path):
+    pkg = tmp_path / "openai_text"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("from .client import configure\n", encoding="utf-8")
+    (pkg / "client.py").write_text("def configure():\n    return 1\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "conftest.py").write_text("from openai_text.client import configure\n", encoding="utf-8")
+    stdout_lines = []
+    import_files = ["openai_text/__init__.py", "openai_text/client.py"]
+    for i in range(20):
+        name = f"test_extra_{i}.py"
+        (tests / name).write_text("def test_x(): pass\n", encoding="utf-8")
+        stdout_lines.append(f"tests/{name}:1: in test_x\n    assert False\n")
+        import_files.append(f"tests/{name}")
+    result = RunnerResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["python", "-m", "pytest", "-q"],
+        stdout="".join(stdout_lines),
+        stderr="",
+    )
+    files = _collect_context_files(
+        tmp_path,
+        result,
+        source={"import_files": import_files},
+    )
+    rels = {k.replace("\\", "/") for k in files}
+    assert "openai_text/client.py" in rels
+    assert "openai_text/__init__.py" in rels
+    assert "tests/conftest.py" in rels
+
+
+def test_packet_for_prompt_drops_notes():
+    slim = _packet_for_prompt(
+        {
+            "packet_id": "p",
+            "package": "openai",
+            "from_version": "0.28.1",
+            "to_version": "1.0.0",
+            "notes": "catalog dump " * 200,
+            "rules": [{"type": "DEPENDENCY_BUMP", "package": "openai"}],
+        }
+    )
+    assert "notes" not in slim
+    assert slim["rules"]
 
 
 def test_rate_limit_helpers(monkeypatch):
@@ -146,3 +200,105 @@ def test_self_correct_nudge_continues(monkeypatch, tmp_path: Path):
     assert calls["nudge"] == 1
     assert result.passed
     assert any("test_a.py" in c for c in changed)
+
+
+def test_self_correct_reverts_regressed_rewrite(monkeypatch, tmp_path: Path):
+    from conduit import self_correct as sc
+
+    pkg = tmp_path / "openai_text"
+    pkg.mkdir()
+    original = "def configure():\n    return True\n"
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(original, encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "conftest.py").write_text(
+        "from openai_text.client import configure\n", encoding="utf-8"
+    )
+    (tests / "test_a.py").write_text("def test_a(): assert False\n", encoding="utf-8")
+
+    broken = "def other():\n    return 1\n"
+    results = [
+        RunnerResult(
+            passed=False,
+            returncode=1,
+            runner="pytest",
+            command=["pytest"],
+            stdout="8 failed, 10 passed",
+            stderr="",
+        ),
+        RunnerResult(
+            passed=False,
+            returncode=4,
+            runner="pytest",
+            command=["pytest"],
+            stdout="ImportError while loading conftest\ncannot import name 'configure'",
+            stderr="",
+        ),
+        RunnerResult(
+            passed=False,
+            returncode=1,
+            runner="pytest",
+            command=["pytest"],
+            stdout="8 failed, 10 passed",
+            stderr="",
+        ),
+        RunnerResult(
+            passed=True,
+            returncode=0,
+            runner="pytest",
+            command=["pytest"],
+            stdout="10 passed",
+            stderr="",
+        ),
+    ]
+
+    class FakeClient:
+        def run_agent(self, **kwargs):
+            user = kwargs.get("user") or ""
+            if "regressed" in user or "dropped" in user:
+                return {
+                    "files": {"openai_text/client.py": original},
+                    "packet_patch": {},
+                }
+            return {
+                "files": {"openai_text/client.py": broken},
+                "packet_patch": {},
+            }
+
+    monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(sc, "run_tests", lambda _root: results.pop(0))
+    monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
+    monkeypatch.setattr(sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], []))
+
+    logs: list[str] = []
+    result, _changed = sc.verify_with_self_correct(
+        tmp_path,
+        {"package": "openai", "rules": [], "notes": ""},
+        max_retries=3,
+        verbose=True,
+        log=logs.append,
+    )
+    assert any("regressed" in line for line in logs)
+    assert (pkg / "client.py").read_text(encoding="utf-8") == original
+    assert result.passed
+
+
+def test_repair_regressed_detects_collection_error():
+    prev = RunnerResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["pytest"],
+        stdout="8 failed, 10 passed",
+        stderr="",
+    )
+    cur = RunnerResult(
+        passed=False,
+        returncode=4,
+        runner="pytest",
+        command=["pytest"],
+        stdout="ImportError while loading conftest",
+        stderr="",
+    )
+    assert _repair_regressed(prev, cur) is True

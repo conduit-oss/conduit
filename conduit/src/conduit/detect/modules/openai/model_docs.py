@@ -16,10 +16,15 @@ _USER_AGENT = "conduit-model-docs/0.1"
 
 # Client api_pattern tokens → OpenAI route keys (without leading slash).
 _API_PATTERN_ROUTES: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"^chat\.completions$", re.I), "v1/chat/completions"),
-    (re.compile(r"^ChatCompletion$", re.I), "v1/chat/completions"),
-    (re.compile(r"^embeddings\.create$", re.I), "v1/embeddings"),
-    (re.compile(r"^Completion\.create$", re.I), "v1/completions"),
+    (re.compile(r"^chat\.completions(?:\.create)?$", re.I), "v1/chat/completions"),
+    (re.compile(r"^ChatCompletion(?:\.create)?$", re.I), "v1/chat/completions"),
+    (re.compile(r"^(?:openai\.)?embeddings\.create$", re.I), "v1/embeddings"),
+    (re.compile(r"^(?:openai\.)?Completion\.create$", re.I), "v1/completions"),
+    (re.compile(r"^(?:openai\.)?Edit\.create$", re.I), "v1/edits"),
+    (re.compile(r"^(?:openai\.)?Engine(?:\.list|\.retrieve)?$", re.I), "v1/engines"),
+    (re.compile(r"^(?:openai\.)?FineTune(?:\.list|\.create)?$", re.I), "v1/fine-tunes"),
+    (re.compile(r"^(?:openai\.)?Image\.(?:create|create_edit)$", re.I), "v1/images/generations"),
+    (re.compile(r"^(?:openai\.)?Moderation\.create$", re.I), "v1/moderations"),
 ]
 
 _MODEL_LINK_RE = re.compile(
@@ -113,19 +118,27 @@ def model_supports_routes(
         return True
     if not endpoints:
         return None
-    return all(endpoints.get(r, False) for r in req)
+    listed = [r for r in req if r in endpoints]
+    if not listed:
+        # Docs do not mention these routes (often retired surfaces) — unknown.
+        return None
+    if any(endpoints[r] is False for r in listed):
+        return False
+    if len(listed) < len(req):
+        return None
+    return True
 
 
 def unsupported_routes(
     endpoints: dict[str, bool] | None, required: Iterable[str]
 ) -> list[str]:
-    """Routes from *required* that are missing or Not supported. Empty if docs unknown."""
+    """Routes from *required* that are listed as Not supported. Empty if docs unknown."""
     if not endpoints:
         return []
     missing: list[str] = []
     for r in required:
         route = normalize_route(r)
-        if not endpoints.get(route, False):
+        if route in endpoints and endpoints[route] is False:
             missing.append(route)
     return missing
 

@@ -79,6 +79,50 @@ def test_default_rules_include_reason():
     assert "gpt-4o" in rules[0]["reason"]
 
 
+def test_compat_uses_per_usage_routes_not_global_union():
+    """An edits model must not be scored against completions used elsewhere."""
+    signals = [
+        ChangeSignal(
+            source="module:openai",
+            package="openai",
+            change_type="MODEL_DEPRECATION",
+            affected_pattern="text-davinci-edit-001",
+            replacement_pattern="gpt-4o",
+            description="deprecated",
+            suggested_rules=[
+                {
+                    "type": "EXACT_STRING_REPLACE",
+                    "target_files": ["*.py"],
+                    "match": "text-davinci-edit-001",
+                    "replace": "gpt-4o",
+                }
+            ],
+        )
+    ]
+    state = PackageClientState(
+        package="openai",
+        model_ids=["text-davinci-edit-001", "text-davinci-003"],
+        api_patterns=["Completion.create", "Edit.create"],
+        usages=[
+            {
+                "id": "text-davinci-edit-001",
+                "callees": ["Edit.create"],
+                "paths": ["/v1/edits"],
+                "files": ["edits.py"],
+            },
+            {
+                "id": "text-davinci-003",
+                "callees": ["Completion.create"],
+                "paths": ["/v1/completions"],
+                "files": ["completions.py"],
+            },
+        ],
+    )
+    out, notes = apply_endpoint_compat(signals, client_state=state, demo=True)
+    assert out[0].replacement_pattern == "gpt-4o"
+    assert not any("no replacement emitted" in n for n in notes)
+
+
 def test_compat_keeps_compatible_replacement_with_reason():
     signals = [
         ChangeSignal(

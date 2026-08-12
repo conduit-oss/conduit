@@ -495,6 +495,9 @@ def _run_pipeline(
             console.print("[red]Packet file has no package field.[/red]")
             raise typer.Exit(2)
         beat("packet")
+        state = (detected.package_states or {}).get(pkg) or (
+            detected.package_states or {}
+        ).get((pkg or "").lower())
         ensured = ensure_packet(
             root,
             detected.signals,
@@ -503,6 +506,7 @@ def _run_pipeline(
             installed=detected.installed,
             use_fixture_fallback=demo,
             refresh=refresh_packet,
+            client_state=state,
         )
     else:
         if pkg is None:
@@ -512,6 +516,9 @@ def _run_pipeline(
                 console.print("[green]No migration signals found. Nothing to do.[/green]")
                 raise typer.Exit(0)
         beat("packet")
+        state = (detected.package_states or {}).get(pkg) or (
+            detected.package_states or {}
+        ).get((pkg or "").lower())
         ensured = ensure_packet(
             root,
             detected.signals,
@@ -520,6 +527,7 @@ def _run_pipeline(
             installed=detected.installed,
             use_fixture_fallback=demo,
             refresh=refresh_packet,
+            client_state=state,
         )
 
     pkt = ensured.packet
@@ -601,8 +609,24 @@ def _run_pipeline(
                 report.files_modified.append(rel)
 
         beat("repair")
+        src_state = (detected.package_states or {}).get(pkg) or (
+            detected.package_states or {}
+        ).get((pkg or "").lower())
         test_result, corrected = verify_with_self_correct(
-            root, pkt, max_retries=max_retries, verbose=_VERBOSE, log=console.print
+            root,
+            pkt,
+            max_retries=max_retries,
+            verbose=_VERBOSE,
+            log=console.print,
+            source=src_state.to_dict() if src_state is not None else None,
+            coverage_missed=(
+                [
+                    {"kind": i.kind, "value": i.value, "detail": i.detail}
+                    for i in coverage.missed
+                ]
+                if coverage is not None
+                else None
+            ),
         )
         for rel in corrected:
             console.print(f"[self-correct] updated {rel}")

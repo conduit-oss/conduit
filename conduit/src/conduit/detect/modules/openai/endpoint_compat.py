@@ -143,6 +143,27 @@ def _pick_alternate(
     return None
 
 
+def _required_routes_for_model(
+    client_state: PackageClientState | None,
+    model_id: str,
+    fallback: list[str],
+) -> list[str]:
+    """Routes this model is actually called with; not the union of all client APIs."""
+    if client_state is None:
+        return list(fallback)
+    tokens: list[str] = []
+    mid = (model_id or "").lower()
+    for raw in client_state.usages or []:
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("id") or "").lower() != mid:
+            continue
+        tokens.extend(str(x) for x in (raw.get("paths") or []) if x)
+        tokens.extend(str(x) for x in (raw.get("callees") or []) if x)
+    per_site = map_api_patterns_to_routes(tokens)
+    return per_site or list(fallback)
+
+
 def apply_endpoint_compat(
     signals: list[ChangeSignal],
     *,
@@ -160,7 +181,7 @@ def apply_endpoint_compat(
         if client_state and client_state.api_patterns
         else (_demo_api_patterns(client_state) if demo else [])
     )
-    required = map_api_patterns_to_routes(api_patterns)
+    fallback_required = map_api_patterns_to_routes(api_patterns)
 
     model_signals = [
         s
@@ -189,6 +210,9 @@ def apply_endpoint_compat(
             legacy = str(signal.affected_pattern)
             replacement = signal.replacement_pattern
             source_url = signal.source_url
+            required = _required_routes_for_model(
+                client_state, legacy, fallback_required
+            )
 
             # No usable client endpoints → keep scrape replacement; still attach reason.
             if not required:

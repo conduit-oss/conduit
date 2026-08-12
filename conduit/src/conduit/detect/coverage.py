@@ -133,6 +133,39 @@ def _rule_touches_path(rule: dict[str, Any], path: str) -> bool:
     return False
 
 
+def _rule_touches_callee(rule: dict[str, Any], callee: str) -> bool:
+    want = (callee or "").strip().lower()
+    if not want:
+        return False
+    rtype = str(rule.get("type") or "")
+    if rtype == "AST_CALL_REWRITE":
+        return want in {
+            str(rule.get("old_callee") or "").strip().lower(),
+            str(rule.get("new_callee") or "").strip().lower(),
+        }
+    if rtype == "AST_ATTR_RENAME":
+        return want in {
+            str(rule.get("old_attr") or "").strip().lower(),
+            str(rule.get("new_attr") or "").strip().lower(),
+        }
+    if rtype == "EXACT_STRING_REPLACE":
+        return want in {
+            str(rule.get("match") or "").strip().lower(),
+            str(rule.get("replace") or "").strip().lower(),
+        }
+    return False
+
+
+def _signal_touches_callee(signal: ChangeSignal, callee: str) -> bool:
+    want = (callee or "").strip().lower()
+    if not want:
+        return False
+    for candidate in (signal.affected_pattern, signal.replacement_pattern):
+        if str(candidate or "").strip().lower() == want:
+            return True
+    return any(_rule_touches_callee(r, callee) for r in signal.suggested_rules)
+
+
 def _migration_summary(
     signals: list[ChangeSignal],
     packet: dict[str, Any] | None,
@@ -174,7 +207,11 @@ def build_coverage_report(
     items: list[CoverageItem] = []
     notes: list[str] = []
 
-    if not source.get("model_ids") and not source.get("api_patterns"):
+    if (
+        not source.get("model_ids")
+        and not source.get("api_patterns")
+        and not source.get("usages")
+    ):
         notes.append(
             "Source packet empty (no model_ids / api_patterns). "
             "Coverage cannot flag misses — baseline unknown."
@@ -245,15 +282,19 @@ def build_coverage_report(
                     or path.lower() in (s.description or "").lower()
                 )
             ]
-            if hits or rule_hits or param_hits:
+            callee_hits = [
+                s for s in pkg_signals if _signal_touches_callee(s, str(pattern))
+            ]
+            callee_rules = [r for r in rules if _rule_touches_callee(r, str(pattern))]
+            if hits or rule_hits or param_hits or callee_hits or callee_rules:
                 items.append(
                     CoverageItem(
                         kind="api_pattern",
                         value=str(pattern),
                         status="caught",
                         detail=(
-                            f"path={path}; signals={len(hits) + len(param_hits)}; "
-                            f"rules={len(rule_hits)}"
+                            f"path={path}; signals={len(hits) + len(param_hits) + len(callee_hits)}; "
+                            f"rules={len(rule_hits) + len(callee_rules)}"
                         ),
                     )
                 )
@@ -264,17 +305,52 @@ def build_coverage_report(
                         value=str(pattern),
                         status="missed",
                         detail=(
-                            f"Maps to {path}; no path/param migration signal or rule."
+                            f"Maps to {path}; no path/param/callee migration signal or rule."
                         ),
                     )
                 )
         else:
+            callee_hits = [s for s in pkg_signals if _signal_touches_callee(s, str(pattern))]
+            callee_rules = [r for r in rules if _rule_touches_callee(r, str(pattern))]
+            if callee_hits or callee_rules:
+                items.append(
+                    CoverageItem(
+                        kind="api_pattern",
+                        value=str(pattern),
+                        status="caught",
+                        detail=(
+                            f"callee signals={len(callee_hits)}; "
+                            f"rules={len(callee_rules)}"
+                        ),
+                    )
+                )
+            else:
+                items.append(
+                    CoverageItem(
+                        kind="api_pattern",
+                        value=str(pattern),
+                        status="unknown",
+                        detail="Could not map token to a /v1/... route for coverage.",
+                    )
+                )
+
+    for usage in source.get("usages") or []:
+        if not isinstance(usage, dict):
+            continue
+        for callee in usage.get("callees") or []:
+            if any(i.kind == "api_pattern" and i.value == callee for i in items):
+                continue
+            hits = [s for s in pkg_signals if _signal_touches_callee(s, str(callee))]
+            rule_hits = [r for r in rules if _rule_touches_callee(r, str(callee))]
             items.append(
                 CoverageItem(
-                    kind="api_pattern",
-                    value=str(pattern),
-                    status="unknown",
-                    detail="Could not map token to a /v1/... route for coverage.",
+                    kind="callee",
+                    value=str(callee),
+                    status="caught" if (hits or rule_hits) else "missed",
+                    detail=(
+                        f"usage id={usage.get('id')}; signals={len(hits)}; "
+                        f"rules={len(rule_hits)}"
+                    ),
                 )
             )
 
@@ -325,6 +401,9 @@ def format_coverage_report(report: PacketCoverageReport, *, verbose: bool = Fals
         f"api_patterns ({len(src.get('api_patterns') or [])}): "
         f"{src.get('api_patterns') or []}"
     )
+    usages = src.get("usages") or []
+    if usages:
+        lines.append(f"usages ({len(usages)}): {usages[:6]}{' …' if len(usages) > 6 else ''}")
     files = src.get("import_files") or []
     if verbose:
         lines.append(f"import_files ({len(files)}):")

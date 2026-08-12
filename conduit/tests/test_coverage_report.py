@@ -66,6 +66,45 @@ def test_coverage_marks_missed_and_caught_models(tmp_path):
     assert "gpt-4-0613" in path.read_text(encoding="utf-8")
 
 
+def test_coverage_marks_callee_from_usage_and_rule():
+    state = PackageClientState(
+        package="openai",
+        model_ids=["text-davinci-edit-001"],
+        api_patterns=["Edit.create"],
+        usages=[
+            {
+                "id": "text-davinci-edit-001",
+                "callees": ["Edit.create"],
+                "paths": ["/v1/edits"],
+                "files": ["edits.py"],
+            }
+        ],
+    )
+    packet = {
+        "packet_id": "p",
+        "package": "openai",
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "Edit.create",
+                "new_callee": "chat.completions.create",
+            },
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "match": "text-davinci-edit-001",
+                "replace": "gpt-4o",
+            },
+        ],
+    }
+    report = build_coverage_report(
+        package="openai", state=state, signals=[], packet=packet
+    )
+    by_val = {i.value: i for i in report.items}
+    assert by_val["text-davinci-edit-001"].status == "caught"
+    assert by_val["Edit.create"].status == "caught"
+    assert not report.missed
+
+
 def test_empty_source_notes_unknown_baseline():
     report = build_coverage_report(
         package="openai",
