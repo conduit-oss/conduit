@@ -193,6 +193,60 @@ def test_agent_scan_grounds_usages_and_drops_invented(tmp_path: Path, monkeypatc
     assert state.source == "agent"
 
 
+def test_agent_scan_does_not_promote_usage_ids_to_models(tmp_path: Path, monkeypatch):
+    """Helper/function usage ids must not inflate model_ids / coverage misses."""
+    (tmp_path / "requirements.txt").write_text("openai==0.28.1\n", encoding="utf-8")
+    (tmp_path / "edits.py").write_text(
+        "import openai\n"
+        "def apply_edit(text):\n"
+        '    return openai.Edit.create(model="text-davinci-edit-001", input=text)\n'
+        "def configure():\n"
+        "    openai.api_key = 'x'\n",
+        encoding="utf-8",
+    )
+
+    class FakeLLM:
+        def run_agent(self, **kwargs):
+            return {
+                "model_ids": ["text-davinci-edit-001", "apply_edit"],
+                "api_patterns": ["openai.Edit.create", "openai.api_key"],
+                "usages": [
+                    {
+                        "id": "apply_edit",
+                        "callees": ["openai.Edit.create"],
+                        "paths": [],
+                        "files": ["edits.py"],
+                    },
+                    {
+                        "id": "configure",
+                        "callees": ["openai.api_key"],
+                        "paths": [],
+                        "files": ["edits.py"],
+                    },
+                ],
+            }
+
+    monkeypatch.setattr("conduit.llm.client.get_llm_client", lambda: FakeLLM())
+    monkeypatch.setattr(
+        "conduit.detect.modules.openai.known_models.collect_known_model_ids",
+        lambda **kwargs: {"text-davinci-edit-001"},
+    )
+    state = scan_package_state(
+        tmp_path,
+        "openai",
+        installed={"openai": "0.28.1"},
+        demo=False,
+        use_llm=True,
+    )
+    assert "text-davinci-edit-001" in state.model_ids
+    assert "apply_edit" not in state.model_ids
+    assert "configure" not in state.model_ids
+    assert "openai.Edit.create" in state.api_patterns
+    assert any(u.get("id") == "apply_edit" for u in state.usages)
+    assert any(u.get("id") == "configure" for u in state.usages)
+    assert state.source == "agent"
+
+
 def test_sdk_release_compares_installed_to_latest(monkeypatch):
     monkeypatch.setattr(
         "conduit.detect.modules.openai.workers.sdk_release._github_release_tags",

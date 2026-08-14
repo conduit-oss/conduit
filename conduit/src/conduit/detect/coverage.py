@@ -223,7 +223,35 @@ def build_coverage_report(
         if s.change_type in {"MODEL_DEPRECATION", "MODEL_REMOVED"} and s.replacement_pattern
     }
 
+    usage_ids = {
+        str(u.get("id") or "").strip().lower()
+        for u in (source.get("usages") or [])
+        if isinstance(u, dict) and str(u.get("id") or "").strip()
+    }
+    known_models_lower: set[str] = set()
+    if package.lower() == "openai" and usage_ids:
+        try:
+            from conduit.detect.modules.openai.known_models import (
+                collect_known_model_ids,
+            )
+
+            known_models_lower = {
+                m.lower() for m in collect_known_model_ids(demo=False)
+            }
+        except Exception:  # noqa: BLE001 — fail soft; score all model_ids
+            known_models_lower = set()
+
     for model_id in source.get("model_ids") or []:
+        mid = str(model_id).strip()
+        mid_lower = mid.lower()
+        # Usage ids are often helper/function names, not model strings. When the
+        # known catalog is available, skip usage-id tokens that are not in it.
+        if (
+            mid_lower in usage_ids
+            and known_models_lower
+            and mid_lower not in known_models_lower
+        ):
+            continue
         hits = [s for s in pkg_signals if _signal_touches_model(s, model_id)]
         rule_hits = [r for r in rules if _rule_touches_model(r, model_id)]
         if hits or rule_hits:

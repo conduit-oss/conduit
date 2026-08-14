@@ -344,6 +344,20 @@ def _agent_enrich(
         state.notes.append("llm enrichment returned empty/invalid JSON")
         return state
 
+    known_models: set[str] = set()
+    known_lower: dict[str, str] = {}
+    if state.package.lower() == "openai":
+        try:
+            from conduit.detect.modules.openai.known_models import (
+                collect_known_model_ids,
+            )
+
+            known_models = collect_known_model_ids(demo=False)
+            known_lower = {k.lower(): k for k in known_models}
+        except Exception:  # noqa: BLE001 — fail soft; corpus-only merge below
+            known_models = set()
+            known_lower = {}
+
     added_models = 0
     added_apis = 0
     added_usages = 0
@@ -351,6 +365,11 @@ def _agent_enrich(
         token = str(raw).strip()
         if not _token_in_corpus(token, corpus_lower):
             continue
+        if known_models:
+            canon = known_lower.get(token.lower())
+            if not canon:
+                continue
+            token = canon
         if token not in state.model_ids:
             state.model_ids.append(token)
             added_models += 1
@@ -374,11 +393,8 @@ def _agent_enrich(
             state.usages.append(usage)
             by_id[key] = usage
             added_usages += 1
-        if usage["id"] not in state.model_ids and _token_in_corpus(
-            usage["id"], corpus_lower
-        ):
-            state.model_ids.append(usage["id"])
-            added_models += 1
+        # Do not promote usage ids into model_ids — usage ids are often
+        # function/helper names (apply_edit, configure), not model strings.
         for callee in usage.get("callees") or []:
             if callee not in state.api_patterns:
                 state.api_patterns.append(callee)
