@@ -262,6 +262,7 @@ def detect_cmd(
             skip_lockfile=skip_lockfile,
             demo=demo,
             verbose=_VERBOSE,
+            log=None if json_out else console.print,
         )
     finally:
         stop_pulse()
@@ -481,17 +482,17 @@ def _run_pipeline(
         skip_lockfile=skip_lockfile,
         demo=demo,
         verbose=_VERBOSE,
+        log=console.print,
     )
     for warning in detected.warnings:
         console.print(f"[yellow]Warning:[/yellow] {warning}")
-    if _VERBOSE:
-        by_type: dict[str, int] = {}
-        for s in detected.signals:
-            by_type[s.change_type] = by_type.get(s.change_type, 0) + 1
-        _vprint(
-            "detect signals: "
-            + (", ".join(f"{k}={v}" for k, v in sorted(by_type.items())) or "(none)")
-        )
+    by_type: dict[str, int] = {}
+    for s in detected.signals:
+        by_type[s.change_type] = by_type.get(s.change_type, 0) + 1
+    console.print(
+        "detect signals: "
+        + (", ".join(f"{k}={v}" for k, v in sorted(by_type.items())) or "(none)")
+    )
     pkg = _pick_package(detected.signals, pkg_hint)
 
     if packet_file is not None:
@@ -519,6 +520,7 @@ def _run_pipeline(
             use_fixture_fallback=demo,
             refresh=refresh_packet,
             client_state=state,
+            log=console.print,
         )
     else:
         if pkg is None:
@@ -539,6 +541,7 @@ def _run_pipeline(
             use_fixture_fallback=demo,
             refresh=refresh_packet,
             client_state=state,
+            log=console.print,
         )
 
     pkt = ensured.packet

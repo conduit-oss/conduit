@@ -550,6 +550,7 @@ def synthesize_from_evidence(
     root: Path | None = None,
     source_packet: dict[str, Any] | None = None,
     missed_items: list[dict[str, Any]] | None = None,
+    log: Any | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     LLM-author rules via Responses agent tools (web_search / fetch_url / read_file).
@@ -561,7 +562,8 @@ def synthesize_from_evidence(
     from conduit.repair_ignore import IgnoreList, build_ignore_list
 
     warnings: list[str] = []
-    client = get_llm_client()
+    emit = log if callable(log) else None
+    client = get_llm_client(log=emit)
     if client is None:
         warnings.append("LLM packet enrichment skipped (no LLM configured)")
         return base, warnings
@@ -630,18 +632,30 @@ def synthesize_from_evidence(
         return executor(name, args)
 
     try:
-        from conduit.llm.tools import resolve_max_turns
+        from conduit.llm.tools import resolve_max_turns, resolve_reasoning_effort
 
         run_agent = getattr(client, "run_agent", None)
+        label = "LLM coverage retry" if missed_items else "LLM packet enrichment"
         if callable(run_agent):
+            max_turns = min(16, resolve_max_turns(32))
+            if emit is not None:
+                emit(
+                    f"{label} for {package} "
+                    f"(effort={resolve_reasoning_effort()}, max_turns={max_turns})…"
+                )
             data = run_agent(
                 system=system,
                 user=json.dumps(user_payload),
                 tools=agent_tools(mode="enrich"),
                 tool_executor=_exec,
-                max_turns=min(16, resolve_max_turns(32)),
+                max_turns=max_turns,
             )
         else:
+            if emit is not None:
+                emit(
+                    f"{label} for {package} "
+                    f"(effort={resolve_reasoning_effort()}, one-shot)…"
+                )
             data = client.complete_json(
                 system=system,
                 user=json.dumps(user_payload),
@@ -772,6 +786,7 @@ def ensure_packet(
     refresh: bool = False,
     client_state: Any | None = None,
     source_packet: dict[str, Any] | None = None,
+    log: Any | None = None,
 ) -> PacketEnsureResult:
     """Load explicit packet, cache, signal-synth, or openai fixture."""
     from conduit.packet.cache import find_cached_packet, cache_path
@@ -921,6 +936,7 @@ def ensure_packet(
             base=packet,
             root=root,
             source_packet=source,
+            log=log,
         )
         warnings.extend(enrich_warnings)
         _apply_versions(
@@ -959,6 +975,7 @@ def ensure_packet(
                     root=root,
                     source_packet=source,
                     missed_items=missed,
+                    log=log,
                 )
                 warnings.extend(retry_warnings)
                 warnings.append(

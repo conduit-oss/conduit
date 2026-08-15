@@ -13,6 +13,8 @@ conduit <command> --help
 |--------|-------------|
 | `--verbose` / `-v` | Extra diagnostics (packet version sources, export-delta resolve details, self-correct failure/fix details, etc.) |
 
+Normal (non-`-v`) runs still print stage progress: detect signal counts, LLM enrich/repair banners, and `[llm] turn N/M` / tool names during agent loops. See [LLM configuration](llm.md#progress-logs-always-on).
+
 Place before or after the subcommand:
 
 ```bash

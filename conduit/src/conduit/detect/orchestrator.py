@@ -35,6 +35,7 @@ def run_detect(
     skip_lockfile: bool = False,
     demo: bool = False,
     verbose: bool = False,
+    log=None,
 ) -> DetectResult:
     root = root.resolve()
     installed = read_installed(root)
@@ -68,6 +69,7 @@ def run_detect(
             installed=installed,
             demo=demo,
             use_llm=not demo,
+            log=log,
         )
         for state in package_states.values():
             for note in state.notes:

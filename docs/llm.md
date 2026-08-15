@@ -107,6 +107,16 @@ When provider is `openai`, Conduit uses the **Responses API** (`/v1/responses`) 
 
 Simple one-shot callers still use `complete_json` (Responses, high reasoning, no tools). Packet enrichment and self-correct use `run_agent` so the model can call tools as it sees fit. Default agent budget is **32** turns (`CONDUIT_LLM_MAX_TURNS`).
 
+### Progress logs (always on)
+
+Even without `-v`, Conduit prints short stage lines so long agent work is visible:
+
+- Detect signal counts after detect
+- `LLM client enrichment…` / `LLM packet enrichment…` / `LLM coverage retry…` / `[self-correct] LLM repair…` with current effort and max turns
+- Per Responses turn: `[llm] turn N/M` and `[llm] tools: …` (tool names only)
+
+`-v` still adds heavier diagnostics (failure excerpts, packet version sources, export-delta details).
+
 Anthropic / Ollama / `custom` keep Chat Completions; `run_agent` falls back to a single JSON completion without OpenAI built-ins (local Conduit tools are still what you’d want if those providers gain a tool loop later).
 
 ## Evidence-grounded packet enrichment

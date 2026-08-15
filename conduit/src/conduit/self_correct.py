@@ -692,12 +692,16 @@ def _llm_suggest_fixes(
     coverage_missed: list[dict[str, Any]] | None = None,
 ) -> LlmRepairSuggestion:
     emit = log or _noop_log
-    client = get_llm_client()
+    client = get_llm_client(log=emit if emit is not _noop_log else None)
     if client is None:
         return LlmRepairSuggestion()
 
     from conduit.llm.executors import RepoToolExecutor
-    from conduit.llm.tools import agent_tools, resolve_max_turns
+    from conduit.llm.tools import (
+        agent_tools,
+        resolve_max_turns,
+        resolve_reasoning_effort,
+    )
 
     ignore = ignore or IgnoreList()
     files = {k: v for k, v in files.items() if not ignore.path_ignored(k)}
@@ -766,14 +770,23 @@ def _llm_suggest_fixes(
     try:
         run_agent = getattr(client, "run_agent", None)
         if callable(run_agent):
+            max_turns = resolve_max_turns(32)
+            emit(
+                f"[self-correct] LLM repair "
+                f"(effort={resolve_reasoning_effort()}, max_turns={max_turns})…"
+            )
             data = run_agent(
                 system=system,
                 user=json.dumps(prompt),
                 tools=agent_tools(mode="self_correct"),
                 tool_executor=executor,
-                max_turns=resolve_max_turns(32),
+                max_turns=max_turns,
             )
         else:
+            emit(
+                f"[self-correct] LLM repair "
+                f"(effort={resolve_reasoning_effort()}, one-shot)…"
+            )
             data = client.complete_json(system=system, user=json.dumps(prompt))
     except Exception as exc:
         emit(f"[self-correct] LLM repair failed: {exc}")

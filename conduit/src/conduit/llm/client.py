@@ -180,9 +180,12 @@ class _OpenAIResponsesClient:
         ]
         previous_id: str | None = None
         last_text = ""
+        emit = self.log
 
-        for _turn in range(turns):
+        for turn_idx in range(turns):
             beat("think")
+            if emit is not None:
+                emit(f"[llm] turn {turn_idx + 1}/{turns}")
             create_kwargs: dict[str, Any] = {}
             if previous_id:
                 create_kwargs["previous_response_id"] = previous_id
@@ -207,6 +210,10 @@ class _OpenAIResponsesClient:
                     "calls": [c["name"] for c in calls],
                 }
 
+            names = [str(c.get("name") or "?") for c in calls]
+            if emit is not None:
+                emit(f"[llm] tools: {', '.join(names)}")
+
             input_items = []
             for call in calls:
                 beat(family_for_tool(call["name"]))
@@ -221,6 +228,8 @@ class _OpenAIResponsesClient:
                     }
                 )
 
+        if emit is not None:
+            emit(f"[llm] exceeded max_turns ({turns})")
         return _parse_json_response(last_text) or {
             "error": "agent exceeded max_turns without a final JSON answer",
         }
@@ -362,7 +371,9 @@ def _default_model(provider: str) -> str:
     return "gpt-5.4-mini"
 
 
-def get_llm_client() -> LlmClient | None:
+def get_llm_client(
+    *, log: Callable[[str], None] | None = None
+) -> LlmClient | None:
     """Build a client from env, or None when LLM use should be skipped."""
     provider = resolve_provider()
     if not provider:
@@ -412,4 +423,5 @@ def get_llm_client() -> LlmClient | None:
         api_key=api_key,
         base_url=base_url,
         reasoning_effort=effort,
+        log=log,
     )

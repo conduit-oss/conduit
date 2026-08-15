@@ -295,6 +295,7 @@ def _agent_enrich(
     *,
     root: Path,
     files: list[Path],
+    log: Any | None = None,
 ) -> PackageClientState:
     """Agent/LLM pass; merge only tokens that appear in the consumer repo."""
     try:
@@ -302,7 +303,8 @@ def _agent_enrich(
     except ImportError:
         return state
 
-    client = get_llm_client()
+    emit = log if callable(log) else None
+    client = get_llm_client(log=emit)
     if client is None:
         return state
 
@@ -335,10 +337,20 @@ def _agent_enrich(
     data: dict[str, Any] | None = None
     try:
         from conduit.llm.executors import RepoToolExecutor
-        from conduit.llm.tools import agent_tools, resolve_max_turns
+        from conduit.llm.tools import (
+            agent_tools,
+            resolve_max_turns,
+            resolve_reasoning_effort,
+        )
 
         run_agent = getattr(client, "run_agent", None)
         if callable(run_agent):
+            max_turns = min(16, resolve_max_turns(32))
+            if emit is not None:
+                emit(
+                    f"LLM client enrichment for {state.package} "
+                    f"(effort={resolve_reasoning_effort()}, max_turns={max_turns})…"
+                )
             executor = RepoToolExecutor(
                 root=root,
                 allow_writes=False,
@@ -349,9 +361,14 @@ def _agent_enrich(
                 user=json.dumps(prompt),
                 tools=agent_tools(mode="enrich"),
                 tool_executor=executor,
-                max_turns=min(16, resolve_max_turns(32)),
+                max_turns=max_turns,
             )
         else:
+            if emit is not None:
+                emit(
+                    f"LLM client enrichment for {state.package} "
+                    f"(effort={resolve_reasoning_effort()}, one-shot)…"
+                )
             data = client.complete_json(system=system, user=json.dumps(prompt))
     except Exception as exc:  # noqa: BLE001 — fail soft
         state.notes.append(f"llm enrichment failed: {exc}")
@@ -439,6 +456,7 @@ def scan_package_state(
     installed: dict[str, str] | None = None,
     demo: bool = False,
     use_llm: bool = True,
+    log: Any | None = None,
 ) -> PackageClientState:
     """Scan one package's client usage (regex bootstrap; agent when LLM is on)."""
     installed = installed or {}
@@ -459,7 +477,10 @@ def scan_package_state(
         and p.suffix.lower() in {".env", ".yaml", ".yml", ".toml", ".json", ".ini"}
     ]
     return _agent_enrich(
-        state, root=root, files=list(dict.fromkeys([*files, *config_files]))
+        state,
+        root=root,
+        files=list(dict.fromkeys([*files, *config_files])),
+        log=log,
     )
 
 
@@ -470,6 +491,7 @@ def scan_package_states(
     installed: dict[str, str] | None = None,
     demo: bool = False,
     use_llm: bool = True,
+    log: Any | None = None,
 ) -> dict[str, PackageClientState]:
     """Scan client state for each package name."""
     out: dict[str, PackageClientState] = {}
@@ -485,5 +507,6 @@ def scan_package_states(
             installed=installed,
             demo=demo,
             use_llm=use_llm,
+            log=log,
         )
     return out

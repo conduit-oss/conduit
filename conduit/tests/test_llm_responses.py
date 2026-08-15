@@ -190,6 +190,66 @@ def test_responses_agent_tool_loop(monkeypatch, tmp_path: Path):
     assert data["files"]["a.py"] == "print(2)\n"
 
 
+def test_responses_agent_emits_turn_logs(monkeypatch, tmp_path: Path):
+    (tmp_path / "a.py").write_text("print(1)\n", encoding="utf-8")
+    lines: list[str] = []
+
+    class FakeResponsesAPI:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    id="resp_1",
+                    output_text="",
+                    output=[
+                        SimpleNamespace(
+                            type="function_call",
+                            name="read_file",
+                            call_id="c1",
+                            arguments=json.dumps({"path": "a.py"}),
+                        )
+                    ],
+                )
+            return SimpleNamespace(
+                id="resp_2",
+                output_text='{"ok": true}',
+                output=[],
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = FakeResponsesAPI()
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "openai",
+        SimpleNamespace(OpenAI=FakeOpenAI),
+    )
+
+    client = _OpenAIResponsesClient(
+        model="gpt-5.4-mini",
+        api_key="sk-test",
+        reasoning_effort="high",
+        log=lines.append,
+    )
+    client._client = FakeOpenAI()
+    ex = RepoToolExecutor(root=tmp_path, allow_writes=False)
+    data = client.run_agent(
+        system="s",
+        user="u",
+        tools=agent_tools(mode="enrich"),
+        tool_executor=ex,
+        max_turns=4,
+    )
+    assert data == {"ok": True}
+    assert "[llm] turn 1/4" in lines
+    assert "[llm] tools: read_file" in lines
+    assert "[llm] turn 2/4" in lines
+
+
 def test_default_openai_model(monkeypatch):
     monkeypatch.delenv("CONDUIT_LLM_MODEL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
