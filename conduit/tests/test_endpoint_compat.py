@@ -223,7 +223,7 @@ def test_compat_pick_alternate_skips_unknown_doc_candidates(monkeypatch):
 
     real_load = ec._load_endpoints
 
-    def fake_load(model_id, *, demo, client, cache):
+    def fake_load(model_id, *, demo, client, cache, **_kwargs):
         if model_id.lower() == "gpt-4o-mini":
             return None  # unknown — must not be chosen
         return real_load(model_id, demo=demo, client=client, cache=cache)

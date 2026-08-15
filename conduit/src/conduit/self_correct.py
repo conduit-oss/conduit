@@ -428,11 +428,6 @@ def _extract_research_targets(
     source: dict[str, Any] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Return (seed_urls, search_queries) derived from failure + packet."""
-    from conduit.detect.modules.openai.model_docs import (
-        MODELS_CATALOG_URL,
-        model_doc_url,
-    )
-
     blob = "\n".join(
         [
             test_result.stdout or "",
@@ -454,26 +449,38 @@ def _extract_research_targets(
         ordered_ids.append(mid)
 
     paths = sorted({p.lower() for p in _PATH_RE.findall(blob)})
-    package = str(packet.get("package") or "openai")
+    package = str(packet.get("package") or "")
+    profile = None
+    try:
+        from conduit.detect.vendor_profile import profile_for_package
 
-    seeds = [
-        MODELS_CATALOG_URL,
-        "https://developers.openai.com/api/docs/models",
-        "https://platform.openai.com/docs/deprecations",
-        "https://developers.openai.com/api/docs/deprecations",
-    ]
-    for mid in ordered_ids[:6]:
-        seeds.append(model_doc_url(mid))
+        if package:
+            profile = profile_for_package(package)
+    except Exception:
+        profile = None
+
+    if profile is not None:
+        seeds = list(profile.evidence_seeds)
+        if profile.models_catalog_url and profile.models_catalog_url not in seeds:
+            seeds.insert(0, profile.models_catalog_url)
+        for mid in ordered_ids[:6]:
+            url = profile.model_doc_url(mid)
+            if url:
+                seeds.append(url)
+        pkg_label = package or profile.name
+    else:
+        seeds = []
+        pkg_label = package or "package"
 
     queries: list[str] = [
-        f"{package} API migration test failure",
-        f"{package} python sdk migration breaking change",
+        f"{pkg_label} API migration test failure",
+        f"{pkg_label} python sdk migration breaking change",
     ]
     queries.extend(_error_search_snippets(test_result))
     for mid in ordered_ids[:4]:
-        queries.append(f"{package} {mid} supported endpoints replacement")
+        queries.append(f"{pkg_label} {mid} supported endpoints replacement")
     for path in paths[:3]:
-        queries.append(f"{package} {path} replacement deprecation")
+        queries.append(f"{pkg_label} {path} replacement deprecation")
     for q in extra_queries or []:
         q = str(q).strip()
         if q and q not in queries:
@@ -495,11 +502,16 @@ def _research_for_failure(
     seeds, queries = _extract_research_targets(
         test_result, packet, extra_queries=extra_queries
     )
-    allow_hosts = [
-        "platform.openai.com",
-        "developers.openai.com",
-        "github.com",
-    ]
+    allow_hosts = ["github.com"]
+    try:
+        from conduit.detect.vendor_profile import profile_for_package
+
+        pkg = str(packet.get("package") or "")
+        prof = profile_for_package(pkg) if pkg else None
+        if prof is not None and prof.evidence_hosts:
+            allow_hosts = list(prof.evidence_hosts)
+    except Exception:
+        pass
     log(
         "[self-correct] researching (general search): "
         f"{len(seeds)} seed URL(s), {len(queries)} quer(ies)"

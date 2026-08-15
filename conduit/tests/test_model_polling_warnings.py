@@ -28,7 +28,7 @@ def test_model_polling_fetch_failed_sets_skip_reason(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(
         "conduit.detect.modules.openai.workers.model_polling._fetch_live_models",
-        lambda _key: None,
+        lambda _key, **_kwargs: None,
     )
     worker = ModelPollingWorker()
     state = PackageClientState(package="openai", model_ids=["gpt-4o"])
@@ -40,7 +40,7 @@ def test_model_polling_client_missing_from_catalog(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(
         "conduit.detect.modules.openai.workers.model_polling._fetch_live_models",
-        lambda _key: {"data": [{"id": "gpt-4o"}]},
+        lambda _key, **_kwargs: {"data": [{"id": "gpt-4o"}]},
     )
     worker = ModelPollingWorker()
     state = PackageClientState(
@@ -55,7 +55,7 @@ def test_model_polling_success_no_removals_is_verbose_only(monkeypatch, tmp_path
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(
         "conduit.detect.modules.openai.workers.model_polling._fetch_live_models",
-        lambda _key: {"data": [{"id": "gpt-4o"}]},
+        lambda _key, **_kwargs: {"data": [{"id": "gpt-4o"}]},
     )
     monkeypatch.setattr(
         "conduit.detect.modules.openai.ALL_WORKERS",

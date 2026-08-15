@@ -182,9 +182,21 @@ def _pick_package(signals, package: Optional[str]) -> str | None:
     if package:
         return package
     packages = sorted({s.package for s in signals if s.package})
-    if "openai" in packages:
-        return "openai"
-    return packages[0] if packages else None
+    if not packages:
+        return None
+    wanted = {p.lower() for p in packages}
+    try:
+        from conduit.detect.modules.discovery import load_modules
+
+        for mod in load_modules():
+            for p in list(mod.packages or []) + [mod.name]:
+                if p.lower() in wanted:
+                    for orig in packages:
+                        if orig.lower() == p.lower():
+                            return orig
+    except Exception:
+        pass
+    return packages[0]
 
 
 def _resolve_packet_arg(
@@ -265,7 +277,7 @@ def detect_cmd(
         if pkgs:
             from conduit.detect.coverage import build_coverage_report
 
-            pkg0 = "openai" if "openai" in pkgs else pkgs[0]
+            pkg0 = _pick_package(result.signals, None) or pkgs[0]
             state = (result.package_states or {}).get(pkg0)
             payload["coverage"] = build_coverage_report(
                 package=pkg0,
@@ -294,7 +306,7 @@ def detect_cmd(
     # Source packet + coverage vs signals (migration packet not built yet on detect)
     pkgs = sorted(result.packages | set(result.package_states or {}))
     if pkgs:
-        pkg0 = "openai" if "openai" in {p.lower() for p in pkgs} else pkgs[0]
+        pkg0 = _pick_package(result.signals, None) or pkgs[0]
         # normalize to actual key
         for key in result.package_states or {}:
             if key.lower() == pkg0.lower():
@@ -510,9 +522,8 @@ def _run_pipeline(
         )
     else:
         if pkg is None:
-            if any(s.package == "openai" for s in detected.signals):
-                pkg = "openai"
-            else:
+            pkg = _pick_package(detected.signals, None)
+            if not pkg:
                 console.print("[green]No migration signals found. Nothing to do.[/green]")
                 raise typer.Exit(0)
         beat("packet")
@@ -744,8 +755,17 @@ def module_new_cmd(
     out_of_tree: bool = typer.Option(
         False, "--out-of-tree", help="Scaffold a standalone module package"
     ),
+    deprecations_url: Optional[str] = typer.Option(None, "--deprecations-url"),
+    changelog_url: Optional[str] = typer.Option(None, "--changelog-url"),
+    openapi_repo: Optional[str] = typer.Option(None, "--openapi-repo"),
+    sdk_repo: Optional[str] = typer.Option(None, "--sdk-repo"),
+    catalog_url: Optional[str] = typer.Option(None, "--catalog-url"),
+    model_doc_template: Optional[str] = typer.Option(None, "--model-doc-template"),
+    live_catalog_url: Optional[str] = typer.Option(None, "--live-catalog-url"),
+    live_catalog_auth_env: Optional[str] = typer.Option(None, "--live-catalog-auth-env"),
+    evidence_hosts: Optional[str] = typer.Option(None, "--evidence-hosts"),
 ) -> None:
-    """Scaffold a new detect module."""
+    """Scaffold a profile-backed detect module (prompts for source URLs on a TTY)."""
     target = _resolve_root(path)
     # Prefer conduit package root when invoked from monorepo
     pkg_root = target / "conduit" if (target / "conduit" / "src" / "conduit").is_dir() else target
@@ -757,9 +777,18 @@ def module_new_cmd(
         ecosystem=ecosystem,
         target_root=target,
         out_of_tree=out_of_tree,
+        deprecations_url=deprecations_url,
+        changelog_url=changelog_url,
+        openapi_repo=openapi_repo,
+        sdk_repo=sdk_repo,
+        catalog_url=catalog_url,
+        model_doc_template=model_doc_template,
+        live_catalog_url=live_catalog_url,
+        live_catalog_auth_env=live_catalog_auth_env,
+        evidence_hosts=evidence_hosts,
     )
-    console.print(f"[green]Created module stub at[/green] {mod_dir}")
-    console.print("Next: implement run(), then `conduit module list`.")
+    console.print(f"[green]Created profile-backed module at[/green] {mod_dir}")
+    console.print("Next: fill profile.py / custom parsers, then `conduit module list`.")
 
 
 @packet_app.command("init")

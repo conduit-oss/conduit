@@ -14,7 +14,7 @@ import yaml
 
 from conduit.detect.modules.openai.models_legacy import ChangeType, RawSignal, Severity
 from conduit.detect.modules.openai.path_callees import callees_for_path
-from conduit.detect.modules.openai.workers.base import Worker, fixtures_dir
+from conduit.detect.modules.openai.workers.base import Worker, fixtures_dir, resolve_profile
 
 OPENAPI_SOURCE_URL = "https://github.com/openai/openai-openapi"
 
@@ -91,15 +91,18 @@ def load_openapi_pair(
     *,
     demo: bool = False,
     cache: dict[str, tuple[dict[str, Any], dict[str, Any]]] | None = None,
+    profile=None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """Load (previous, latest) OpenAPI specs. Demo uses fixtures; live clones latest."""
+    prof = resolve_profile(profile)
     store = cache if cache is not None else _OPENAPI_PAIR_CACHE
-    key = "demo" if demo else "live"
+    key = f"{prof.name}:{'demo' if demo else 'live'}"
     if key in store:
         return store[key]
 
-    fixture_prev = fixtures_dir() / "openapi" / "previous.yaml"
-    fixture_latest = fixtures_dir() / "openapi" / "latest.yaml"
+    fx = fixtures_dir(prof.fixtures_name)
+    fixture_prev = fx / "openapi" / "previous.yaml"
+    fixture_latest = fx / "openapi" / "latest.yaml"
     if not fixture_prev.is_file():
         return None
 
@@ -112,7 +115,7 @@ def load_openapi_pair(
         return store[key]
 
     # Live: prefer cache filled by OpenAPIDiffWorker; else clone tip once.
-    repo = "https://github.com/openai/openai-openapi.git"
+    repo = prof.openapi_git_url() or "https://github.com/openai/openai-openapi.git"
     with tempfile.TemporaryDirectory(prefix="oasdiff-") as tmp:
         tmp_path = Path(tmp)
         try:
@@ -151,12 +154,15 @@ def _param_rename_signal(
     new_path: str,
     old_p: str,
     new_p: str,
+    profile=None,
 ) -> RawSignal:
-    targets = callees_for_path(new_path)
+    prof = resolve_profile(profile)
+    source_url = prof.openapi_source_url or OPENAPI_SOURCE_URL
+    targets = callees_for_path(new_path, profile=prof)
     reason = (
         f"Request property renamed on {old_path}"
         + (f" → {new_path}" if old_path != new_path else "")
-        + f": {old_p} → {new_p}. Source: {OPENAPI_SOURCE_URL}"
+        + f": {old_p} → {new_p}. Source: {source_url}"
     )
     extra: dict[str, Any] = {
         "old_param": old_p,
@@ -170,18 +176,23 @@ def _param_rename_signal(
         extra["function_targets"] = targets
         extra["function_target"] = targets[0]
     return RawSignal(
-        vendor="openai",
+        vendor=prof.name,
         change_type=ChangeType.PARAM_RENAME,
         severity=Severity.CRITICAL,
         affected_pattern=old_p,
         replacement_pattern=new_p,
-        source_url=OPENAPI_SOURCE_URL,
+        source_url=source_url,
         description=reason,
         extra=extra,
     )
 
 
-def _diff_paths(previous: dict[str, Any], latest: dict[str, Any]) -> list[RawSignal]:
+def _diff_paths(
+    previous: dict[str, Any], latest: dict[str, Any], *, profile=None
+) -> list[RawSignal]:
+    prof = resolve_profile(profile)
+    source_url = prof.openapi_source_url or OPENAPI_SOURCE_URL
+    vendor = prof.name
     signals: list[RawSignal] = []
     prev_paths = set((previous.get("paths") or {}).keys())
     latest_paths = set((latest.get("paths") or {}).keys())
@@ -189,12 +200,12 @@ def _diff_paths(previous: dict[str, Any], latest: dict[str, Any]) -> list[RawSig
     for removed in sorted(prev_paths - latest_paths):
         signals.append(
             RawSignal(
-                vendor="openai",
+                vendor=vendor,
                 change_type=ChangeType.API_BREAKING,
                 severity=Severity.CRITICAL,
                 affected_pattern=removed,
                 replacement_pattern=None,
-                source_url=OPENAPI_SOURCE_URL,
+                source_url=source_url,
                 description=f"OpenAPI path removed: {removed}",
                 suggested_rules=[],
             )
@@ -212,17 +223,18 @@ def _diff_paths(previous: dict[str, Any], latest: dict[str, Any]) -> list[RawSig
                         new_path=path,
                         old_p=old_p,
                         new_p=new_p,
+                        profile=prof,
                     )
                 )
         else:
             for prop in diff.removed:
                 signals.append(
                     RawSignal(
-                        vendor="openai",
+                        vendor=vendor,
                         change_type=ChangeType.API_BREAKING,
                         severity=Severity.WARNING,
                         affected_pattern=prop,
-                        source_url=OPENAPI_SOURCE_URL,
+                        source_url=source_url,
                         description=f"Request property removed on {path}: {prop}",
                         extra={"path": path},
                     )
@@ -230,7 +242,9 @@ def _diff_paths(previous: dict[str, Any], latest: dict[str, Any]) -> list[RawSig
     return signals
 
 
-def _run_oasdiff(prev: Path, latest: Path) -> list[RawSignal]:
+def _run_oasdiff(prev: Path, latest: Path, *, profile=None) -> list[RawSignal]:
+    prof = resolve_profile(profile)
+    source_url = prof.openapi_source_url or OPENAPI_SOURCE_URL
     if not shutil.which("oasdiff"):
         return []
     try:
@@ -255,12 +269,12 @@ def _run_oasdiff(prev: Path, latest: Path) -> list[RawSignal]:
         text = str(item.get("text") or item.get("id") or item)
         signals.append(
             RawSignal(
-                vendor="openai",
+                vendor=prof.name,
                 change_type=ChangeType.API_BREAKING,
                 severity=Severity.CRITICAL,
                 affected_pattern=text[:120],
                 description=text,
-                source_url=OPENAPI_SOURCE_URL,
+                source_url=source_url,
             )
         )
     return signals
@@ -269,18 +283,27 @@ def _run_oasdiff(prev: Path, latest: Path) -> list[RawSignal]:
 class OpenAPIDiffWorker(Worker):
     name = "OpenAPIDiffWorker"
 
-    def run(self, *, demo: bool = False, client_state=None, majors_only: bool = True) -> list[RawSignal]:
-        fixture_prev = fixtures_dir() / "openapi" / "previous.yaml"
-        fixture_latest = fixtures_dir() / "openapi" / "latest.yaml"
+    def run(
+        self,
+        *,
+        demo: bool = False,
+        client_state=None,
+        majors_only: bool = True,
+        profile=None,
+    ) -> list[RawSignal]:
+        prof = resolve_profile(profile)
+        fx = fixtures_dir(prof.fixtures_name)
+        fixture_prev = fx / "openapi" / "previous.yaml"
+        fixture_latest = fx / "openapi" / "latest.yaml"
 
         if demo:
-            pair = load_openapi_pair(demo=True)
+            pair = load_openapi_pair(demo=True, profile=prof)
             if not pair:
                 return []
             previous, latest = pair
-            signals = _diff_paths(previous, latest)
+            signals = _diff_paths(previous, latest, profile=prof)
             if fixture_prev.is_file() and fixture_latest.is_file():
-                oas = _run_oasdiff(fixture_prev, fixture_latest)
+                oas = _run_oasdiff(fixture_prev, fixture_latest, profile=prof)
                 if oas:
                     keys = {(s.change_type, s.affected_pattern) for s in signals}
                     for s in oas:
@@ -288,15 +311,17 @@ class OpenAPIDiffWorker(Worker):
                             signals.append(s)
             return signals
 
-        return self._live_diff()
+        return self._live_diff(profile=prof)
 
-    def _live_diff(self) -> list[RawSignal]:
+    def _live_diff(self, *, profile=None) -> list[RawSignal]:
         """Diff committed fixture baseline vs freshly cloned latest OpenAPI."""
-        fixture_prev = fixtures_dir() / "openapi" / "previous.yaml"
+        prof = resolve_profile(profile)
+        fx = fixtures_dir(prof.fixtures_name)
+        fixture_prev = fx / "openapi" / "previous.yaml"
         if not fixture_prev.is_file():
             return []
 
-        repo = "https://github.com/openai/openai-openapi.git"
+        repo = prof.openapi_git_url() or "https://github.com/openai/openai-openapi.git"
         with tempfile.TemporaryDirectory(prefix="oasdiff-") as tmp:
             tmp_path = Path(tmp)
             try:
@@ -318,12 +343,14 @@ class OpenAPIDiffWorker(Worker):
             latest_path = candidates[0]
             previous = _load_openapi(fixture_prev)
             latest = _load_openapi(latest_path)
-            _OPENAPI_PAIR_CACHE["live"] = (previous, latest)
-            signals = _diff_paths(previous, latest)
-            oas = _run_oasdiff(fixture_prev, latest_path)
+            cache_key = f"{prof.name}:live"
+            _OPENAPI_PAIR_CACHE[cache_key] = (previous, latest)
+            signals = _diff_paths(previous, latest, profile=prof)
+            oas = _run_oasdiff(fixture_prev, latest_path, profile=prof)
             if oas:
                 keys = {(s.change_type, s.affected_pattern) for s in signals}
                 for s in oas:
                     if (s.change_type, s.affected_pattern) not in keys:
                         signals.append(s)
             return signals
+

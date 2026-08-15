@@ -109,11 +109,12 @@ def test_endpoint_exact_replace_in_source():
     assert out == 'return "/v1/models"\n'
 
 
-def test_host_allowed_github_openai_only():
+def test_host_allowed_github_when_listed():
     hosts = ["platform.openai.com", "github.com"]
     assert host_allowed("https://platform.openai.com/docs/deprecations", hosts)
     assert host_allowed("https://github.com/openai/openai-python", hosts)
-    assert not host_allowed("https://github.com/other/repo", hosts)
+    assert host_allowed("https://github.com/other/repo", hosts)
+    assert not host_allowed("https://github.com/", hosts)
     assert not host_allowed("https://evil.example/openai", hosts)
 
 

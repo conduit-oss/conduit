@@ -17,6 +17,7 @@ from conduit.detect.modules.openai.workers.openapi_diff import (
     diff_path_params,
     load_openapi_pair,
 )
+from conduit.detect.modules.openai.workers.base import resolve_profile
 
 
 def _path_pairs(signals: list[ChangeSignal]) -> list[tuple[str, str, ChangeSignal | None]]:
@@ -96,11 +97,16 @@ def _param_signal(
     new_param: str,
     api_patterns: list[str],
     source_url: str | None,
+    profile=None,
 ) -> ChangeSignal:
-    targets = callees_for_path(new_path, api_patterns=api_patterns)
+    prof = resolve_profile(profile)
+    pkg = (prof.packages[0] if prof.packages else prof.name)
+    source = f"module:{prof.name}"
+    openapi_url = prof.openapi_source_url or OPENAPI_SOURCE_URL
+    targets = callees_for_path(new_path, api_patterns=api_patterns, profile=prof)
     reason = (
         f"Endpoint {old_path} → {new_path}; request property {old_param} → {new_param} "
-        f"per OpenAPI schemas. Source: {source_url or OPENAPI_SOURCE_URL}"
+        f"per OpenAPI schemas. Source: {source_url or openapi_url}"
     )
     rules: list[dict[str, Any]] = []
     for target in targets:
@@ -115,16 +121,16 @@ def _param_signal(
             }
         )
     return ChangeSignal(
-        source="module:openai",
-        package="openai",
+        source=source,
+        package=pkg,
         change_type="PARAM_RENAME",
         severity="CRITICAL",
         affected_pattern=old_param,
         replacement_pattern=new_param,
         description=reason,
-        source_url=source_url or OPENAPI_SOURCE_URL,
+        source_url=source_url or openapi_url,
         hints={
-            "vendor": "openai",
+            "vendor": prof.name,
             "path": new_path,
             "old_path": old_path,
             "new_path": new_path,
@@ -140,6 +146,7 @@ def apply_path_param_compat(
     client_state: PackageClientState | None = None,
     demo: bool = False,
     openapi_cache: dict | None = None,
+    profile=None,
 ) -> tuple[list[ChangeSignal], list[str]]:
     """
     For endpoint A→B pairs, diff OpenAPI request props and emit param renames.
@@ -167,7 +174,7 @@ def apply_path_param_compat(
     if not pairs:
         return signals, notes
 
-    pair_specs = load_openapi_pair(demo=demo, cache=openapi_cache)
+    pair_specs = load_openapi_pair(demo=demo, cache=openapi_cache, profile=profile)
     if not pair_specs:
         notes.append("path param compat skipped (OpenAPI pair unavailable)")
         return signals, notes
@@ -179,7 +186,9 @@ def apply_path_param_compat(
 
     for old_path, new_path, src in pairs:
         diff = diff_path_params(previous, latest, old_path, new_path)
-        source_url = (src.source_url if src else None) or OPENAPI_SOURCE_URL
+        source_url = (src.source_url if src else None) or (
+            resolve_profile(profile).openapi_source_url or OPENAPI_SOURCE_URL
+        )
 
         if diff.renames:
             for old_p, new_p in diff.renames:
@@ -212,6 +221,7 @@ def apply_path_param_compat(
                                 new_param=new_p,
                                 api_patterns=api_patterns,
                                 source_url=source_url,
+                                profile=profile,
                             )
                             if neo.suggested_rules:
                                 out[i] = ChangeSignal(
@@ -246,6 +256,7 @@ def apply_path_param_compat(
                     new_param=new_p,
                     api_patterns=api_patterns,
                     source_url=source_url,
+                    profile=profile,
                 )
                 out.append(sig)
                 existing.add((old_p, new_p, new_path))

@@ -83,12 +83,16 @@ Normalize step turns raw events into `ChangeSignal` + `suggested_rules` that pac
 
 ## Scaffold a new module
 
+New vendors share OpenAI’s pipeline via a **VendorProfile** (docs URLs, OpenAPI repo, SDK releases, catalog, evidence hosts). `conduit module new` asks for those links on a TTY (or accept `--deprecations-url` / `--openapi-repo` / … flags) and emits `profile.py` plus a `run()` that calls `run_profile_module`.
+
+OpenAI is the reference profile: [`conduit/src/conduit/detect/modules/openai/profile.py`](../conduit/src/conduit/detect/modules/openai/profile.py).
+
 ```bash
 conduit module list
 conduit module new stripe --package stripe --ecosystem pypi --path ./conduit
 ```
 
-This creates a module package under `src/conduit/detect/modules/<name>/` (and optional fixtures dir). Wire it into entry points in `pyproject.toml` if you want it auto-loaded.
+This creates `src/conduit/detect/modules/<name>/` with `profile.py`, fixtures dir, and a smoke test. HTML deprecation/changelog scrapers stay OpenAI-specific (`parser_kind=generic`); add a custom worker when the vendor’s pages don’t match. Wire the module into entry points / `_builtin_modules` so it auto-loads.
 
 Out-of-tree modules:
 

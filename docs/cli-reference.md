@@ -109,7 +109,7 @@ List built-in / entry-point modules and whether they apply to installed manifest
 
 ### `module new`
 
-Scaffold a detect module.
+Scaffold a **profile-backed** detect module. On a TTY, prompts for source URLs (deprecations, changelog, OpenAPI, SDK repo, catalog). Flags skip prompts when provided.
 
 | Option | Description |
 |--------|-------------|
@@ -118,6 +118,15 @@ Scaffold a detect module.
 | `--ecosystem` | `pypi` (default) etc. |
 | `--path` | Conduit package root or out dir |
 | `--out-of-tree` | Standalone package layout |
+| `--deprecations-url` | Vendor deprecations page |
+| `--changelog-url` | Changelog / RSS |
+| `--openapi-repo` | OpenAPI git URL |
+| `--sdk-repo` | GitHub `org/name` for SDK releases |
+| `--catalog-url` | Models/catalog docs URL |
+| `--model-doc-template` | Per-id doc URL with `{model_id}` |
+| `--live-catalog-url` | Live list API (e.g. `/v1/models`) |
+| `--live-catalog-auth-env` | Env var for that API’s bearer token |
+| `--evidence-hosts` | Comma-separated fetch allowlist |
 
 ---
 

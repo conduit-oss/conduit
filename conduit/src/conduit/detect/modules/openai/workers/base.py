@@ -8,6 +8,16 @@ from pathlib import Path
 from typing import Any
 
 from conduit.detect.modules.openai.models_legacy import RawSignal
+from conduit.detect.vendor_profile import VendorProfile
+
+
+def resolve_profile(profile: VendorProfile | None) -> VendorProfile:
+    """Default to the OpenAI profile when a worker is invoked without one."""
+    if profile is not None:
+        return profile
+    from conduit.detect.modules.openai.profile import OPENAI_PROFILE
+
+    return OPENAI_PROFILE
 
 
 def package_root() -> Path:
@@ -15,9 +25,10 @@ def package_root() -> Path:
     return Path(__file__).resolve().parents[6]
 
 
-def fixtures_dir() -> Path:
+def fixtures_dir(vendor: str | None = None) -> Path:
+    name = vendor or "openai"
     candidates = [
-        package_root() / "fixtures" / "openai",
+        package_root() / "fixtures" / name,
         Path(__file__).resolve().parent / "fixtures",
     ]
     for path in candidates:
@@ -26,8 +37,9 @@ def fixtures_dir() -> Path:
     return candidates[0]
 
 
-def data_dir() -> Path:
-    path = package_root() / "data" / "openai"
+def data_dir(vendor: str | None = None) -> Path:
+    name = vendor or "openai"
+    path = package_root() / "data" / name
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -51,6 +63,7 @@ class Worker(ABC):
         demo: bool = False,
         client_state: Any | None = None,
         majors_only: bool = True,
+        profile: VendorProfile | None = None,
     ) -> list[RawSignal]:
         """Emit signals. Live sources by default; fixtures only when demo=True."""
         raise NotImplementedError

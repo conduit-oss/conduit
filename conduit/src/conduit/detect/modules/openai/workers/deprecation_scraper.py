@@ -9,7 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from conduit.detect.modules.openai.models_legacy import ChangeType, RawSignal, Severity
-from conduit.detect.modules.openai.workers.base import Worker, fixtures_dir
+from conduit.detect.modules.openai.workers.base import Worker, fixtures_dir, resolve_profile
 
 DEFAULT_URL = "https://platform.openai.com/docs/deprecations"
 
@@ -276,14 +276,24 @@ def parse_deprecation_html(html: str, source_url: str) -> list[RawSignal]:
 class DeprecationScraperWorker(Worker):
     name = "DeprecationScraperWorker"
 
-    def run(self, *, demo: bool = False, client_state=None, majors_only: bool = True) -> list[RawSignal]:
+    def run(
+        self,
+        *,
+        demo: bool = False,
+        client_state=None,
+        majors_only: bool = True,
+        profile=None,
+    ) -> list[RawSignal]:
+        prof = resolve_profile(profile)
+        url = prof.deprecations_url or DEFAULT_URL
+        fx = fixtures_dir(prof.fixtures_name)
         if demo:
-            fixture = fixtures_dir() / "deprecations" / "openai_deprecations.html"
+            fixture = fx / "deprecations" / "openai_deprecations.html"
             html = fixture.read_text(encoding="utf-8")
-            return parse_deprecation_html(html, DEFAULT_URL)
+            return parse_deprecation_html(html, url)
 
         try:
-            resp = httpx.get(DEFAULT_URL, timeout=45.0, follow_redirects=True)
+            resp = httpx.get(url, timeout=45.0, follow_redirects=True)
             resp.raise_for_status()
             return parse_deprecation_html(resp.text, str(resp.url))
         except httpx.HTTPError as exc:

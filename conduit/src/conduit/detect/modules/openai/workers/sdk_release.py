@@ -12,7 +12,7 @@ from packaging.version import InvalidVersion, Version
 
 from conduit.detect.client_state import PackageClientState
 from conduit.detect.modules.openai.models_legacy import ChangeType, RawSignal, Severity
-from conduit.detect.modules.openai.workers.base import Worker, fixtures_dir
+from conduit.detect.modules.openai.workers.base import Worker, fixtures_dir, resolve_profile
 from conduit.detect.version_steps import (
     list_release_versions,
     next_version_step,
@@ -92,9 +92,10 @@ def _github_latest_tag(repo: str) -> str | None:
         return None
 
 
-def _load_repo_registry() -> dict[str, dict[str, Any]]:
-    """Repos of SDK repos to poll (info points). Fixture file or built-in defaults."""
-    fixture = fixtures_dir() / "sdk_releases" / "tags.json"
+def _load_repo_registry(profile=None) -> dict[str, dict[str, Any]]:
+    """Repos of SDK repos to poll (info points). Fixture file, profile, or defaults."""
+    prof = resolve_profile(profile)
+    fixture = fixtures_dir(prof.fixtures_name) / "sdk_releases" / "tags.json"
     if fixture.is_file():
         try:
             payload = json.loads(fixture.read_text(encoding="utf-8"))
@@ -103,6 +104,8 @@ def _load_repo_registry() -> dict[str, dict[str, Any]]:
                 return repos
         except (OSError, json.JSONDecodeError):
             pass
+    if prof.sdk_release_repos:
+        return dict(prof.sdk_release_repos)
     return dict(DEFAULT_REPOS)
 
 
@@ -152,8 +155,11 @@ class SDKReleaseWorker(Worker):
         demo: bool = False,
         client_state: PackageClientState | None = None,
         majors_only: bool = True,
+        profile=None,
     ) -> list[RawSignal]:
         self.last_skip_reason = None
+        prof = resolve_profile(profile)
+        vendor = prof.name
         installed_raw = (
             (client_state.installed_version if client_state else None) or ""
         ).strip()
@@ -170,7 +176,7 @@ class SDKReleaseWorker(Worker):
                 return []
 
         client_ecosystems = list(client_state.ecosystems) if client_state else []
-        repos = _load_repo_registry()
+        repos = _load_repo_registry(prof)
         signals: list[RawSignal] = []
         seen_packages: set[str] = set()
 
@@ -224,7 +230,7 @@ class SDKReleaseWorker(Worker):
             seen_packages.add(pkg_key)
             signals.append(
                 RawSignal(
-                    vendor="openai",
+                    vendor=vendor,
                     change_type=ChangeType.SDK_MAJOR_BUMP,
                     severity=severity,
                     affected_pattern=package,

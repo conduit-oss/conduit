@@ -591,8 +591,7 @@ def synthesize_from_evidence(
         "missed_coverage": missed_items or [],
         "ignore": ignore_payload,
         "seed_urls": seeds,
-        "allow_hosts": hosts
-        or ["platform.openai.com", "developers.openai.com", "github.com"],
+        "allow_hosts": hosts or ["github.com"],
         "suggested_queries": queries,
         "instructions": (
             "Use tools (web_search, fetch_url, read_file, grep) to gather "
@@ -860,7 +859,19 @@ def ensure_packet(
         to_version=to_v,
     )
     used_fixture = False
-    if not packet.get("rules") and use_fixture_fallback and package.lower() == "openai":
+    profile = None
+    try:
+        from conduit.detect.vendor_profile import profile_for_package
+
+        profile = profile_for_package(package)
+    except Exception:
+        profile = None
+    if (
+        not packet.get("rules")
+        and use_fixture_fallback
+        and profile is not None
+        and profile.demo_packet_fallback
+    ):
         packet = load_fixture_openai_packet()
         used_fixture = True
         if from_source == "placeholder":
@@ -896,7 +907,7 @@ def ensure_packet(
         )
     if used_fixture:
         warnings.append(
-            "using offline openai fixture packet because signal synthesis produced no rules"
+            f"using offline {package} fixture packet because signal synthesis produced no rules"
         )
 
     # Evidence + LLM enrichment (live only; demo keeps fixtures / signal rules)

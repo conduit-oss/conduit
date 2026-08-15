@@ -1,11 +1,13 @@
-"""Map OpenAI REST paths / client api_patterns to SDK call targets for param renames."""
+"""Map REST paths / client api_patterns to SDK call targets for param renames."""
 
 from __future__ import annotations
 
 import re
 from typing import Iterable
 
-# Grounded OpenAI REST path → modern Python SDK callee surface.
+from conduit.detect.vendor_profile import VendorProfile
+
+# Kept for tests / callers that don't pass a profile; OPENAI_PROFILE mirrors these.
 _PATH_TO_CALLEES: dict[str, list[str]] = {
     "/v1/chat/completions": [
         "chat.completions.create",
@@ -77,6 +79,17 @@ _API_PATTERN_TO_PATH: list[tuple[re.Pattern[str], str]] = [
 _PATH_RE = re.compile(r"^/v1/[A-Za-z0-9/_\-{}]+$")
 
 
+def _active_profile(profile: VendorProfile | None) -> VendorProfile | None:
+    if profile is not None:
+        return profile
+    try:
+        from conduit.detect.modules.openai.profile import OPENAI_PROFILE
+
+        return OPENAI_PROFILE
+    except Exception:
+        return None
+
+
 def normalize_api_path(path: str | None) -> str | None:
     if not path:
         return None
@@ -92,13 +105,21 @@ def looks_like_api_path(value: str | None) -> bool:
     return normalize_api_path(value) is not None
 
 
-def path_for_api_pattern(token: str) -> str | None:
+def path_for_api_pattern(
+    token: str, *, profile: VendorProfile | None = None
+) -> str | None:
     t = (token or "").strip()
     if not t:
         return None
     if t.startswith("/v1/") or t.startswith("v1/"):
         return normalize_api_path(t if t.startswith("/") else f"/{t}")
-    for pattern, path in _API_PATTERN_TO_PATH:
+    prof = _active_profile(profile)
+    pairs = (
+        [(re.compile(pat, re.I), path) for pat, path in prof.api_pattern_to_path]
+        if prof and prof.api_pattern_to_path
+        else _API_PATTERN_TO_PATH
+    )
+    for pattern, path in pairs:
         if pattern.match(t):
             return path
     return None
@@ -108,6 +129,7 @@ def callees_for_path(
     path: str | None,
     *,
     api_patterns: Iterable[str] | None = None,
+    profile: VendorProfile | None = None,
 ) -> list[str]:
     """Return SDK function_target candidates for a REST path."""
     norm = normalize_api_path(path)
@@ -116,16 +138,16 @@ def callees_for_path(
 
     out: list[str] = []
     seen: set[str] = set()
+    prof = _active_profile(profile)
 
     # Prefer client-observed patterns that map to this path.
     for raw in api_patterns or []:
         token = str(raw or "").strip()
         if not token:
             continue
-        mapped = path_for_api_pattern(token)
+        mapped = path_for_api_pattern(token, profile=prof)
         if mapped != norm:
             continue
-        # Promote bare tokens to .create when needed
         if token.endswith(".create") or token.endswith(".generate") or token.endswith(".edit"):
             candidate = token
         elif token.lower() == "chat.completions":
@@ -140,7 +162,8 @@ def callees_for_path(
             seen.add(candidate)
             out.append(candidate)
 
-    for candidate in _PATH_TO_CALLEES.get(norm, []):
+    table = (prof.path_to_callees if prof and prof.path_to_callees else _PATH_TO_CALLEES)
+    for candidate in table.get(norm, []):
         if candidate not in seen:
             seen.add(candidate)
             out.append(candidate)

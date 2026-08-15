@@ -29,12 +29,12 @@ def host_allowed(url: str, allow_hosts: Iterable[str]) -> bool:
     if not host:
         return False
     allowed = {h.lower() for h in allow_hosts}
-    # github.com only for /openai paths when github.com is allowlisted
     if host == "github.com":
         if "github.com" not in allowed:
             return False
-        path = urlparse(url).path or ""
-        return path == "/openai" or path.startswith("/openai/")
+        path = (urlparse(url).path or "").strip("/")
+        # Allowlisted github.com: any org/repo path (vendor profiles name their orgs).
+        return bool(path)
     return host in allowed
 
 

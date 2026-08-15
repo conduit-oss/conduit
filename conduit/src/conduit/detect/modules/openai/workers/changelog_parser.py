@@ -9,7 +9,7 @@ import feedparser
 import httpx
 
 from conduit.detect.modules.openai.models_legacy import ChangeType, RawSignal, Severity
-from conduit.detect.modules.openai.workers.base import Worker, fixtures_dir
+from conduit.detect.modules.openai.workers.base import Worker, fixtures_dir, resolve_profile
 
 CHANGELOG_URL = "https://platform.openai.com/docs/changelog"
 
@@ -155,12 +155,22 @@ def _llm_extract(text: str) -> list[RawSignal]:
 class ChangelogParserWorker(Worker):
     name = "ChangelogParserWorker"
 
-    def run(self, *, demo: bool = False, client_state=None, majors_only: bool = True) -> list[RawSignal]:
+    def run(
+        self,
+        *,
+        demo: bool = False,
+        client_state=None,
+        majors_only: bool = True,
+        profile=None,
+    ) -> list[RawSignal]:
         signals: list[RawSignal] = []
         blobs: list[str] = []
+        prof = resolve_profile(profile)
+        changelog_url = prof.changelog_url or CHANGELOG_URL
+        fx = fixtures_dir(prof.fixtures_name)
 
         if demo:
-            feed_path = fixtures_dir() / "changelogs" / "openai_changelog.rss"
+            feed_path = fx / "changelogs" / "openai_changelog.rss"
             parsed = feedparser.parse(feed_path.read_text(encoding="utf-8"))
             for entry in parsed.entries:
                 title = getattr(entry, "title", "") or ""
@@ -171,7 +181,7 @@ class ChangelogParserWorker(Worker):
                 signals.extend(parse_changelog_text(blob, link))
         else:
             try:
-                resp = httpx.get(CHANGELOG_URL, timeout=45.0, follow_redirects=True)
+                resp = httpx.get(changelog_url, timeout=45.0, follow_redirects=True)
                 resp.raise_for_status()
                 from bs4 import BeautifulSoup
 

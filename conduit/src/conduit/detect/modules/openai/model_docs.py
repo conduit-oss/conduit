@@ -47,13 +47,23 @@ def normalize_route(route: str) -> str:
     return r.lower()
 
 
-def model_doc_url(model_id: str) -> str:
+def model_doc_url(model_id: str, *, profile=None) -> str:
+    if profile is not None:
+        url = profile.model_doc_url(model_id)
+        if url:
+            return url
     return MODEL_DOC_URL_TMPL.format(model_id=model_id.strip())
 
 
-def map_api_patterns_to_routes(api_patterns: Iterable[str]) -> list[str]:
+def map_api_patterns_to_routes(api_patterns: Iterable[str], *, profile=None) -> list[str]:
     """Map client-scanned api tokens to required endpoint routes."""
     required: set[str] = set()
+    pairs = _API_PATTERN_ROUTES
+    if profile is not None and profile.api_pattern_to_path:
+        pairs = [
+            (re.compile(pat, re.I), path.lstrip("/"))
+            for pat, path in profile.api_pattern_to_path
+        ]
     for raw in api_patterns:
         token = str(raw or "").strip()
         if not token:
@@ -61,9 +71,9 @@ def map_api_patterns_to_routes(api_patterns: Iterable[str]) -> list[str]:
         if token.startswith("/v1/") or token.startswith("v1/"):
             required.add(normalize_route(token))
             continue
-        for pattern, route in _API_PATTERN_ROUTES:
+        for pattern, route in pairs:
             if pattern.match(token):
-                required.add(route)
+                required.add(normalize_route(route))
                 break
     return sorted(required)
 
@@ -179,6 +189,7 @@ def fetch_model_endpoints(
     text: str | None = None,
     client: httpx.Client | None = None,
     base_url: str | None = None,
+    profile=None,
 ) -> dict[str, bool] | None:
     """
     Load Supported-endpoints map for a model.
@@ -187,7 +198,11 @@ def fetch_model_endpoints(
     (unknown — not the same as “supports nothing”).
     """
     if text is None:
-        url = model_doc_url(model_id) if not base_url else urljoin(base_url, f"{model_id}.md")
+        url = (
+            model_doc_url(model_id, profile=profile)
+            if not base_url
+            else urljoin(base_url, f"{model_id}.md")
+        )
         text = _fetch_text(url, client=client)
     if text is None:
         return None

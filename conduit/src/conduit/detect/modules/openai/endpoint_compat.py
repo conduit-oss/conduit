@@ -20,22 +20,24 @@ from conduit.detect.modules.openai.model_docs import (
     prefer_catalog_candidates,
     unsupported_routes,
 )
-from conduit.detect.modules.openai.workers.base import fixtures_dir
+from conduit.detect.modules.openai.workers.base import fixtures_dir, resolve_profile
 
 _MAX_CANDIDATE_FETCHES = 5
 
 
-def _demo_text(relative: str) -> str | None:
-    path = fixtures_dir() / "model_docs" / relative
+def _demo_text(relative: str, *, vendor: str | None = None) -> str | None:
+    path = fixtures_dir(vendor) / "model_docs" / relative
     if path.is_file():
         return path.read_text(encoding="utf-8")
     return None
 
 
-def _demo_api_patterns(client_state: PackageClientState | None) -> list[str]:
+def _demo_api_patterns(
+    client_state: PackageClientState | None, *, vendor: str | None = None
+) -> list[str]:
     if client_state and client_state.api_patterns:
         return list(client_state.api_patterns)
-    used_path = fixtures_dir() / "models" / "client_used.json"
+    used_path = fixtures_dir(vendor) / "models" / "client_used.json"
     if used_path.is_file():
         data = json.loads(used_path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
@@ -49,27 +51,38 @@ def _load_endpoints(
     demo: bool,
     client: httpx.Client | None,
     cache: dict[str, dict[str, bool] | None],
+    vendor: str | None = None,
+    profile=None,
 ) -> dict[str, bool] | None:
     key = model_id.lower()
     if key in cache:
         return cache[key]
     if demo:
-        text = _demo_text(f"{model_id}.md")
+        text = _demo_text(f"{model_id}.md", vendor=vendor)
         # Missing fixture → unknown (None), not empty-unsupported.
         endpoints = (
             fetch_model_endpoints(model_id, text=text) if text is not None else None
         )
     else:
-        endpoints = fetch_model_endpoints(model_id, client=client)
+        endpoints = fetch_model_endpoints(model_id, client=client, profile=profile)
     cache[key] = endpoints
     return endpoints
 
 
-def _load_catalog(*, demo: bool, client: httpx.Client | None) -> list[str]:
+def _load_catalog(
+    *,
+    demo: bool,
+    client: httpx.Client | None,
+    vendor: str | None = None,
+    profile=None,
+) -> list[str]:
+    catalog_url = MODELS_CATALOG_URL
+    if profile is not None and getattr(profile, "models_catalog_url", None):
+        catalog_url = profile.models_catalog_url
     if demo:
-        text = _demo_text("models.md") or ""
+        text = _demo_text("models.md", vendor=vendor) or ""
         return fetch_models_catalog(text=text)
-    return fetch_models_catalog(client=client)
+    return fetch_models_catalog(url=catalog_url, client=client)
 
 
 def _reason_keep(
@@ -127,8 +140,10 @@ def _pick_alternate(
     demo: bool,
     client: httpx.Client | None,
     cache: dict[str, dict[str, bool] | None],
+    vendor: str | None = None,
+    profile=None,
 ) -> str | None:
-    catalog = _load_catalog(demo=demo, client=client)
+    catalog = _load_catalog(demo=demo, client=client, vendor=vendor, profile=profile)
     candidates = prefer_catalog_candidates(
         catalog,
         required_routes=required,
@@ -136,7 +151,9 @@ def _pick_alternate(
         limit=_MAX_CANDIDATE_FETCHES,
     )
     for mid in candidates:
-        endpoints = _load_endpoints(mid, demo=demo, client=client, cache=cache)
+        endpoints = _load_endpoints(
+            mid, demo=demo, client=client, cache=cache, vendor=vendor, profile=profile
+        )
         # Skip unknown docs — cannot verify support.
         if model_supports_routes(endpoints, required) is True:
             return mid
@@ -169,19 +186,22 @@ def apply_endpoint_compat(
     *,
     client_state: PackageClientState | None = None,
     demo: bool = False,
+    profile=None,
 ) -> tuple[list[ChangeSignal], list[str]]:
     """
     Adjust MODEL_* replacements using per-model Supported endpoints.
 
     Returns (signals, notes) where notes are decision-log lines for the packet/PR.
     """
+    prof = resolve_profile(profile)
+    vendor = prof.fixtures_name
     notes: list[str] = []
     api_patterns = (
         list(client_state.api_patterns)
         if client_state and client_state.api_patterns
-        else (_demo_api_patterns(client_state) if demo else [])
+        else (_demo_api_patterns(client_state, vendor=vendor) if demo else [])
     )
-    fallback_required = map_api_patterns_to_routes(api_patterns)
+    fallback_required = map_api_patterns_to_routes(api_patterns, profile=prof)
 
     model_signals = [
         s
@@ -232,15 +252,21 @@ def apply_endpoint_compat(
                     demo=demo,
                     client=http,
                     cache=cache,
+                    vendor=vendor,
+                    profile=prof,
                 )
                 if alt:
                     reason = (
                         f"Model {legacy} missing/removed with no deprecation replacement; "
                         f"chose {alt} supporting [{', '.join(required)}]. "
-                        f"Source: {model_doc_url(alt)}"
+                        f"Source: {model_doc_url(alt, profile=prof)}"
                     )
                     notes.append(reason)
-                    out.append(_with_reason(signal, alt, reason, model_doc_url(alt)))
+                    out.append(
+                        _with_reason(
+                            signal, alt, reason, model_doc_url(alt, profile=prof)
+                        )
+                    )
                 else:
                     reason = _reason_cleared(legacy, None, [], required)
                     notes.append(reason)
@@ -248,7 +274,12 @@ def apply_endpoint_compat(
                 continue
 
             endpoints = _load_endpoints(
-                replacement, demo=demo, client=http, cache=cache
+                replacement,
+                demo=demo,
+                client=http,
+                cache=cache,
+                vendor=vendor,
+                profile=prof,
             )
             support = model_supports_routes(endpoints, required)
             # Unknown docs → keep documented replacement (fail-open).
@@ -257,7 +288,7 @@ def apply_endpoint_compat(
                     f"Deprecated/removed model {legacy}; "
                     f"using documented replacement {replacement} "
                     f"(endpoint docs unavailable — skipped endpoint check). "
-                    f"Source: {source_url or model_doc_url(replacement)}"
+                    f"Source: {source_url or model_doc_url(replacement, profile=prof)}"
                 )
                 notes.append(reason)
                 out.append(
@@ -265,7 +296,7 @@ def apply_endpoint_compat(
                         signal,
                         replacement,
                         reason,
-                        source_url or model_doc_url(replacement),
+                        source_url or model_doc_url(replacement, profile=prof),
                     )
                 )
                 continue
@@ -279,7 +310,7 @@ def apply_endpoint_compat(
                         signal,
                         replacement,
                         reason,
-                        source_url or model_doc_url(replacement),
+                        source_url or model_doc_url(replacement, profile=prof),
                     )
                 )
                 continue
@@ -291,13 +322,15 @@ def apply_endpoint_compat(
                 demo=demo,
                 client=http,
                 cache=cache,
+                vendor=vendor,
+                profile=prof,
             )
             if alt:
                 reason = _reason_alternate(
                     legacy, replacement, alt, missing, required
                 )
                 notes.append(reason)
-                out.append(_with_reason(signal, alt, reason, model_doc_url(alt)))
+                out.append(_with_reason(signal, alt, reason, model_doc_url(alt, profile=prof)))
             else:
                 reason = _reason_cleared(legacy, replacement, missing, required)
                 notes.append(reason)

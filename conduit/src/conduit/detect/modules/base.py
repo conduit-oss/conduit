@@ -11,6 +11,7 @@ from conduit.detect.models import ChangeSignal
 
 if TYPE_CHECKING:
     from conduit.detect.client_state import PackageClientState
+    from conduit.detect.vendor_profile import VendorProfile
 
 
 @dataclass
@@ -38,6 +39,7 @@ class DetectModule(ABC):
 
     name: str = "module"
     packages: list[str] = []
+    profile: VendorProfile | None = None
 
     def applies(self, installed: dict[str, str]) -> bool:
         if not self.packages:
@@ -46,15 +48,23 @@ class DetectModule(ABC):
         return any(name.lower() in wanted for name in installed)
 
     def evidence_seeds(self) -> list[str]:
-        """Canonical doc URLs for LLM packet synthesis (override per vendor)."""
+        """Canonical doc URLs for LLM packet synthesis (from profile when set)."""
+        if self.profile is not None:
+            return list(self.profile.evidence_seeds)
         return []
 
     def evidence_hosts(self) -> list[str]:
-        """Host allowlist for fetch/search evidence (override per vendor)."""
+        """Host allowlist for fetch/search evidence (from profile when set)."""
+        if self.profile is not None:
+            return list(self.profile.evidence_hosts)
         return []
 
     def evidence_queries(self, *, from_version: str, to_version: str) -> list[str]:
-        """Web search queries for LLM evidence (override per vendor)."""
+        """Web search queries for LLM evidence (from profile when set)."""
+        if self.profile is not None:
+            return self.profile.format_evidence_queries(
+                from_version=from_version, to_version=to_version
+            )
         return []
 
     def review_checklist(

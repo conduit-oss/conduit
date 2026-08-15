@@ -56,6 +56,21 @@ PACKAGE_PATTERN_PACKS: dict[str, dict[str, re.Pattern[str]]] = {
 }
 
 
+def pattern_pack_for(package: str) -> dict[str, re.Pattern[str]]:
+    """Pattern pack from the vendor profile, falling back to built-in openai pack."""
+    try:
+        from conduit.detect.vendor_profile import profile_for_package
+
+        prof = profile_for_package(package)
+        if prof is not None:
+            pack = prof.pattern_pack()
+            if pack:
+                return pack
+    except Exception:
+        pass
+    return PACKAGE_PATTERN_PACKS.get(package.lower(), {})
+
+
 @dataclass
 class PackageClientState:
     """Where the client repo stands for one dependency package."""
@@ -133,7 +148,7 @@ def _regex_scan_package(
     installed: dict[str, str],
     demo: bool = False,
 ) -> PackageClientState:
-    packs = PACKAGE_PATTERN_PACKS.get(package.lower(), {})
+    packs = pattern_pack_for(package)
     model_re = packs.get("model_id")
     api_re = packs.get("api_pattern")
 
@@ -158,18 +173,15 @@ def _regex_scan_package(
 
     known: set[str] = set()
     known_err: Exception | None = None
-    if package.lower() == "openai":
-        try:
-            from conduit.detect.modules.openai.known_models import (
-                collect_known_model_ids,
-                extract_model_kwarg_ids,
-                find_known_models_in_text,
-            )
+    try:
+        from conduit.detect.vendor_profile import collect_known_ids, profile_for_package
 
-            known = collect_known_model_ids(demo=demo)
-        except Exception as exc:  # noqa: BLE001 — fail soft; regex bootstrap below
-            known = set()
-            known_err = exc
+        prof = profile_for_package(package)
+        if prof is not None and prof.known_ids is not None:
+            known = collect_known_ids(package, demo=demo)
+    except Exception as exc:  # noqa: BLE001 — fail soft; regex bootstrap below
+        known = set()
+        known_err = exc
 
     for path in scan_files:
         if _is_docish(path):
@@ -182,6 +194,11 @@ def _regex_scan_package(
         if path.suffix.lower() in SCAN_SUFFIXES and path in files:
             import_rels.append(rel)
         if known:
+            from conduit.detect.modules.openai.known_models import (
+                extract_model_kwarg_ids,
+                find_known_models_in_text,
+            )
+
             model_ids.update(find_known_models_in_text(text, known))
             model_ids.update(extract_model_kwarg_ids(text, known))
             if model_re:
@@ -205,7 +222,7 @@ def _regex_scan_package(
     notes: list[str] = []
     if known_err is not None:
         notes.append(f"known-model universe unavailable: {known_err}")
-    if package.lower() == "openai" and known:
+    if known:
         notes.append(f"model discovery grounded on {len(known)} known model ids")
     if not model_ids:
         notes.append(
@@ -346,17 +363,14 @@ def _agent_enrich(
 
     known_models: set[str] = set()
     known_lower: dict[str, str] = {}
-    if state.package.lower() == "openai":
-        try:
-            from conduit.detect.modules.openai.known_models import (
-                collect_known_model_ids,
-            )
+    try:
+        from conduit.detect.vendor_profile import collect_known_ids
 
-            known_models = collect_known_model_ids(demo=False)
-            known_lower = {k.lower(): k for k in known_models}
-        except Exception:  # noqa: BLE001 — fail soft; corpus-only merge below
-            known_models = set()
-            known_lower = {}
+        known_models = collect_known_ids(state.package, demo=False)
+        known_lower = {k.lower(): k for k in known_models}
+    except Exception:  # noqa: BLE001 — fail soft; corpus-only merge below
+        known_models = set()
+        known_lower = {}
 
     added_models = 0
     added_apis = 0

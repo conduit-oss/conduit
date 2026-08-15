@@ -229,14 +229,12 @@ def build_coverage_report(
         if isinstance(u, dict) and str(u.get("id") or "").strip()
     }
     known_models_lower: set[str] = set()
-    if package.lower() == "openai" and usage_ids:
+    if usage_ids:
         try:
-            from conduit.detect.modules.openai.known_models import (
-                collect_known_model_ids,
-            )
+            from conduit.detect.vendor_profile import collect_known_ids
 
             known_models_lower = {
-                m.lower() for m in collect_known_model_ids(demo=False)
+                m.lower() for m in collect_known_ids(package, demo=False)
             }
         except Exception:  # noqa: BLE001 — fail soft; score all model_ids
             known_models_lower = set()
