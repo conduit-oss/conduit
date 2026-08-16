@@ -12,6 +12,7 @@ from conduit.patcher.ast_attr_call import apply_attr_rename, apply_call_rewrite
 from conduit.patcher.ast_import_rewrite import apply_import_rewrite
 from conduit.patcher.ast_param_rename import apply_param_rename
 from conduit.patcher.dependency_update import apply_dependency_bump
+from conduit.patcher.key_rename import apply_key_rename, is_env_file, iter_config_files
 from conduit.patcher.string_replace import exact_replace, regex_replace, write_if_changed
 from conduit.prune.grep_imports import SKIP_DIRS
 
@@ -132,6 +133,16 @@ def apply_packet(
         if path.is_file() and path.resolve() not in files:
             files.append(path.resolve())
 
+    if any(
+        isinstance(rule, dict) and rule.get("type") == "KEY_RENAME"
+        for rule in packet.get("rules") or []
+    ):
+        seen = {p.resolve() for p in files}
+        for path in iter_config_files(root):
+            if path not in seen:
+                files.append(path)
+                seen.add(path)
+
     packet_id = packet.get("packet_id", "packet")
     vendor = packet.get("package", "")
     rules = _net_dependency_bumps(list(packet.get("rules") or []))
@@ -222,6 +233,17 @@ def apply_packet(
                 detail = (
                     f'Rewrote call "{rule.get("old_callee")}" -> '
                     f'"{rule.get("new_callee")}" ({count}x)'
+                )
+            elif rule_type == "KEY_RENAME":
+                updated, count = apply_key_rename(
+                    original,
+                    str(rule.get("old_key") or ""),
+                    str(rule.get("new_key") or ""),
+                    env_file=is_env_file(path),
+                )
+                detail = (
+                    f'Renamed key "{rule.get("old_key")}" -> '
+                    f'"{rule.get("new_key")}" ({count}x)'
                 )
             else:
                 continue

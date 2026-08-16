@@ -144,3 +144,34 @@ def test_build_pr_body_includes_review_section():
     )
     assert "### Review" in body
     assert "Confirm replacement models" in body
+
+
+def test_run_summary_includes_side_effects():
+    packet = _packet()
+    packet["side_effects"] = [
+        {
+            "kind": "webhook",
+            "detail": "Receivers must accept max_completion_tokens in the payload.",
+        },
+        {
+            "kind": "database",
+            "detail": "Migrate stored completion param name if persisted.",
+        },
+    ]
+    summary = build_run_summary(
+        packet=packet,
+        report=PatchReport(),
+        test_result=_tests(),
+    )
+    text = format_run_summary(summary)
+    assert "Side effect (webhook): Receivers must accept max_completion_tokens" in text
+    assert "Side effect (database): Migrate stored completion param name" in text
+    md = format_run_summary_markdown(summary)
+    assert "Side effect (webhook):" in md
+    body = build_pr_body(
+        packet,
+        PatchReport(),
+        _tests(),
+        review_markdown=md,
+    )
+    assert "Receivers must accept max_completion_tokens" in body

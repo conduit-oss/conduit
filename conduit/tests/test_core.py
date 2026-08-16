@@ -26,10 +26,16 @@ from conduit.main import _resolve_packet_arg, app
 from conduit.patcher import apply_packet
 from conduit.patcher.ast_attr_call import rename_python_attr, rewrite_python_call
 from conduit.patcher.ast_import_rewrite import rewrite_python_imports
+from conduit.patcher.key_rename import apply_key_rename
 from conduit.prune.grep_imports import prune_by_imports
 from conduit.scaffold.module_new import scaffold_module
 from conduit.scaffold.packet_init import scaffold_packet
-from conduit.test_gen import ensure_tests, token_in_text
+from conduit.test_gen import (
+    ensure_tests,
+    oracle_forbidden_tokens,
+    oracle_scan_rels,
+    token_in_text,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 DEMO = REPO / "examples" / "demo-consumer"
@@ -945,3 +951,119 @@ def test_exact_replace_skips_model_id_prefixes():
     out2, n2 = exact_replace(src, "gpt-4-0613", "gpt-5.6-sol")
     assert n2 == 1
     assert out2 == 'model = "gpt-5.6-sol"\n'
+
+
+def _key_rename_packet(**extra) -> dict:
+    packet = {
+        "packet_id": "t",
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0",
+        "to_version": "1",
+        "rules": [
+            {
+                "type": "KEY_RENAME",
+                "old_key": "max_tokens",
+                "new_key": "max_completion_tokens",
+                "target_files": [
+                    "*.py",
+                    "*.json",
+                    "*.yaml",
+                    "*.yml",
+                    "*.toml",
+                    ".env*",
+                ],
+            }
+        ],
+    }
+    packet.update(extra)
+    return packet
+
+
+def test_apply_key_rename_quoted_and_env():
+    py, n_py = apply_key_rename(
+        'data["max_tokens"] = payload["max_tokens"]\n',
+        "max_tokens",
+        "max_completion_tokens",
+    )
+    assert n_py == 2
+    assert "max_tokens" not in py
+    assert 'data["max_completion_tokens"]' in py
+
+    yaml, n_yaml = apply_key_rename(
+        '"max_tokens": 128\n',
+        "max_tokens",
+        "max_completion_tokens",
+    )
+    assert n_yaml == 1
+    assert yaml == '"max_completion_tokens": 128\n'
+
+    env, n_env = apply_key_rename(
+        "MAX_TOKENS=128\nexport max_tokens=64\n",
+        "max_tokens",
+        "max_completion_tokens",
+        env_file=True,
+    )
+    assert n_env >= 2
+    assert "MAX_COMPLETION_TOKENS=128" in env
+    assert "export max_completion_tokens=64" in env
+    assert "MAX_TOKENS=" not in env
+
+
+def test_key_rename_packet_validates_with_side_effects():
+    packet = _key_rename_packet(
+        side_effects=[
+            {
+                "kind": "webhook",
+                "detail": "Receivers must accept max_completion_tokens.",
+            },
+            {
+                "kind": "database",
+                "detail": "Migrate stored completion param name if persisted.",
+            },
+        ]
+    )
+    assert validate_packet(packet) == []
+
+
+def test_key_rename_updates_py_yaml_env_despite_prune(tmp_path: Path):
+    src = tmp_path / "app.py"
+    src.write_text(
+        'import openai\npayload = {"max_tokens": 10}\n',
+        encoding="utf-8",
+    )
+    yaml = tmp_path / "config.yaml"
+    yaml.write_text('"max_tokens": 128\n', encoding="utf-8")
+    env = tmp_path / ".env"
+    env.write_text("MAX_TOKENS=128\n", encoding="utf-8")
+    (tmp_path / "unrelated.py").write_text("print('no vendor')\n", encoding="utf-8")
+
+    packet = _key_rename_packet()
+    report = apply_packet(
+        tmp_path,
+        packet,
+        dry_run=False,
+        require_context=True,
+        file_allowlist=[src],
+    )
+    assert '"max_completion_tokens": 10' in src.read_text(encoding="utf-8")
+    assert yaml.read_text(encoding="utf-8") == '"max_completion_tokens": 128\n'
+    assert env.read_text(encoding="utf-8") == "MAX_COMPLETION_TOKENS=128\n"
+    assert "config.yaml" in report.files_modified
+    assert ".env" in report.files_modified
+
+
+def test_oracle_key_rename_scans_config_and_forbids_old_key(tmp_path: Path):
+    app = tmp_path / "app.py"
+    app.write_text("import openai\n", encoding="utf-8")
+    yaml = tmp_path / "settings.yaml"
+    yaml.write_text('"max_tokens": 1\n', encoding="utf-8")
+    env = tmp_path / ".env.local"
+    env.write_text("MAX_TOKENS=1\n", encoding="utf-8")
+    packet = _key_rename_packet()
+    tokens = oracle_forbidden_tokens(packet)
+    assert "max_tokens" in tokens
+    rels = oracle_scan_rels(tmp_path, packet, file_allowlist=[app])
+    assert "settings.yaml" in rels
+    assert ".env.local" in rels
+

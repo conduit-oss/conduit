@@ -98,6 +98,21 @@ Rewrites call / callee paths the same way as attribute rename, targeting call ex
 }
 ```
 
+### `KEY_RENAME`
+
+Rewrites **quoted** request/response/config keys (`data["max_tokens"]`, JSON fixtures, quoted YAML) and `.env*` line prefixes. Unlike `AST_PARAM_RENAME`, this is not limited to call kwargs.
+
+Config candidates (`.env*`, `*.yaml` / `*.yml` / `*.json` / `*.toml` / `*.ini`) are always unioned into the apply set, even when import-prune dropped them. Source files still come from the existing allowlist. Other string rules are **not** broadened to every config file.
+
+```json
+{
+  "type": "KEY_RENAME",
+  "old_key": "max_tokens",
+  "new_key": "max_completion_tokens",
+  "target_files": ["*.py", "*.ts", "*.js", "*.json", "*.yaml", "*.yml", "*.toml", ".env*"]
+}
+```
+
 ### `DEPENDENCY_BUMP`
 
 Updates manifests (`requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, `pom.xml`, `build.gradle` / `.kts`). Always considered even if the file was not import-pruned.
@@ -124,7 +139,7 @@ Optional formatters (`gofmt`, `prettier`, `google-java-format`) run after edits 
 | JS/TS | tree-sitter when `langs` / `llm-js` extra installed; regex/string fallbacks |
 | Java | tree-sitter (`tree-sitter-java`) + fallbacks |
 | Go | tree-sitter (`tree-sitter-go`) + `gofmt` when available |
-| YAML/JSON/env | String / regex rules only |
+| YAML/JSON/env | String / regex / `KEY_RENAME` |
 
 Install grammars:
 

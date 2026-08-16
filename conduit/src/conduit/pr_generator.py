@@ -74,6 +74,8 @@ def _rule_summary(rule: dict[str, Any]) -> str:
         return f"attr `{rule.get('old_attr')}` → `{rule.get('new_attr')}`"
     if rtype == "AST_CALL_REWRITE":
         return f"call `{rule.get('old_callee')}` → `{rule.get('new_callee')}`"
+    if rtype == "KEY_RENAME":
+        return f"key `{rule.get('old_key')}` → `{rule.get('new_key')}`"
     return rtype or "(rule)"
 
 

@@ -32,6 +32,22 @@
       }
     },
     "notes": { "type": ["string", "null"] },
+    "side_effects": {
+      "type": "array",
+      "description": "Human checklist for webhooks, databases, and other non-code ripples.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "detail"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["webhook", "database", "config", "other"]
+          },
+          "detail": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "ignore": {
       "type": "object",
       "additionalProperties": false,
@@ -65,7 +81,8 @@
         { "$ref": "#/$defs/dependency_bump" },
         { "$ref": "#/$defs/ast_import_rewrite" },
         { "$ref": "#/$defs/ast_attr_rename" },
-        { "$ref": "#/$defs/ast_call_rewrite" }
+        { "$ref": "#/$defs/ast_call_rewrite" },
+        { "$ref": "#/$defs/key_rename" }
       ]
     },
     "rule_reason": {
@@ -191,6 +208,22 @@
         },
         "old_callee": { "type": "string" },
         "new_callee": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "key_rename": {
+      "type": "object",
+      "required": ["type", "target_files", "old_key", "new_key"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "KEY_RENAME" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "old_key": { "type": "string", "minLength": 1 },
+        "new_key": { "type": "string", "minLength": 1 },
         "reason": { "$ref": "#/$defs/rule_reason" }
       }
     }

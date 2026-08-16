@@ -22,6 +22,7 @@ _RULE_TOKEN_KEYS = {
     "AST_IMPORT_REWRITE": "old_import",
     "AST_ATTR_RENAME": "old_attr",
     "AST_CALL_REWRITE": "old_callee",
+    "KEY_RENAME": "old_key",
 }
 
 _MANIFEST_NAMES = (
@@ -125,6 +126,15 @@ def oracle_scan_rels(
     ):
         for name in _MANIFEST_NAMES:
             _add(root / name)
+
+    if any(
+        isinstance(rule, dict) and str(rule.get("type") or "") == "KEY_RENAME"
+        for rule in packet.get("rules") or []
+    ):
+        from conduit.patcher.key_rename import iter_config_files
+
+        for path in iter_config_files(root):
+            _add(path)
 
     return sorted(out)
 

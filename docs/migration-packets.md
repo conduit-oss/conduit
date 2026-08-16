@@ -15,6 +15,9 @@ Schema: [`schema/conduit-packet.schema.json`](../schema/conduit-packet.schema.js
   "to_version": "1.40.0",
   "sources": [ { "url": "…", "kind": "docs" } ],
   "notes": "optional",
+  "side_effects": [
+    {"kind": "webhook", "detail": "Receivers must accept max_completion_tokens in the payload."}
+  ],
   "ignore": {
     "globs": ["**/policy.py"],
     "paths": [],
@@ -25,6 +28,8 @@ Schema: [`schema/conduit-packet.schema.json`](../schema/conduit-packet.schema.js
 ```
 
 Optional `ignore` protects migration-contract files/patterns from self-correct heuristics and LLMs (also auto-merged with `.conduit/ignore.json` and discovered `LEGACY_`/`FORBIDDEN_` fixtures). See [Testing & self-correction](testing-and-self-correct.md).
+
+Optional `side_effects` is a human checklist (`webhook`, `database`, `config`, `other`) for ripples Conduit cannot apply (payload receivers, stored field names). It is not executed; items appear under **Double-check** in the run summary and PR body.
 
 `ecosystem` is one of: `pypi`, `npm`, `go`, `maven`, `other`.
 
@@ -101,6 +106,7 @@ conduit packet show ./my-packet/conduit-packet.json
 | `AST_IMPORT_REWRITE` | Rewrite import module path (Python, JS/TS, Java, Go) |
 | `AST_ATTR_RENAME` | Rename attribute / member chain |
 | `AST_CALL_REWRITE` | Rewrite call callee path |
+| `KEY_RENAME` | Rename quoted dict/JSON/YAML keys and `.env` prefixes (config files included even if import-pruned) |
 | `DEPENDENCY_BUMP` | Bump version in pip/npm/go.mod/Maven/Gradle manifests |
 
 Optional `reason` on any rule explains why it was chosen (endpoint-compat checks, deprecation docs, etc.). PR bodies render these under **Rationale**, with packet `notes` and full `sources`.

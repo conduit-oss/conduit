@@ -46,6 +46,7 @@ def _capped(items: Iterable[str], cap: int) -> list[str]:
 
 def _core_review(
     *,
+    packet: dict[str, Any],
     coverage: PacketCoverageReport | None,
     generated: list[str],
     corrected: list[str],
@@ -67,6 +68,14 @@ def _core_review(
                 continue
             detail = f" — {item.detail}" if item.detail else ""
             items.append(f"Coverage unknown {item.kind} `{item.value}`{detail}")
+    for effect in packet.get("side_effects") or []:
+        if not isinstance(effect, dict):
+            continue
+        detail = str(effect.get("detail") or "").strip()
+        if not detail:
+            continue
+        kind = str(effect.get("kind") or "other").strip() or "other"
+        items.append(f"Side effect ({kind}): {detail}")
     if generated:
         items.append("Review generated tests: " + ", ".join(generated))
     if corrected:
@@ -133,6 +142,7 @@ def build_run_summary(
         tests=test_result.summary,
         pr_message=pr_message,
         core_review=_core_review(
+            packet=packet,
             coverage=coverage,
             generated=list(generated or []),
             corrected=list(corrected or []),

@@ -378,7 +378,8 @@ def synthesize_from_docs(
             "Generate a Conduit migration packet JSON with keys: "
             "packet_id, package, ecosystem, from_version, to_version, sources, notes, rules. "
             "Rules may use EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
-            "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE. "
+            "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE, "
+            "KEY_RENAME. "
             "Only propose replacements grounded in the provided changelog/docs. "
             "If a successor is unknown, put it in notes — do not invent paths or callees. "
             "Reply with JSON only."
@@ -410,7 +411,8 @@ _EVIDENCE_SYSTEM = (
     "You are a Staff Software Engineer authoring Conduit Migration Packets. "
     "Emit JSON only with keys: notes (string), sources (list of {url, kind}), rules (list). "
     "Allowed rule types: EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
-    "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE. "
+    "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE, "
+    "KEY_RENAME. "
     "Every path replace, param rename, and call rewrite MUST be supported by the evidence "
     "excerpts (cite URLs in notes). "
     "For AST_PARAM_RENAME include explicit function_target(s) taken from evidence — "
@@ -427,7 +429,9 @@ _EVIDENCE_SYSTEM = (
     "Scope rules to the provided source packet: only models/callees/paths the client "
     "uses. Prefer AST_CALL_REWRITE / AST_ATTR_RENAME for SDK call surfaces observed "
     "in source.usages (path-string replaces are not enough when the client calls "
-    "Resource.create). One DEPENDENCY_BUMP only, from_version → to_version. "
+    "Resource.create). Use KEY_RENAME when request/response dict keys, JSON/YAML "
+    "fixtures, or .env names change (AST_PARAM_RENAME only rewrites call kwargs). "
+    "One DEPENDENCY_BUMP only, from_version → to_version. "
     "Cover every in-scope deprecated usage; if a successor is documented, emit a rule."
 )
 
@@ -464,6 +468,15 @@ def _rule_dedupe_key(rule: dict[str, Any]) -> str:
                 "type": rtype,
                 "old_attr": rule.get("old_attr"),
                 "new_attr": rule.get("new_attr"),
+            },
+            sort_keys=True,
+        )
+    if rtype == "KEY_RENAME":
+        return json.dumps(
+            {
+                "type": rtype,
+                "old_key": rule.get("old_key"),
+                "new_key": rule.get("new_key"),
             },
             sort_keys=True,
         )
