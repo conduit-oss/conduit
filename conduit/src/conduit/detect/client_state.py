@@ -299,12 +299,12 @@ def _agent_enrich(
 ) -> PackageClientState:
     """Agent/LLM pass; merge only tokens that appear in the consumer repo."""
     try:
-        from conduit.llm.client import get_llm_client
+        from conduit.llm.client import attach_llm_log, get_llm_client
     except ImportError:
         return state
 
     emit = log if callable(log) else None
-    client = get_llm_client(log=emit)
+    client = attach_llm_log(get_llm_client(), emit)
     if client is None:
         return state
 

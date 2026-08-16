@@ -26,7 +26,7 @@ conduit run -v --path . --packet openai
 
 ## `conduit run`
 
-Full pipeline: detect → prune → export delta → packet → apply → test gen → verify → PR.
+Full pipeline: detect → prune → export delta → packet → apply → verify (oracle + tests + self-correct) → PR.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -37,7 +37,7 @@ Full pipeline: detect → prune → export delta → packet → apply → test g
 | `--packet` | cache/synth | Path to an existing `conduit-packet.json`, **or** a package name (e.g. `openai`, `stripe`) |
 | `--demo` | false | Offline detect fixtures + openai demo packet fallback (default is **live** vendor sources) |
 | `--refresh-packet` | false | Ignore `.conduit/packets` cache and re-synthesize from current detect signals (use after detect/normalize changes) |
-| `--skip-tests` | false | Skip test gen + verify |
+| `--skip-tests` | false | Skip oracle generation + verify (apply only) |
 | `--skip-pr` | false | Do not open a PR |
 | `--no-push` | false | Do not push remote |
 | `--skip-modules` | false | Lockfile detect only |
@@ -80,7 +80,7 @@ Exit `0` if any signals, else `1`.
 
 ## `conduit apply`
 
-Apply a packet only.
+Apply a packet only (no oracle tests, no verify).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -92,7 +92,7 @@ Apply a packet only.
 
 ## `conduit verify`
 
-Run tests + self-correct using a packet for heuristic/LLM context.
+Write/update packet leftover-token oracle tests, then run the suite + self-correct using the packet for heuristic/LLM context. Same oracle + verify path as `conduit run`.
 
 | Option | Default | Description |
 |--------|---------|-------------|

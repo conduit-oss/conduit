@@ -425,3 +425,12 @@ def get_llm_client(
         reasoning_effort=effort,
         log=log,
     )
+
+
+def attach_llm_log(
+    client: LlmClient | None, log: Callable[[str], None] | None
+) -> LlmClient | None:
+    """Set ``client.log`` when present so mocks of ``get_llm_client()`` stay valid."""
+    if client is not None and log is not None and hasattr(client, "log"):
+        client.log = log
+    return client
