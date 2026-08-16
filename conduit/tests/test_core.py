@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 from conduit.detect.lockfile_diff import detect_lockfile_jumps, diff_versions
@@ -20,14 +22,14 @@ from conduit.packet.synthesize import (
     load_fixture_openai_packet,
 )
 from conduit.packet.validate import validate_packet
-from conduit.main import _resolve_packet_arg
+from conduit.main import _resolve_packet_arg, app
 from conduit.patcher import apply_packet
 from conduit.patcher.ast_attr_call import rename_python_attr, rewrite_python_call
 from conduit.patcher.ast_import_rewrite import rewrite_python_imports
 from conduit.prune.grep_imports import prune_by_imports
 from conduit.scaffold.module_new import scaffold_module
 from conduit.scaffold.packet_init import scaffold_packet
-from conduit.test_gen import ensure_tests
+from conduit.test_gen import ensure_tests, token_in_text
 
 REPO = Path(__file__).resolve().parents[2]
 DEMO = REPO / "examples" / "demo-consumer"
@@ -437,7 +439,16 @@ def test_rename_python_attr_and_call():
     assert n2 >= 1
 
 
-def test_ensure_tests_creates_stub(tmp_path: Path, monkeypatch):
+def _disable_llm(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CONDUIT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("CONDUIT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("CONDUIT_LLM_BASE_URL", raising=False)
+
+
+def test_ensure_tests_empty_rules_import_smoke_no_tautology(tmp_path: Path, monkeypatch):
+    _disable_llm(monkeypatch)
     packet = {
         "package": "demo",
         "ecosystem": "pypi",
@@ -445,14 +456,196 @@ def test_ensure_tests_creates_stub(tmp_path: Path, monkeypatch):
         "to_version": "2.0.0",
         "rules": [],
     }
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("CONDUIT_LLM_PROVIDER", raising=False)
-    monkeypatch.delenv("CONDUIT_LLM_API_KEY", raising=False)
-    monkeypatch.delenv("CONDUIT_LLM_BASE_URL", raising=False)
     created = ensure_tests(tmp_path, packet)
-    assert created
-    assert (tmp_path / created[0]).is_file()
+    assert created == ["tests/test_conduit_oracle.py"]
+    text = (tmp_path / created[0]).read_text(encoding="utf-8")
+    assert "or True" not in text
+    assert "test_package_importable" in text
+
+
+def test_ensure_tests_oracle_fails_on_leftover_match(tmp_path: Path, monkeypatch):
+    _disable_llm(monkeypatch)
+    app = tmp_path / "app.py"
+    app.write_text("model = 'gpt-4-0613'\n", encoding="utf-8")
+    packet = {
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "1.0.0",
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "target_files": ["*.py"],
+                "match": "gpt-4-0613",
+                "replace": "gpt-4o",
+            }
+        ],
+    }
+    created = ensure_tests(tmp_path, packet, file_allowlist=[app])
+    assert created == ["tests/test_conduit_oracle.py"]
+    assert token_in_text(app.read_text(encoding="utf-8"), "gpt-4-0613")
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", str(tmp_path / created[0]), "-q"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != 0
+    assert "gpt-4-0613" in (proc.stdout + proc.stderr)
+
+
+def test_ensure_tests_oracle_skips_ignored_contract(tmp_path: Path, monkeypatch):
+    _disable_llm(monkeypatch)
+    (tmp_path / "app.py").write_text("model = 'gpt-4o'\n", encoding="utf-8")
+    oracle = tmp_path / "policy.py"
+    oracle.write_text(
+        "LEGACY_MODEL = 'gpt-4-0613'\n",
+        encoding="utf-8",
+    )
+    packet = {
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "1.0.0",
+        "ignore": {"paths": ["policy.py"]},
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "target_files": ["*.py"],
+                "match": "gpt-4-0613",
+                "replace": "gpt-4o",
+            }
+        ],
+    }
+    created = ensure_tests(
+        tmp_path,
+        packet,
+        file_allowlist=[tmp_path / "app.py", oracle],
+    )
+    text = (tmp_path / created[0]).read_text(encoding="utf-8")
+    assert "app.py" in text
+    assert "policy.py" not in text
+
+
+def test_ensure_tests_writes_oracle_when_native_suite_exists(
+    tmp_path: Path, monkeypatch
+):
+    _disable_llm(monkeypatch)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_app.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    app = tmp_path / "app.py"
+    app.write_text("x = 1\n", encoding="utf-8")
+    packet = {
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "1",
+        "to_version": "2",
+        "rules": [
+            {
+                "type": "AST_PARAM_RENAME",
+                "target_files": ["*.py"],
+                "function_target": "create",
+                "old_param": "max_tokens",
+                "new_param": "max_completion_tokens",
+            }
+        ],
+    }
+    created = ensure_tests(tmp_path, packet, file_allowlist=[app])
+    assert "tests/test_conduit_oracle.py" in created
+    text = (tmp_path / "tests" / "test_conduit_oracle.py").read_text(encoding="utf-8")
+    assert "max_tokens" in text
+    assert "test_conduit_no_legacy_tokens" in text
+
+
+def test_ensure_tests_writes_js_oracle(tmp_path: Path, monkeypatch):
+    _disable_llm(monkeypatch)
+    app = tmp_path / "index.js"
+    app.write_text("const model = 'gpt-4-0613';\n", encoding="utf-8")
+    packet = {
+        "package": "openai",
+        "ecosystem": "npm",
+        "from_version": "3",
+        "to_version": "4",
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "target_files": ["*.js"],
+                "match": "gpt-4-0613",
+                "replace": "gpt-4o",
+            }
+        ],
+    }
+    created = ensure_tests(tmp_path, packet, file_allowlist=[app])
+    assert created == ["conduit_oracle.test.js"]
+    text = (tmp_path / created[0]).read_text(encoding="utf-8")
+    assert "gpt-4-0613" in text
+    assert "conduit no legacy tokens" in text
+    assert "or True" not in text
+
+
+def _leftover_packet() -> dict:
+    return {
+        "packet_id": "openai-0.28.1-1.0.0",
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "1.0.0",
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "target_files": ["*.py"],
+                "match": "gpt-4-0613",
+                "replace": "gpt-4o",
+            }
+        ],
+    }
+
+
+def test_verify_cmd_writes_oracle(tmp_path: Path, monkeypatch):
+    from typer.testing import CliRunner
+
+    _disable_llm(monkeypatch)
+    (tmp_path / "app.py").write_text(
+        "import openai\nmodel = 'gpt-4-0613'\n", encoding="utf-8"
+    )
+    pkt = tmp_path / "conduit-packet.json"
+    pkt.write_text(json.dumps(_leftover_packet()), encoding="utf-8")
+    result = CliRunner().invoke(
+        app,
+        [
+            "verify",
+            "--path",
+            str(tmp_path),
+            "--packet",
+            str(pkt),
+            "--max-retries",
+            "1",
+        ],
+    )
+    oracle = tmp_path / "tests" / "test_conduit_oracle.py"
+    assert oracle.is_file(), result.output
+    text = oracle.read_text(encoding="utf-8")
+    assert "test_conduit_no_legacy_tokens" in text
+    assert "leftover-token oracle" in text
+
+
+def test_apply_cmd_does_not_write_oracle(tmp_path: Path, monkeypatch):
+    from typer.testing import CliRunner
+
+    _disable_llm(monkeypatch)
+    (tmp_path / "app.py").write_text(
+        "import openai\nmodel = 'gpt-4-0613'\n", encoding="utf-8"
+    )
+    pkt = tmp_path / "conduit-packet.json"
+    pkt.write_text(json.dumps(_leftover_packet()), encoding="utf-8")
+    result = CliRunner().invoke(
+        app,
+        ["apply", "--path", str(tmp_path), "--packet", str(pkt)],
+    )
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / "tests" / "test_conduit_oracle.py").exists()
 
 
 def test_attr_rename_rule_in_packet(tmp_path: Path):

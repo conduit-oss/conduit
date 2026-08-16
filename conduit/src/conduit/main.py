@@ -158,6 +158,49 @@ def _main(
     _VERBOSE = verbose
 
 
+def _verify_with_oracle(
+    root: Path,
+    packet: dict,
+    *,
+    max_retries: int,
+    changed_files: list[str] | None = None,
+    file_allowlist: list[Path] | None = None,
+    source: dict | None = None,
+    coverage_missed: list[dict] | None = None,
+):
+    """Write packet oracle tests, then run the suite with self-correct.
+
+    Shared by ``conduit verify`` and ``conduit run`` so split workflows
+    get the same leftover-token checks.
+    """
+    pkg = str(packet.get("package") or "")
+    allowlist = file_allowlist
+    if allowlist is None and pkg:
+        allowlist = prune_by_imports(root, [pkg])
+
+    beat("hatch")
+    generated = ensure_tests(
+        root,
+        packet,
+        changed_files=changed_files,
+        file_allowlist=allowlist,
+    )
+    for rel in generated:
+        console.print(f"[test-gen] created {rel}")
+
+    beat("repair")
+    result, corrected = verify_with_self_correct(
+        root,
+        packet,
+        max_retries=max_retries,
+        verbose=_VERBOSE,
+        log=console.print,
+        source=source,
+        coverage_missed=coverage_missed,
+    )
+    return result, generated, corrected
+
+
 def _resolve_root(path: Path) -> Path:
     raw = str(path)
     # Windows: "C:foo" (no slash after colon) is drive-relative to cwd, not
@@ -358,7 +401,7 @@ def verify_cmd(
         False, "--verbose", "-v", help="Print self-correct failure/fix details"
     ),
 ) -> None:
-    """Run native tests with optional self-correction."""
+    """Run oracle tests + native suite with optional self-correction."""
     global _VERBOSE
     if verbose:
         _VERBOSE = True
@@ -370,9 +413,8 @@ def verify_cmd(
     )
     start_pulse(console, "repair")
     try:
-        beat("test")
-        result, corrected = verify_with_self_correct(
-            root, data, max_retries=max_retries, verbose=_VERBOSE, log=console.print
+        result, _generated, corrected = _verify_with_oracle(
+            root, data, max_retries=max_retries
         )
     finally:
         stop_pulse()
@@ -615,23 +657,15 @@ def _run_pipeline(
         generated: list[str] = []
         corrected: list[str] = []
     else:
-        beat("hatch")
-        generated = ensure_tests(root, pkt, changed_files=report.files_modified)
-        for rel in generated:
-            console.print(f"[test-gen] created {rel}")
-            if rel not in report.files_modified:
-                report.files_modified.append(rel)
-
-        beat("repair")
         src_state = (detected.package_states or {}).get(pkg) or (
             detected.package_states or {}
         ).get((pkg or "").lower())
-        test_result, corrected = verify_with_self_correct(
+        test_result, generated, corrected = _verify_with_oracle(
             root,
             pkt,
             max_retries=max_retries,
-            verbose=_VERBOSE,
-            log=console.print,
+            changed_files=report.files_modified,
+            file_allowlist=files,
             source=src_state.to_dict() if src_state is not None else None,
             coverage_missed=(
                 [
@@ -642,6 +676,9 @@ def _run_pipeline(
                 else None
             ),
         )
+        for rel in generated:
+            if rel not in report.files_modified:
+                report.files_modified.append(rel)
         for rel in corrected:
             console.print(f"[self-correct] updated {rel}")
             if rel not in report.files_modified:

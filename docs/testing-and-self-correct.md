@@ -14,19 +14,26 @@ After apply, Conduit verifies the consumer repo still works.
 
 If nothing is detected, the runner currently treats the suite as a soft pass — unless test generation creates files first (see below).
 
-## Generating tests when missing
+## Packet-derived oracle tests
 
-[`test_gen.ensure_tests`](../conduit/src/conduit/test_gen.py) runs before verify when you use `conduit run` (unless `--skip-tests`):
+[`test_gen.ensure_tests`](../conduit/src/conduit/test_gen.py) runs at the start of **`conduit verify`** (and therefore also `conduit run`, which calls the same helper). It **always** regenerates a leftover-token oracle from the migration packet (even if the repo already has a suite):
 
-1. If a runner **and** test files already exist → no-op  
-2. Else if an LLM is configured → ask it for a minimal smoke test JSON (`files` map)  
-3. Else write a **deterministic stub**:
-   - Python: `tests/test_conduit_migration.py` (import package + marker assert)
-   - npm ecosystem: `conduit_migration.test.js`
+- Python: `tests/test_conduit_oracle.py`
+- npm: `conduit_oracle.test.js`
+
+The file is self-contained (does not import Conduit). It scans the pruned/changed file set for **legacy tokens** from packet rules (`match`, `old_param`, `old_import`, `old_attr`, `old_callee`, and `DEPENDENCY_BUMP` pins). Matching uses the same whole-token boundaries as apply, so `gpt-4` does not flag `gpt-4-0613`.
+
+Ignored paths (packet `ignore`, `.conduit/ignore.json`, auto-discovered `LEGACY_`/`FORBIDDEN_` contract files) are omitted from the scan. `REGEX_REPLACE` rules are skipped (no safe leftover string).
+
+If the packet has **no** extractable tokens and the repo has **no** other tests, Conduit writes a one-line **import smoke** instead (no tautological `or True` asserts).
+
+Optional LLM extra tests run only when no consumer tests exist besides the oracle, and they must not overwrite the oracle path.
+
+Generated paths are included in the patch report / PR body when `conduit run` opens a PR. Oracle failures look like normal pytest/npm failures (`app.py still contains 'gpt-4-0613'`), so the self-correct loop can repair them.
+
+`conduit apply` does **not** write the oracle (it only applies packet rules). `conduit run --skip-tests` skips oracle generation and verify.
 
 Runners already cover pytest, `npm test`, and `go test ./...`. Java/Maven suites are not auto-detected yet — pass existing tests in-repo or generate via LLM.
-
-Generated paths are included in the patch report / PR body.
 
 ## Self-correction loop
 
@@ -82,12 +89,12 @@ conduit run -v --path . --packet openai --skip-pr
 conduit verify --path . --packet ./conduit-packet.json --max-retries 5
 conduit run ... --max-retries 3
 conduit run -v ... --max-retries 3   # show failure + fix details per attempt
-conduit run ... --skip-tests    # apply only; not recommended for real migrations
+conduit run ... --skip-tests    # apply only; skips oracle + verify
 ```
 
 ## Tips
 
-- Prefer real unit tests in the consumer repo; generated smoke tests only prove importability.
+- Prefer real unit tests in the consumer repo; the generated oracle only proves leftover packet tokens are gone from scanned files.
 - For local iteration without burning API quota, leave LLM unset and rely on packet quality + heuristics.
 - CI should pass `CONDUIT_LLM_*` secrets only when you want the repair loop online.
 
