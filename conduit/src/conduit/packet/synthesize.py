@@ -556,14 +556,14 @@ def synthesize_from_evidence(
     LLM-author rules via Responses agent tools (web_search / fetch_url / read_file).
     Returns (packet, warnings).
     """
-    from conduit.llm import get_llm_client
+    from conduit.llm import attach_llm_log, get_llm_client
     from conduit.llm.executors import RepoToolExecutor
     from conduit.llm.tools import agent_tools
     from conduit.repair_ignore import IgnoreList, build_ignore_list
 
     warnings: list[str] = []
     emit = log if callable(log) else None
-    client = get_llm_client(log=emit)
+    client = attach_llm_log(get_llm_client(), emit)
     if client is None:
         warnings.append("LLM packet enrichment skipped (no LLM configured)")
         return base, warnings

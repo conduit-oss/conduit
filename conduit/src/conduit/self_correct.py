@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from conduit.llm import get_llm_client
+from conduit.llm import attach_llm_log, get_llm_client
 from conduit.repair_ignore import IgnoreList, build_ignore_list
 from conduit.test_runner import TestResult, run_tests
 
@@ -64,6 +64,7 @@ def _candidate_path(root: Path, raw: str) -> Path | None:
     raw = raw.strip().strip('"').strip("'")
     if not raw:
         return None
+    raw = raw.replace("\\", "/")
     path = Path(raw)
     if not path.is_absolute():
         path = root / path
@@ -692,7 +693,9 @@ def _llm_suggest_fixes(
     coverage_missed: list[dict[str, Any]] | None = None,
 ) -> LlmRepairSuggestion:
     emit = log or _noop_log
-    client = get_llm_client(log=emit if emit is not _noop_log else None)
+    client = attach_llm_log(
+        get_llm_client(), emit if emit is not _noop_log else None
+    )
     if client is None:
         return LlmRepairSuggestion()
 
