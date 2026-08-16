@@ -117,6 +117,8 @@ def _signal_in_scope(signal: ChangeSignal, index: dict[str, Any]) -> bool:
         "SDK_MAJOR_BUMP",
         "SDK_BUMP",
         "PARAM_RENAME",
+        "PACKAGE_ADDED",
+        "PACKAGE_REMOVED",
     }:
         return True
     from conduit.detect.modules.openai.path_callees import normalize_api_path
@@ -157,6 +159,60 @@ def filter_signals_to_source(
             continue
         if _signal_in_scope(signal, index):
             out.append(signal)
+    return out
+
+
+_DEP_RULE_TYPES = frozenset(
+    {"DEPENDENCY_BUMP", "DEPENDENCY_ADD", "DEPENDENCY_REMOVE"}
+)
+
+
+def _named_dep_packages(rules: list[dict[str, Any]], package: str) -> set[str]:
+    named = {package.lower()}
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        if str(rule.get("type") or "") not in _DEP_RULE_TYPES:
+            continue
+        pkg = str(rule.get("package") or "").strip().lower()
+        if pkg:
+            named.add(pkg)
+    return named
+
+
+def fold_companion_rules(
+    rules: list[dict[str, Any]],
+    signals: list[ChangeSignal],
+    *,
+    package: str,
+) -> list[dict[str, Any]]:
+    """Append suggested_rules from signals whose package is already named."""
+    out = list(rules)
+    seen = {json.dumps(r, sort_keys=True) for r in out if isinstance(r, dict)}
+    named = _named_dep_packages(out, package)
+    changed = True
+    while changed:
+        changed = False
+        for signal in signals:
+            if signal.package.lower() not in named:
+                continue
+            for rule in signal.suggested_rules:
+                if not isinstance(rule, dict):
+                    continue
+                item = dict(rule)
+                key = json.dumps(item, sort_keys=True)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(item)
+                pkg = str(item.get("package") or "").strip().lower()
+                if (
+                    str(item.get("type") or "") in _DEP_RULE_TYPES
+                    and pkg
+                    and pkg not in named
+                ):
+                    named.add(pkg)
+                    changed = True
     return out
 
 
@@ -234,6 +290,7 @@ def packet_from_signals(
     ecosystem: str = "pypi",
     from_version: str = "0.0.0",
     to_version: str = "1.0.0",
+    companion_signals: list[ChangeSignal] | None = None,
 ) -> dict[str, Any]:
     """Assemble a packet from ChangeSignal suggested_rules (deterministic)."""
     pkg_signals = [s for s in signals if s.package.lower() == package.lower()]
@@ -312,7 +369,11 @@ def packet_from_signals(
                 seen_rules.add(key)
                 rules.append(rule)
     packet["rules"] = collapse_dependency_bumps(
-        rules,
+        fold_companion_rules(
+            rules,
+            list(companion_signals or []) + list(signals),
+            package=package,
+        ),
         package=package,
         from_version=str(from_version),
         to_version=str(to_version),
@@ -378,7 +439,8 @@ def synthesize_from_docs(
             "Generate a Conduit migration packet JSON with keys: "
             "packet_id, package, ecosystem, from_version, to_version, sources, notes, rules. "
             "Rules may use EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
-            "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE. "
+            "DEPENDENCY_BUMP, DEPENDENCY_ADD, DEPENDENCY_REMOVE, AST_IMPORT_REWRITE, "
+            "AST_ATTR_RENAME, AST_CALL_REWRITE, KEY_RENAME. "
             "Only propose replacements grounded in the provided changelog/docs. "
             "If a successor is unknown, put it in notes — do not invent paths or callees. "
             "Reply with JSON only."
@@ -410,7 +472,8 @@ _EVIDENCE_SYSTEM = (
     "You are a Staff Software Engineer authoring Conduit Migration Packets. "
     "Emit JSON only with keys: notes (string), sources (list of {url, kind}), rules (list). "
     "Allowed rule types: EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
-    "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE. "
+    "DEPENDENCY_BUMP, DEPENDENCY_ADD, DEPENDENCY_REMOVE, AST_IMPORT_REWRITE, "
+    "AST_ATTR_RENAME, AST_CALL_REWRITE, KEY_RENAME. "
     "Every path replace, param rename, and call rewrite MUST be supported by the evidence "
     "excerpts (cite URLs in notes). "
     "For AST_PARAM_RENAME include explicit function_target(s) taken from evidence — "
@@ -427,7 +490,12 @@ _EVIDENCE_SYSTEM = (
     "Scope rules to the provided source packet: only models/callees/paths the client "
     "uses. Prefer AST_CALL_REWRITE / AST_ATTR_RENAME for SDK call surfaces observed "
     "in source.usages (path-string replaces are not enough when the client calls "
-    "Resource.create). One DEPENDENCY_BUMP only, from_version → to_version. "
+    "Resource.create). Use KEY_RENAME when request/response dict keys, JSON/YAML "
+    "fixtures, or .env names change (AST_PARAM_RENAME only rewrites call kwargs). "
+    "One primary DEPENDENCY_BUMP pinned to packet from_version → to_version. "
+    "When evidence names companion packages (splits, extra wheels), emit "
+    "DEPENDENCY_ADD / DEPENDENCY_REMOVE / extra DEPENDENCY_BUMP with ecosystems "
+    "and scope (main|dev|peer) — do not invent companion names. "
     "Cover every in-scope deprecated usage; if a successor is documented, emit a rule."
 )
 
@@ -464,6 +532,26 @@ def _rule_dedupe_key(rule: dict[str, Any]) -> str:
                 "type": rtype,
                 "old_attr": rule.get("old_attr"),
                 "new_attr": rule.get("new_attr"),
+            },
+            sort_keys=True,
+        )
+    if rtype == "KEY_RENAME":
+        return json.dumps(
+            {
+                "type": rtype,
+                "old_key": rule.get("old_key"),
+                "new_key": rule.get("new_key"),
+            },
+            sort_keys=True,
+        )
+    if rtype in {"DEPENDENCY_ADD", "DEPENDENCY_REMOVE", "DEPENDENCY_BUMP"}:
+        return json.dumps(
+            {
+                "type": rtype,
+                "package": rule.get("package"),
+                "from_version": rule.get("from_version"),
+                "to_version": rule.get("to_version"),
+                "scope": rule.get("scope") or "main",
             },
             sort_keys=True,
         )
@@ -872,6 +960,7 @@ def ensure_packet(
         ecosystem=eco,
         from_version=from_v,
         to_version=to_v,
+        companion_signals=signals,
     )
     used_fixture = False
     profile = None
@@ -946,7 +1035,11 @@ def ensure_packet(
             to_version=str(packet.get("to_version") or to_v),
         )
         packet["rules"] = collapse_dependency_bumps(
-            list(packet.get("rules") or []),
+            fold_companion_rules(
+                list(packet.get("rules") or []),
+                signals,
+                package=package,
+            ),
             package=package,
             from_version=str(packet.get("from_version") or from_v),
             to_version=str(packet.get("to_version") or to_v),
@@ -988,7 +1081,11 @@ def ensure_packet(
                     to_version=str(packet.get("to_version") or to_v),
                 )
                 packet["rules"] = collapse_dependency_bumps(
-                    list(packet.get("rules") or []),
+                    fold_companion_rules(
+                        list(packet.get("rules") or []),
+                        signals,
+                        package=package,
+                    ),
                     package=package,
                     from_version=str(packet.get("from_version") or from_v),
                     to_version=str(packet.get("to_version") or to_v),

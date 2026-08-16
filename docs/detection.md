@@ -22,7 +22,9 @@ Conduit diffs watched files against `--base-ref` (or `HEAD~1` / merge-base heuri
 - `poetry.lock`, `Pipfile.lock`
 - `go.mod`
 
-Only packages whose declared version **changed** become `VersionJump` signals. Unchanged dependencies are ignored (Tier 1 isolation).
+Only packages whose declared version **changed** become bump `VersionJump` signals. Names that appear only on the new side become `PACKAGE_ADDED`; names only on the old side become `PACKAGE_REMOVED`. Unchanged dependencies are ignored (Tier 1 isolation). Add/remove events are not filtered by `--majors-only`.
+
+Companion ADD/REMOVE rules are folded into the primary packet only when that packet already names the package (do not invent companions from the same PR). Leftover lockfile events still appear under Double-check.
 
 Separately, Conduit always parses **currently declared** versions from the same manifests via `read_installed()` (`DetectResult.installed`). That map is used to:
 

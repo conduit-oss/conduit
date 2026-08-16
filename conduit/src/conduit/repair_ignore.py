@@ -79,6 +79,10 @@ def _packet_match_strings(packet: dict[str, Any]) -> set[str]:
             old = rule.get("old_attr")
             if old:
                 out.add(str(old))
+        elif rtype == "KEY_RENAME":
+            old = rule.get("old_key")
+            if old:
+                out.add(str(old))
     return out
 
 

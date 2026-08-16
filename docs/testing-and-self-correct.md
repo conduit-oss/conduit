@@ -21,7 +21,7 @@ If nothing is detected, the runner currently treats the suite as a soft pass —
 - Python: `tests/test_conduit_oracle.py`
 - npm: `conduit_oracle.test.js`
 
-The file is self-contained (does not import Conduit). It scans the pruned/changed file set for **legacy tokens** from packet rules (`match`, `old_param`, `old_import`, `old_attr`, `old_callee`, and `DEPENDENCY_BUMP` pins). Matching uses the same whole-token boundaries as apply, so `gpt-4` does not flag `gpt-4-0613`.
+The file is self-contained (does not import Conduit). It scans the pruned/changed file set for **legacy tokens** from packet rules (`match`, `old_param`, `old_key`, `old_import`, `old_attr`, `old_callee`, and `DEPENDENCY_BUMP` pins). Matching uses the same whole-token boundaries as apply, so `gpt-4` does not flag `gpt-4-0613`. `KEY_RENAME` also includes config/env files in the scan even when import-prune dropped them.
 
 Ignored paths (packet `ignore`, `.conduit/ignore.json`, auto-discovered `LEGACY_`/`FORBIDDEN_` contract files) are omitted from the scan. `REGEX_REPLACE` rules are skipped (no safe leftover string).
 
@@ -65,7 +65,7 @@ Heuristics and LLMs share [`repair_ignore.build_ignore_list`](../conduit/src/con
 |--------|---------|
 | Packet `ignore` | `"ignore": { "globs": ["**/policy.py"], "paths": [], "patterns": [] }` |
 | Consumer `.conduit/ignore.json` | Same shape as packet `ignore` |
-| Auto | Files that define `LEGACY_` / `FORBIDDEN_` / `EXPECTED_` / `ALLOWED_` / `MODERN_` constants whose values appear in packet match/old_param strings |
+| Auto | Files that define `LEGACY_` / `FORBIDDEN_` / `EXPECTED_` / `ALLOWED_` / `MODERN_` constants whose values appear in packet match/old_param/old_key strings |
 
 Ignored files are omitted from LLM context and heuristic scans. With `-v`, Conduit prints the ignore list at the start of self-correct.
 

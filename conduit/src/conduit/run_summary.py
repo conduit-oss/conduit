@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from conduit.detect.coverage import PacketCoverageReport
 from conduit.detect.modules.discovery import load_modules
+from conduit.patcher.dependency_update import DEP_RULE_TYPES, dependency_packages
 from conduit.patcher.engine import ChangeRecord, PatchReport
 from conduit.test_runner import TestResult
 
@@ -46,6 +47,8 @@ def _capped(items: Iterable[str], cap: int) -> list[str]:
 
 def _core_review(
     *,
+    packet: dict[str, Any],
+    report: PatchReport,
     coverage: PacketCoverageReport | None,
     generated: list[str],
     corrected: list[str],
@@ -53,6 +56,7 @@ def _core_review(
     skip_tests: bool,
     pr_created: bool | None,
     pr_message: str | None,
+    detected_signals: list[Any] | None = None,
 ) -> list[str]:
     items: list[str] = []
     if coverage:
@@ -67,6 +71,43 @@ def _core_review(
                 continue
             detail = f" — {item.detail}" if item.detail else ""
             items.append(f"Coverage unknown {item.kind} `{item.value}`{detail}")
+    for effect in packet.get("side_effects") or []:
+        if not isinstance(effect, dict):
+            continue
+        detail = str(effect.get("detail") or "").strip()
+        if not detail:
+            continue
+        kind = str(effect.get("kind") or "other").strip() or "other"
+        items.append(f"Side effect ({kind}): {detail}")
+    if any(
+        isinstance(rule, dict) and str(rule.get("type") or "") in DEP_RULE_TYPES
+        for rule in packet.get("rules") or []
+    ):
+        items.append(
+            "Regenerate the lockfile (poetry lock / npm install / go mod tidy) "
+            "after these manifest edits"
+        )
+    named = {p.lower() for p in dependency_packages(packet)}
+    leftover_lock: list[str] = []
+    for signal in detected_signals or []:
+        pkg = str(getattr(signal, "package", "") or "").strip()
+        ctype = str(getattr(signal, "change_type", "") or "")
+        source = str(getattr(signal, "source", "") or "")
+        if source != "lockfile" or not pkg:
+            continue
+        if pkg.lower() in named:
+            continue
+        if ctype not in {
+            "PACKAGE_ADDED",
+            "PACKAGE_REMOVED",
+            "SDK_MAJOR_BUMP",
+            "DEPENDENCY_BUMP",
+        }:
+            continue
+        leftover_lock.append(f"Lockfile also changed `{pkg}` ({ctype}); not in this packet")
+    items.extend(leftover_lock[:_REVIEW_CAP])
+    for skip in report.skips:
+        items.append(skip)
     if generated:
         items.append("Review generated tests: " + ", ".join(generated))
     if corrected:
@@ -120,6 +161,7 @@ def build_run_summary(
     skip_tests: bool = False,
     pr_created: bool | None = None,
     pr_message: str | None = None,
+    detected_signals: list[Any] | None = None,
 ) -> RunSummary:
     package = str(packet.get("package") or "package")
     changes = [_change_line(c) for c in report.changes]
@@ -133,6 +175,8 @@ def build_run_summary(
         tests=test_result.summary,
         pr_message=pr_message,
         core_review=_core_review(
+            packet=packet,
+            report=report,
             coverage=coverage,
             generated=list(generated or []),
             corrected=list(corrected or []),
@@ -140,6 +184,7 @@ def build_run_summary(
             skip_tests=skip_tests,
             pr_created=pr_created,
             pr_message=pr_message,
+            detected_signals=detected_signals,
         ),
         package_review=_package_review(
             package=package,

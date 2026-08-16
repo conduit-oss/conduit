@@ -11,7 +11,8 @@ from conduit.context_filter import file_has_vendor_context
 from conduit.patcher.ast_attr_call import apply_attr_rename, apply_call_rewrite
 from conduit.patcher.ast_import_rewrite import apply_import_rewrite
 from conduit.patcher.ast_param_rename import apply_param_rename
-from conduit.patcher.dependency_update import apply_dependency_bump
+from conduit.patcher.dependency_update import apply_dependency_rule
+from conduit.patcher.key_rename import apply_key_rename, is_env_file, iter_config_files
 from conduit.patcher.string_replace import exact_replace, regex_replace, write_if_changed
 from conduit.prune.grep_imports import SKIP_DIRS
 
@@ -41,6 +42,7 @@ class ChangeRecord:
 class PatchReport:
     changes: list[ChangeRecord] = field(default_factory=list)
     files_modified: list[str] = field(default_factory=list)
+    skips: list[str] = field(default_factory=list)
 
     def add(self, record: ChangeRecord) -> None:
         self.changes.append(record)
@@ -64,6 +66,7 @@ def _iter_candidate_files(
             out.append(path)
         elif path.name in {
             "requirements.txt",
+            "requirements-dev.txt",
             "pyproject.toml",
             "package.json",
             "go.mod",
@@ -121,6 +124,7 @@ def apply_packet(
     files = _iter_candidate_files(root, file_allowlist)
     for name in (
         "requirements.txt",
+        "requirements-dev.txt",
         "pyproject.toml",
         "package.json",
         "go.mod",
@@ -132,23 +136,51 @@ def apply_packet(
         if path.is_file() and path.resolve() not in files:
             files.append(path.resolve())
 
+    if any(
+        isinstance(rule, dict) and rule.get("type") == "KEY_RENAME"
+        for rule in packet.get("rules") or []
+    ):
+        seen = {p.resolve() for p in files}
+        for path in iter_config_files(root):
+            if path not in seen:
+                files.append(path)
+                seen.add(path)
+
     packet_id = packet.get("packet_id", "packet")
     vendor = packet.get("package", "")
     rules = _net_dependency_bumps(list(packet.get("rules") or []))
 
     for rule in rules:
         rule_type = rule.get("type")
-        if rule_type == "DEPENDENCY_BUMP":
-            for rel in apply_dependency_bump(root, rule, dry_run=dry_run):
+        if rule_type in {
+            "DEPENDENCY_BUMP",
+            "DEPENDENCY_ADD",
+            "DEPENDENCY_REMOVE",
+        }:
+            edited = apply_dependency_rule(root, rule, dry_run=dry_run)
+            for skip in edited.skips:
+                if skip not in report.skips:
+                    report.skips.append(skip)
+            scope = str(rule.get("scope") or "main")
+            for rel in edited.changed:
+                if rule_type == "DEPENDENCY_BUMP":
+                    detail = (
+                        f"Bumped {rule.get('package')} "
+                        f"{rule.get('from_version')} -> {rule.get('to_version')}"
+                    )
+                elif rule_type == "DEPENDENCY_ADD":
+                    detail = (
+                        f"Added {rule.get('package')} {rule.get('to_version')} "
+                        f"(scope={scope})"
+                    )
+                else:
+                    detail = f"Removed {rule.get('package')} (scope={scope})"
                 report.add(
                     ChangeRecord(
                         event_id=packet_id,
                         path=rel,
                         rule_type=rule_type,
-                        detail=(
-                            f"Bumped {rule.get('package')} "
-                            f"{rule.get('from_version')} -> {rule.get('to_version')}"
-                        ),
+                        detail=detail,
                     )
                 )
             continue
@@ -222,6 +254,17 @@ def apply_packet(
                 detail = (
                     f'Rewrote call "{rule.get("old_callee")}" -> '
                     f'"{rule.get("new_callee")}" ({count}x)'
+                )
+            elif rule_type == "KEY_RENAME":
+                updated, count = apply_key_rename(
+                    original,
+                    str(rule.get("old_key") or ""),
+                    str(rule.get("new_key") or ""),
+                    env_file=is_env_file(path),
+                )
+                detail = (
+                    f'Renamed key "{rule.get("old_key")}" -> '
+                    f'"{rule.get("new_key")}" ({count}x)'
                 )
             else:
                 continue

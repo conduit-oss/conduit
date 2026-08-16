@@ -28,6 +28,7 @@ from conduit.packet.synthesize import (
 )
 from conduit.packet.validate import validate_packet
 from conduit.patcher import apply_packet
+from conduit.patcher.dependency_update import dependency_packages
 from conduit.pr_generator import open_pull_request
 from conduit.prune.grep_imports import prune_by_imports
 from conduit.pulse import beat, start_pulse, stop_pulse
@@ -115,6 +116,7 @@ def _make_run_summary(
         skip_tests=skip_tests,
         pr_created=pr_created,
         pr_message=pr_message,
+        detected_signals=list(getattr(detected, "signals", None) or []),
     )
 
 
@@ -176,7 +178,7 @@ def _verify_with_oracle(
     pkg = str(packet.get("package") or "")
     allowlist = file_allowlist
     if allowlist is None and pkg:
-        allowlist = prune_by_imports(root, [pkg])
+        allowlist = prune_by_imports(root, dependency_packages(packet))
 
     beat("hatch")
     generated = ensure_tests(
@@ -381,7 +383,7 @@ def apply_cmd(
         for err in errors:
             console.print(f"[red]schema:[/red] {err}")
         raise typer.Exit(1)
-    files = prune_by_imports(root, [data.get("package", "")])
+    files = prune_by_imports(root, dependency_packages(data))
     report = apply_packet(root, data, dry_run=dry_run, file_allowlist=files or None)
     for change in report.changes:
         prefix = "DRY-RUN " if dry_run else ""
@@ -606,8 +608,11 @@ def _run_pipeline(
     )
 
     beat("prune")
-    files = prune_by_imports(root, [pkg])
-    console.print(f"Pruned to {len(files)} file(s) importing {pkg}")
+    pkgs = dependency_packages(pkt)
+    files = prune_by_imports(root, pkgs)
+    console.print(
+        f"Pruned to {len(files)} file(s) importing {', '.join(pkgs)}"
+    )
 
     if not skip_export_delta:
         from_v = str(pkt.get("from_version") or "")

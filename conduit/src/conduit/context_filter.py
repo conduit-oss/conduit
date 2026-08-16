@@ -16,7 +16,9 @@ def file_has_vendor_context(path: Path, content: str, vendor: str) -> bool:
     env keys). Config / env files are always treated as in-context.
     """
     name = path.name.lower()
-    if name.startswith(".env") or name.endswith((".yaml", ".yml", ".json", ".toml")):
+    if name.startswith(".env") or name.endswith(
+        (".yaml", ".yml", ".json", ".toml", ".ini")
+    ):
         return True
 
     markers = VENDOR_MARKERS.get(vendor.lower(), (vendor.lower(),))
