@@ -115,7 +115,7 @@ Config candidates (`.env*`, `*.yaml` / `*.yml` / `*.json` / `*.toml` / `*.ini`) 
 
 ### `DEPENDENCY_BUMP`
 
-Updates manifests (`requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, `pom.xml`, `build.gradle` / `.kts`). Always considered even if the file was not import-pruned.
+Updates manifests (`requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, `pom.xml`, `build.gradle` / `.kts`). Always considered even if the file was not import-pruned. `pyproject.toml` is edited with **tomlkit** (PEP 621 arrays and Poetry maps), not regex.
 
 ```json
 {
@@ -124,6 +124,22 @@ Updates manifests (`requirements.txt`, `pyproject.toml`, `package.json`, `go.mod
   "from_version": "0.28.1",
   "to_version": "1.0.0",
   "ecosystems": ["pip", "pyproject", "npm", "go", "maven", "gradle"]
+}
+```
+
+### `DEPENDENCY_ADD` / `DEPENDENCY_REMOVE`
+
+Companion packages for splits (e.g. `langchain` → `langchain-core`). Packet `to_version` is a **bare** version (`1.2.3`); apply formats the pin per manifest (`pkg==1.2.3`, npm/Poetry `^1.2.3`, Go `v1.2.3`). Optional `scope`: `main` (default), `dev`, or npm `peer`.
+
+ADD/REMOVE default to `pip` + `pyproject` unless `ecosystems` is set. They do not create missing Poetry groups, PEP 621 extras, or `requirements-dev.txt`. Maven/Gradle ADD/REMOVE are skipped. Lockfiles are not regenerated — Double-check asks you to run `poetry lock` / `npm install` / `go mod tidy`.
+
+```json
+{
+  "type": "DEPENDENCY_ADD",
+  "package": "langchain-core",
+  "to_version": "0.2.0",
+  "scope": "main",
+  "ecosystems": ["pip", "pyproject"]
 }
 ```
 

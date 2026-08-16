@@ -68,6 +68,12 @@ def _rule_summary(rule: dict[str, Any]) -> str:
             f"`{rule.get('package')}` "
             f"{rule.get('from_version')} → {rule.get('to_version')}"
         )
+    if rtype == "DEPENDENCY_ADD":
+        scope = str(rule.get("scope") or "main")
+        return f"add `{rule.get('package')}` {rule.get('to_version')} ({scope})"
+    if rtype == "DEPENDENCY_REMOVE":
+        scope = str(rule.get("scope") or "main")
+        return f"remove `{rule.get('package')}` ({scope})"
     if rtype == "AST_IMPORT_REWRITE":
         return f"import `{rule.get('old_import')}` → `{rule.get('new_import')}`"
     if rtype == "AST_ATTR_RENAME":

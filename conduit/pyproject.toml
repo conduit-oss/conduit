@@ -19,6 +19,7 @@ dependencies = [
   "feedparser>=6.0",
   "packaging>=24.0",
   "pyyaml>=6.0",
+  "tomlkit>=0.13",
 ]
 
 [project.optional-dependencies]

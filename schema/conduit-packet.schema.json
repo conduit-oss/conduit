@@ -79,6 +79,8 @@
         { "$ref": "#/$defs/regex_replace" },
         { "$ref": "#/$defs/ast_param_rename" },
         { "$ref": "#/$defs/dependency_bump" },
+        { "$ref": "#/$defs/dependency_add" },
+        { "$ref": "#/$defs/dependency_remove" },
         { "$ref": "#/$defs/ast_import_rewrite" },
         { "$ref": "#/$defs/ast_attr_rename" },
         { "$ref": "#/$defs/ast_call_rewrite" },
@@ -144,6 +146,18 @@
         "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },
+    "dep_scope": {
+      "type": "string",
+      "enum": ["main", "dev", "peer"],
+      "description": "main (default), dev extras/devDependencies, or npm peerDependencies."
+    },
+    "dep_ecosystems": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["pip", "npm", "pyproject", "go", "maven", "gradle"]
+      }
+    },
     "dependency_bump": {
       "type": "object",
       "required": ["type", "package", "from_version", "to_version"],
@@ -153,13 +167,34 @@
         "package": { "type": "string" },
         "from_version": { "type": "string" },
         "to_version": { "type": "string" },
-        "ecosystems": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": ["pip", "npm", "pyproject", "go", "maven", "gradle"]
-          }
-        },
+        "ecosystems": { "$ref": "#/$defs/dep_ecosystems" },
+        "scope": { "$ref": "#/$defs/dep_scope" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "dependency_add": {
+      "type": "object",
+      "required": ["type", "package", "to_version"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "DEPENDENCY_ADD" },
+        "package": { "type": "string", "minLength": 1 },
+        "to_version": { "type": "string", "minLength": 1 },
+        "ecosystems": { "$ref": "#/$defs/dep_ecosystems" },
+        "scope": { "$ref": "#/$defs/dep_scope" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "dependency_remove": {
+      "type": "object",
+      "required": ["type", "package"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "DEPENDENCY_REMOVE" },
+        "package": { "type": "string", "minLength": 1 },
+        "from_version": { "type": "string" },
+        "ecosystems": { "$ref": "#/$defs/dep_ecosystems" },
+        "scope": { "$ref": "#/$defs/dep_scope" },
         "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },

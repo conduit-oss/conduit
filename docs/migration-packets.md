@@ -108,6 +108,8 @@ conduit packet show ./my-packet/conduit-packet.json
 | `AST_CALL_REWRITE` | Rewrite call callee path |
 | `KEY_RENAME` | Rename quoted dict/JSON/YAML keys and `.env` prefixes (config files included even if import-pruned) |
 | `DEPENDENCY_BUMP` | Bump version in pip/npm/go.mod/Maven/Gradle manifests |
+| `DEPENDENCY_ADD` | Add a companion pin (formatted per ecosystem; optional `scope`) |
+| `DEPENDENCY_REMOVE` | Remove a pin (optional `scope`) |
 
 Optional `reason` on any rule explains why it was chosen (endpoint-compat checks, deprecation docs, etc.). PR bodies render these under **Rationale**, with packet `notes` and full `sources`.
 

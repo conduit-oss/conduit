@@ -37,6 +37,8 @@ class VersionJump:
     to_version: str
     ecosystem: str  # pypi | npm | go
     manifest: str
+    kind: str = "bump"  # bump | add | remove
+    scope: str | None = None
 
     @property
     def is_major(self) -> bool:
@@ -48,7 +50,60 @@ class VersionJump:
 
         return major(self.from_version) != major(self.to_version)
 
+    def _ecosystems(self) -> list[str]:
+        if self.ecosystem == "pypi":
+            return ["pip", "pyproject"]
+        if self.ecosystem == "npm":
+            return ["npm"]
+        if self.ecosystem == "go":
+            return ["go"]
+        return []
+
     def to_signal(self) -> ChangeSignal:
+        ecosystems = self._ecosystems()
+        scope = self.scope or "main"
+        if self.kind == "add":
+            return ChangeSignal(
+                source="lockfile",
+                package=self.name,
+                change_type="PACKAGE_ADDED",
+                severity="WARNING",
+                to_version=self.to_version or None,
+                ecosystem=self.ecosystem,
+                description=(
+                    f"{self.name} added {self.to_version} ({self.manifest})"
+                ),
+                suggested_rules=[
+                    {
+                        "type": "DEPENDENCY_ADD",
+                        "package": self.name,
+                        "to_version": self.to_version,
+                        "ecosystems": ecosystems,
+                        "scope": scope,
+                    }
+                ],
+            )
+        if self.kind == "remove":
+            return ChangeSignal(
+                source="lockfile",
+                package=self.name,
+                change_type="PACKAGE_REMOVED",
+                severity="WARNING",
+                from_version=self.from_version or None,
+                ecosystem=self.ecosystem,
+                description=(
+                    f"{self.name} removed {self.from_version} ({self.manifest})"
+                ),
+                suggested_rules=[
+                    {
+                        "type": "DEPENDENCY_REMOVE",
+                        "package": self.name,
+                        "from_version": self.from_version,
+                        "ecosystems": ecosystems,
+                        "scope": scope,
+                    }
+                ],
+            )
         return ChangeSignal(
             source="lockfile",
             package=self.name,
@@ -67,13 +122,7 @@ class VersionJump:
                     "package": self.name,
                     "from_version": self.from_version,
                     "to_version": self.to_version,
-                    "ecosystems": (
-                        ["pip", "pyproject"]
-                        if self.ecosystem == "pypi"
-                        else ["npm"]
-                        if self.ecosystem == "npm"
-                        else []
-                    ),
+                    "ecosystems": ecosystems,
                 }
             ],
         )
