@@ -15,6 +15,7 @@ from conduit.detect.coverage import (
     PacketCoverageReport,
     build_coverage_report,
     format_coverage_report,
+    load_source_packet,
     save_source_packet,
 )
 from conduit.detect.modules.discovery import load_modules
@@ -27,6 +28,8 @@ from conduit.packet.synthesize import (
     load_fixture_openai_packet,
     synthesize_from_docs,
 )
+from conduit.packet.bind import bind_packet_to_client, is_snapshot_floor
+from conduit.packet.scope import scope_packet_to_source
 from conduit.packet.validate import validate_packet
 from conduit.patcher import apply_packet
 from conduit.patcher.dependency_update import dependency_packages
@@ -57,6 +60,39 @@ def _vprint(message: str) -> None:
         console.print(f"[dim][verbose][/dim] {message}")
 
 
+def _prepare_client_packet(
+    root: Path,
+    packet: dict,
+    *,
+    source: dict | None = None,
+    installed_version: str | None = None,
+) -> tuple[dict, dict | None]:
+    """Stamp floor from_version from the client pin and prune catalog rules."""
+    pkg = str(packet.get("package") or "")
+    src = source
+    if src is None and pkg:
+        src = load_source_packet(root, pkg)
+    installed = str(installed_version or "").strip()
+    if not installed and isinstance(src, dict):
+        installed = str(src.get("installed_version") or "").strip()
+    floor = str(packet.get("from_version") or "")
+    bound = bind_packet_to_client(packet, installed_version=installed)
+    if installed and is_snapshot_floor(floor) and not is_snapshot_floor(
+        str(bound.get("from_version") or "")
+    ):
+        console.print(
+            f"Bound packet from_version {floor!r} → {bound.get('from_version')!r} "
+            f"from client install"
+        )
+    scoped, stats = scope_packet_to_source(bound, src)
+    if stats.total:
+        console.print(
+            f"Pruned to {stats.kept}/{stats.total} packet rules from client usage"
+            + (f" (collapsed {stats.collapsed} chain hop(s))" if stats.collapsed else "")
+        )
+    return scoped, src
+
+
 def _print_packet_coverage(
     *,
     root: Path,
@@ -65,7 +101,7 @@ def _print_packet_coverage(
     packet: dict | None = None,
     persist_source: bool = True,
 ) -> PacketCoverageReport:
-    """Print source packet, migration summary, and caught/missed coverage diff."""
+    """Print source packet, migration summary, and coverage (will migrate / keep / no rule)."""
     state = (detected.package_states or {}).get(package) or (
         detected.package_states or {}
     ).get(package.lower())
@@ -76,10 +112,10 @@ def _print_packet_coverage(
         packet=packet,
     )
     console.print(format_coverage_report(report, verbose=_VERBOSE))
-    if report.missed:
+    if report.no_rule:
         console.print(
-            f"[yellow]Coverage:[/yellow] {len(report.missed)} client item(s) not "
-            "covered by migration signals/rules (see MISSED above)."
+            f"[yellow]Coverage:[/yellow] {len(report.no_rule)} client item(s) have "
+            "no migrate-from rule (see NO RULE above). KEEP is not a gap."
         )
     if persist_source:
         path = save_source_packet(root, report.source_packet)
@@ -187,6 +223,7 @@ def _verify_with_oracle(
         packet,
         changed_files=changed_files,
         file_allowlist=allowlist,
+        source=source,
     )
     for rel in generated:
         console.print(f"[test-gen] created {rel}")
@@ -403,6 +440,7 @@ def apply_cmd(
         for err in errors:
             console.print(f"[red]schema:[/red] {err}")
         raise typer.Exit(1)
+    data, _src = _prepare_client_packet(root, data)
     files = prune_by_imports(root, dependency_packages(data))
     report = apply_packet(root, data, dry_run=dry_run, file_allowlist=files or None)
     for change in report.changes:
@@ -440,10 +478,11 @@ def verify_cmd(
         data = json.loads(packet_file.read_text(encoding="utf-8"))
     else:
         data = load_fixture_openai_packet()
+    data, src = _prepare_client_packet(root, data)
     start_pulse(console, "repair")
     try:
         result, _generated, corrected = _verify_with_oracle(
-            root, data, max_retries=max_retries
+            root, data, max_retries=max_retries, source=src
         )
     finally:
         stop_pulse()
@@ -652,6 +691,18 @@ def _run_pipeline(
         detected=detected,
         packet=pkt,
         persist_source=True,
+    )
+
+    src_dict = coverage.source_packet if coverage is not None else None
+    installed = str((src_dict or {}).get("installed_version") or "").strip()
+    if not installed and detected.installed:
+        installed = str(
+            detected.installed.get(pkg)
+            or detected.installed.get((pkg or "").lower())
+            or ""
+        ).strip()
+    pkt, src_dict = _prepare_client_packet(
+        root, pkt, source=src_dict, installed_version=installed
     )
 
     beat("prune")

@@ -43,6 +43,23 @@ Optional `side_effects` is a human checklist (`webhook`, `database`, `config`, `
 
 These top-level versions also drive **export delta** (downloading both package versions to compare public APIs). Rule-level `DEPENDENCY_BUMP.from_version` / `to_version` can still describe the pin rewrite independently.
 
+Catalog snapshots use `from_version` `0` as a **floor**, not a PyPI/npm release. On `conduit run` / `apply` / `verify`, Conduit copies the consumer `installed_version` from the source packet onto that floor in memory (the published JSON is not rewritten) so export-delta and leftover pin tokens use the real pin.
+
+`DEPENDENCY_BUMP` rewrites nested `requirements.txt` / `constraints.txt` / `*requirements*.txt` and nested `package.json` (skipping `vendor/`, venvs, `node_modules`, `.conduit`). Root `pyproject.toml` / `go.mod` / Maven / Gradle stay root-only.
+
+Before apply, catalog rules are **scoped to source-packet usage**: replace chains collapse (`A→B` + `B→C` becomes `A→C`) and unused model/callee string rules are dropped. `DEPENDENCY_*` always stays.
+
+### Coverage (source vs packet)
+
+Coverage scores each client `model_id` / API token against **migrate-from** rules only:
+
+| Tag | Meaning |
+|-----|---------|
+| `WILL MIGRATE` | Packet has a rule that changes this (e.g. `gpt-4-0613` → `gpt-4o`) |
+| `KEEP` | This id is already a replacement target; leave it |
+| `NO RULE` | Used in this repo; packet has no replace-from rule (may still be current, e.g. `gpt-4o-mini`) |
+| `UNMAPPED` | Helper name or short path, not a known `/v1` route — not a gap |
+
 ## Where packets come from (`ensure_packet`)
 
 Resolution order in `conduit run`:
@@ -101,7 +118,7 @@ conduit packet validate ./my-packet/conduit-packet.json
 conduit packet show ./my-packet/conduit-packet.json
 ```
 
-`from-detect` freezes **what the scan sees now**. The next new latest is a new file whose `from_version` is the last file’s `to_version` for that package+ecosystem. It is not a git-history replay. `--enrich` optionally adds LLM rules; default is scrape-only.
+`from-detect` freezes **what the scan sees now**. The next new latest is a new file whose `from_version` is the last file’s `to_version` for that package+ecosystem. It is not a git-history replay. `--enrich` optionally adds LLM rules; default is scrape-only. OpenAI snapshots also include documented SDK call-surface AST rules (`ChatCompletion.create`, `createChatCompletion`, `max_tokens` → `max_completion_tokens`, and similar).
 
 Clients apply **one hop** (file or URL). They do not scrape OpenAI to author rules:
 

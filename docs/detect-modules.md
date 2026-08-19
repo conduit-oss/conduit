@@ -31,9 +31,9 @@ This baseline is the **source packet** (in-memory `package_states`, also written
 
 1. Source packet (models / api_patterns / files)
 2. Migration packet summary (signals + rules)
-3. **Coverage diff** — each client model/api_pattern as `CAUGHT` or `MISSED`
+3. **Coverage** — each client model/api_pattern as `WILL MIGRATE`, `KEEP`, `NO RULE`, or `UNMAPPED`
 
-Use `MISSED` lines to see what the client uses that never got a rule. `-v` adds full JSON dumps.
+`NO RULE` is “used here, packet has no migrate-from rule” (not necessarily a bug). `KEEP` is a successor/current id. `UNMAPPED` wrappers are not gaps. `-v` adds full JSON dumps.
 
 See [`conduit/src/conduit/detect/client_state.py`](../conduit/src/conduit/detect/client_state.py) and [`coverage.py`](../conduit/src/conduit/detect/coverage.py).
 

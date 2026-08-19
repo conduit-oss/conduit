@@ -54,7 +54,7 @@ Full pipeline: detect → prune → export delta → packet → apply → verify
 4. If both `--packet <file-or-url>` and `--package` disagree on the package field, the **packet file** wins (with a warning).
 5. If `--packet <name>` and `--package` disagree, **`--package`** wins (with a warning).
 
-A **file or URL** skips vendor detect workers (no GitHub/OpenAI scrape). Conduit still scans the consumer repo for a **source packet** (imports / models) so prune and coverage work. `--packet openai` (a name) still runs vendor detect and synthesizes.
+A **file or URL** skips vendor detect workers (no GitHub/OpenAI scrape). Conduit still scans the consumer repo for a **source packet** (imports / models) so prune and coverage work. Catalog floor `from_version` `0` is stamped from the client pin before export-delta/apply; unused catalog string rules are dropped. `--packet openai` (a name) still runs vendor detect and synthesizes.
 
 ### Version defaults and warnings
 

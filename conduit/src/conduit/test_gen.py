@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Iterable
 
 from conduit.llm import get_llm_client
 from conduit.repair_ignore import IgnoreList, build_ignore_list
-
-_TOKEN_CHAR = r"A-Za-z0-9_." + r"-"
+from conduit.text_tokens import token_in_text as _token_in_text
 
 _ORACLE_PY = "tests/test_conduit_oracle.py"
 _ORACLE_JS = "conduit_oracle.test.js"
-_ORACLE_RELS = frozenset({_ORACLE_PY, _ORACLE_JS})
+_SMOKE_PY = "tests/test_conduit_smoke.py"
+_SMOKE_JS = "conduit_smoke.test.js"
+_ORACLE_RELS = frozenset({_ORACLE_PY, _ORACLE_JS, _SMOKE_PY, _SMOKE_JS})
 
 _RULE_TOKEN_KEYS = {
     "EXACT_STRING_REPLACE": "match",
@@ -39,12 +39,7 @@ _MANIFEST_NAMES = (
 
 def token_in_text(text: str, token: str) -> bool:
     """True if ``token`` appears as a whole token (same bounds as exact_replace)."""
-    if not token or token not in text:
-        return False
-    pattern = re.compile(
-        rf"(?<![{_TOKEN_CHAR}]){re.escape(token)}(?![{_TOKEN_CHAR}])"
-    )
-    return pattern.search(text) is not None
+    return _token_in_text(text, token)
 
 
 def oracle_forbidden_tokens(packet: dict[str, Any]) -> list[str]:
@@ -108,6 +103,8 @@ def oracle_scan_rels(
         if rel in _ORACLE_RELS or Path(rel).name in {
             "test_conduit_oracle.py",
             "conduit_oracle.test.js",
+            "test_conduit_smoke.py",
+            "conduit_smoke.test.js",
         }:
             return
         if ignore.path_ignored(rel):
@@ -144,7 +141,101 @@ def _is_oracle_rel(rel: str) -> bool:
     return posix in _ORACLE_RELS or Path(posix).name in {
         "test_conduit_oracle.py",
         "conduit_oracle.test.js",
+        "test_conduit_smoke.py",
+        "conduit_smoke.test.js",
     }
+
+
+def _is_impl_rel(rel: str) -> bool:
+    posix = rel.replace("\\", "/")
+    name = Path(posix).name
+    if posix.startswith("tests/") or "/tests/" in posix:
+        return False
+    if name.startswith("test_") or name.endswith(".test.js") or name.endswith(".spec.js"):
+        return False
+    if name in _MANIFEST_NAMES or name == "constraints.txt":
+        return False
+    return True
+
+
+def oracle_required_appearances(
+    packet: dict[str, Any],
+    source: dict[str, Any] | None,
+) -> list[dict[str, str]]:
+    """New callees/params that must appear in impl files when the client used the old name."""
+    from conduit.packet.scope import _token_in_index
+    from conduit.packet.synthesize import _source_usage_index
+
+    index = _source_usage_index(source)
+    if not index["has_usage"]:
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for rule in packet.get("rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        rtype = str(rule.get("type") or "")
+        pairs: list[tuple[str, str, str]] = []
+        if rtype == "AST_CALL_REWRITE":
+            pairs.append(
+                (
+                    str(rule.get("old_callee") or ""),
+                    str(rule.get("new_callee") or ""),
+                    "callee",
+                )
+            )
+        elif rtype == "AST_PARAM_RENAME":
+            pairs.append(
+                (
+                    str(rule.get("old_param") or ""),
+                    str(rule.get("new_param") or ""),
+                    "param",
+                )
+            )
+        elif rtype == "AST_ATTR_RENAME":
+            pairs.append(
+                (
+                    str(rule.get("old_attr") or ""),
+                    str(rule.get("new_attr") or ""),
+                    "attr",
+                )
+            )
+        elif rtype == "AST_IMPORT_REWRITE":
+            pairs.append(
+                (
+                    str(rule.get("old_import") or ""),
+                    str(rule.get("new_import") or ""),
+                    "import",
+                )
+            )
+        elif rtype == "EXACT_STRING_REPLACE":
+            pairs.append(
+                (
+                    str(rule.get("match") or ""),
+                    str(rule.get("replace") or ""),
+                    "replace",
+                )
+            )
+        for old, new, kind in pairs:
+            old, new = old.strip(), new.strip()
+            if not old or not new or old.lower() == new.lower():
+                continue
+            if not _token_in_index(old, index):
+                continue
+            key = (kind, new)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"kind": kind, "old": old, "new": new})
+    return out
+
+
+def _packet_has_ast_rules(packet: dict[str, Any]) -> bool:
+    return any(
+        isinstance(r, dict)
+        and str(r.get("type") or "").startswith("AST_")
+        for r in (packet.get("rules") or [])
+    )
 
 
 def _has_consumer_tests(root: Path, *, include_oracle: bool = False) -> bool:
@@ -175,14 +266,15 @@ def ensure_tests(
     *,
     changed_files: list[str] | None = None,
     file_allowlist: Iterable[Path | str] | None = None,
+    source: dict[str, Any] | None = None,
 ) -> list[str]:
     """
-    Write/update a packet-derived leftover-token oracle.
+    Write/update a packet-derived leftover-token oracle and migration smoke.
 
-    Always regenerates the oracle when there are tokens and files to scan.
-    When the packet has no extractable tokens and the repo has no other tests,
-    writes a one-line import smoke. Optional LLM extras run only when no
-    consumer tests exist besides the oracle (and never overwrite the oracle).
+    Always regenerates the leftover oracle when there are tokens and files to
+    scan. Shape/smoke tests are written whenever the packet has in-scope AST
+    or string rules. Optional LLM extras run only when no consumer tests exist
+    besides Conduit-generated files, and never overwrite the leftover oracle.
     """
     root = root.resolve()
     ignore = build_ignore_list(root, packet)
@@ -196,6 +288,8 @@ def ensure_tests(
     )
     ecosystem = str(packet.get("ecosystem") or "pypi")
     package = str(packet.get("package") or "unknown")
+    required = oracle_required_appearances(packet, source)
+    impl_rels = [rel for rel in scan_rels if _is_impl_rel(rel)]
     created: list[str] = []
 
     if tokens and scan_rels:
@@ -206,12 +300,27 @@ def ensure_tests(
                 ecosystem=ecosystem,
                 files=scan_rels,
                 forbidden=tokens,
+                required=required,
+                impl_files=impl_rels,
             )
         )
     elif not tokens and not _has_consumer_tests(root, include_oracle=True):
         created.append(_write_import_smoke(root, package, packet, ecosystem=ecosystem))
 
-    if not _has_consumer_tests(root, include_oracle=False):
+    smoke = _write_smoke(
+        root,
+        packet,
+        ecosystem=ecosystem,
+        impl_files=impl_rels,
+        required=required,
+        changed_files=changed_files or [],
+    )
+    if smoke:
+        created.append(smoke)
+
+    if not _has_consumer_tests(root, include_oracle=False) and not _packet_has_ast_rules(
+        packet
+    ):
         extra = _llm_generate_tests(
             root, packet, changed_files=changed_files or [], ecosystem=ecosystem
         )
@@ -234,10 +343,26 @@ def _write_oracle(
     ecosystem: str,
     files: list[str],
     forbidden: list[str],
+    required: list[dict[str, str]] | None = None,
+    impl_files: list[str] | None = None,
 ) -> str:
     if ecosystem == "npm":
-        return _write_js_oracle(root, packet, files=files, forbidden=forbidden)
-    return _write_pytest_oracle(root, packet, files=files, forbidden=forbidden)
+        return _write_js_oracle(
+            root,
+            packet,
+            files=files,
+            forbidden=forbidden,
+            required=required or [],
+            impl_files=impl_files or [],
+        )
+    return _write_pytest_oracle(
+        root,
+        packet,
+        files=files,
+        forbidden=forbidden,
+        required=required or [],
+        impl_files=impl_files or [],
+    )
 
 
 def _write_import_smoke(
@@ -280,6 +405,8 @@ def _write_pytest_oracle(
     *,
     files: list[str],
     forbidden: list[str],
+    required: list[dict[str, str]],
+    impl_files: list[str],
 ) -> str:
     tests = root / "tests"
     tests.mkdir(parents=True, exist_ok=True)
@@ -289,6 +416,8 @@ def _write_pytest_oracle(
     to_v = packet.get("to_version", "?")
     files_lit = json.dumps(files, indent=4)
     forbidden_lit = json.dumps(forbidden, indent=4)
+    required_lit = json.dumps(required, indent=4)
+    impl_lit = json.dumps(impl_files, indent=4)
     content = f'''"""Auto-generated by Conduit — leftover-token oracle for {package} {from_v} -> {to_v}.
 
 Do not edit; regenerated on each `conduit run`.
@@ -296,13 +425,28 @@ Do not edit; regenerated on each `conduit run`.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = {files_lit}
+IMPL_FILES = {impl_lit}
 FORBIDDEN = {forbidden_lit}
+REQUIRED = {required_lit}
 _TOKEN_CHAR = r"A-Za-z0-9_." + r"-"
+_STR_LIT = re.compile(r"""(['"])(?:\\\\.|(?!\\1).)*\\1""")
+_PY_JOIN = re.compile(
+    r"(?P<sep>(['\\"])(?:\\\\.|(?!\\2).)*\\2)\\s*\\.\\s*join\\s*\\(\\s*\\[\\s*"
+    r"(?P<parts>(?:(['\\"])(?:\\\\.|(?!\\4).)*\\4\\s*,\\s*)*(['\\"])(?:\\\\.|(?!\\5).)*\\5)"
+    r"\\s*\\]\\s*\\)",
+    re.DOTALL,
+)
+_JS_JOIN = re.compile(
+    r"\\[\\s*(?P<parts>(?:(['\\"])(?:\\\\.|(?!\\2).)*\\2\\s*,\\s*)*(['\\"])(?:\\\\.|(?!\\3).)*\\3)"
+    r"\\s*\\]\\s*\\.\\s*join\\s*\\(\\s*(?P<sep>(['\\"])(?:\\\\.|(?!\\5).)*\\5)\\s*\\)",
+    re.DOTALL,
+)
 
 
 def _has_token(text: str, token: str) -> bool:
@@ -314,6 +458,72 @@ def _has_token(text: str, token: str) -> bool:
     return pattern.search(text) is not None
 
 
+def _unquote(lit: str) -> str:
+    try:
+        return ast.literal_eval(lit)
+    except (ValueError, SyntaxError):
+        if len(lit) >= 2 and lit[0] == lit[-1] and lit[0] in {{"'", '"'}}:
+            return lit[1:-1]
+        return lit
+
+
+def _join_from_parts(parts_blob: str, sep_lit: str) -> str | None:
+    parts = [_unquote(m.group(0)) for m in _STR_LIT.finditer(parts_blob)]
+    if not parts:
+        return None
+    return _unquote(sep_lit).join(parts)
+
+
+def _reconstructed_literals(text: str) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str | None) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            found.append(value)
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        tree = None
+    if tree is not None:
+        class _V(ast.NodeVisitor):
+            def visit_Call(self, node: ast.Call) -> None:
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr == "join":
+                    sep = func.value.value if isinstance(func.value, ast.Constant) else None
+                    if isinstance(sep, str) and node.args and isinstance(node.args[0], (ast.List, ast.Tuple)):
+                        parts = [
+                            elt.value
+                            for elt in node.args[0].elts
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                        ]
+                        if len(parts) == len(node.args[0].elts):
+                            _add(sep.join(parts))
+                self.generic_visit(node)
+
+            def visit_BinOp(self, node: ast.BinOp) -> None:
+                if isinstance(node.op, ast.Add):
+                    def fold(n):
+                        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                            return n.value
+                        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
+                            left, right = fold(n.left), fold(n.right)
+                            if left is not None and right is not None:
+                                return left + right
+                        return None
+                    _add(fold(node))
+                self.generic_visit(node)
+
+        _V().visit(tree)
+    for match in _PY_JOIN.finditer(text):
+        _add(_join_from_parts(match.group("parts"), match.group("sep")))
+    for match in _JS_JOIN.finditer(text):
+        _add(_join_from_parts(match.group("parts"), match.group("sep")))
+    return found
+
+
 def test_conduit_no_legacy_tokens():
     failures = []
     for rel in FILES:
@@ -321,9 +531,31 @@ def test_conduit_no_legacy_tokens():
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
+        rebuilt = _reconstructed_literals(text)
         for token in FORBIDDEN:
             if _has_token(text, token):
                 failures.append(f"{{rel}} still contains {{token!r}}")
+            elif any(token == item or _has_token(item, token) for item in rebuilt):
+                failures.append(f"{{rel}} obfuscates leftover {{token!r}} via concat/join")
+    assert not failures, "\\n".join(failures)
+
+
+def test_conduit_required_shapes_present():
+    if not REQUIRED:
+        return
+    failures = []
+    blobs = []
+    for rel in IMPL_FILES:
+        path = ROOT / rel
+        if path.is_file():
+            blobs.append(path.read_text(encoding="utf-8"))
+    combined = "\\n".join(blobs)
+    for item in REQUIRED:
+        new = item.get("new") or ""
+        if new and not _has_token(combined, new):
+            failures.append(
+                f"no impl file contains {{new!r}} (required after {{item.get('old')!r}})"
+            )
     assert not failures, "\\n".join(failures)
 '''
     path.write_text(content, encoding="utf-8")
@@ -336,6 +568,8 @@ def _write_js_oracle(
     *,
     files: list[str],
     forbidden: list[str],
+    required: list[dict[str, str]],
+    impl_files: list[str],
 ) -> str:
     package = packet.get("package") or "unknown"
     from_v = packet.get("from_version", "?")
@@ -347,7 +581,9 @@ const fs = require('fs');
 const path = require('path');
 
 const FILES = %(files_lit)s;
+const IMPL_FILES = %(impl_lit)s;
 const FORBIDDEN = %(forbidden_lit)s;
+const REQUIRED = %(required_lit)s;
 
 function hasToken(text, token) {
   if (!token || !text.includes(token)) return false;
@@ -356,16 +592,52 @@ function hasToken(text, token) {
   return re.test(text);
 }
 
+function reconstructedLiterals(text) {
+  const out = [];
+  const re = /\\[\\s*((?:(['"])(?:\\\\.|(?!\\2).)*\\2\\s*,\\s*)*(['"])(?:\\\\.|(?!\\3).)*\\3)\\s*\\]\\s*\\.\\s*join\\s*\\(\\s*(['"])((?:\\\\.|(?!\\4).)*)\\4\\s*\\)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const parts = [];
+    const partRe = /(['"])((?:\\\\.|(?!\\1).)*)\\1/g;
+    let p;
+    while ((p = partRe.exec(m[1])) !== null) {
+      parts.push(p[2]);
+    }
+    out.push(parts.join(m[5]));
+  }
+  return out;
+}
+
 test('conduit no legacy tokens', () => {
   const failures = [];
   for (const rel of FILES) {
     const full = path.join(process.cwd(), rel);
     if (!fs.existsSync(full)) continue;
     const text = fs.readFileSync(full, 'utf8');
+    const rebuilt = reconstructedLiterals(text);
     for (const token of FORBIDDEN) {
       if (hasToken(text, token)) {
         failures.push(rel + ' still contains ' + JSON.stringify(token));
+      } else if (rebuilt.some((item) => item === token || hasToken(item, token))) {
+        failures.push(rel + ' obfuscates leftover ' + JSON.stringify(token));
       }
+    }
+  }
+  expect(failures).toEqual([]);
+});
+
+test('conduit required shapes present', () => {
+  if (!REQUIRED.length) return;
+  const blobs = [];
+  for (const rel of IMPL_FILES) {
+    const full = path.join(process.cwd(), rel);
+    if (fs.existsSync(full)) blobs.push(fs.readFileSync(full, 'utf8'));
+  }
+  const combined = blobs.join('\\n');
+  const failures = [];
+  for (const item of REQUIRED) {
+    if (item.new && !hasToken(combined, item.new)) {
+      failures.push('missing ' + JSON.stringify(item.new));
     }
   }
   expect(failures).toEqual([]);
@@ -375,11 +647,127 @@ test('conduit no legacy tokens', () => {
         "from_v": from_v,
         "to_v": to_v,
         "files_lit": json.dumps(files, indent=2),
+        "impl_lit": json.dumps(impl_files, indent=2),
         "forbidden_lit": json.dumps(forbidden, indent=2),
+        "required_lit": json.dumps(required, indent=2),
     }
     path = root / _ORACLE_JS
     path.write_text(content, encoding="utf-8")
     return _ORACLE_JS
+
+
+def _write_smoke(
+    root: Path,
+    packet: dict[str, Any],
+    *,
+    ecosystem: str,
+    impl_files: list[str],
+    required: list[dict[str, str]],
+    changed_files: list[str],
+) -> str | None:
+    """Deterministic migration smoke: required new tokens + import changed modules."""
+    if not required and not impl_files and not changed_files:
+        return None
+    package = packet.get("package") or "unknown"
+    from_v = packet.get("from_version", "?")
+    to_v = packet.get("to_version", "?")
+    py_changed = [
+        rel.replace("\\", "/")
+        for rel in changed_files
+        if rel.replace("\\", "/").endswith(".py") and _is_impl_rel(rel)
+    ]
+    if ecosystem == "npm":
+        path = root / _SMOKE_JS
+        content = """/** Auto-generated by Conduit — migration smoke for %(package)s %(from_v)s -> %(to_v)s. */
+const fs = require('fs');
+const path = require('path');
+const IMPL_FILES = %(impl_lit)s;
+const REQUIRED = %(required_lit)s;
+
+function hasToken(text, token) {
+  if (!token || !text.includes(token)) return false;
+  const escaped = token.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+  return new RegExp('(?<![A-Za-z0-9_.-])' + escaped + '(?![A-Za-z0-9_.-])').test(text);
+}
+
+test('conduit smoke required shapes', () => {
+  if (!REQUIRED.length) return;
+  const blobs = IMPL_FILES.filter((rel) => fs.existsSync(path.join(process.cwd(), rel)))
+    .map((rel) => fs.readFileSync(path.join(process.cwd(), rel), 'utf8'));
+  const combined = blobs.join('\\n');
+  const failures = REQUIRED.filter((item) => item.new && !hasToken(combined, item.new))
+    .map((item) => item.new);
+  expect(failures).toEqual([]);
+});
+""" % {
+            "package": package,
+            "from_v": from_v,
+            "to_v": to_v,
+            "impl_lit": json.dumps(impl_files, indent=2),
+            "required_lit": json.dumps(required, indent=2),
+        }
+        path.write_text(content, encoding="utf-8")
+        return _SMOKE_JS
+
+    tests = root / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    path = tests / "test_conduit_smoke.py"
+    content = f'''"""Auto-generated by Conduit — migration smoke for {package} {from_v} -> {to_v}."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+IMPL_FILES = {json.dumps(impl_files, indent=4)}
+REQUIRED = {json.dumps(required, indent=4)}
+CHANGED_PY = {json.dumps(py_changed, indent=4)}
+_TOKEN_CHAR = r"A-Za-z0-9_." + r"-"
+
+
+def _has_token(text: str, token: str) -> bool:
+    if not token or token not in text:
+        return False
+    return re.search(
+        rf"(?<![{{_TOKEN_CHAR}}]){{re.escape(token)}}(?![{{_TOKEN_CHAR}}])",
+        text,
+    ) is not None
+
+
+def test_conduit_smoke_required_shapes():
+    if not REQUIRED:
+        return
+    blobs = []
+    for rel in IMPL_FILES:
+        path = ROOT / rel
+        if path.is_file():
+            blobs.append(path.read_text(encoding="utf-8"))
+    combined = "\\n".join(blobs)
+    failures = []
+    for item in REQUIRED:
+        new = item.get("new") or ""
+        if new and not _has_token(combined, new):
+            failures.append(new)
+    assert not failures, "missing migrated tokens: " + ", ".join(failures)
+
+
+def test_conduit_smoke_changed_modules_importable():
+    import importlib.util
+
+    for rel in CHANGED_PY:
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module is not None
+'''
+    path.write_text(content, encoding="utf-8")
+    return _SMOKE_PY
 
 
 def _llm_generate_tests(
@@ -408,7 +796,9 @@ def _llm_generate_tests(
             'Return JSON: {"files": {"relative/path": "full file contents"}}. '
             "For Python use tests/test_conduit_smoke.py with pytest. "
             "For npm use conduit_smoke.test.js. Do not require network calls. "
-            "Do not write tests/test_conduit_oracle.py or conduit_oracle.test.js."
+            "Do not write tests/test_conduit_oracle.py or conduit_oracle.test.js. "
+            "Do not use pytest.mark.skip, xfail, or string join/concat to hide tokens. "
+            "Do not require network calls."
         ),
         "ecosystem": ecosystem,
         "packet": {
@@ -434,7 +824,25 @@ def _llm_generate_tests(
         if not isinstance(content, str):
             continue
         rel_posix = str(rel).replace("\\", "/")
-        if _is_oracle_rel(rel_posix):
+        if rel_posix in {_ORACLE_PY, _ORACLE_JS} or Path(rel_posix).name in {
+            "test_conduit_oracle.py",
+            "conduit_oracle.test.js",
+        }:
+            continue
+        if rel_posix in {_SMOKE_PY, _SMOKE_JS}:
+            continue
+        lowered = content.lower()
+        if any(
+            needle in lowered
+            for needle in (
+                "pytest.mark.skip",
+                "pytest.mark.xfail",
+                ".skip(",
+                ".xfail(",
+            )
+        ):
+            continue
+        if ".join(" in lowered and "forbidden" not in lowered:
             continue
         path = (root / str(rel)).resolve()
         if not str(path).startswith(str(root_resolved)):

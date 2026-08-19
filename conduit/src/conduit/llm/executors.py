@@ -56,6 +56,7 @@ class RepoToolExecutor:
     shell_timeout_s: float = 120.0
     written_files: list[str] = field(default_factory=list)
     snapshots: dict[str, str | None] = field(default_factory=dict)
+    reject_write: Callable[[str, str], str | None] | None = None
 
     def __call__(self, name: str, arguments: dict[str, Any]) -> str:
         try:
@@ -143,6 +144,11 @@ class RepoToolExecutor:
         rel_posix = self._rel(path) if path.exists() else rel.replace("\\", "/")
         if self.ignore.path_ignored(rel_posix):
             return json.dumps({"error": f"path ignored: {rel_posix}"})
+        if self.reject_write is not None:
+            reason = self.reject_write(rel_posix, contents)
+            if reason:
+                self.log(f"[llm-tool] rejected write_file {rel_posix}: {reason}")
+                return json.dumps({"error": f"write rejected: {reason}"})
         if rel_posix not in self.snapshots:
             if path.is_file():
                 try:

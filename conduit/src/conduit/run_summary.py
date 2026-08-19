@@ -60,17 +60,17 @@ def _core_review(
 ) -> list[str]:
     items: list[str] = []
     if coverage:
-        for item in coverage.missed[:_REVIEW_CAP]:
+        for item in coverage.no_rule[:_REVIEW_CAP]:
             detail = f" — {item.detail}" if item.detail else ""
-            items.append(f"Coverage missed {item.kind} `{item.value}`{detail}")
-        leftover = len(coverage.missed) - _REVIEW_CAP
+            items.append(f"No packet rule for {item.kind} `{item.value}`{detail}")
+        leftover = len(coverage.no_rule) - _REVIEW_CAP
         if leftover > 0:
-            items.append(f"... +{leftover} more coverage misses")
-        for item in coverage.items:
-            if item.status != "unknown":
-                continue
-            detail = f" — {item.detail}" if item.detail else ""
-            items.append(f"Coverage unknown {item.kind} `{item.value}`{detail}")
+            items.append(f"... +{leftover} more items with no packet rule")
+        unmapped_n = len(coverage.unmapped)
+        if unmapped_n:
+            items.append(
+                f"{unmapped_n} client token(s) unmapped (wrappers/short paths; not gaps)"
+            )
     for effect in packet.get("side_effects") or []:
         if not isinstance(effect, dict):
             continue

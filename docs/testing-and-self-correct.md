@@ -21,15 +21,15 @@ If nothing is detected, the runner currently treats the suite as a soft pass —
 - Python: `tests/test_conduit_oracle.py`
 - npm: `conduit_oracle.test.js`
 
-The file is self-contained (does not import Conduit). It scans the pruned/changed file set for **legacy tokens** from packet rules (`match`, `old_param`, `old_key`, `old_import`, `old_attr`, `old_callee`, and `DEPENDENCY_BUMP` pins). Matching uses the same whole-token boundaries as apply, so `gpt-4` does not flag `gpt-4-0613`. `KEY_RENAME` also includes config/env files in the scan even when import-prune dropped them.
+The file is self-contained (does not import Conduit). It scans the pruned/changed file set for **legacy tokens** from packet rules (`match`, `old_param`, `old_key`, `old_import`, `old_attr`, `old_callee`, and `DEPENDENCY_BUMP` pins). Matching uses the same whole-token boundaries as apply, so `gpt-4` does not flag `gpt-4-0613`. Concat/join reconstructions (e.g. `"".join(["a", "da"])`) also fail when they rebuild a forbidden token. If the client used an old callee/param, the oracle requires the packet’s `new_callee` / `new_param` to appear in an implementation file. `KEY_RENAME` also includes config/env files in the scan even when import-prune dropped them.
 
 Ignored paths (packet `ignore`, `.conduit/ignore.json`, auto-discovered `LEGACY_`/`FORBIDDEN_` contract files) are omitted from the scan. `REGEX_REPLACE` rules are skipped (no safe leftover string).
 
 If the packet has **no** extractable tokens and the repo has **no** other tests, Conduit writes a one-line **import smoke** instead (no tautological `or True` asserts).
 
-Optional LLM extra tests run only when no consumer tests exist besides the oracle, and they must not overwrite the oracle path.
+Conduit also always writes a deterministic **migration smoke** when there are in-scope rules (`tests/test_conduit_smoke.py` or `conduit_smoke.test.js`): required new tokens in impl files, plus import of changed Python modules (no network). Optional LLM extra tests run only when no consumer tests exist besides Conduit-generated files **and** the packet has no AST rules; they must not overwrite the leftover oracle or use skip/xfail/join to hide tokens.
 
-Generated paths are included in the patch report / PR body when `conduit run` opens a PR. Oracle failures look like normal pytest/npm failures (`app.py still contains 'gpt-4-0613'`), so the self-correct loop can repair them.
+Generated paths are included in the patch report / PR body when `conduit run` opens a PR. Oracle failures look like normal pytest/npm failures (`app.py still contains 'gpt-4-0613'` or `obfuscates leftover …`), so the self-correct loop can repair them — by migrating call sites, not by splitting strings.
 
 `conduit apply` does **not** write the oracle (it only applies packet rules). `conduit run --skip-tests` skips oracle generation and verify.
 
@@ -43,7 +43,7 @@ Runners already cover pytest, `npm test`, and `go test ./...`. Java/Maven suites
 2. On failure, up to `--max-retries` (default **5**):
    - Collect traceback file paths + nearby source/tests  
    - Build a **dynamic ignore list** (see below)  
-   - If LLM configured → **Responses agent** (OpenAI: `gpt-5.4-mini`, `reasoning_effort=high`, tools such as `web_search` / `fetch_url` / local repo read-write / `grep` / `run_tests` / allowlisted `run_shell`). Seed URLs and suggested queries are provided; the model chooses tools. Final JSON may:
+   - If LLM configured → **Responses agent** (OpenAI: `gpt-5.4-mini`, `reasoning_effort=high`, tools such as `web_search` / `fetch_url` / local repo read-write / `grep` / `run_tests` / allowlisted `run_shell`). Seed URLs and suggested queries are provided; the model chooses tools. Writes that obfuscate leftover tokens (`"".join(...)`), edit the leftover oracle, weaken tests (`skip`/`xfail`), or touch `vendor/` are **rejected**. Final JSON may:
      - return `files` fixes (or write via `write_file`),
      - return `packet_patch` (rules/notes/sources) when the migration packet itself must change,
      - return `search_queries` on non-tool providers when evidence is still insufficient — Conduit runs those searches and asks again in the same attempt.
@@ -94,7 +94,7 @@ conduit run ... --skip-tests    # apply only; skips oracle + verify
 
 ## Tips
 
-- Prefer real unit tests in the consumer repo; the generated oracle only proves leftover packet tokens are gone from scanned files.
+- Prefer real unit tests in the consumer repo; leftover oracles prove old tokens are gone **and not obfuscated**, and that required new callees/params appear. They do not replace a live API suite.
 - For local iteration without burning API quota, leave LLM unset and rely on packet quality + heuristics.
 - CI should pass `CONDUIT_LLM_*` secrets only when you want the repair loop online.
 

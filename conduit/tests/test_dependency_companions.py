@@ -222,6 +222,35 @@ def test_prune_includes_companion_import(tmp_path: Path):
     assert "extra.py" in rels
 
 
+def test_nested_requirements_and_skip_vendor(tmp_path: Path):
+    (tmp_path / "requirements.txt").write_text("openai==0.28.1\n", encoding="utf-8")
+    svc = tmp_path / "services" / "desk"
+    svc.mkdir(parents=True)
+    (svc / "requirements.txt").write_text("openai==0.28.1\n", encoding="utf-8")
+    (tmp_path / "constraints.txt").write_text("openai==0.28.1\n", encoding="utf-8")
+    vendor = tmp_path / "vendor" / "legacy"
+    vendor.mkdir(parents=True)
+    (vendor / "requirements.txt").write_text("openai==0.28.1\n", encoding="utf-8")
+    result = apply_dependency_rule(
+        tmp_path,
+        {
+            "type": "DEPENDENCY_BUMP",
+            "package": "openai",
+            "from_version": "0.28.1",
+            "to_version": "3.3.0",
+            "ecosystems": ["pip"],
+        },
+        dry_run=False,
+    )
+    rels = {p.replace("\\", "/") for p in result.changed}
+    assert "requirements.txt" in rels
+    assert "services/desk/requirements.txt" in rels
+    assert "constraints.txt" in rels
+    assert not any(r.startswith("vendor/") for r in rels)
+    assert (vendor / "requirements.txt").read_text(encoding="utf-8") == "openai==0.28.1\n"
+    assert "openai==3.3.0" in (svc / "requirements.txt").read_text(encoding="utf-8")
+
+
 def test_diff_versions_add_and_remove():
     old = "openai==0.28.1\nrequests==2.0.0\n"
     new = "openai==0.28.1\nhttpx==0.27.0\n"
