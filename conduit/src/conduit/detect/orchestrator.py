@@ -37,6 +37,7 @@ def run_detect(
     verbose: bool = False,
     scan_client: bool = True,
     catalog_latest: bool = False,
+    scan_packages: list[str] | None = None,
     log=None,
 ) -> DetectResult:
     root = root.resolve()
@@ -44,6 +45,8 @@ def run_detect(
     signals: list[ChangeSignal] = []
     warnings: list[str] = []
     package_states: dict[str, PackageClientState] = {}
+    scan_pkgs: list[str] = []
+    modules = []
 
     if not skip_lockfile:
         for jump in detect_lockfile_jumps(
@@ -54,8 +57,6 @@ def run_detect(
 
     if not skip_modules:
         modules = list(load_modules(names=module_names))
-        # Packages to scan: explicit module packages that apply (or were requested)
-        scan_pkgs: list[str] = []
         for mod in modules:
             if (
                 module_names is None
@@ -65,20 +66,25 @@ def run_detect(
                 continue
             scan_pkgs.extend(mod.packages or [mod.name])
 
-        if scan_client:
-            package_states = scan_package_states(
-                root,
-                scan_pkgs,
-                installed=installed,
-                demo=demo,
-                use_llm=not demo,
-                log=log,
-            )
-            for state in package_states.values():
-                for note in state.notes:
-                    if note.startswith("llm enrichment failed"):
-                        warnings.append(f"client state {state.package}: {note}")
+    for extra in scan_packages or []:
+        if extra and extra not in scan_pkgs:
+            scan_pkgs.append(extra)
 
+    if scan_client and scan_pkgs:
+        package_states = scan_package_states(
+            root,
+            scan_pkgs,
+            installed=installed,
+            demo=demo,
+            use_llm=not demo,
+            log=log,
+        )
+        for state in package_states.values():
+            for note in state.notes:
+                if note.startswith("llm enrichment failed"):
+                    warnings.append(f"client state {state.package}: {note}")
+
+    if not skip_modules:
         ctx = DetectContext(
             repo_root=root,
             installed=installed,
@@ -109,5 +115,5 @@ def run_detect(
         signals=signals,
         installed=installed,
         warnings=warnings,
-        package_states=package_states if not skip_modules else {},
+        package_states=package_states,
     )

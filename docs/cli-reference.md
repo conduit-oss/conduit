@@ -34,7 +34,7 @@ Full pipeline: detect → prune → export delta → packet → apply → verify
 | `--base-ref` | none | Git ref for lockfile diff (e.g. `origin/main`) |
 | `--package` | auto | Package to migrate |
 | `--module` | auto | Restrict detect modules (if omitted and a package name is known, Conduit uses a matching detect module when one exists) |
-| `--packet` | cache/synth | Path to an existing `conduit-packet.json`, **or** a package name (e.g. `openai`, `stripe`) |
+| `--packet` | cache/synth | Path to a packet JSON, **http(s) URL**, or a package name (e.g. `openai`, `stripe`). A file or URL **loads** the packet (no OpenAI scrape / synthesis). A package name still synthesizes from detect. |
 | `--demo` | false | Offline detect fixtures + openai demo packet fallback (default is **live** vendor sources) |
 | `--refresh-packet` | false | Ignore `.conduit/packets` cache and re-synthesize from current detect signals (use after detect/normalize changes) |
 | `--skip-tests` | false | Skip oracle generation + verify (apply only) |
@@ -48,10 +48,13 @@ Full pipeline: detect → prune → export delta → packet → apply → verify
 
 ### `--packet` resolution
 
-1. If the value is an **existing file** → load that packet JSON.
-2. Otherwise treat it as a **package name** → same idea as `--package <name>`: detect/synthesize a packet for that package.
-3. If both `--packet <file>` and `--package` disagree on the package field, the **packet file** wins (with a warning).
-4. If `--packet <name>` and `--package` disagree, **`--package`** wins (with a warning).
+1. If the value is an **http(s) URL** → download JSON into `.conduit/packets/` (reuse the cached file unless `--refresh-packet`) and load it.
+2. If the value is an **existing file** → load that packet JSON.
+3. Otherwise treat it as a **package name** → same idea as `--package <name>`: detect/synthesize a packet for that package.
+4. If both `--packet <file-or-url>` and `--package` disagree on the package field, the **packet file** wins (with a warning).
+5. If `--packet <name>` and `--package` disagree, **`--package`** wins (with a warning).
+
+A **file or URL** skips vendor detect workers (no GitHub/OpenAI scrape). Conduit still scans the consumer repo for a **source packet** (imports / models) so prune and coverage work. `--packet openai` (a name) still runs vendor detect and synthesizes.
 
 ### Version defaults and warnings
 
@@ -85,7 +88,7 @@ Apply a packet only (no oracle tests, no verify).
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--path` | `.` | Repo root |
-| `--packet` | required | Packet **file** path |
+| `--packet` | required | Packet **file** path or **http(s) URL** |
 | `--dry-run` | false | Print changes without writing |
 
 ---
@@ -97,7 +100,7 @@ Write/update packet leftover-token oracle tests, then run the suite + self-corre
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--path` | `.` | Repo root |
-| `--packet` | openai fixture if omitted | Packet **file** path |
+| `--packet` | openai fixture if omitted | Packet **file** path or **http(s) URL** |
 | `--max-retries` | `5` | |
 | `--verbose` / `-v` | false | Self-correct failure/fix details |
 

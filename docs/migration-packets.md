@@ -103,10 +103,11 @@ conduit packet show ./my-packet/conduit-packet.json
 
 `from-detect` freezes **what the scan sees now**. The next new latest is a new file whose `from_version` is the last file’s `to_version` for that package+ecosystem. It is not a git-history replay. `--enrich` optionally adds LLM rules; default is scrape-only.
 
-Clients still apply **one file**:
+Clients apply **one hop** (file or URL). They do not scrape OpenAI to author rules:
 
 ```bash
 conduit run --path . --packet ./packets/openai-pypi-1.109.1.json
+conduit run --path . --packet https://example.com/packets/openai-pypi-1.109.1.json
 ```
 
 Give a Python client the **pypi** hops with `to_version` greater than their pin, in order. Node clients get the **npm** chain. There is no `--packet-dir` chain runner yet; the wrong hop still rewrites the pin and can skip earlier delta rules.
@@ -139,7 +140,7 @@ See [`examples/sample-packet/conduit-packet.json`](../examples/sample-packet/con
 | Role | Typical action |
 |------|----------------|
 | Vendor / maintainer | `conduit packet from-detect --module openai --out-dir ./packets` (or init/synthesize); share JSON |
-| Consumer | `conduit run --packet ./file.json` (one hop); source packet from `detect` |
+| Consumer | `conduit run --packet ./file.json` or `--packet https://…` (one hop); source packet from client inventory |
 
 There is not yet a `conduit packet publish` registry command — share packets via git/HTTP for now.
 
