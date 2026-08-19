@@ -10,7 +10,9 @@ from typing import Any, Callable
 
 from conduit.llm import attach_llm_log, get_llm_client
 from conduit.repair_ignore import IgnoreList, build_ignore_list
+from conduit.test_gen import oracle_forbidden_tokens
 from conduit.test_runner import TestResult, run_tests
+from conduit.text_tokens import obfuscated_forbidden_tokens
 
 LogFn = Callable[[str], None]
 
@@ -216,10 +218,59 @@ def _collect_context_files(
     return files
 
 
+_ORACLE_NAMES = {
+    "test_conduit_oracle.py",
+    "conduit_oracle.test.js",
+}
+
+
+def reject_self_correct_write(
+    rel: str,
+    content: str,
+    *,
+    packet: dict[str, Any],
+    ignore: IgnoreList | None = None,
+) -> str | None:
+    """Return a reason to drop this write, or None if it is allowed."""
+    rel_posix = rel.replace("\\", "/")
+    ignore = ignore or IgnoreList()
+    if ignore.path_ignored(rel_posix):
+        return f"ignored path {rel_posix}"
+    name = Path(rel_posix).name
+    if name in _ORACLE_NAMES or rel_posix in {
+        "tests/test_conduit_oracle.py",
+        "conduit_oracle.test.js",
+    }:
+        return "cannot edit leftover-token oracle"
+    if "vendor" in Path(rel_posix).parts:
+        return "cannot edit vendor decoys"
+    forbidden = oracle_forbidden_tokens(packet)
+    hidden = obfuscated_forbidden_tokens(content, forbidden)
+    if hidden:
+        return "obfuscates leftover tokens via concat/join: " + ", ".join(hidden)
+    lowered = content.lower()
+    is_test = (
+        rel_posix.startswith("tests/")
+        or "/tests/" in rel_posix
+        or name.startswith("test_")
+        or name.endswith(".test.js")
+    )
+    if is_test and any(
+        needle in lowered
+        for needle in ("pytest.mark.skip", "pytest.mark.xfail", ".skip(", ".xfail(")
+    ):
+        return "cannot weaken tests with skip/xfail"
+    return None
+
+
 def _apply_file_updates(
     root: Path,
     updates: dict[str, str],
     snapshots: dict[str, str | None] | None = None,
+    *,
+    packet: dict[str, Any] | None = None,
+    ignore: IgnoreList | None = None,
+    log: LogFn | None = None,
 ) -> list[str]:
     changed: list[str] = []
     root_resolved = root.resolve()
@@ -229,6 +280,14 @@ def _apply_file_updates(
         if not str(path).startswith(str(root_resolved)):
             continue
         rel_posix = rel.replace("\\", "/")
+        if packet is not None:
+            reason = reject_self_correct_write(
+                rel_posix, content, packet=packet, ignore=ignore
+            )
+            if reason:
+                emit = log or _noop_log
+                emit(f"[self-correct] rejected obfuscating edit {rel_posix}: {reason}")
+                continue
         if rel_posix not in store:
             if path.is_file():
                 try:
@@ -715,13 +774,17 @@ def _llm_suggest_fixes(
         allow_run_tests=True,
         allow_shell=True,
         log=emit if emit is not _noop_log else _noop_log,
+        reject_write=lambda rel, contents: reject_self_correct_write(
+            rel, contents, packet=packet, ignore=ignore
+        ),
     )
 
     failing_hint = sorted(files.keys())
     prompt = {
         "instructions": (
             "Tests failed after an automatic API migration. Fix IMPLEMENTATION "
-            "code so tests pass. The packet may be incomplete — you may also "
+            "code so tests pass by rewriting call sites and manifests to the "
+            "packet's new API. The packet may be incomplete — you may also "
             "update packet_patch.\n"
             "Workflow:\n"
             "1) read_file every path you will edit (seeded_paths first).\n"
@@ -746,7 +809,10 @@ def _llm_suggest_fixes(
             "- Every new/changed rule should include a short 'reason'.\n"
             "- Only include files that need changes (or rely on write_file tool).\n"
             "- Empty files in the final JSON is OK if write_file already saved edits.\n"
-            "- Do NOT modify ignored paths.\n"
+            "- Do NOT modify ignored paths, vendor decoys, or tests/test_conduit_oracle.py.\n"
+            "- Do NOT split/join/concat strings to hide leftover tokens "
+            "(e.g. ''.join(['a','da'])). Migrate the API instead.\n"
+            "- Do NOT weaken consumer tests with skip/xfail or split assertion needles.\n"
             "- Do NOT rewrite ignored patterns when they appear as LEGACY_/FORBIDDEN_/"
             "EXPECTED_/ALLOWED_ contract constants — those define the migration oracle.\n"
             "- Prefer running tests via the run_tests tool before finalizing."
@@ -973,7 +1039,14 @@ def verify_with_self_correct(
 
         snapshots = dict(suggestion.snapshots)
         if suggestion.files:
-            changed = _apply_file_updates(root, suggestion.files, snapshots)
+            changed = _apply_file_updates(
+                root,
+                suggestion.files,
+                snapshots,
+                packet=packet,
+                ignore=ignore,
+                log=emit,
+            )
             fix = FixAttempt(
                 strategy="llm",
                 files=changed,

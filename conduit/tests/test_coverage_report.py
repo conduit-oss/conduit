@@ -51,15 +51,22 @@ def test_coverage_marks_missed_and_caught_models(tmp_path):
         package="openai", state=state, signals=signals, packet=packet
     )
     by_val = {i.value: i for i in report.items}
-    assert by_val["gpt-4-0613"].status == "caught"
-    assert by_val["mystery-model"].status == "missed"
-    assert by_val["chat.completions"].status in {"caught", "missed", "unknown"}
+    assert by_val["gpt-4-0613"].status == "will_migrate"
+    assert by_val["gpt-4o"].status == "keep"
+    assert by_val["mystery-model"].status == "no_rule"
+    assert by_val["chat.completions"].status in {
+        "will_migrate",
+        "no_rule",
+        "unmapped",
+    }
 
     text = format_coverage_report(report)
     assert "source packet" in text.lower()
     assert "migration packet" in text.lower()
-    assert "MISSED" in text
-    assert "CAUGHT" in text
+    assert "WILL MIGRATE" in text
+    assert "KEEP" in text
+    assert "NO RULE" in text
+    assert "will replace with gpt-4o" in text
 
     path = save_source_packet(tmp_path, report.source_packet)
     assert path.is_file()
@@ -100,9 +107,9 @@ def test_coverage_marks_callee_from_usage_and_rule():
         package="openai", state=state, signals=[], packet=packet
     )
     by_val = {i.value: i for i in report.items}
-    assert by_val["text-davinci-edit-001"].status == "caught"
-    assert by_val["Edit.create"].status == "caught"
-    assert not report.missed
+    assert by_val["text-davinci-edit-001"].status == "will_migrate"
+    assert by_val["Edit.create"].status == "will_migrate"
+    assert not report.no_rule
 
 
 def test_coverage_skips_usage_id_false_models(monkeypatch):
@@ -154,8 +161,8 @@ def test_coverage_skips_usage_id_false_models(monkeypatch):
     )
     model_items = {i.value: i for i in report.items if i.kind == "model"}
     assert "apply_edit" not in model_items
-    assert model_items["gpt-4-0613"].status == "caught"
-    assert "apply_edit" not in {i.value for i in report.missed if i.kind == "model"}
+    assert model_items["gpt-4-0613"].status == "will_migrate"
+    assert "apply_edit" not in {i.value for i in report.no_rule if i.kind == "model"}
 
 
 def test_empty_source_notes_unknown_baseline():

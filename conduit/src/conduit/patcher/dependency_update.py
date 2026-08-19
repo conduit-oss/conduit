@@ -12,6 +12,8 @@ import tomlkit
 from tomlkit.exceptions import TOMLKitError
 from tomlkit.items import Array, Table
 
+from conduit.prune.grep_imports import SKIP_DIRS
+
 Op = Literal["bump", "add", "remove"]
 
 DEP_RULE_TYPES = frozenset(
@@ -442,6 +444,53 @@ def bump_pyproject(
     return ok
 
 
+def _path_skipped(path: Path, root: Path) -> bool:
+    try:
+        rel_parts = path.resolve().relative_to(root.resolve()).parts
+    except ValueError:
+        rel_parts = path.parts
+    return any(part in SKIP_DIRS for part in rel_parts)
+
+
+def _iter_pip_manifests(root: Path, *, scope: str) -> list[Path]:
+    """Root plus nested requirements/constraints files (venv/vendor skipped)."""
+    names = (
+        {"requirements-dev.txt"}
+        if scope == "dev"
+        else {"requirements.txt", "constraints.txt"}
+    )
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for path in root.rglob("*"):
+        if not path.is_file() or _path_skipped(path, root):
+            continue
+        name = path.name.lower()
+        if name in {n.lower() for n in names} or (
+            scope != "dev"
+            and name.endswith(".txt")
+            and "requirements" in name
+            and name != "requirements-dev.txt"
+        ):
+            resolved = path.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                found.append(path)
+    return found
+
+
+def _iter_npm_manifests(root: Path) -> list[Path]:
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for path in root.rglob("package.json"):
+        if not path.is_file() or _path_skipped(path, root):
+            continue
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            found.append(path)
+    return found
+
+
 def apply_dependency_rule(
     root: Path,
     rule: dict[str, Any],
@@ -473,21 +522,13 @@ def apply_dependency_rule(
         return str(path.relative_to(root))
 
     if "pip" in ecosystems:
-        if scope == "dev":
-            req = root / "requirements-dev.txt"
-            if op == "add" and not req.is_file():
-                result.skips.append(
-                    "Skipped requirements-dev.txt: file does not exist"
-                )
-            elif _edit_requirements_txt(
-                req, package, version, op=op, dry_run=dry_run
-            ):
-                result.changed.append(_rel(req))
-        else:
-            req = root / "requirements.txt"
-            if _edit_requirements_txt(
-                req, package, version, op=op, dry_run=dry_run
-            ):
+        pip_paths = _iter_pip_manifests(root, scope=scope)
+        if scope == "dev" and not pip_paths:
+            result.skips.append(
+                "Skipped requirements-dev.txt: file does not exist"
+            )
+        for req in pip_paths:
+            if _edit_requirements_txt(req, package, version, op=op, dry_run=dry_run):
                 result.changed.append(_rel(req))
 
     if "pyproject" in ecosystems:
@@ -501,11 +542,11 @@ def apply_dependency_rule(
             result.skips.append(skip)
 
     if "npm" in ecosystems:
-        pkg = root / "package.json"
-        if _edit_package_json(
-            pkg, package, version, op=op, scope=scope, dry_run=dry_run
-        ):
-            result.changed.append(_rel(pkg))
+        for pkg in _iter_npm_manifests(root):
+            if _edit_package_json(
+                pkg, package, version, op=op, scope=scope, dry_run=dry_run
+            ):
+                result.changed.append(_rel(pkg))
 
     if "go" in ecosystems:
         gomod = root / "go.mod"

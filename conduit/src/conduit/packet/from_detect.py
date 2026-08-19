@@ -16,6 +16,9 @@ from conduit.detect.orchestrator import run_detect
 from conduit.packet.cache import save_packet
 from conduit.packet.synthesize import packet_from_signals, synthesize_from_evidence
 from conduit.packet.validate import validate_packet
+from conduit.detect.modules.openai.sdk_surface_seeds import (
+    merge_catalog_sdk_surface_rules,
+)
 
 SNAPSHOT_FLOOR = "0"
 _SDK_BUMP_TYPES = frozenset({"SDK_MAJOR_BUMP", "SDK_BUMP", "DEPENDENCY_BUMP"})
@@ -305,6 +308,11 @@ def build_snapshot_packet(
     packet["from_version"] = from_version
     packet["to_version"] = to_version
     packet["ecosystem"] = ecosystem
+    packet["rules"] = merge_catalog_sdk_surface_rules(
+        list(packet.get("rules") or []),
+        package=package,
+        ecosystem=ecosystem,
+    )
     prev_label = previous.get("to_version") if previous else None
     packet["notes"] = (
         f"Catalog snapshot targeting {package} {to_version} ({ecosystem}). "

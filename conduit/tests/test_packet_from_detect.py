@@ -109,6 +109,11 @@ def test_first_snapshot_from_floor(tmp_path: Path):
     assert bump["to_version"] == "2.0.0"
     assert bump["ecosystems"] == ["pip", "pyproject"]
     assert any(r.get("match") == "gpt-4-0613" for r in pkt["rules"])
+    assert any(
+        r.get("type") == "AST_CALL_REWRITE"
+        and r.get("old_callee") == "ChatCompletion.create"
+        for r in pkt["rules"]
+    )
 
 
 def test_second_hop_deltas_and_skips_same_latest(tmp_path: Path):

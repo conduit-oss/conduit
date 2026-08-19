@@ -15,11 +15,37 @@ from conduit.detect.modules.openai.path_callees import (
 )
 
 
+# Client usage vs packet: does this hop change it, leave it, or lack a rule?
+STATUS_WILL_MIGRATE = "will_migrate"
+STATUS_KEEP = "keep"
+STATUS_NO_RULE = "no_rule"
+STATUS_UNMAPPED = "unmapped"
+
+_STATUS_LABEL = {
+    STATUS_WILL_MIGRATE: "WILL MIGRATE",
+    STATUS_KEEP: "KEEP",
+    STATUS_NO_RULE: "NO RULE",
+    STATUS_UNMAPPED: "UNMAPPED",
+}
+_STATUS_BLURB = {
+    STATUS_WILL_MIGRATE: "packet has a rule to change this",
+    STATUS_KEEP: "already a replacement target; no change needed",
+    STATUS_NO_RULE: "used in this repo; packet has no migrate-from rule",
+    STATUS_UNMAPPED: "not a known /v1 route or SDK callee; not a migration gap",
+}
+_STATUS_ORDER = (
+    STATUS_WILL_MIGRATE,
+    STATUS_KEEP,
+    STATUS_NO_RULE,
+    STATUS_UNMAPPED,
+)
+
+
 @dataclass
 class CoverageItem:
-    kind: str  # model | api_pattern | endpoint
+    kind: str  # model | api_pattern | callee
     value: str
-    status: str  # caught | missed | unknown
+    status: str  # will_migrate | keep | no_rule | unmapped
     detail: str = ""
 
 
@@ -32,12 +58,33 @@ class PacketCoverageReport:
     notes: list[str] = field(default_factory=list)
 
     @property
+    def will_migrate(self) -> list[CoverageItem]:
+        return [i for i in self.items if i.status == STATUS_WILL_MIGRATE]
+
+    @property
+    def keep(self) -> list[CoverageItem]:
+        return [i for i in self.items if i.status == STATUS_KEEP]
+
+    @property
+    def no_rule(self) -> list[CoverageItem]:
+        return [i for i in self.items if i.status == STATUS_NO_RULE]
+
+    @property
+    def unmapped(self) -> list[CoverageItem]:
+        return [i for i in self.items if i.status == STATUS_UNMAPPED]
+
+    # Aliases used by run summary / older tests
+    @property
     def missed(self) -> list[CoverageItem]:
-        return [i for i in self.items if i.status == "missed"]
+        return self.no_rule
 
     @property
     def caught(self) -> list[CoverageItem]:
-        return [i for i in self.items if i.status == "caught"]
+        return self.will_migrate
+
+    @property
+    def ok(self) -> list[CoverageItem]:
+        return self.keep
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,14 +131,10 @@ def _signal_touches_model(signal: ChangeSignal, model_id: str) -> bool:
     mid = model_id.lower()
     if (signal.affected_pattern or "").lower() == mid:
         return True
-    if (signal.replacement_pattern or "").lower() == mid:
-        return True
     for rule in signal.suggested_rules:
         if rule.get("type") != "EXACT_STRING_REPLACE":
             continue
         if str(rule.get("match") or "").lower() == mid:
-            return True
-        if str(rule.get("replace") or "").lower() == mid:
             return True
     return False
 
@@ -113,12 +156,25 @@ def _signal_touches_path(signal: ChangeSignal, path: str) -> bool:
     return norm.lower() in desc
 
 
+def _successor_from_rules(
+    rule_hits: list[dict[str, Any]],
+    hits: list[ChangeSignal],
+) -> str:
+    for rule in rule_hits:
+        for key in ("replace", "new_callee", "new_param", "new_attr", "new_import"):
+            val = str(rule.get(key) or "").strip()
+            if val:
+                return val
+    for signal in hits:
+        if signal.replacement_pattern:
+            return str(signal.replacement_pattern)
+    return ""
+
+
 def _rule_touches_model(rule: dict[str, Any], model_id: str) -> bool:
     mid = model_id.lower()
     if rule.get("type") == "EXACT_STRING_REPLACE":
-        return str(rule.get("match") or "").lower() == mid or str(
-            rule.get("replace") or ""
-        ).lower() == mid
+        return str(rule.get("match") or "").lower() == mid
     return False
 
 
@@ -127,7 +183,7 @@ def _rule_touches_path(rule: dict[str, Any], path: str) -> bool:
     if not norm:
         return False
     if rule.get("type") == "EXACT_STRING_REPLACE":
-        for key in ("match", "replace"):
+        for key in ("match",):
             if normalize_api_path(str(rule.get(key) or "")) == norm:
                 return True
     return False
@@ -139,20 +195,11 @@ def _rule_touches_callee(rule: dict[str, Any], callee: str) -> bool:
         return False
     rtype = str(rule.get("type") or "")
     if rtype == "AST_CALL_REWRITE":
-        return want in {
-            str(rule.get("old_callee") or "").strip().lower(),
-            str(rule.get("new_callee") or "").strip().lower(),
-        }
+        return want == str(rule.get("old_callee") or "").strip().lower()
     if rtype == "AST_ATTR_RENAME":
-        return want in {
-            str(rule.get("old_attr") or "").strip().lower(),
-            str(rule.get("new_attr") or "").strip().lower(),
-        }
+        return want == str(rule.get("old_attr") or "").strip().lower()
     if rtype == "EXACT_STRING_REPLACE":
-        return want in {
-            str(rule.get("match") or "").strip().lower(),
-            str(rule.get("replace") or "").strip().lower(),
-        }
+        return want == str(rule.get("match") or "").strip().lower()
     return False
 
 
@@ -222,6 +269,12 @@ def build_coverage_report(
         for s in pkg_signals
         if s.change_type in {"MODEL_DEPRECATION", "MODEL_REMOVED"} and s.replacement_pattern
     }
+    for rule in rules:
+        if str(rule.get("type") or "") != "EXACT_STRING_REPLACE":
+            continue
+        repl = str(rule.get("replace") or "").strip().lower()
+        if repl:
+            successor_models.add(repl)
 
     usage_ids = {
         str(u.get("id") or "").strip().lower()
@@ -253,18 +306,20 @@ def build_coverage_report(
         hits = [s for s in pkg_signals if _signal_touches_model(s, model_id)]
         rule_hits = [r for r in rules if _rule_touches_model(r, model_id)]
         if hits or rule_hits:
-            detail_parts = [
-                f"{s.change_type}:{s.affected_pattern}->{s.replacement_pattern}"
-                for s in hits[:3]
-            ]
-            if rule_hits:
-                detail_parts.append(f"{len(rule_hits)} packet rule(s)")
+            successor = _successor_from_rules(rule_hits, hits)
+            if successor:
+                detail = f"will replace with {successor}"
+            else:
+                detail = f"{len(rule_hits)} packet rule(s)" if rule_hits else (
+                    f"{hits[0].change_type}:{hits[0].affected_pattern}"
+                    if hits else ""
+                )
             items.append(
                 CoverageItem(
                     kind="model",
                     value=str(model_id),
-                    status="caught",
-                    detail="; ".join(detail_parts),
+                    status=STATUS_WILL_MIGRATE,
+                    detail=detail,
                 )
             )
         elif str(model_id).lower() in successor_models:
@@ -272,8 +327,8 @@ def build_coverage_report(
                 CoverageItem(
                     kind="model",
                     value=str(model_id),
-                    status="caught",
-                    detail="Already a documented replacement target (no further model rule).",
+                    status=STATUS_KEEP,
+                    detail="already a replacement target; leave as-is",
                 )
             )
         else:
@@ -281,11 +336,8 @@ def build_coverage_report(
                 CoverageItem(
                     kind="model",
                     value=str(model_id),
-                    status="missed",
-                    detail=(
-                        "Client uses this model; no deprecation/removal/replace rule. "
-                        "If it should migrate, detect did not catch it."
-                    ),
+                    status=STATUS_NO_RULE,
+                    detail="used here; packet has no replace-from rule (may still be current)",
                 )
             )
 
@@ -313,15 +365,14 @@ def build_coverage_report(
             ]
             callee_rules = [r for r in rules if _rule_touches_callee(r, str(pattern))]
             if hits or rule_hits or param_hits or callee_hits or callee_rules:
+                successor = _successor_from_rules(rule_hits + callee_rules, hits)
+                extra = f" → {successor}" if successor else ""
                 items.append(
                     CoverageItem(
                         kind="api_pattern",
                         value=str(pattern),
-                        status="caught",
-                        detail=(
-                            f"path={path}; signals={len(hits) + len(param_hits) + len(callee_hits)}; "
-                            f"rules={len(rule_hits) + len(callee_rules)}"
-                        ),
+                        status=STATUS_WILL_MIGRATE,
+                        detail=f"path {path}{extra}",
                     )
                 )
             else:
@@ -329,25 +380,22 @@ def build_coverage_report(
                     CoverageItem(
                         kind="api_pattern",
                         value=str(pattern),
-                        status="missed",
-                        detail=(
-                            f"Maps to {path}; no path/param/callee migration signal or rule."
-                        ),
+                        status=STATUS_NO_RULE,
+                        detail=f"maps to {path}; packet has no path/param/callee rewrite",
                     )
                 )
         else:
             callee_hits = [s for s in pkg_signals if _signal_touches_callee(s, str(pattern))]
             callee_rules = [r for r in rules if _rule_touches_callee(r, str(pattern))]
             if callee_hits or callee_rules:
+                successor = _successor_from_rules(callee_rules, callee_hits)
+                extra = f" → {successor}" if successor else ""
                 items.append(
                     CoverageItem(
                         kind="api_pattern",
                         value=str(pattern),
-                        status="caught",
-                        detail=(
-                            f"callee signals={len(callee_hits)}; "
-                            f"rules={len(callee_rules)}"
-                        ),
+                        status=STATUS_WILL_MIGRATE,
+                        detail=f"callee rewrite{extra}",
                     )
                 )
             else:
@@ -355,8 +403,8 @@ def build_coverage_report(
                     CoverageItem(
                         kind="api_pattern",
                         value=str(pattern),
-                        status="unknown",
-                        detail="Could not map token to a /v1/... route for coverage.",
+                        status=STATUS_UNMAPPED,
+                        detail="helper/token, not a known /v1 route — not scored as a gap",
                     )
                 )
 
@@ -368,14 +416,17 @@ def build_coverage_report(
                 continue
             hits = [s for s in pkg_signals if _signal_touches_callee(s, str(callee))]
             rule_hits = [r for r in rules if _rule_touches_callee(r, str(callee))]
+            successor = _successor_from_rules(rule_hits, hits)
+            extra = f" → {successor}" if successor else ""
             items.append(
                 CoverageItem(
                     kind="callee",
                     value=str(callee),
-                    status="caught" if (hits or rule_hits) else "missed",
+                    status=STATUS_WILL_MIGRATE if (hits or rule_hits) else STATUS_NO_RULE,
                     detail=(
-                        f"usage id={usage.get('id')}; signals={len(hits)}; "
-                        f"rules={len(rule_hits)}"
+                        f"from usage {usage.get('id')}{extra}"
+                        if hits or rule_hits
+                        else f"from usage {usage.get('id')}; packet has no callee rewrite"
                     ),
                 )
             )
@@ -463,21 +514,36 @@ def format_coverage_report(report: PacketCoverageReport, *, verbose: bool = Fals
                 lines.append(f"  - {s.get('kind')}: {s.get('url')}")
 
     lines.append("")
-    lines.append("=== Coverage diff (source vs migration) ===")
+    lines.append("=== Coverage (what this repo uses vs packet rules) ===")
+    lines.append("WILL MIGRATE  packet will change this")
+    lines.append("KEEP          already the new id / no change needed")
+    lines.append("NO RULE       used here; packet has no migrate-from rule")
+    lines.append("UNMAPPED      helper/short path; not scored as a gap")
     if not report.items:
         lines.append("(no client model_ids / api_patterns to score)")
+    by_status: dict[str, list[CoverageItem]] = {key: [] for key in _STATUS_ORDER}
     for item in report.items:
-        mark = {
-            "caught": "CAUGHT",
-            "missed": "MISSED",
-            "unknown": "UNKNOWN",
-        }.get(item.status, item.status.upper())
-        lines.append(f"[{mark}] {item.kind} {item.value}")
-        if item.detail:
-            lines.append(f"         {item.detail}")
-    caught_n = len(report.caught)
-    missed_n = len(report.missed)
-    lines.append(f"summary: caught={caught_n} missed={missed_n} total={len(report.items)}")
+        by_status.setdefault(item.status, []).append(item)
+    for status in _STATUS_ORDER:
+        group = by_status.get(status) or []
+        if not group:
+            continue
+        label = _STATUS_LABEL.get(status, status.upper())
+        blurb = _STATUS_BLURB.get(status, "")
+        lines.append(f"[{label}] {len(group)}  — {blurb}")
+        for item in group:
+            line = f"  {item.kind} {item.value}"
+            if item.detail:
+                line += f"  ({item.detail})"
+            lines.append(line)
+    lines.append(
+        "summary: "
+        f"will_migrate={len(report.will_migrate)} "
+        f"keep={len(report.keep)} "
+        f"no_rule={len(report.no_rule)} "
+        f"unmapped={len(report.unmapped)} "
+        f"total={len(report.items)}"
+    )
     for n in report.notes:
         lines.append(f"note: {n}")
 
@@ -500,3 +566,14 @@ def save_source_packet(root: Path, source_packet: dict[str, Any]) -> Path:
     path = out_dir / f"{pkg}.json"
     path.write_text(json.dumps(source_packet, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def load_source_packet(root: Path, package: str) -> dict[str, Any] | None:
+    path = root / ".conduit" / "source-packets" / f"{package}.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None

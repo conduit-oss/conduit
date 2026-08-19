@@ -488,7 +488,8 @@ def test_ensure_tests_oracle_fails_on_leftover_match(tmp_path: Path, monkeypatch
         ],
     }
     created = ensure_tests(tmp_path, packet, file_allowlist=[app])
-    assert created == ["tests/test_conduit_oracle.py"]
+    assert created[0] == "tests/test_conduit_oracle.py"
+    assert "tests/test_conduit_smoke.py" in created
     assert token_in_text(app.read_text(encoding="utf-8"), "gpt-4-0613")
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", str(tmp_path / created[0]), "-q"],
@@ -499,6 +500,38 @@ def test_ensure_tests_oracle_fails_on_leftover_match(tmp_path: Path, monkeypatch
     )
     assert proc.returncode != 0
     assert "gpt-4-0613" in (proc.stdout + proc.stderr)
+
+
+def test_ensure_tests_oracle_fails_on_join_obfuscation(tmp_path: Path, monkeypatch):
+    _disable_llm(monkeypatch)
+    app = tmp_path / "app.py"
+    app.write_text('LEGACY = "".join(["gpt-4", "-0613"])\n', encoding="utf-8")
+    packet = {
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "1.0.0",
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "target_files": ["*.py"],
+                "match": "gpt-4-0613",
+                "replace": "gpt-4o",
+            }
+        ],
+    }
+    created = ensure_tests(tmp_path, packet, file_allowlist=[app])
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", str(tmp_path / created[0]), "-q"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != 0
+    assert "obfuscat" in (proc.stdout + proc.stderr).lower() or "gpt-4-0613" in (
+        proc.stdout + proc.stderr
+    )
 
 
 def test_ensure_tests_oracle_skips_ignored_contract(tmp_path: Path, monkeypatch):
@@ -584,7 +617,8 @@ def test_ensure_tests_writes_js_oracle(tmp_path: Path, monkeypatch):
         ],
     }
     created = ensure_tests(tmp_path, packet, file_allowlist=[app])
-    assert created == ["conduit_oracle.test.js"]
+    assert created[0] == "conduit_oracle.test.js"
+    assert "conduit_smoke.test.js" in created
     text = (tmp_path / created[0]).read_text(encoding="utf-8")
     assert "gpt-4-0613" in text
     assert "conduit no legacy tokens" in text
