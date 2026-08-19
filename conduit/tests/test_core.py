@@ -80,8 +80,8 @@ def test_export_delta_placeholder_version(tmp_path: Path):
     assert "placeholder" in delta.diagnostics[0]
 
 
-def test_resolve_packet_arg_package_name():
-    path, pkg = _resolve_packet_arg("openai")
+def test_resolve_packet_arg_package_name(tmp_path: Path):
+    path, pkg = _resolve_packet_arg("openai", root=tmp_path)
     assert path is None
     assert pkg == "openai"
 
@@ -89,7 +89,7 @@ def test_resolve_packet_arg_package_name():
 def test_resolve_packet_arg_file(tmp_path: Path):
     packet_file = tmp_path / "conduit-packet.json"
     packet_file.write_text("{}", encoding="utf-8")
-    path, pkg = _resolve_packet_arg(str(packet_file))
+    path, pkg = _resolve_packet_arg(str(packet_file), root=tmp_path)
     assert path == packet_file.resolve()
     assert pkg is None
 

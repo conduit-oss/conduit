@@ -10,7 +10,10 @@ from conduit.detect.modules.openai.endpoint_compat import apply_endpoint_compat
 from conduit.detect.modules.openai.normalize import default_rules_for, signal_to_event
 from conduit.detect.modules.openai.path_param_compat import apply_path_param_compat
 from conduit.detect.modules.openai.workers.model_polling import ModelPollingWorker
-from conduit.detect.modules.openai.workers.sdk_release import SDKReleaseWorker
+from conduit.detect.modules.openai.workers.sdk_release import (
+    SDKReleaseWorker,
+    packet_ecosystem_for,
+)
 from conduit.detect.vendor_profile import VendorProfile
 
 
@@ -92,13 +95,22 @@ def run_profile_module(
                 client_state=client_state,
                 majors_only=ctx.majors_only,
                 profile=profile,
+                catalog_latest=ctx.catalog_latest,
             )
         except TypeError:
-            raw_list = worker.run(
-                demo=ctx.demo,
-                client_state=client_state,
-                majors_only=ctx.majors_only,
-            )
+            try:
+                raw_list = worker.run(
+                    demo=ctx.demo,
+                    client_state=client_state,
+                    majors_only=ctx.majors_only,
+                    profile=profile,
+                )
+            except TypeError:
+                raw_list = worker.run(
+                    demo=ctx.demo,
+                    client_state=client_state,
+                    majors_only=ctx.majors_only,
+                )
         except Exception as exc:
             warnings.append(f"{label} worker {worker.name}: {exc}")
             continue
@@ -142,6 +154,7 @@ def run_profile_module(
                 list(rules), installed=ctx.installed
             )
             from_v = to_v = None
+            eco = None
             if raw.change_type.value == "SDK_MAJOR_BUMP":
                 to_v = str(raw.extra.get("to_version") or raw.replacement_pattern or "")
                 bump_pkg = str(raw.extra.get("package") or raw.affected_pattern or pkg)
@@ -151,6 +164,7 @@ def run_profile_module(
                         from_v = ver
                         break
                 from_v = from_v or str(raw.extra.get("from_version") or "")
+                eco = packet_ecosystem_for(raw.extra.get("ecosystems") or [])
             signals.append(
                 ChangeSignal(
                     source=f"module:{label}",
@@ -159,6 +173,7 @@ def run_profile_module(
                     severity=event.severity,
                     from_version=from_v,
                     to_version=to_v,
+                    ecosystem=eco,
                     affected_pattern=event.affected_pattern,
                     replacement_pattern=event.replacement_pattern,
                     description=event.description,

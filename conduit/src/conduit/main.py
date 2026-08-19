@@ -21,6 +21,7 @@ from conduit.detect.modules.discovery import load_modules
 from conduit.detect.orchestrator import run_detect
 from conduit.export_delta import compute_export_delta, prune_by_export_symbols
 from conduit.packet.cache import save_packet
+from conduit.packet.fetch import PacketFetchError, fetch_packet_url, is_packet_url
 from conduit.packet.synthesize import (
     ensure_packet,
     load_fixture_openai_packet,
@@ -246,9 +247,13 @@ def _pick_package(signals, package: Optional[str]) -> str | None:
 
 def _resolve_packet_arg(
     packet: Optional[str],
+    *,
+    root: Path,
+    refresh: bool = False,
+    allow_package_name: bool = True,
 ) -> tuple[Optional[Path], Optional[str]]:
     """
-    Interpret --packet as an existing packet file path, or else a package name.
+    Interpret --packet as a file path, http(s) URL, or else a package name.
     Returns (packet_file, package_name).
     """
     if not packet:
@@ -256,11 +261,20 @@ def _resolve_packet_arg(
     raw = packet.strip()
     if not raw:
         return None, None
+    if is_packet_url(raw):
+        try:
+            return fetch_packet_url(raw, root=root, refresh=refresh), None
+        except PacketFetchError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2) from exc
     as_path = Path(raw).expanduser()
     if as_path.is_file():
         return as_path.resolve(), None
     # Bare package names must not look like accidental relative paths with separators
     if any(sep in raw for sep in ("/", "\\")) or raw.endswith(".json"):
+        console.print(f"[red]Packet file not found:[/red] {raw}")
+        raise typer.Exit(2)
+    if not allow_package_name:
         console.print(f"[red]Packet file not found:[/red] {raw}")
         raise typer.Exit(2)
     return None, raw
@@ -372,12 +386,18 @@ def detect_cmd(
 @app.command("apply")
 def apply_cmd(
     path: Path = typer.Option(Path("."), "--path"),
-    packet: Path = typer.Option(..., "--packet", help="Path to conduit-packet.json"),
+    packet: str = typer.Option(..., "--packet", help="Path or http(s) URL to conduit-packet.json"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
     """Apply a Migration Packet without opening a PR."""
     root = _resolve_root(path)
-    data = json.loads(packet.read_text(encoding="utf-8"))
+    packet_file, _ = _resolve_packet_arg(
+        str(packet), root=root, allow_package_name=False
+    )
+    if packet_file is None:
+        console.print("[red]--packet must be a file path or http(s) URL.[/red]")
+        raise typer.Exit(2)
+    data = json.loads(packet_file.read_text(encoding="utf-8"))
     errors = validate_packet(data)
     if errors:
         for err in errors:
@@ -397,7 +417,9 @@ def apply_cmd(
 @app.command("verify")
 def verify_cmd(
     path: Path = typer.Option(Path("."), "--path"),
-    packet: Optional[Path] = typer.Option(None, "--packet"),
+    packet: Optional[str] = typer.Option(
+        None, "--packet", help="Path or http(s) URL to conduit-packet.json"
+    ),
     max_retries: int = typer.Option(5, "--max-retries"),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Print self-correct failure/fix details"
@@ -408,11 +430,16 @@ def verify_cmd(
     if verbose:
         _VERBOSE = True
     root = _resolve_root(path)
-    data = (
-        json.loads(packet.read_text(encoding="utf-8"))
-        if packet
-        else load_fixture_openai_packet()
-    )
+    if packet:
+        packet_file, _ = _resolve_packet_arg(
+            packet, root=root, allow_package_name=False
+        )
+        if packet_file is None:
+            console.print("[red]--packet must be a file path or http(s) URL.[/red]")
+            raise typer.Exit(2)
+        data = json.loads(packet_file.read_text(encoding="utf-8"))
+    else:
+        data = load_fixture_openai_packet()
     start_pulse(console, "repair")
     try:
         result, _generated, corrected = _verify_with_oracle(
@@ -435,7 +462,7 @@ def run_cmd(
     packet: Optional[str] = typer.Option(
         None,
         "--packet",
-        help="Path to conduit-packet.json, or a package name (e.g. openai)",
+        help="Path, http(s) URL, or package name (e.g. openai) for conduit-packet.json",
     ),
     skip_tests: bool = typer.Option(False, "--skip-tests"),
     skip_pr: bool = typer.Option(False, "--skip-pr"),
@@ -465,7 +492,9 @@ def run_cmd(
     if verbose:
         _VERBOSE = True
     root = _resolve_root(path)
-    packet_file, packet_package = _resolve_packet_arg(packet)
+    packet_file, packet_package = _resolve_packet_arg(
+        packet, root=root, refresh=refresh_packet
+    )
     start_pulse(console, "awakening")
     try:
         _run_pipeline(
@@ -514,6 +543,27 @@ def _run_pipeline(
             f"--packet package name {packet_package!r}; using --package"
         )
 
+    published: dict | None = None
+    scan_packages = None
+    skip_vendor = skip_modules
+    if packet_file is not None:
+        published = json.loads(packet_file.read_text(encoding="utf-8"))
+        file_pkg = str(published.get("package") or "")
+        if package and file_pkg and package.lower() != file_pkg.lower():
+            console.print(
+                f"[yellow]Warning:[/yellow] --package {package!r} differs from "
+                f"packet file package {file_pkg!r}; using packet file"
+            )
+        pkg_hint = file_pkg or pkg_hint
+        if not pkg_hint:
+            console.print("[red]Packet file has no package field.[/red]")
+            raise typer.Exit(2)
+        scan_packages = dependency_packages(published)
+        skip_vendor = True
+        console.print(
+            "[dim]Using published packet; skipping vendor detect scrape[/dim]"
+        )
+
     names = [module] if module else _detect_module_names_for_package(pkg_hint)
     if demo:
         console.print("[dim]Demo mode: using offline detect fixtures[/dim]")
@@ -522,8 +572,10 @@ def _run_pipeline(
         root,
         base_ref=base_ref,
         module_names=names,
-        skip_modules=skip_modules,
+        skip_modules=skip_vendor,
         skip_lockfile=skip_lockfile,
+        scan_client=True,
+        scan_packages=scan_packages,
         demo=demo,
         verbose=_VERBOSE,
         log=console.print,
@@ -540,13 +592,8 @@ def _run_pipeline(
     pkg = _pick_package(detected.signals, pkg_hint)
 
     if packet_file is not None:
-        pkt_data = json.loads(packet_file.read_text(encoding="utf-8"))
+        pkt_data = published or json.loads(packet_file.read_text(encoding="utf-8"))
         file_pkg = str(pkt_data.get("package") or "")
-        if package and file_pkg and package.lower() != file_pkg.lower():
-            console.print(
-                f"[yellow]Warning:[/yellow] --package {package!r} differs from "
-                f"packet file package {file_pkg!r}; using packet file"
-            )
         pkg = file_pkg or pkg
         if not pkg:
             console.print("[red]Packet file has no package field.[/red]")
@@ -914,6 +961,85 @@ def packet_synthesize_cmd(
             console.print(f"  {err}")
     else:
         console.print(f"[green]Wrote valid packet[/green] {out}")
+
+
+@packet_app.command("from-detect")
+def packet_from_detect_cmd(
+    module: str = typer.Option(..., "--module", help="Detect module (e.g. openai)"),
+    out_dir: Path = typer.Option(Path("."), "--out-dir", help="Directory for snapshot JSON files"),
+    package: Optional[str] = typer.Option(None, "--package"),
+    ecosystem: Optional[str] = typer.Option(
+        None, "--ecosystem", help="Write only this chain (pypi, npm, go, maven)"
+    ),
+    previous: Optional[Path] = typer.Option(
+        None, "--previous", help="Previous snapshot JSON (requires --ecosystem)"
+    ),
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Explicit output file (requires --ecosystem)"
+    ),
+    demo: bool = typer.Option(False, "--demo", help="Offline detect fixtures"),
+    enrich: bool = typer.Option(
+        False, "--enrich", help="Optional LLM rule pass (off = scrape only)"
+    ),
+) -> None:
+    """Freeze catalog snapshot packets from detect (no consumer repo)."""
+    from conduit.packet.from_detect import run_packet_from_detect
+
+    if previous is not None and not ecosystem:
+        console.print("[red]--previous requires --ecosystem[/red]")
+        raise typer.Exit(2)
+    if out is not None and not ecosystem:
+        console.print("[red]--out requires --ecosystem[/red]")
+        raise typer.Exit(2)
+    if ecosystem and ecosystem.lower() not in {"pypi", "npm", "go", "maven", "other"}:
+        console.print(f"[red]Unknown ecosystem {ecosystem!r}[/red]")
+        raise typer.Exit(2)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        writes, warnings = run_packet_from_detect(
+            module=module,
+            out_dir=out_dir,
+            package=package,
+            ecosystem=ecosystem.lower() if ecosystem else None,
+            previous_path=previous,
+            out_path=out,
+            demo=demo,
+            enrich=enrich,
+            log=console.print,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+
+    for warning in warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+    if not writes:
+        console.print("[red]Scan produced no SDK target version (nothing to write).[/red]")
+        raise typer.Exit(2)
+
+    wrote = 0
+    for item in writes:
+        pkt = item.packet
+        pkg = pkt.get("package")
+        eco = pkt.get("ecosystem")
+        to_v = pkt.get("to_version")
+        from_v = pkt.get("from_version")
+        console.print(f"target {pkg} {to_v} ({eco})")
+        if from_v and from_v != "0":
+            console.print(f"previous snapshot {from_v}")
+        else:
+            console.print("previous snapshot (none)")
+        n_rules = len(pkt.get("rules") or [])
+        if item.skipped:
+            console.print(f"[dim]skip[/dim] {item.path} ({item.skip_reason})")
+        else:
+            wrote += 1
+            console.print(f"[green]wrote[/green] {item.path}  ({n_rules} rules)")
+
+    if wrote == 0:
+        console.print("[dim]All snapshot chains already up to date.[/dim]")
 
 
 if __name__ == "__main__":
