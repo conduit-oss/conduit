@@ -157,6 +157,23 @@ JSON Schema validation; exit non-zero on errors.
 
 Pretty-print packet JSON.
 
+### `packet from-detect`
+
+Freeze **catalog snapshot** packets from a detect module. No consumer repo, apply, or source packet. Scan picks the latest stable SDK tag **per ecosystem** (PyPI and npm are different version lines).
+
+```bash
+conduit packet from-detect --module openai --out-dir ./packets
+# --demo for offline fixtures
+# --enrich optional LLM extra rules (scrape-only if omitted)
+# --ecosystem pypi   # one chain only
+```
+
+Writes `{package}-{ecosystem}-{to_version}.json` (e.g. `openai-pypi-2.0.0.json`, `openai-npm-5.0.0.json`). First snapshot uses `from_version` `0`. Later runs write a **new** file whose `from` is the previous snapshot’s `to`. Same latest → skip, do not overwrite.
+
+`--previous` and `--out` require `--ecosystem`.
+
+Unknown `--module` or no scanned target version → exit 2.
+
 ---
 
 ## Environment (global)

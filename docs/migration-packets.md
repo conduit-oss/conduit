@@ -92,9 +92,24 @@ conduit packet synthesize \
   --changelog ./CHANGELOG.md --docs ./MIGRATION.md \
   --out ./my-packet/conduit-packet.json
 
+# Catalog snapshots from detect (no consumer repo). Scan picks latest per ecosystem.
+conduit packet from-detect --module openai --out-dir ./packets
+# packets/openai-pypi-<latest>.json
+# packets/openai-npm-<latest>.json
+
 conduit packet validate ./my-packet/conduit-packet.json
 conduit packet show ./my-packet/conduit-packet.json
 ```
+
+`from-detect` freezes **what the scan sees now**. The next new latest is a new file whose `from_version` is the last file’s `to_version` for that package+ecosystem. It is not a git-history replay. `--enrich` optionally adds LLM rules; default is scrape-only.
+
+Clients still apply **one file**:
+
+```bash
+conduit run --path . --packet ./packets/openai-pypi-1.109.1.json
+```
+
+Give a Python client the **pypi** hops with `to_version` greater than their pin, in order. Node clients get the **npm** chain. There is no `--packet-dir` chain runner yet; the wrong hop still rewrites the pin and can skip earlier delta rules.
 
 ## Rule types (summary)
 
@@ -123,8 +138,8 @@ See [`examples/sample-packet/conduit-packet.json`](../examples/sample-packet/con
 
 | Role | Typical action |
 |------|----------------|
-| Vendor / maintainer | Publish a packet next to a breaking release (or open a PR to consumer orgs) |
-| Consumer | Drop packet in `.conduit/packets/`, pass `--packet ./file.json`, or `--packet <package-name>`; run `conduit run` |
+| Vendor / maintainer | `conduit packet from-detect --module openai --out-dir ./packets` (or init/synthesize); share JSON |
+| Consumer | `conduit run --packet ./file.json` (one hop); source packet from `detect` |
 
 There is not yet a `conduit packet publish` registry command — share packets via git/HTTP for now.
 

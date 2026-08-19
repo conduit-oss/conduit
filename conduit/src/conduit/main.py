@@ -916,5 +916,84 @@ def packet_synthesize_cmd(
         console.print(f"[green]Wrote valid packet[/green] {out}")
 
 
+@packet_app.command("from-detect")
+def packet_from_detect_cmd(
+    module: str = typer.Option(..., "--module", help="Detect module (e.g. openai)"),
+    out_dir: Path = typer.Option(Path("."), "--out-dir", help="Directory for snapshot JSON files"),
+    package: Optional[str] = typer.Option(None, "--package"),
+    ecosystem: Optional[str] = typer.Option(
+        None, "--ecosystem", help="Write only this chain (pypi, npm, go, maven)"
+    ),
+    previous: Optional[Path] = typer.Option(
+        None, "--previous", help="Previous snapshot JSON (requires --ecosystem)"
+    ),
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Explicit output file (requires --ecosystem)"
+    ),
+    demo: bool = typer.Option(False, "--demo", help="Offline detect fixtures"),
+    enrich: bool = typer.Option(
+        False, "--enrich", help="Optional LLM rule pass (off = scrape only)"
+    ),
+) -> None:
+    """Freeze catalog snapshot packets from detect (no consumer repo)."""
+    from conduit.packet.from_detect import run_packet_from_detect
+
+    if previous is not None and not ecosystem:
+        console.print("[red]--previous requires --ecosystem[/red]")
+        raise typer.Exit(2)
+    if out is not None and not ecosystem:
+        console.print("[red]--out requires --ecosystem[/red]")
+        raise typer.Exit(2)
+    if ecosystem and ecosystem.lower() not in {"pypi", "npm", "go", "maven", "other"}:
+        console.print(f"[red]Unknown ecosystem {ecosystem!r}[/red]")
+        raise typer.Exit(2)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        writes, warnings = run_packet_from_detect(
+            module=module,
+            out_dir=out_dir,
+            package=package,
+            ecosystem=ecosystem.lower() if ecosystem else None,
+            previous_path=previous,
+            out_path=out,
+            demo=demo,
+            enrich=enrich,
+            log=console.print,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+
+    for warning in warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+    if not writes:
+        console.print("[red]Scan produced no SDK target version (nothing to write).[/red]")
+        raise typer.Exit(2)
+
+    wrote = 0
+    for item in writes:
+        pkt = item.packet
+        pkg = pkt.get("package")
+        eco = pkt.get("ecosystem")
+        to_v = pkt.get("to_version")
+        from_v = pkt.get("from_version")
+        console.print(f"target {pkg} {to_v} ({eco})")
+        if from_v and from_v != "0":
+            console.print(f"previous snapshot {from_v}")
+        else:
+            console.print("previous snapshot (none)")
+        n_rules = len(pkt.get("rules") or [])
+        if item.skipped:
+            console.print(f"[dim]skip[/dim] {item.path} ({item.skip_reason})")
+        else:
+            wrote += 1
+            console.print(f"[green]wrote[/green] {item.path}  ({n_rules} rules)")
+
+    if wrote == 0:
+        console.print("[dim]All snapshot chains already up to date.[/dim]")
+
+
 if __name__ == "__main__":
     app()

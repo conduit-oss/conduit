@@ -638,6 +638,7 @@ def synthesize_from_evidence(
     root: Path | None = None,
     source_packet: dict[str, Any] | None = None,
     missed_items: list[dict[str, Any]] | None = None,
+    publisher: bool = False,
     log: Any | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """
@@ -669,7 +670,31 @@ def synthesize_from_evidence(
         ignore = build_ignore_list(root, base)
         ignore_payload = ignore.to_prompt_dict()
 
-    scoped_signals = filter_signals_to_source(signals, source_packet, package=package)
+    scoped_signals = (
+        list(signals)
+        if publisher
+        else filter_signals_to_source(signals, source_packet, package=package)
+    )
+    has_source_usage = bool(_source_usage_index(source_packet)["has_usage"])
+    if publisher or not has_source_usage:
+        instructions = (
+            "Use tools (web_search, fetch_url, read_file, grep) to gather "
+            "grounded migration facts from seed_urls / suggested_queries. "
+            "This is a publisher catalog packet (no consumer source_packet). "
+            "Emit rules covering detect_signals up to to_version. "
+            "Do not invent path successors or call shapes. "
+            "Emit final JSON with notes, sources, and rules."
+        )
+    else:
+        instructions = (
+            "Use tools (web_search, fetch_url, read_file, grep) to gather "
+            "grounded migration facts from seed_urls / suggested_queries "
+            "and the consumer source_packet. "
+            "Only emit rules for source_packet model_ids / usages / api_patterns. "
+            "Do not invent path successors or call shapes. "
+            "If missed_coverage is non-empty, those rows are the only required adds. "
+            "Emit final JSON with notes, sources, and rules."
+        )
     user_payload = {
         "package": package,
         "from_version": from_version,
@@ -683,15 +708,7 @@ def synthesize_from_evidence(
         "seed_urls": seeds,
         "allow_hosts": hosts or ["github.com"],
         "suggested_queries": queries,
-        "instructions": (
-            "Use tools (web_search, fetch_url, read_file, grep) to gather "
-            "grounded migration facts from seed_urls / suggested_queries "
-            "and the consumer source_packet. "
-            "Only emit rules for source_packet model_ids / usages / api_patterns. "
-            "Do not invent path successors or call shapes. "
-            "If missed_coverage is non-empty, those rows are the only required adds. "
-            "Emit final JSON with notes, sources, and rules."
-        ),
+        "instructions": instructions,
     }
     system = (
         _EVIDENCE_SYSTEM

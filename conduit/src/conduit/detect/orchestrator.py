@@ -35,6 +35,8 @@ def run_detect(
     skip_lockfile: bool = False,
     demo: bool = False,
     verbose: bool = False,
+    scan_client: bool = True,
+    catalog_latest: bool = False,
     log=None,
 ) -> DetectResult:
     root = root.resolve()
@@ -63,18 +65,19 @@ def run_detect(
                 continue
             scan_pkgs.extend(mod.packages or [mod.name])
 
-        package_states = scan_package_states(
-            root,
-            scan_pkgs,
-            installed=installed,
-            demo=demo,
-            use_llm=not demo,
-            log=log,
-        )
-        for state in package_states.values():
-            for note in state.notes:
-                if note.startswith("llm enrichment failed"):
-                    warnings.append(f"client state {state.package}: {note}")
+        if scan_client:
+            package_states = scan_package_states(
+                root,
+                scan_pkgs,
+                installed=installed,
+                demo=demo,
+                use_llm=not demo,
+                log=log,
+            )
+            for state in package_states.values():
+                for note in state.notes:
+                    if note.startswith("llm enrichment failed"):
+                        warnings.append(f"client state {state.package}: {note}")
 
         ctx = DetectContext(
             repo_root=root,
@@ -83,6 +86,7 @@ def run_detect(
             demo=demo,
             verbose=verbose,
             majors_only=majors_only,
+            catalog_latest=catalog_latest,
         )
         for mod in modules:
             if (
