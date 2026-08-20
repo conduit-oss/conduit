@@ -8,22 +8,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from conduit.integrity import (
-    dummy_except_findings,
-    integrity_failure_result,
-    integrity_findings,
-    unused_marker_literals,
-    packet_new_tokens,
-)
+from conduit.anticheat.rules import reject_write
+from conduit.anticheat.scan import anticheat_failure_result, run_anticheat
 from conduit.llm import attach_llm_log, get_llm_client
 from conduit.repair_ignore import IgnoreList, build_ignore_list
-from conduit.test_gen import (
-    CONDUIT_GENERATED_NAMES,
-    is_conduit_generated_rel,
-    oracle_forbidden_tokens,
-)
 from conduit.test_runner import TestResult, run_tests
-from conduit.text_tokens import obfuscated_forbidden_tokens
 
 LogFn = Callable[[str], None]
 
@@ -229,55 +218,32 @@ def _collect_context_files(
     return files
 
 
-_ORACLE_NAMES = set(CONDUIT_GENERATED_NAMES)
-
-
 def reject_self_correct_write(
     rel: str,
     content: str,
     *,
     packet: dict[str, Any],
     ignore: IgnoreList | None = None,
+    previous: str | None = None,
+    root: Path | None = None,
 ) -> str | None:
     """Return a reason to drop this write, or None if it is allowed."""
     rel_posix = rel.replace("\\", "/")
     ignore = ignore or IgnoreList()
     if ignore.path_ignored(rel_posix):
         return f"ignored path {rel_posix}"
-    name = Path(rel_posix).name
-    if is_conduit_generated_rel(rel_posix) or name in _ORACLE_NAMES:
-        return "cannot edit leftover-token oracle, smoke, or functional tests"
-    if "vendor" in Path(rel_posix).parts:
-        return "cannot edit vendor decoys"
-    forbidden = oracle_forbidden_tokens(packet)
-    hidden = obfuscated_forbidden_tokens(content, forbidden)
-    if hidden:
-        return "obfuscates leftover tokens via concat/join: " + ", ".join(hidden)
-    lowered = content.lower()
-    is_test = (
-        rel_posix.startswith("tests/")
-        or "/tests/" in rel_posix
-        or name.startswith("test_")
-        or name.endswith(".test.js")
-        or name == "conftest.py"
+    if previous is None and root is not None:
+        path = root / rel_posix
+        if path.is_file():
+            try:
+                previous = path.read_text(encoding="utf-8")
+            except OSError:
+                previous = None
+        else:
+            previous = ""
+    return reject_write(
+        rel_posix, content, packet=packet, previous=previous
     )
-    skip_needles = (
-        "pytest.mark.skip",
-        "pytest.mark.xfail",
-        "unittest.skip",
-        ".skip(",
-        ".xfail(",
-        "pytest.skip",
-    )
-    if is_test and any(needle in lowered for needle in skip_needles):
-        return "cannot weaken tests with skip/xfail"
-    dummy = dummy_except_findings(content, rel_posix)
-    if dummy:
-        return dummy[0]
-    markers = unused_marker_literals(content, packet_new_tokens(packet))
-    if markers:
-        return "unused migration marker literals: " + ", ".join(markers)
-    return None
 
 
 def _apply_file_updates(
@@ -299,7 +265,11 @@ def _apply_file_updates(
         rel_posix = rel.replace("\\", "/")
         if packet is not None:
             reason = reject_self_correct_write(
-                rel_posix, content, packet=packet, ignore=ignore
+                rel_posix,
+                content,
+                packet=packet,
+                ignore=ignore,
+                root=root,
             )
             if reason:
                 emit = log or _noop_log
@@ -792,7 +762,7 @@ def _llm_suggest_fixes(
         allow_shell=True,
         log=emit if emit is not _noop_log else _noop_log,
         reject_write=lambda rel, contents: reject_self_correct_write(
-            rel, contents, packet=packet, ignore=ignore
+            rel, contents, packet=packet, ignore=ignore, root=root
         ),
     )
 
@@ -834,6 +804,12 @@ def _llm_suggest_fixes(
             "- Do NOT weaken consumer tests with skip/xfail or split assertion needles.\n"
             "- Do NOT rewrite ignored patterns when they appear as LEGACY_/FORBIDDEN_/"
             "EXPECTED_/ALLOWED_ contract constants — those define the migration oracle.\n"
+            "- Keep the official "
+            + str(packet.get("package") or "the packet package")
+            + " SDK at to_version. Migrate call sites only. "
+            "Do not replace the SDK with requests/fetch or a fake/stub client.\n"
+            "- Do NOT catch HTTP errors and return canned chat/embeddings.\n"
+            "- Do NOT edit packets/, .conduit/, vendor/, or *.jsonl knowledge seeds.\n"
             "- Prefer running tests via the run_tests tool before finalizing."
         ),
         "seeded_paths": failing_hint,
@@ -933,13 +909,17 @@ def _run_verified_tests(
     packet: dict[str, Any],
     *,
     scan_files: list[str] | None = None,
+    llm_audit: bool = False,
+    log: LogFn | None = None,
 ) -> TestResult:
     result = run_tests(root)
     if not result.passed:
         return result
-    findings = integrity_findings(root, packet, scan_files)
-    if findings:
-        return integrity_failure_result(findings)
+    report = run_anticheat(
+        root, packet, scan_files, llm=llm_audit, log=log
+    )
+    if report.findings:
+        return anticheat_failure_result(report.findings, source=report.source)
     return result
 
 
@@ -958,7 +938,13 @@ def verify_with_self_correct(
     vlog: LogFn = emit if verbose else _noop_log
 
     corrected_files: list[str] = []
-    result = _run_verified_tests(root, packet)
+    mech = run_anticheat(root, packet, llm=False, log=vlog)
+    if mech.findings:
+        result = anticheat_failure_result(mech.findings, source=mech.source)
+    else:
+        result = _run_verified_tests(
+            root, packet, llm_audit=True, log=emit
+        )
     if result.passed:
         return result, corrected_files
 
@@ -1174,7 +1160,7 @@ def verify_with_self_correct(
             break
 
         previous = result
-        result = _run_verified_tests(root, packet)
+        result = _run_verified_tests(root, packet, llm_audit=True, log=emit)
         if result.passed:
             vlog(f"[self-correct] tests passed after attempt {attempt}")
             return result, sorted(set(corrected_files))
@@ -1194,7 +1180,7 @@ def verify_with_self_correct(
                 f"{len(restored)} file(s)"
                 + (f" ({'; '.join(lost_bits[:4])})" if lost_bits else "")
             )
-            result = _run_verified_tests(root, packet)
+            result = _run_verified_tests(root, packet, llm_audit=True, log=emit)
             empty_nudge_used = False
             pending_nudge = (
                 "Previous write regressed tests (collection/import failure). "
