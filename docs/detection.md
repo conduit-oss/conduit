@@ -10,6 +10,8 @@ Command: `conduit detect` (also the first stage of `conduit run`).
 
 Before vendor modules run, Conduit builds a **`PackageClientState`** per applicable package (installed version, model ids / API tokens found in the repo, import files, ecosystems). Regex always; optional LLM enrichment when configured. Empty model lists mean **unknown**, not safe.
 
+When an LLM is configured, enrichment still runs as an **agent**, but it is seeded with a mechanical **usage dossier** (path allowlist + regex/import hit index from the cheap scan). The agent may only `read_file` / `grep` allowlisted paths (no repo-wide `list_files`), with a lower turn cap. Merged tokens must still appear verbatim in the consumer corpus.
+
 Vendor modules consume this as the client baseline. See [Detect modules](detect-modules.md).
 
 ### 1. Lockfile / manifest git diff

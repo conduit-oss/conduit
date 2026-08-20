@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 from typing import Any, Literal
 
-ToolMode = Literal["self_correct", "enrich", "readonly", "anticheat_audit"]
+ToolMode = Literal[
+    "self_correct", "enrich", "readonly", "anticheat_audit", "enrich_scoped"
+]
 
 _REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
 
@@ -79,24 +81,28 @@ def _fn(
 
 def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
     """Local tools Conduit executes. Mode controls write/test access."""
-    if mode == "anticheat_audit":
-        # Log-first auditor: read + grep only (executor enforces path allowlist).
+    if mode in {"anticheat_audit", "enrich_scoped"}:
+        scope = (
+            "migration audit log"
+            if mode == "anticheat_audit"
+            else "usage dossier allowlist"
+        )
         return [
             _fn(
                 "read_file",
-                "Read a UTF-8 text file that appears in the migration audit log "
+                f"Read a UTF-8 text file that appears in the {scope} "
                 "(other paths are rejected).",
                 {
                     "path": {
                         "type": "string",
-                        "description": "Relative file path from the audit log.",
+                        "description": "Relative file path from the allowlist.",
                     },
                 },
                 required=["path"],
             ),
             _fn(
                 "grep",
-                "Search file contents under log-listed paths only "
+                f"Search file contents under {scope} paths only "
                 "(executor rejects other paths).",
                 {
                     "pattern": {
@@ -238,7 +244,7 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
 
 def agent_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
     """Built-ins + Conduit functions for a Responses agent turn."""
-    if mode == "anticheat_audit":
-        # No web_search / code_interpreter — stay on the migration log.
+    if mode in {"anticheat_audit", "enrich_scoped"}:
+        # Local inventory / audit only — no web_search / code_interpreter.
         return list(conduit_function_tools(mode=mode))
     return [*openai_builtin_tools(), *conduit_function_tools(mode=mode)]
