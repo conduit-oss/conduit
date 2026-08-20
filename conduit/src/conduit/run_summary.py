@@ -27,6 +27,8 @@ class RunSummary:
     pr_message: str | None = None
     core_review: list[str] = field(default_factory=list)
     package_review: list[str] = field(default_factory=list)
+    audit_score: dict[str, Any] | None = None
+    audit_log_path: str | None = None
 
     @property
     def has_review(self) -> bool:
@@ -162,9 +164,38 @@ def build_run_summary(
     pr_created: bool | None = None,
     pr_message: str | None = None,
     detected_signals: list[Any] | None = None,
+    audit_log: Any | None = None,
 ) -> RunSummary:
     package = str(packet.get("package") or "package")
     changes = [_change_line(c) for c in report.changes]
+    core = _core_review(
+        packet=packet,
+        report=report,
+        coverage=coverage,
+        generated=list(generated or []),
+        corrected=list(corrected or []),
+        test_result=test_result,
+        skip_tests=skip_tests,
+        pr_created=pr_created,
+        pr_message=pr_message,
+        detected_signals=detected_signals,
+    )
+    score = getattr(audit_log, "score", None) if audit_log is not None else None
+    if isinstance(score, dict):
+        honesty = score.get("honesty")
+        completeness = score.get("migration_completeness")
+        notes = score.get("notes") or []
+        core.append(
+            f"Anti-cheat score (advisory): honesty={honesty} "
+            f"completeness={completeness}"
+        )
+        for note in list(notes)[:5]:
+            core.append(f"Anti-cheat note: {note}")
+    if audit_log is not None and getattr(audit_log, "entries", None):
+        core.append(
+            "Migration audit log: .conduit/migration_audit.jsonl "
+            f"({len(audit_log.entries)} entries)"
+        )
     return RunSummary(
         package=package,
         packet_id=str(packet.get("packet_id") or ""),
@@ -174,18 +205,7 @@ def build_run_summary(
         change_lines=_capped(changes, _CHANGE_CAP),
         tests=test_result.summary,
         pr_message=pr_message,
-        core_review=_core_review(
-            packet=packet,
-            report=report,
-            coverage=coverage,
-            generated=list(generated or []),
-            corrected=list(corrected or []),
-            test_result=test_result,
-            skip_tests=skip_tests,
-            pr_created=pr_created,
-            pr_message=pr_message,
-            detected_signals=detected_signals,
-        ),
+        core_review=core,
         package_review=_package_review(
             package=package,
             packet=packet,
@@ -193,6 +213,8 @@ def build_run_summary(
             state=state,
             coverage=coverage,
         ),
+        audit_score=score if isinstance(score, dict) else None,
+        audit_log_path=".conduit/migration_audit.jsonl" if audit_log else None,
     )
 
 
@@ -217,6 +239,14 @@ def format_run_summary(summary: RunSummary) -> str:
         lines.append("- (no file-level change details recorded)")
     if summary.tests:
         lines.append(f"- Tests: {summary.tests}")
+    if summary.audit_score:
+        lines.append(
+            "- Anti-cheat score (advisory): "
+            f"honesty={summary.audit_score.get('honesty')} "
+            f"completeness={summary.audit_score.get('migration_completeness')}"
+        )
+    if summary.audit_log_path:
+        lines.append(f"- Audit log: {summary.audit_log_path}")
     if summary.pr_message:
         lines.append(f"- PR: {summary.pr_message}")
 

@@ -170,6 +170,7 @@ def _make_run_summary(
     skip_tests: bool = False,
     pr_created: bool | None = None,
     pr_message: str | None = None,
+    audit_log=None,
 ):
     package = str(packet.get("package") or "")
     state = None
@@ -189,6 +190,7 @@ def _make_run_summary(
         pr_created=pr_created,
         pr_message=pr_message,
         detected_signals=list(getattr(detected, "signals", None) or []),
+        audit_log=audit_log,
     )
 
 
@@ -204,6 +206,7 @@ def _print_run_summary(
     skip_tests: bool = False,
     pr_created: bool | None = None,
     pr_message: str | None = None,
+    audit_log=None,
 ) -> str:
     """Print the changed / double-check summary. Returns markdown for the PR body."""
     summary = _make_run_summary(
@@ -217,6 +220,7 @@ def _print_run_summary(
         skip_tests=skip_tests,
         pr_created=pr_created,
         pr_message=pr_message,
+        audit_log=audit_log,
     )
     console.print(format_run_summary(summary))
     return format_run_summary_markdown(summary)
@@ -241,18 +245,23 @@ def _verify_with_oracle(
     file_allowlist: list[Path] | None = None,
     source: dict | None = None,
     coverage_missed: list[dict] | None = None,
+    audit_log=None,
 ):
     """Write packet oracle tests, then run the suite with self-correct.
 
     Shared by ``conduit verify`` and ``conduit run`` so split workflows
     get the same leftover-token checks.
     """
+    from conduit.anticheat.audit_log import MigrationAuditLog
     from conduit.llm.client import get_llm_client, resolve_provider
 
     pkg = str(packet.get("package") or "")
     allowlist = file_allowlist
     if allowlist is None and pkg:
         allowlist = prune_by_imports(root, dependency_packages(packet))
+
+    if audit_log is None:
+        audit_log = MigrationAuditLog.from_packet(packet, root=root)
 
     want_llm = resolve_provider() not in {None, "none", "off", "disabled"}
     try:
@@ -271,6 +280,8 @@ def _verify_with_oracle(
     )
     for rel in generated:
         console.print(f"[test-gen] created {rel}")
+    if generated:
+        audit_log.record_generated(generated)
 
     beat("repair")
     result, corrected = verify_with_self_correct(
@@ -281,8 +292,13 @@ def _verify_with_oracle(
         log=console.print,
         source=source,
         coverage_missed=coverage_missed,
+        audit_log=audit_log,
     )
-    return result, generated, corrected
+    try:
+        audit_log.persist(root)
+    except OSError:
+        pass
+    return result, generated, corrected, audit_log
 
 
 def _resolve_root(path: Path) -> Path:
@@ -525,7 +541,7 @@ def verify_cmd(
     data, src = _prepare_client_packet(root, data)
     start_pulse(console, "repair")
     try:
-        result, _generated, corrected = _verify_with_oracle(
+        result, _generated, corrected, _audit = _verify_with_oracle(
             root, data, max_retries=max_retries, source=src
         )
     finally:
@@ -790,6 +806,15 @@ def _run_pipeline(
     for change in report.changes:
         console.print(f"[{change.rule_type}] {change.path}: {change.detail}")
 
+    from conduit.anticheat.audit_log import MigrationAuditLog
+
+    audit_log = MigrationAuditLog.from_packet(pkt, root=root)
+    audit_log.record_apply(report)
+    try:
+        audit_log.persist(root)
+    except OSError:
+        pass
+
     if skip_tests:
         from conduit.test_runner import TestResult
 
@@ -807,7 +832,7 @@ def _run_pipeline(
         src_state = (detected.package_states or {}).get(pkg) or (
             detected.package_states or {}
         ).get((pkg or "").lower())
-        test_result, generated, corrected = _verify_with_oracle(
+        test_result, generated, corrected, audit_log = _verify_with_oracle(
             root,
             pkt,
             max_retries=max_retries,
@@ -822,6 +847,7 @@ def _run_pipeline(
                 if coverage is not None
                 else None
             ),
+            audit_log=audit_log,
         )
         for rel in generated:
             if rel not in report.files_modified:
@@ -847,6 +873,7 @@ def _run_pipeline(
             generated=generated,
             corrected=corrected,
             skip_tests=skip_tests,
+            audit_log=audit_log,
         )
         raise typer.Exit(2)
 
@@ -863,6 +890,7 @@ def _run_pipeline(
             skip_tests=skip_tests,
             pr_created=None,
             pr_message="PR skipped (--skip-pr)",
+            audit_log=audit_log,
         )
         raise typer.Exit(0)
 
@@ -881,6 +909,7 @@ def _run_pipeline(
             generated=generated,
             corrected=corrected,
             skip_tests=skip_tests,
+            audit_log=audit_log,
         )
     )
     beat("pr")
@@ -906,6 +935,7 @@ def _run_pipeline(
         skip_tests=skip_tests,
         pr_created=pr.created,
         pr_message=pr.message,
+        audit_log=audit_log,
     )
     raise typer.Exit(0 if pr.created or skip_pr else 3)
 

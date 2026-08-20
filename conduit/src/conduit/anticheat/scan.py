@@ -21,6 +21,7 @@ _SCAN_SUFFIXES = {".py", ".ts", ".js", ".tsx", ".jsx"}
 class AnticheatReport:
     findings: list[str] = field(default_factory=list)
     source: str = "mechanical"  # mechanical | llm | mixed
+    score: dict[str, Any] | None = None
 
     @property
     def messages(self) -> list[str]:
@@ -94,7 +95,6 @@ def run_anticheat_mechanical(
     )
     if missing:
         findings.append(missing)
-    # unique preserve order
     seen: set[str] = set()
     uniq: list[str] = []
     for item in findings:
@@ -112,25 +112,46 @@ def run_anticheat(
     llm: bool = False,
     previous: dict[str, str] | None = None,
     log: Any | None = None,
+    audit_log: Any | None = None,
 ) -> AnticheatReport:
     """Mechanical scan, then optional additive LLM auditor (never subtracts)."""
     report = run_anticheat_mechanical(
         root, packet, files, previous=previous
     )
+    if audit_log is not None:
+        audit_log.record_mechanical(
+            report.findings,
+            gate="llm" if llm else "mechanical",
+        )
     if not llm:
         return report
     from conduit.anticheat.llm_audit import llm_audit_findings
 
-    extra = llm_audit_findings(
-        root, packet, files=files, mechanical=report.findings, log=log
+    extra, score = llm_audit_findings(
+        root,
+        packet,
+        audit_log=audit_log,
+        files=files,
+        mechanical=report.findings,
+        log=log,
     )
+    if score is not None and audit_log is not None:
+        audit_log.score = score
     if extra:
         merged = list(report.findings)
         for item in extra:
             if item not in merged:
                 merged.append(item)
-        return AnticheatReport(findings=merged, source="mixed" if report.findings else "llm")
-    return report
+        return AnticheatReport(
+            findings=merged,
+            source="mixed" if report.findings else "llm",
+            score=score,
+        )
+    return AnticheatReport(
+        findings=list(report.findings),
+        source=report.source,
+        score=score,
+    )
 
 
 def anticheat_failure_result(findings: list[str], *, source: str = "mechanical"):

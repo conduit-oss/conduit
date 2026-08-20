@@ -7,9 +7,11 @@ from conduit.anticheat.scan import (
     run_anticheat_mechanical,
 )
 from conduit.anticheat.rules import reject_write
+from conduit.anticheat.audit_log import MigrationAuditLog
 
 __all__ = [
     "AnticheatReport",
+    "MigrationAuditLog",
     "anticheat_failure_result",
     "reject_write",
     "run_anticheat",
