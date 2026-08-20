@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Literal
 
-ToolMode = Literal["self_correct", "enrich", "readonly"]
+ToolMode = Literal["self_correct", "enrich", "readonly", "anticheat_audit"]
 
 _REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
 
@@ -79,6 +79,51 @@ def _fn(
 
 def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
     """Local tools Conduit executes. Mode controls write/test access."""
+    if mode == "anticheat_audit":
+        # Log-first auditor: read + grep only (executor enforces path allowlist).
+        return [
+            _fn(
+                "read_file",
+                "Read a UTF-8 text file that appears in the migration audit log "
+                "(other paths are rejected).",
+                {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative file path from the audit log.",
+                    },
+                },
+                required=["path"],
+            ),
+            _fn(
+                "grep",
+                "Search file contents under log-listed paths only "
+                "(executor rejects other paths).",
+                {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Literal or regex pattern to search for.",
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "Optional file glob, e.g. '**/*.py'.",
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": "Relative directory to search (default '.').",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max matches to return (default 40).",
+                    },
+                    "case_insensitive": {
+                        "type": "boolean",
+                        "description": "If true, ignore case (default false).",
+                    },
+                },
+                required=["pattern"],
+            ),
+        ]
+
     tools = [
         _fn(
             "list_files",
@@ -193,4 +238,7 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
 
 def agent_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
     """Built-ins + Conduit functions for a Responses agent turn."""
+    if mode == "anticheat_audit":
+        # No web_search / code_interpreter — stay on the migration log.
+        return list(conduit_function_tools(mode=mode))
     return [*openai_builtin_tools(), *conduit_function_tools(mode=mode)]

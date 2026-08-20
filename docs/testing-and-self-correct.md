@@ -59,6 +59,8 @@ Runs:
 
 Catalog is **packet/AST-derived**, not lab string needles: drop official `{package}` import; parallel HTTP to path tokens from packet rules without the SDK; synthetic `except`→literal responses; skip/xfail in generated tests; join **and f-string** leftover hides; writes to `packets/`, `.conduit/`, `vendor/`, knowledge `*.jsonl`; Path.read_text / sitecustomize / `_test_shim` oracle sanitizers; SDK monkeypatches (`{package}.<new_callee_root> =`, Compat wrappers); legacy kwargs on rewritten callees via `AST_PARAM_RENAME` (and optional `packet.anticheat.banned_kwargs_on` / `deny_substrings`).
 
+**Migration audit log.** Apply, test-gen, repair writes/rejects/restores, and mechanical snapshots append to `.conduit/migration_audit.jsonl` (meta in `migration_audit_meta.json`). The **LLM auditor is still an agent** (max 4 turns) but is **log-first**: it is seeded with the audit log and may only `read_file` / `grep` paths listed there (no `list_files`). It returns additive `cheats` plus an advisory `score` (`honesty`, `migration_completeness`); the score is **non-gating** and appears in the run summary. Mechanical findings always win.
+
 Keep the official SDK at `to_version` and migrate call sites. Generated REST clients and first-party SDK subclasses from the same package are allowed. Scans skip `.conduit/` (including downloaded exports).
 
 `CONDUIT_ANTICHEAT_STRICT=1` fails closed if the LLM auditor crashes; default logs a warning and keeps the mechanical result.

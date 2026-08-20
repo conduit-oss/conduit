@@ -57,6 +57,8 @@ class RepoToolExecutor:
     written_files: list[str] = field(default_factory=list)
     snapshots: dict[str, str | None] = field(default_factory=dict)
     reject_write: Callable[[str, str], str | None] | None = None
+    # When set, read_file/grep may only touch these relative paths (audit agent).
+    path_allowlist: set[str] | None = None
 
     def __call__(self, name: str, arguments: dict[str, Any]) -> str:
         try:
@@ -93,7 +95,20 @@ class RepoToolExecutor:
     def _rel(self, path: Path) -> str:
         return path.resolve().relative_to(self.root.resolve()).as_posix()
 
+    def _allowlisted(self, rel: str) -> bool:
+        if self.path_allowlist is None:
+            return True
+        posix = rel.replace("\\", "/")
+        if posix in self.path_allowlist:
+            return True
+        # Allow reading under a logged directory prefix only if exact file listed
+        return False
+
     def _list_files(self, args: dict[str, Any]) -> str:
+        if self.path_allowlist is not None:
+            return json.dumps(
+                {"error": "list_files not allowed in anticheat audit mode"}
+            )
         directory = str(args.get("directory") or ".")
         pattern = str(args.get("glob") or "**/*")
         limit = int(args.get("limit") or 80)
@@ -121,7 +136,15 @@ class RepoToolExecutor:
     def _read_file(self, args: dict[str, Any]) -> str:
         rel = str(args.get("path") or "")
         path = self._resolve(rel)
-        if self.ignore.path_ignored(self._rel(path)):
+        rel_posix = self._rel(path) if path.exists() else rel.replace("\\", "/")
+        if not self._allowlisted(rel_posix):
+            return json.dumps(
+                {
+                    "error": f"path not in migration audit allowlist: {rel_posix}",
+                    "hint": "Only read paths listed in the audit log.",
+                }
+            )
+        if self.ignore.path_ignored(rel_posix):
             return json.dumps({"error": f"path ignored: {rel}"})
         if not path.is_file():
             return json.dumps({"error": f"not a file: {rel}"})
@@ -247,7 +270,19 @@ class RepoToolExecutor:
             return json.dumps({"error": f"not a directory: {directory}"})
 
         matches: list[dict[str, Any]] = []
-        for path in sorted(base.glob(glob_pat)):
+        if self.path_allowlist is not None:
+            candidates = []
+            for rel in sorted(self.path_allowlist):
+                try:
+                    path = self._resolve(rel)
+                except ValueError:
+                    continue
+                if path.is_file():
+                    candidates.append(path)
+        else:
+            candidates = sorted(base.glob(glob_pat))
+
+        for path in candidates:
             if not path.is_file():
                 continue
             if any(part in SKIP_DIRS for part in path.parts):
@@ -255,6 +290,8 @@ class RepoToolExecutor:
             try:
                 rel = self._rel(path)
             except ValueError:
+                continue
+            if not self._allowlisted(rel):
                 continue
             if self.ignore.path_ignored(rel):
                 continue

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from conduit.anticheat.audit_log import MigrationAuditLog
 from conduit.anticheat.rules import reject_write
 from conduit.anticheat.scan import anticheat_failure_result, run_anticheat
 from conduit.llm import attach_llm_log, get_llm_client
@@ -254,6 +255,8 @@ def _apply_file_updates(
     packet: dict[str, Any] | None = None,
     ignore: IgnoreList | None = None,
     log: LogFn | None = None,
+    audit_log: MigrationAuditLog | None = None,
+    attempt: int | None = None,
 ) -> list[str]:
     changed: list[str] = []
     root_resolved = root.resolve()
@@ -274,7 +277,12 @@ def _apply_file_updates(
             if reason:
                 emit = log or _noop_log
                 emit(f"[self-correct] rejected obfuscating edit {rel_posix}: {reason}")
+                if audit_log is not None:
+                    audit_log.record_reject(
+                        rel_posix, reason, source="repair", attempt=attempt
+                    )
                 continue
+        previous_text: str | None
         if rel_posix not in store:
             if path.is_file():
                 try:
@@ -283,9 +291,18 @@ def _apply_file_updates(
                     store[rel_posix] = None
             else:
                 store[rel_posix] = None
+        previous_text = store.get(rel_posix)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         changed.append(rel_posix)
+        if audit_log is not None:
+            audit_log.record_write(
+                rel_posix,
+                source="repair",
+                attempt=attempt,
+                before=previous_text,
+                after=content,
+            )
     return changed
 
 
@@ -737,6 +754,8 @@ def _llm_suggest_fixes(
     nudge: str | None = None,
     source: dict[str, Any] | None = None,
     coverage_missed: list[dict[str, Any]] | None = None,
+    audit_log: MigrationAuditLog | None = None,
+    attempt: int | None = None,
 ) -> LlmRepairSuggestion:
     emit = log or _noop_log
     client = attach_llm_log(
@@ -754,6 +773,17 @@ def _llm_suggest_fixes(
 
     ignore = ignore or IgnoreList()
     files = {k: v for k, v in files.items() if not ignore.path_ignored(k)}
+
+    def _reject(rel: str, contents: str) -> str | None:
+        reason = reject_self_correct_write(
+            rel, contents, packet=packet, ignore=ignore, root=root
+        )
+        if reason and audit_log is not None:
+            audit_log.record_reject(
+                rel, reason, source="repair_tool", attempt=attempt
+            )
+        return reason
+
     executor = RepoToolExecutor(
         root=root,
         ignore=ignore,
@@ -761,9 +791,7 @@ def _llm_suggest_fixes(
         allow_run_tests=True,
         allow_shell=True,
         log=emit if emit is not _noop_log else _noop_log,
-        reject_write=lambda rel, contents: reject_self_correct_write(
-            rel, contents, packet=packet, ignore=ignore, root=root
-        ),
+        reject_write=_reject,
     )
 
     failing_hint = sorted(files.keys())
@@ -915,12 +943,18 @@ def _run_verified_tests(
     scan_files: list[str] | None = None,
     llm_audit: bool = False,
     log: LogFn | None = None,
+    audit_log: MigrationAuditLog | None = None,
 ) -> TestResult:
     result = run_tests(root)
     if not result.passed:
         return result
     report = run_anticheat(
-        root, packet, scan_files, llm=llm_audit, log=log
+        root,
+        packet,
+        scan_files,
+        llm=llm_audit,
+        log=log,
+        audit_log=audit_log,
     )
     if report.findings:
         return anticheat_failure_result(report.findings, source=report.source)
@@ -936,19 +970,29 @@ def verify_with_self_correct(
     log: LogFn | None = None,
     source: dict[str, Any] | None = None,
     coverage_missed: list[dict[str, Any]] | None = None,
+    audit_log: MigrationAuditLog | None = None,
 ) -> tuple[TestResult, list[str]]:
     """Run tests; on failure, research + LLM/heuristic-fix and retry (default 5)."""
     emit: LogFn = log or print
     vlog: LogFn = emit if verbose else _noop_log
 
+    if audit_log is None:
+        audit_log = MigrationAuditLog.from_packet(packet, root=root)
+
     corrected_files: list[str] = []
-    mech = run_anticheat(root, packet, llm=False, log=vlog)
+    mech = run_anticheat(
+        root, packet, llm=False, log=vlog, audit_log=audit_log
+    )
     if mech.findings:
         result = anticheat_failure_result(mech.findings, source=mech.source)
     else:
         result = _run_verified_tests(
-            root, packet, llm_audit=True, log=emit
+            root, packet, llm_audit=True, log=emit, audit_log=audit_log
         )
+    try:
+        audit_log.persist(root)
+    except OSError:
+        pass
     if result.passed:
         return result, corrected_files
 
@@ -1016,6 +1060,8 @@ def verify_with_self_correct(
                 nudge=nudge,
                 source=source,
                 coverage_missed=coverage_missed,
+                audit_log=audit_log,
+                attempt=attempt,
             )
 
             # Fallback providers without tools may still return search_queries.
@@ -1049,6 +1095,8 @@ def verify_with_self_correct(
                         nudge=nudge,
                         source=source,
                         coverage_missed=coverage_missed,
+                        audit_log=audit_log,
+                        attempt=attempt,
                     )
                 if suggestion.search_queries and not suggestion.files:
                     pending_queries = list(suggestion.search_queries)
@@ -1060,6 +1108,7 @@ def verify_with_self_correct(
                 vlog(
                     "[self-correct] packet updated: " + "; ".join(patch_details)
                 )
+                audit_log.record_packet_patch(patch_details, attempt=attempt)
 
         snapshots = dict(suggestion.snapshots)
         if suggestion.files:
@@ -1070,6 +1119,8 @@ def verify_with_self_correct(
                 packet=packet,
                 ignore=ignore,
                 log=emit,
+                audit_log=audit_log,
+                attempt=attempt,
             )
             fix = FixAttempt(
                 strategy="llm",
@@ -1164,12 +1215,20 @@ def verify_with_self_correct(
             break
 
         previous = result
-        result = _run_verified_tests(root, packet, llm_audit=True, log=emit)
+        result = _run_verified_tests(
+            root, packet, llm_audit=True, log=emit, audit_log=audit_log
+        )
+        try:
+            audit_log.persist(root)
+        except OSError:
+            pass
         if result.passed:
             vlog(f"[self-correct] tests passed after attempt {attempt}")
             return result, sorted(set(corrected_files))
         if snapshots and _repair_regressed(previous, result):
             restored = _restore_snapshots(root, snapshots)
+            if restored:
+                audit_log.record_restore(restored, attempt=attempt)
             lost_bits: list[str] = []
             for rel, original in snapshots.items():
                 if not original:
@@ -1184,7 +1243,13 @@ def verify_with_self_correct(
                 f"{len(restored)} file(s)"
                 + (f" ({'; '.join(lost_bits[:4])})" if lost_bits else "")
             )
-            result = _run_verified_tests(root, packet, llm_audit=True, log=emit)
+            result = _run_verified_tests(
+                root, packet, llm_audit=True, log=emit, audit_log=audit_log
+            )
+            try:
+                audit_log.persist(root)
+            except OSError:
+                pass
             empty_nudge_used = False
             pending_nudge = (
                 "Previous write regressed tests (collection/import failure). "
@@ -1201,4 +1266,8 @@ def verify_with_self_correct(
                 dict.fromkeys([*pending_queries, *suggestion.search_queries])
             )
 
+    try:
+        audit_log.persist(root)
+    except OSError:
+        pass
     return result, sorted(set(corrected_files))

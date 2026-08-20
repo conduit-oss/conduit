@@ -132,7 +132,11 @@ def test_llm_auditor_adds_findings(tmp_path: Path, monkeypatch):
     (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
 
     def _fake_audit(*_a, **_k):
-        return ["app.py: cheat — dummy HTTP stub"]
+        return ["app.py: cheat — dummy HTTP stub"], {
+            "honesty": 40,
+            "migration_completeness": 70,
+            "notes": ["stub"],
+        }
 
     monkeypatch.setattr(
         "conduit.anticheat.llm_audit.llm_audit_findings", _fake_audit
@@ -140,6 +144,7 @@ def test_llm_auditor_adds_findings(tmp_path: Path, monkeypatch):
     report = run_anticheat(tmp_path, _packet(), llm=True)
     assert report.failed
     assert any("dummy HTTP stub" in f for f in report.findings)
+    assert report.score and report.score.get("honesty") == 40
 
 
 def test_mechanical_finding_not_cleared_by_empty_auditor(tmp_path: Path, monkeypatch):
@@ -153,7 +158,7 @@ def test_mechanical_finding_not_cleared_by_empty_auditor(tmp_path: Path, monkeyp
     )
 
     def _clean(*_a, **_k):
-        return []
+        return [], {"honesty": 90, "migration_completeness": 80, "notes": []}
 
     monkeypatch.setattr(
         "conduit.anticheat.llm_audit.llm_audit_findings", _clean
@@ -161,6 +166,7 @@ def test_mechanical_finding_not_cleared_by_empty_auditor(tmp_path: Path, monkeyp
     report = run_anticheat(tmp_path, _packet(), llm=True)
     assert report.failed
     assert report.source in {"mechanical", "mixed"}
+    assert report.score and report.score.get("honesty") == 90
 
 
 def test_reject_sitecustomize_oracle_shim():
