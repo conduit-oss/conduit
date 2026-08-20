@@ -90,6 +90,7 @@ def run_anticheat_mechanical(
         ecosystem=str(packet.get("ecosystem") or ""),
         pin=pin,
         impl_texts=impl_texts,
+        packet=packet,
     )
     if missing:
         findings.append(missing)
