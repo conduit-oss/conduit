@@ -80,6 +80,22 @@ def _join_call(node: ast.Call) -> str | None:
     return sep.join(parts)  # type: ignore[arg-type]
 
 
+def _joined_const_str(node: ast.JoinedStr) -> str | None:
+    """Fold f-strings whose interpolations are string constants (``f\"/{'engines'}\"``)."""
+    parts: list[str] = []
+    for val in node.values:
+        chunk = _const_str(val)
+        if chunk is None and isinstance(val, ast.FormattedValue):
+            inner = val.value
+            chunk = _const_str(inner)
+            if chunk is None and isinstance(inner, ast.JoinedStr):
+                chunk = _joined_const_str(inner)
+        if chunk is None:
+            return None
+        parts.append(chunk)
+    return "".join(parts)
+
+
 def reconstructed_literals(text: str) -> list[str]:
     """String values built from literal concat/join in Python or JS/TS source."""
     found: list[str] = []
@@ -107,16 +123,7 @@ def reconstructed_literals(text: str) -> list[str]:
                 self.generic_visit(node)
 
             def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
-                parts: list[str] = []
-                ok = True
-                for val in node.values:
-                    if isinstance(val, ast.Constant) and isinstance(val.value, str):
-                        parts.append(val.value)
-                    else:
-                        ok = False
-                        break
-                if ok:
-                    _add("".join(parts))
+                _add(_joined_const_str(node))
                 self.generic_visit(node)
 
         _Visitor().visit(tree)

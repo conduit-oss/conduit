@@ -12,53 +12,13 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-from conduit.prune.grep_imports import SKIP_DIRS
-from conduit.test_gen import (
-    CONDUIT_GENERATED_NAMES,
-    is_conduit_generated_rel,
-    oracle_forbidden_tokens,
-)
-from conduit.text_tokens import obfuscated_forbidden_tokens, token_in_text
+from conduit.test_gen import is_conduit_generated_rel
 
 _MARKER_NAME_RE = re.compile(
     r"(MARKER|MIGRATION|REQUIRED_TOKENS|REQUIRED_SHAPES)",
     re.I,
 )
-_SKIP_NEEDLES = (
-    "pytest.mark.skip",
-    "pytest.mark.xfail",
-    "unittest.skip",
-    "unittest.expectedFailure",
-)
 _DUMMY_CONST = {"", "ok", "OK", None, 0, False}
-
-
-def _is_test_rel(rel: str) -> bool:
-    posix = rel.replace("\\", "/").lower()
-    name = Path(posix).name
-    return (
-        posix.startswith("tests/")
-        or "/tests/" in posix
-        or name.startswith("test_")
-        or name.endswith(".test.js")
-        or name.endswith(".spec.js")
-        or name == "conftest.py"
-    )
-
-
-def _is_impl_rel(rel: str) -> bool:
-    if _is_test_rel(rel):
-        return False
-    name = Path(rel.replace("\\", "/")).name
-    if name in {
-        "requirements.txt",
-        "pyproject.toml",
-        "package.json",
-        "constraints.txt",
-        "go.mod",
-    }:
-        return False
-    return True
 
 
 def dotted_expr(node: ast.AST) -> str:
@@ -253,14 +213,6 @@ def dummy_except_findings(text: str, rel: str) -> list[str]:
     return findings
 
 
-def _generated_skip_findings(rel: str, text: str) -> list[str]:
-    lowered = text.lower()
-    hits: list[str] = []
-    if any(n in lowered for n in _SKIP_NEEDLES) or ".skip(" in lowered or ".xfail(" in lowered:
-        hits.append(f"{rel} weakens generated tests with skip/xfail")
-    return hits
-
-
 def packet_new_tokens(packet: dict[str, Any]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -322,67 +274,13 @@ def integrity_findings(
     files: Iterable[str] | None = None,
 ) -> list[str]:
     """Scan impl + generated tests. Any finding is a verify failure."""
-    root = root.resolve()
-    forbidden = oracle_forbidden_tokens(packet)
-    interesting = packet_new_tokens(packet)
-    rels: list[str] = []
-    if files:
-        rels = [str(r).replace("\\", "/") for r in files]
-    else:
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            if any(part in SKIP_DIRS for part in path.parts):
-                continue
-            if path.suffix.lower() not in {".py", ".ts", ".js", ".tsx", ".jsx"}:
-                continue
-            try:
-                rels.append(path.relative_to(root).as_posix())
-            except ValueError:
-                continue
+    from conduit.anticheat.scan import run_anticheat_mechanical
 
-    findings: list[str] = []
-    for rel in rels:
-        path = root / rel
-        if not path.is_file():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        if is_conduit_generated_rel(rel):
-            findings.extend(_generated_skip_findings(rel, text))
-            continue
-        if _is_impl_rel(rel):
-            hidden = obfuscated_forbidden_tokens(text, forbidden)
-            if hidden:
-                findings.append(
-                    f"{rel} obfuscates leftover tokens via concat/join: "
-                    + ", ".join(hidden)
-                )
-            findings.extend(dummy_except_findings(text, rel))
-            markers = unused_marker_literals(text, interesting)
-            if markers:
-                findings.append(
-                    f"{rel} unused migration marker literals: " + ", ".join(markers)
-                )
-            # JS join obfuscation already covered by obfuscated_forbidden_tokens
-        if _is_test_rel(rel) and Path(rel).name in CONDUIT_GENERATED_NAMES:
-            findings.extend(_generated_skip_findings(rel, text))
-    return findings
+    return run_anticheat_mechanical(root, packet, files).messages
 
 
 def integrity_failure_result(findings: list[str]):
     """Build a TestResult-shaped failure for the self-correct loop."""
-    from conduit.test_runner import TestResult
+    from conduit.anticheat.scan import anticheat_failure_result
 
-    body = "integrity audit failed:\n" + "\n".join(findings)
-    return TestResult(
-        runner="integrity",
-        passed=False,
-        returncode=1,
-        stdout=body,
-        stderr="",
-        command=["conduit", "integrity-audit"],
-        fail_reason="implementation cheated tests (integrity audit)",
-    )
+    return anticheat_failure_result(findings, source="mechanical")

@@ -47,14 +47,25 @@ Existing consumer tests are **audited**, not trusted: skip/xfail/tautology notes
 
 `conduit apply` does **not** write these tests. `conduit run --skip-tests` skips generation and verify.
 
+## Anti-cheat (separate from apply, inventory, and repair)
+
+[`conduit.anticheat`](../conduit/src/conduit/anticheat/) fails verify when implementation cheats tests. **Mechanical rules always win.** An optional **LLM auditor** may only **add** findings; it cannot clear a mechanical fail.
+
+Runs:
+
+1. After packet apply (mechanical)
+2. On every self-correct `write_file` (mechanical reject)
+3. After pytest would pass (mechanical, then LLM auditor once)
+
+Catalog includes: dropping the official `{package}` SDK import; homemade HTTP / `_FakeResponse` / canned `"pong"` clients; dummy `except`; skip/xfail in generated tests; join **and f-string** leftover hides (`f"/{'engines'}"`); writes to `packets/`, `.conduit/`, `vendor/`, knowledge `*.jsonl`.
+
+Keep the official SDK at `to_version` and migrate call sites. Generated REST clients and `AzureOpenAI` from the same package are allowed. Scans skip `.conduit/` (including downloaded exports).
+
+`CONDUIT_ANTICHEAT_STRICT=1` fails closed if the LLM auditor crashes; default logs a warning and keeps the mechanical result.
+
 ## Integrity audit (does not trust pytest)
 
-[`integrity.py`](../conduit/src/conduit/integrity.py) runs after every pytest/npm result that would otherwise pass (including after self-correct). Findings fail verify:
-
-- Join/concat reconstruction of leftover tokens
-- `except Exception:` / bare `except:` that swallows and returns a dummy (`""`, `[]`, `prompt`, `"ok"`, hashed ids)
-- Unused `MIGRATION_MARKERS` / similar tuples whose only job is to satisfy token smoke
-- skip/xfail in Conduit-generated tests
+The integrity helpers in [`integrity.py`](../conduit/src/conduit/integrity.py) still detect dummy-except and marker tuples; repo scans go through anti-cheat.
 
 Self-correct may only fix implementation by using the real new API — not by adding fallbacks or renaming things `LEGACY_*`.
 
@@ -117,8 +128,8 @@ conduit run ... --skip-tests    # apply only; skips oracle + verify
 
 ## Tips
 
-- Leftover oracles are a **floor**. Functional tests + the integrity audit are the **ceiling**.
-- Cheating the leftover scan (join obfuscation, marker tuples, skip-all conftest) fails verify even if pytest exits 0.
+- Leftover oracles are a **floor**. Functional tests + **anti-cheat** are the **ceiling**.
+- Cheating (join/f-string obfuscation, fake HTTP clients, skip-all conftest, dropping the official SDK) fails verify even if pytest exits 0.
 - For local iteration without LLM quota, set `CONDUIT_LLM_PROVIDER=none` and still export `OPENAI_API_KEY` for consumer tests.
 - CI should pass `OPENAI_API_KEY` (consumer) and `CONDUIT_LLM_*` only when the repair loop should run.
 
