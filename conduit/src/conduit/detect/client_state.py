@@ -290,6 +290,240 @@ def _merge_usage_row(existing: dict[str, Any], incoming: dict[str, Any]) -> None
                 seen.add(str(item))
 
 
+_PATH_TOKEN_RE = re.compile(r"(/[A-Za-z0-9._~/-]{2,})")
+_CREATE_CALL_RE = re.compile(r"\b([A-Za-z_][\w.]*)\.create\s*\(")
+_MAX_ALLOWLIST = 80
+_MAX_HITS = 120
+_MAX_DOSSIER_CHARS = 55_000
+_SNIPPET_LEN = 120
+_ENRICH_MAX_TURNS = 8
+
+
+def _dossier_redact(text: str) -> str:
+    try:
+        from conduit.anticheat.audit_log import redact_secrets
+
+        return redact_secrets(text)
+    except ImportError:
+        return text
+
+
+def _snippet_at(text: str, start: int, end: int) -> str:
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end < 0:
+        line_end = len(text)
+    snippet = text[line_start:line_end].strip()
+    if len(snippet) > _SNIPPET_LEN:
+        snippet = snippet[:_SNIPPET_LEN] + "…"
+    return _dossier_redact(snippet)
+
+
+def build_usage_dossier(
+    root: Path,
+    package: str,
+    state: PackageClientState,
+    files: list[Path],
+) -> dict[str, Any]:
+    """Mechanical usage dossier for LLM enrich (no LLM).
+
+    Allowlisted paths + regex/import hit index so the agent extends coverage
+    instead of rediscovering the repo.
+    """
+    root = root.resolve()
+    pkg = (package or state.package or "").strip()
+    packs = pattern_pack_for(pkg)
+    model_re = packs.get("model_id")
+    api_re = packs.get("api_pattern")
+
+    # Prefer import hits, then config-ish, then other pruned files.
+    import_set = {
+        str(p).replace("\\", "/") for p in (state.import_files or []) if p
+    }
+    config_rels: list[str] = []
+    other_rels: list[str] = []
+    for path in files:
+        if not path.is_file() or _is_docish(path):
+            continue
+        rel = _rel(path, root)
+        if rel in import_set:
+            continue
+        if path.suffix.lower() in {".env", ".yaml", ".yml", ".toml", ".json", ".ini"}:
+            config_rels.append(rel)
+        else:
+            other_rels.append(rel)
+
+    allowlist: list[str] = []
+    seen: set[str] = set()
+    for rel in sorted(import_set) + sorted(set(config_rels)) + sorted(set(other_rels)):
+        if rel in seen:
+            continue
+        seen.add(rel)
+        allowlist.append(rel)
+        if len(allowlist) >= _MAX_ALLOWLIST:
+            break
+
+    already_models = {str(m) for m in (state.model_ids or [])}
+    already_apis = {str(a) for a in (state.api_patterns or [])}
+    hits: list[dict[str, Any]] = []
+    files_with_api_or_model: set[str] = set()
+    files_with_import: set[str] = set()
+
+    for rel in allowlist:
+        path = root / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        has_pkg = bool(re.search(rf"\b{re.escape(pkg)}\b", text, re.I)) if pkg else False
+        if has_pkg or f"import {pkg}" in text or f"from {pkg}" in text:
+            files_with_import.add(rel)
+            # one import hit per file is enough for the index
+            for m in re.finditer(
+                rf"(?:import\s+{re.escape(pkg)}\b|from\s+{re.escape(pkg)}\b|"
+                rf"require\(\s*['\"]{re.escape(pkg)}['\"])",
+                text,
+            ):
+                line = text.count("\n", 0, m.start()) + 1
+                hits.append(
+                    {
+                        "path": rel,
+                        "line": line,
+                        "kind": "import",
+                        "token": pkg,
+                        "snippet": _snippet_at(text, m.start(), m.end()),
+                    }
+                )
+                break
+
+        if model_re:
+            for m in model_re.finditer(text):
+                tok = m.group(0)
+                line = text.count("\n", 0, m.start()) + 1
+                hits.append(
+                    {
+                        "path": rel,
+                        "line": line,
+                        "kind": "model",
+                        "token": tok,
+                        "snippet": _snippet_at(text, m.start(), m.end()),
+                    }
+                )
+                files_with_api_or_model.add(rel)
+                if len(hits) >= _MAX_HITS:
+                    break
+        if len(hits) >= _MAX_HITS:
+            break
+
+        if api_re:
+            for m in api_re.finditer(text):
+                tok = m.group(0)
+                line = text.count("\n", 0, m.start()) + 1
+                hits.append(
+                    {
+                        "path": rel,
+                        "line": line,
+                        "kind": "api",
+                        "token": tok,
+                        "snippet": _snippet_at(text, m.start(), m.end()),
+                    }
+                )
+                files_with_api_or_model.add(rel)
+                if len(hits) >= _MAX_HITS:
+                    break
+        if len(hits) >= _MAX_HITS:
+            break
+
+        # Generic create / path tokens only when package context is present
+        if has_pkg:
+            for m in _CREATE_CALL_RE.finditer(text):
+                tok = f"{m.group(1)}.create"
+                line = text.count("\n", 0, m.start()) + 1
+                hits.append(
+                    {
+                        "path": rel,
+                        "line": line,
+                        "kind": "api",
+                        "token": tok,
+                        "snippet": _snippet_at(text, m.start(), m.end()),
+                    }
+                )
+                files_with_api_or_model.add(rel)
+                if len(hits) >= _MAX_HITS:
+                    break
+            if len(hits) >= _MAX_HITS:
+                break
+            for m in _PATH_TOKEN_RE.finditer(text):
+                tok = m.group(1)
+                if not (
+                    tok.startswith("/v1/")
+                    or tok.startswith("/v2/")
+                    or re.match(r"^/v?\d", tok)
+                ):
+                    continue
+                line = text.count("\n", 0, m.start()) + 1
+                hits.append(
+                    {
+                        "path": rel,
+                        "line": line,
+                        "kind": "api",
+                        "token": tok,
+                        "snippet": _snippet_at(text, m.start(), m.end()),
+                    }
+                )
+                files_with_api_or_model.add(rel)
+                if len(hits) >= _MAX_HITS:
+                    break
+        if len(hits) >= _MAX_HITS:
+            break
+
+    gaps: list[str] = []
+    for rel in sorted(import_set):
+        if rel in files_with_import and rel not in files_with_api_or_model:
+            gaps.append(
+                f"{rel}: imports {pkg} but no model/api hits in dossier yet"
+            )
+    for hit in hits:
+        tok = str(hit.get("token") or "")
+        kind = str(hit.get("kind") or "")
+        if kind == "model" and tok and tok not in already_models:
+            gaps.append(f"hit model {tok!r} in {hit.get('path')} not in already_found")
+        if kind == "api" and tok and tok not in already_apis:
+            gaps.append(f"hit api {tok!r} in {hit.get('path')} not in already_found")
+    # Cap gaps
+    gaps = list(dict.fromkeys(gaps))[:40]
+
+    dossier: dict[str, Any] = {
+        "package": pkg,
+        "installed_version": state.installed_version,
+        "already_found": {
+            "model_ids": list(state.model_ids),
+            "api_patterns": list(state.api_patterns),
+            "usages": [dict(u) for u in (state.usages or [])],
+        },
+        "path_allowlist": allowlist,
+        "hits": hits[:_MAX_HITS],
+        "gaps_to_check": gaps,
+    }
+    raw = json.dumps(dossier, ensure_ascii=False)
+    while len(raw) > _MAX_DOSSIER_CHARS and dossier["hits"]:
+        # Truncate snippets first, then drop hits from the end
+        for h in dossier["hits"]:
+            sn = str(h.get("snippet") or "")
+            if len(sn) > 60:
+                h["snippet"] = sn[:60] + "…"
+        raw = json.dumps(dossier, ensure_ascii=False)
+        if len(raw) <= _MAX_DOSSIER_CHARS:
+            break
+        dossier["hits"].pop()
+        raw = json.dumps(dossier, ensure_ascii=False)
+    if len(raw) > _MAX_DOSSIER_CHARS:
+        dossier["truncated"] = True
+    return dossier
+
+
 def _agent_enrich(
     state: PackageClientState,
     *,
@@ -313,26 +547,48 @@ def _agent_enrich(
         return state
 
     known_files = {_rel(p, root) for p in files}
-    seeded = sorted(state.import_files)[:40]
+    try:
+        dossier = build_usage_dossier(root, state.package, state, files)
+    except Exception as exc:  # noqa: BLE001 — thin seed fallback
+        dossier = {
+            "package": state.package,
+            "installed_version": state.installed_version,
+            "already_found": {
+                "model_ids": list(state.model_ids),
+                "api_patterns": list(state.api_patterns),
+                "usages": [],
+            },
+            "path_allowlist": sorted(state.import_files)[:40],
+            "hits": [],
+            "gaps_to_check": [],
+            "dossier_error": str(exc),
+        }
+
+    allow = {
+        str(p).replace("\\", "/")
+        for p in (dossier.get("path_allowlist") or [])
+        if p
+    }
     prompt = {
         "package": state.package,
-        "import_files": seeded,
-        "hint_model_ids": list(state.model_ids),
-        "hint_api_patterns": list(state.api_patterns),
+        "usage_dossier": dossier,
         "instructions": (
-            "Inventory how this consumer repo uses the named dependency. "
-            "Use list_files / grep / read_file on import_files (and related modules). "
-            "Hints are optional seeds, not a filter — record call surfaces the cheap "
-            "scan missed (e.g. Resource.create, chat.completions, REST /v1/... paths). "
+            "Extend the usage_dossier for this dependency. "
+            "already_found and hits are mechanical seeds — confirm gaps and find "
+            "call surfaces the cheap scan missed. "
+            "Do not list the whole repo. Only read_file / grep paths in "
+            "path_allowlist. "
             "Return JSON only with keys: model_ids (string[]), api_patterns (string[]), "
             "usages (list of {id, callees, paths, files}). "
+            "Prefer tokens not already in already_found when you have evidence. "
             "Every id/callee/path must appear verbatim in a file you read. "
             "Do not invent model ids or APIs."
         ),
     }
     system = (
         "You map a client repository's real usage of one dependency. "
-        "Prefer tools over guessing. Final reply is JSON only."
+        "Start from the usage dossier. Prefer tools on allowlisted paths only. "
+        "Final reply is JSON only."
     )
     data: dict[str, Any] | None = None
     try:
@@ -345,21 +601,23 @@ def _agent_enrich(
 
         run_agent = getattr(client, "run_agent", None)
         if callable(run_agent):
-            max_turns = min(16, resolve_max_turns(32))
+            max_turns = min(_ENRICH_MAX_TURNS, resolve_max_turns(32))
             if emit is not None:
                 emit(
                     f"LLM client enrichment for {state.package} "
-                    f"(effort={resolve_reasoning_effort()}, max_turns={max_turns})…"
+                    f"(effort={resolve_reasoning_effort()}, max_turns={max_turns}, "
+                    f"dossier_hits={len(dossier.get('hits') or [])})…"
                 )
             executor = RepoToolExecutor(
                 root=root,
                 allow_writes=False,
                 allow_run_tests=False,
+                path_allowlist=allow,
             )
             data = run_agent(
                 system=system,
                 user=json.dumps(prompt),
-                tools=agent_tools(mode="enrich"),
+                tools=agent_tools(mode="enrich_scoped"),
                 tool_executor=executor,
                 max_turns=max_turns,
             )
@@ -424,8 +682,6 @@ def _agent_enrich(
             state.usages.append(usage)
             by_id[key] = usage
             added_usages += 1
-        # Do not promote usage ids into model_ids — usage ids are often
-        # function/helper names (apply_edit, configure), not model strings.
         for callee in usage.get("callees") or []:
             if callee not in state.api_patterns:
                 state.api_patterns.append(callee)
