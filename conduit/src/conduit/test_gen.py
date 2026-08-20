@@ -14,7 +14,33 @@ _ORACLE_PY = "tests/test_conduit_oracle.py"
 _ORACLE_JS = "conduit_oracle.test.js"
 _SMOKE_PY = "tests/test_conduit_smoke.py"
 _SMOKE_JS = "conduit_smoke.test.js"
-_ORACLE_RELS = frozenset({_ORACLE_PY, _ORACLE_JS, _SMOKE_PY, _SMOKE_JS})
+_FUNCTIONAL_PY = "tests/test_conduit_functional.py"
+_FUNCTIONAL_JS = "conduit_functional.test.js"
+CONDUIT_GENERATED_NAMES = frozenset(
+    {
+        "test_conduit_oracle.py",
+        "conduit_oracle.test.js",
+        "test_conduit_smoke.py",
+        "conduit_smoke.test.js",
+        "test_conduit_functional.py",
+        "conduit_functional.test.js",
+    }
+)
+_ORACLE_RELS = frozenset(
+    {_ORACLE_PY, _ORACLE_JS, _SMOKE_PY, _SMOKE_JS, _FUNCTIONAL_PY, _FUNCTIONAL_JS}
+)
+
+
+def is_conduit_generated_rel(rel: str) -> bool:
+    posix = rel.replace("\\", "/")
+    name = Path(posix).name
+    if posix in _ORACLE_RELS or name in CONDUIT_GENERATED_NAMES:
+        return True
+    if name.startswith("test_conduit_") and name.endswith(".py"):
+        return True
+    if name.startswith("conduit_") and name.endswith((".test.js", ".test.ts")):
+        return True
+    return False
 
 _RULE_TOKEN_KEYS = {
     "EXACT_STRING_REPLACE": "match",
@@ -70,6 +96,12 @@ def oracle_forbidden_tokens(packet: dict[str, Any]) -> list[str]:
         _add(f"{pkg}=={from_v}")
         _add(f'"{pkg}": "{from_v}"')
         _add(f"'{pkg}': '{from_v}'")
+    extra: list[str] = []
+    for token in list(out):
+        if token.startswith("/v1/") and len(token) > 4:
+            extra.append(token[3:])  # "/fine-tunes" from "/v1/fine-tunes"
+    for token in extra:
+        _add(token)
     return out
 
 
@@ -100,12 +132,7 @@ def oracle_scan_rels(
         rel = _as_rel(root, path)
         if not rel or rel in seen:
             return
-        if rel in _ORACLE_RELS or Path(rel).name in {
-            "test_conduit_oracle.py",
-            "conduit_oracle.test.js",
-            "test_conduit_smoke.py",
-            "conduit_smoke.test.js",
-        }:
+        if is_conduit_generated_rel(rel):
             return
         if ignore.path_ignored(rel):
             return
@@ -117,33 +144,55 @@ def oracle_scan_rels(
     for rel in changed_files or []:
         _add(root / str(rel))
 
-    if any(
-        isinstance(rule, dict) and str(rule.get("type") or "") == "DEPENDENCY_BUMP"
-        for rule in packet.get("rules") or []
-    ):
-        for name in _MANIFEST_NAMES:
-            _add(root / name)
+    for name in _MANIFEST_NAMES:
+        _add(root / name)
 
-    if any(
-        isinstance(rule, dict) and str(rule.get("type") or "") == "KEY_RENAME"
-        for rule in packet.get("rules") or []
-    ):
-        from conduit.patcher.key_rename import iter_config_files
+    from conduit.patcher.key_rename import iter_config_files as _iter_cfg
 
-        for path in iter_config_files(root):
-            _add(path)
+    # Always scan configs/scripts/workflows even when import-prune dropped them.
+    for path in _iter_cfg(root):
+        _add(path)
+    for extra_dir in ("scripts", "configs", ".github"):
+        folder = root / extra_dir
+        if not folder.is_dir():
+            continue
+        for path in folder.rglob("*"):
+            if path.is_file() and path.suffix.lower() in {
+                ".py",
+                ".ts",
+                ".js",
+                ".sh",
+                ".yml",
+                ".yaml",
+                ".json",
+                ".toml",
+            }:
+                _add(path)
+    for name in ("docker-compose.yml", "docker-compose.yaml", "Dockerfile"):
+        _add(root / name)
+    # Neighbor source files in the same directory as allowlisted impl.
+    neighbors: list[Path] = []
+    for rel in list(out):
+        parent = (root / rel).parent
+        if not parent.is_dir():
+            continue
+        for sib in parent.iterdir():
+            if sib.is_file() and sib.suffix.lower() in {
+                ".py",
+                ".ts",
+                ".js",
+                ".tsx",
+                ".jsx",
+            }:
+                neighbors.append(sib)
+    for path in neighbors:
+        _add(path)
 
     return sorted(out)
 
 
 def _is_oracle_rel(rel: str) -> bool:
-    posix = rel.replace("\\", "/")
-    return posix in _ORACLE_RELS or Path(posix).name in {
-        "test_conduit_oracle.py",
-        "conduit_oracle.test.js",
-        "test_conduit_smoke.py",
-        "conduit_smoke.test.js",
-    }
+    return is_conduit_generated_rel(rel)
 
 
 def _is_impl_rel(rel: str) -> bool:
@@ -269,12 +318,13 @@ def ensure_tests(
     source: dict[str, Any] | None = None,
 ) -> list[str]:
     """
-    Write/update a packet-derived leftover-token oracle and migration smoke.
+    Write/update leftover-token oracle, migration smoke, and (when an LLM is
+    configured) functional tests that exercise new endpoints.
 
     Always regenerates the leftover oracle when there are tokens and files to
     scan. Shape/smoke tests are written whenever the packet has in-scope AST
-    or string rules. Optional LLM extras run only when no consumer tests exist
-    besides Conduit-generated files, and never overwrite the leftover oracle.
+    or string rules. LLM functional tests run in addition to leftover/smoke and
+    never overwrite the leftover oracle.
     """
     root = root.resolve()
     ignore = build_ignore_list(root, packet)
@@ -318,13 +368,14 @@ def ensure_tests(
     if smoke:
         created.append(smoke)
 
-    if not _has_consumer_tests(root, include_oracle=False) and not _packet_has_ast_rules(
-        packet
-    ):
-        extra = _llm_generate_tests(
-            root, packet, changed_files=changed_files or [], ecosystem=ecosystem
-        )
-        created.extend(extra)
+    extra = _llm_generate_functional_tests(
+        root,
+        packet,
+        changed_files=changed_files or [],
+        ecosystem=ecosystem,
+        source=source,
+    )
+    created.extend(extra)
 
     # Deduplicate while preserving order
     seen: set[str] = set()
@@ -458,6 +509,81 @@ def _has_token(text: str, token: str) -> bool:
     return pattern.search(text) is not None
 
 
+def _dotted(node):
+    parts = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+    parts.reverse()
+    return ".".join(parts)
+
+
+def _callee_used(text, callee):
+    callee = callee or ""
+    if not callee:
+        return False
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return callee + "(" in text
+    found = set()
+
+    class _C(ast.NodeVisitor):
+        def visit_Call(self, node):
+            dotted = _dotted(node.func)
+            if dotted:
+                found.add(dotted)
+            self.generic_visit(node)
+
+        def visit_Attribute(self, node):
+            dotted = _dotted(node)
+            if dotted:
+                found.add(dotted)
+            self.generic_visit(node)
+
+    _C().visit(tree)
+    if callee in found:
+        return True
+    return any(item.endswith("." + callee) or item.endswith(callee) for item in found)
+
+
+def _active_token(text, token):
+    if not _has_token(text, token):
+        return False
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return True
+    marker_re = re.compile(r"(MARKER|MIGRATION)", re.I)
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not node.targets or not isinstance(node.targets[0], ast.Name):
+            continue
+        if not marker_re.search(node.targets[0].id):
+            continue
+        seq = node.value
+        elts = getattr(seq, "elts", None)
+        if elts is None:
+            continue
+        if any(isinstance(elt, ast.Constant) and elt.value == token for elt in elts):
+            # token only lives in an unused marker tuple
+            name = node.targets[0].id
+            class _L(ast.NodeVisitor):
+                loads = 0
+                def visit_Name(self, n):
+                    if n.id == name and isinstance(n.ctx, ast.Load):
+                        self.loads += 1
+            v = _L()
+            v.visit(tree)
+            if v.loads == 0:
+                return False
+    return True
+
+
 def _unquote(lit: str) -> str:
     try:
         return ast.literal_eval(lit)
@@ -552,7 +678,27 @@ def test_conduit_required_shapes_present():
     combined = "\\n".join(blobs)
     for item in REQUIRED:
         new = item.get("new") or ""
-        if new and not _has_token(combined, new):
+        kind = item.get("kind") or ""
+        if not new:
+            continue
+        if kind in {{"callee", "attr", "param"}}:
+            ok = False
+            for blob in blobs:
+                if kind == "param":
+                    quoted = '"' + new + '"'
+                    if re.search(rf"\\b{{re.escape(new)}}\\s*=", blob) or quoted in blob:
+                        prefix = blob.split(new, 1)[0][-80:]
+                        if "MIGRATION_MARKER" not in prefix:
+                            ok = True
+                            break
+                elif _callee_used(blob, new):
+                    ok = True
+                    break
+            if not ok:
+                failures.append(
+                    f"no impl file uses {{new!r}} as a {{kind}} (required after {{item.get('old')!r}})"
+                )
+        elif not any(_active_token(blob, new) for blob in blobs):
             failures.append(
                 f"no impl file contains {{new!r}} (required after {{item.get('old')!r}})"
             )
@@ -716,6 +862,7 @@ test('conduit smoke required shapes', () => {
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -735,6 +882,47 @@ def _has_token(text: str, token: str) -> bool:
     ) is not None
 
 
+def _dotted(node):
+    parts = []
+    cur = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+    parts.reverse()
+    return ".".join(parts)
+
+
+def _callee_used(text, callee):
+    callee = callee or ""
+    if not callee:
+        return False
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return (callee + "(") in text
+    found = set()
+
+    class _C(ast.NodeVisitor):
+        def visit_Call(self, node):
+            dotted = _dotted(node.func)
+            if dotted:
+                found.add(dotted)
+            self.generic_visit(node)
+
+        def visit_Attribute(self, node):
+            dotted = _dotted(node)
+            if dotted:
+                found.add(dotted)
+            self.generic_visit(node)
+
+    _C().visit(tree)
+    if callee in found:
+        return True
+    return any(item.endswith("." + callee) or item.endswith(callee) for item in found)
+
+
 def test_conduit_smoke_required_shapes():
     if not REQUIRED:
         return
@@ -743,11 +931,21 @@ def test_conduit_smoke_required_shapes():
         path = ROOT / rel
         if path.is_file():
             blobs.append(path.read_text(encoding="utf-8"))
-    combined = "\\n".join(blobs)
     failures = []
     for item in REQUIRED:
         new = item.get("new") or ""
-        if new and not _has_token(combined, new):
+        kind = item.get("kind") or ""
+        if not new:
+            continue
+        ok = False
+        for blob in blobs:
+            if kind in {{"callee", "attr"}}:
+                ok = _callee_used(blob, new)
+            else:
+                ok = _has_token(blob, new) and "MIGRATION_MARKERS" not in blob
+            if ok:
+                break
+        if not ok:
             failures.append(new)
     assert not failures, "missing migrated tokens: " + ", ".join(failures)
 
@@ -770,48 +968,79 @@ def test_conduit_smoke_changed_modules_importable():
     return _SMOKE_PY
 
 
-def _llm_generate_tests(
+def _llm_generate_functional_tests(
     root: Path,
     packet: dict[str, Any],
     *,
     changed_files: list[str],
     ecosystem: str,
+    source: dict[str, Any] | None = None,
 ) -> list[str]:
+    """LLM functional tests for new endpoints + public APIs. Never skip."""
+    from conduit.integrity import audit_consumer_tests
+    from conduit.self_correct import reject_self_correct_write
+
     client = get_llm_client()
     if client is None:
         return []
 
     samples: dict[str, str] = {}
-    for rel in changed_files[:8]:
+    for rel in changed_files[:12]:
         path = root / rel
-        if path.is_file():
+        if path.is_file() and not is_conduit_generated_rel(rel):
             try:
-                samples[rel] = path.read_text(encoding="utf-8")[:4000]
+                samples[rel] = path.read_text(encoding="utf-8")[:5000]
             except OSError:
                 continue
 
+    required = oracle_required_appearances(packet, source)
+    audit_notes = audit_consumer_tests(root)
+    target = _FUNCTIONAL_JS if ecosystem == "npm" else _FUNCTIONAL_PY
     prompt = {
         "instructions": (
-            "Generate a minimal extra smoke test for a repo after an API migration. "
-            'Return JSON: {"files": {"relative/path": "full file contents"}}. '
-            "For Python use tests/test_conduit_smoke.py with pytest. "
-            "For npm use conduit_smoke.test.js. Do not require network calls. "
-            "Do not write tests/test_conduit_oracle.py or conduit_oracle.test.js. "
-            "Do not use pytest.mark.skip, xfail, or string join/concat to hide tokens. "
-            "Do not require network calls."
+            "Write STRONG functional tests for a repo after an API migration. "
+            "Exercise migrated public functions and new endpoints/callees from the "
+            "packet (chat completions, models list, fine_tuning.jobs, tools vs "
+            "functions, etc.). Prefer live API calls with tiny max_tokens when "
+            "OPENAI_API_KEY is already in the environment. "
+            "If the key is missing the test MUST fail with an assertion — never skip, "
+            "xfail, or catch Exception to return a dummy. "
+            "Do not trust existing consumer tests listed in audit_notes. "
+            "Do not overwrite leftover oracle or smoke files. "
+            "Do not use pytest.mark.skip, xfail, string join/concat, or unused "
+            "MIGRATION_MARKERS tuples. "
+            f'Return JSON: {{"files": {{"{target}": "full file contents"}}}}.'
         ),
         "ecosystem": ecosystem,
+        "target_path": target,
+        "audit_notes": audit_notes,
+        "required_shapes": required,
         "packet": {
             "package": packet.get("package"),
             "from_version": packet.get("from_version"),
             "to_version": packet.get("to_version"),
-            "rules": packet.get("rules") or [],
+            "rules": [
+                {
+                    "type": r.get("type"),
+                    "old_callee": r.get("old_callee"),
+                    "new_callee": r.get("new_callee"),
+                    "old_param": r.get("old_param"),
+                    "new_param": r.get("new_param"),
+                    "match": r.get("match"),
+                    "replace": r.get("replace"),
+                }
+                for r in (packet.get("rules") or [])
+                if isinstance(r, dict)
+            ][:80],
         },
         "changed_files": samples,
     }
     try:
         data = client.complete_json(
-            system="You write minimal migration smoke tests. JSON only.",
+            system=(
+                "You write real functional tests that fail loudly. JSON only. "
+                "Never skip, never dummy-except, never hide tokens."
+            ),
             user=json.dumps(prompt),
         )
     except Exception:
@@ -824,25 +1053,25 @@ def _llm_generate_tests(
         if not isinstance(content, str):
             continue
         rel_posix = str(rel).replace("\\", "/")
-        if rel_posix in {_ORACLE_PY, _ORACLE_JS} or Path(rel_posix).name in {
+        if rel_posix in {_ORACLE_PY, _ORACLE_JS, _SMOKE_PY, _SMOKE_JS}:
+            continue
+        if Path(rel_posix).name in {
             "test_conduit_oracle.py",
             "conduit_oracle.test.js",
+            "test_conduit_smoke.py",
+            "conduit_smoke.test.js",
         }:
             continue
-        if rel_posix in {_SMOKE_PY, _SMOKE_JS}:
-            continue
-        lowered = content.lower()
-        if any(
-            needle in lowered
-            for needle in (
-                "pytest.mark.skip",
-                "pytest.mark.xfail",
-                ".skip(",
-                ".xfail(",
-            )
-        ):
-            continue
-        if ".join(" in lowered and "forbidden" not in lowered:
+        if ecosystem == "npm" and rel_posix != _FUNCTIONAL_JS:
+            if not rel_posix.endswith(".test.js"):
+                continue
+        if ecosystem != "npm" and rel_posix != _FUNCTIONAL_PY:
+            if not rel_posix.startswith("tests/") or not rel_posix.endswith(".py"):
+                continue
+            if not Path(rel_posix).name.startswith("test_conduit_"):
+                continue
+        reason = reject_self_correct_write(rel_posix, content, packet=packet)
+        if reason:
             continue
         path = (root / str(rel)).resolve()
         if not str(path).startswith(str(root_resolved)):

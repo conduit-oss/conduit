@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from conduit.context.fetch import read_local_text
+from conduit.credentials import CredentialsError, ensure_verify_credentials
 from conduit.detect.coverage import (
     PacketCoverageReport,
     build_coverage_report,
@@ -212,10 +213,19 @@ def _verify_with_oracle(
     Shared by ``conduit verify`` and ``conduit run`` so split workflows
     get the same leftover-token checks.
     """
+    from conduit.llm.client import get_llm_client, resolve_provider
+
     pkg = str(packet.get("package") or "")
     allowlist = file_allowlist
     if allowlist is None and pkg:
         allowlist = prune_by_imports(root, dependency_packages(packet))
+
+    want_llm = resolve_provider() not in {None, "none", "off", "disabled"}
+    try:
+        ensure_verify_credentials(root, packet, want_llm=bool(want_llm or get_llm_client()))
+    except CredentialsError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
 
     beat("hatch")
     generated = ensure_tests(
