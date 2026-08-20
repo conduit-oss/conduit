@@ -26,7 +26,7 @@ Only packages whose declared version **changed** become bump `VersionJump` signa
 
 Companion ADD/REMOVE rules are folded into the primary packet only when that packet already names the package (do not invent companions from the same PR). Leftover lockfile events still appear under Double-check.
 
-Separately, Conduit always parses **currently declared** versions from the same manifests via `read_installed()` (`DetectResult.installed`). That map is used to:
+Separately, Conduit always parses **currently declared** versions from the same manifests via `read_installed()` (`DetectResult.installed`). Pip and npm pins are stored separately; the flat map keeps the **PyPI** pin when both exist. Catalog bind uses the pin for the packet’s ecosystem. That map is used to:
 
 - Decide whether a detect module **applies** to this repo
 - Fill packet **`from_version`** when there is no lockfile jump signal (so export delta can fetch the real old package)

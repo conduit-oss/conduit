@@ -43,7 +43,7 @@ Optional `side_effects` is a human checklist (`webhook`, `database`, `config`, `
 
 These top-level versions also drive **export delta** (downloading both package versions to compare public APIs). Rule-level `DEPENDENCY_BUMP.from_version` / `to_version` can still describe the pin rewrite independently.
 
-Catalog snapshots use `from_version` `0` as a **floor**, not a PyPI/npm release. On `conduit run` / `apply` / `verify`, Conduit copies the consumer `installed_version` from the source packet onto that floor in memory (the published JSON is not rewritten) so export-delta and leftover pin tokens use the real pin.
+    Catalog snapshots use `from_version` `0` as a **floor**, not a PyPI/npm release. On `conduit run` / `apply` / `verify`, Conduit copies the consumer pin for the **packet ecosystem** onto that floor in memory (the published JSON is not rewritten) so export-delta and leftover pin tokens use the real pin. A pypi packet binds `requirements.txt` / `pyproject.toml`; an npm packet binds `package.json`. The same package name in both ecosystems does not share a pin — npm `openai@3.3.0` is never stamped onto a pypi hop.
 
 `DEPENDENCY_BUMP` rewrites nested `requirements.txt` / `constraints.txt` / `*requirements*.txt` and nested `package.json` (skipping `vendor/`, venvs, `node_modules`, `.conduit`). Root `pyproject.toml` / `go.mod` / Maven / Gradle stay root-only.
 

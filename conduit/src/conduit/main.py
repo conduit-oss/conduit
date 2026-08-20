@@ -20,6 +20,10 @@ from conduit.detect.coverage import (
     save_source_packet,
 )
 from conduit.detect.modules.discovery import load_modules
+from conduit.detect.manifests import (
+    pin_for_packet_ecosystem,
+    read_installed_by_ecosystem,
+)
 from conduit.detect.orchestrator import run_detect
 from conduit.export_delta import compute_export_delta, prune_by_export_symbols
 from conduit.packet.cache import save_packet
@@ -61,6 +65,30 @@ def _vprint(message: str) -> None:
         console.print(f"[dim][verbose][/dim] {message}")
 
 
+def _ecosystem_client_pin(
+    root: Path,
+    packet: dict,
+    *,
+    fallback: str | None = None,
+) -> tuple[str, str | None]:
+    """Pin matching ``packet.ecosystem``. Empty if the only pin is the other eco."""
+    from conduit.detect.manifests import flatten_installed, normalize_packet_ecosystem
+
+    pkg = str(packet.get("package") or "")
+    eco = str(packet.get("ecosystem") or "")
+    by_eco = read_installed_by_ecosystem(root)
+    pin = pin_for_packet_ecosystem(by_eco, pkg, eco or None)
+    if pin:
+        return pin, None
+    other = flatten_installed(by_eco).get(pkg.lower()) if pkg else None
+    if normalize_packet_ecosystem(eco) and other:
+        return "", (
+            f"packet ecosystem {eco!r} has no {pkg} pin; "
+            f"not binding {other!r} from another ecosystem"
+        )
+    return str(fallback or "").strip(), None
+
+
 def _prepare_client_packet(
     root: Path,
     packet: dict,
@@ -73,9 +101,15 @@ def _prepare_client_packet(
     src = source
     if src is None and pkg:
         src = load_source_packet(root, pkg)
-    installed = str(installed_version or "").strip()
-    if not installed and isinstance(src, dict):
-        installed = str(src.get("installed_version") or "").strip()
+    installed, pin_warning = _ecosystem_client_pin(
+        root, packet, fallback=installed_version
+    )
+    if pin_warning:
+        console.print(f"[yellow]Warning:[/yellow] {pin_warning}")
+        installed = ""
+    if isinstance(src, dict) and installed:
+        src = dict(src)
+        src["installed_version"] = installed
     floor = str(packet.get("from_version") or "")
     bound = bind_packet_to_client(packet, installed_version=installed)
     if installed and is_snapshot_floor(floor) and not is_snapshot_floor(
@@ -694,6 +728,13 @@ def _run_pipeline(
         f"ecosystem={pkt.get('ecosystem')!r}"
     )
 
+    pin, _pin_warn = _ecosystem_client_pin(root, pkt)
+    state = (detected.package_states or {}).get(pkg) or (
+        detected.package_states or {}
+    ).get((pkg or "").lower())
+    if state is not None:
+        state.installed_version = pin or None
+
     # Always print source packet + migration packet + coverage diff
     coverage = _print_packet_coverage(
         root=root,
@@ -704,15 +745,8 @@ def _run_pipeline(
     )
 
     src_dict = coverage.source_packet if coverage is not None else None
-    installed = str((src_dict or {}).get("installed_version") or "").strip()
-    if not installed and detected.installed:
-        installed = str(
-            detected.installed.get(pkg)
-            or detected.installed.get((pkg or "").lower())
-            or ""
-        ).strip()
     pkt, src_dict = _prepare_client_packet(
-        root, pkt, source=src_dict, installed_version=installed
+        root, pkt, source=src_dict, installed_version=pin
     )
 
     beat("prune")
