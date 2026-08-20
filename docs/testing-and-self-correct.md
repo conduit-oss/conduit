@@ -57,9 +57,9 @@ Runs:
 2. On every self-correct `write_file` (mechanical reject)
 3. After pytest would pass (mechanical, then LLM auditor once)
 
-Catalog includes: dropping the official `{package}` SDK import; homemade HTTP / `_FakeResponse` / canned `"pong"` clients; dummy `except`; skip/xfail in generated tests; join **and f-string** leftover hides (`f"/{'engines'}"`); writes to `packets/`, `.conduit/`, `vendor/`, knowledge `*.jsonl`.
+Catalog is **packet/AST-derived**, not lab string needles: drop official `{package}` import; parallel HTTP to path tokens from packet rules without the SDK; synthetic `except`→literal responses; skip/xfail in generated tests; join **and f-string** leftover hides; writes to `packets/`, `.conduit/`, `vendor/`, knowledge `*.jsonl`; Path.read_text / sitecustomize / `_test_shim` oracle sanitizers; SDK monkeypatches (`{package}.<new_callee_root> =`, Compat wrappers); legacy kwargs on rewritten callees via `AST_PARAM_RENAME` (and optional `packet.anticheat.banned_kwargs_on` / `deny_substrings`).
 
-Keep the official SDK at `to_version` and migrate call sites. Generated REST clients and `AzureOpenAI` from the same package are allowed. Scans skip `.conduit/` (including downloaded exports).
+Keep the official SDK at `to_version` and migrate call sites. Generated REST clients and first-party SDK subclasses from the same package are allowed. Scans skip `.conduit/` (including downloaded exports).
 
 `CONDUIT_ANTICHEAT_STRICT=1` fails closed if the LLM auditor crashes; default logs a warning and keeps the mechanical result.
 

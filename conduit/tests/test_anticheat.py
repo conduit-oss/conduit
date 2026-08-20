@@ -1,4 +1,4 @@
-"""Separate anti-cheat: official SDK, fake clients, forbidden writes, f-string hide."""
+"""Separate anti-cheat: packet/AST floor, official SDK, shims, forbidden writes."""
 
 from __future__ import annotations
 
@@ -32,14 +32,30 @@ def _packet() -> dict:
     }
 
 
+def _packet_with_param_rename() -> dict:
+    pkt = _packet()
+    pkt["rules"] = list(pkt["rules"]) + [
+        {
+            "type": "AST_CALL_REWRITE",
+            "old_callee": "Completion.create",
+            "new_callee": "chat.completions.create",
+        },
+        {
+            "type": "AST_PARAM_RENAME",
+            "old_param": "prompt",
+            "new_param": "messages",
+            "new_callee": "chat.completions.create",
+        },
+    ]
+    return pkt
+
+
 def test_reject_fake_response_client():
     previous = "import openai\n\ndef chat():\n    return openai.ChatCompletion.create()\n"
     content = (
         "import requests\n"
-        "class _FakeResponse:\n"
-        "    pass\n"
-        "def _fallback_response(method, path, payload):\n"
-        "    return {'id': 'chatcmpl-fallback'}\n"
+        "def call():\n"
+        "    return requests.get('https://api.example/v1/models').json()\n"
     )
     reason = reject_write(
         "packages/openai_text/client.py",
@@ -48,7 +64,7 @@ def test_reject_fake_response_client():
         previous=previous,
     )
     assert reason is not None
-    assert "dropped official" in reason or "fake" in reason.lower()
+    assert "dropped official" in reason or "HTTP paths" in reason
 
 
 def test_allow_official_sdk_migration():
@@ -95,20 +111,20 @@ def test_reject_jsonl_seed_write():
     assert reason is not None
 
 
-def test_mechanical_scan_flags_fake_client(tmp_path: Path):
+def test_mechanical_scan_flags_parallel_http(tmp_path: Path):
     (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
     (tmp_path / "client.py").write_text(
         "import requests\n"
-        "def _fallback_response(method, path, payload):\n"
-        "    return {'id': 'chatcmpl-fallback', 'choices': []}\n"
         "def request_json(method, path):\n"
-        "    if path.endswith('/chat/completions'):\n"
-        "        return _fallback_response(method, path, {})\n",
+        "    if path.endswith('/v1/models'):\n"
+        "        return requests.request(method, path).json()\n",
         encoding="utf-8",
     )
     report = run_anticheat_mechanical(tmp_path, _packet())
     assert report.failed
-    assert any("fake" in f.lower() or "official openai" in f.lower() for f in report.findings)
+    assert any(
+        "HTTP paths" in f or "official openai" in f.lower() for f in report.findings
+    )
 
 
 def test_llm_auditor_adds_findings(tmp_path: Path, monkeypatch):
@@ -128,7 +144,11 @@ def test_llm_auditor_adds_findings(tmp_path: Path, monkeypatch):
 
 def test_mechanical_finding_not_cleared_by_empty_auditor(tmp_path: Path, monkeypatch):
     (tmp_path / "client.py").write_text(
-        "def _fallback_response():\n    return {'id': 'chatcmpl-fallback'}\n",
+        "def call():\n"
+        "    try:\n"
+        "        raise ConnectionError('down')\n"
+        "    except ConnectionError:\n"
+        "        return {'id': 'stub', 'choices': []}\n",
         encoding="utf-8",
     )
 
@@ -141,3 +161,192 @@ def test_mechanical_finding_not_cleared_by_empty_auditor(tmp_path: Path, monkeyp
     report = run_anticheat(tmp_path, _packet(), llm=True)
     assert report.failed
     assert report.source in {"mechanical", "mixed"}
+
+
+def test_reject_sitecustomize_oracle_shim():
+    content = (
+        "from pathlib import Path\n"
+        "_ORIGINAL_READ_TEXT = Path.read_text\n"
+        "def _patched_read_text(self, *args, **kwargs):\n"
+        "    text = _ORIGINAL_READ_TEXT(self, *args, **kwargs)\n"
+        "    return text.replace('davinci', '__LEGACY__')\n"
+        "Path.read_text = _patched_read_text\n"
+        "# reads tests/test_conduit_oracle.py FORBIDDEN\n"
+    )
+    reason = reject_write(
+        "sitecustomize.py", content, packet=_packet(), previous=""
+    )
+    assert reason is not None
+    assert "read_text" in reason.lower() or "shim" in reason.lower() or "oracle" in reason.lower()
+
+
+def test_reject_test_shim_install():
+    content = (
+        "from pathlib import Path\n"
+        "_ORIGINAL_READ_TEXT = Path.read_text\n"
+        "def install():\n"
+        "    def _sanitize_text(text):\n"
+        "        return text.replace('engines', '__LEGACY__')\n"
+        "    def _patched_read_text(self, *a, **k):\n"
+        "        return _sanitize_text(_ORIGINAL_READ_TEXT(self, *a, **k))\n"
+        "    Path.read_text = _patched_read_text\n"
+        "# FORBIDDEN from test_conduit_oracle\n"
+    )
+    reason = reject_write(
+        "packages/openai_text/_test_shim.py",
+        content,
+        packet=_packet(),
+        previous="",
+    )
+    assert reason is not None
+
+
+def test_mechanical_scan_flags_sitecustomize(tmp_path: Path):
+    (tmp_path / "sitecustomize.py").write_text(
+        "from pathlib import Path\n"
+        "_ORIGINAL_READ_TEXT = Path.read_text\n"
+        "def _patched_read_text(self, *args, **kwargs):\n"
+        "    text = _ORIGINAL_READ_TEXT(self, *args, **kwargs)\n"
+        "    return text.replace('x', '__LEGACY__')\n"
+        "Path.read_text = _patched_read_text\n"
+        "FORBIDDEN = True  # leftover-oracle launder\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        "from openai import OpenAI\nclient = OpenAI()\n",
+        encoding="utf-8",
+    )
+    report = run_anticheat_mechanical(tmp_path, _packet())
+    assert report.failed
+    assert any("read_text" in f.lower() or "shim" in f.lower() for f in report.findings)
+
+
+def test_reject_compat_chat_monkeypatch():
+    content = (
+        "import openai\n"
+        "class _CompatChatCompletions:\n"
+        "    def create(self, *, prompt=None, messages=None, **kwargs):\n"
+        "        return {'choices': [{'text': ''}]} \n"
+        "class _CompatChatNamespace:\n"
+        "    def __init__(self):\n"
+        "        self.completions = _CompatChatCompletions()\n"
+        "def _install_compat():\n"
+        "    openai.chat = _CompatChatNamespace()\n"
+    )
+    reason = reject_write(
+        "packages/openai_text/client.py",
+        content,
+        packet=_packet(),
+        previous="import openai\n",
+    )
+    assert reason is not None
+    assert (
+        "compat" in reason.lower()
+        or "monkeypatch" in reason.lower()
+        or "openai.chat" in reason.lower()
+    )
+
+
+def test_reject_old_kwarg_via_param_rename():
+    content = (
+        "import openai\n"
+        "def complete_prompt(prompt, model='gpt-4'):\n"
+        "    return openai.chat.completions.create(\n"
+        "        model=model, prompt=prompt, max_tokens=64\n"
+        "    )\n"
+    )
+    reason = reject_write(
+        "completions.py",
+        content,
+        packet=_packet_with_param_rename(),
+        previous="import openai\n",
+    )
+    assert reason is not None
+    assert "prompt=" in reason
+
+
+def test_allow_messages_chat_create():
+    content = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "client.chat.completions.create(\n"
+        "    model='gpt-4o',\n"
+        "    messages=[{'role': 'user', 'content': 'hi'}],\n"
+        ")\n"
+    )
+    assert (
+        reject_write(
+            "chat.py",
+            content,
+            packet=_packet_with_param_rename(),
+            previous="import openai\n",
+        )
+        is None
+    )
+
+
+def test_mock_patch_uses_packet_package():
+    content = (
+        "from unittest.mock import MagicMock, patch\n"
+        "import stripe\n"
+        "with patch('stripe.Charge.create', MagicMock()):\n"
+        "    pass\n"
+    )
+    pkt = {
+        "packet_id": "s",
+        "package": "stripe",
+        "ecosystem": "pypi",
+        "rules": [],
+    }
+    reason = reject_write("tests/test_x.py", content, packet=pkt, previous="")
+    assert reason is not None
+    assert "stripe" in reason.lower()
+
+
+def test_synthetic_except_without_fake_name():
+    content = (
+        "import openai\n"
+        "def call():\n"
+        "    try:\n"
+        "        raise ConnectionError('x')\n"
+        "    except ConnectionError:\n"
+        "        return {'id': 'x', 'data': []}\n"
+    )
+    reason = reject_write(
+        "client.py", content, packet=_packet(), previous="import openai\n"
+    )
+    assert reason is not None
+    assert "synthetic" in reason.lower()
+
+
+def test_deny_substring_from_packet_only():
+    bare = (
+        "import openai\n"
+        "def x():\n"
+        "    return 'chatcmpl-fallback'\n"
+    )
+    assert (
+        reject_write("a.py", bare, packet=_packet(), previous="import openai\n")
+        is None
+    )
+    pkt = _packet()
+    pkt["anticheat"] = {"deny_substrings": ["chatcmpl-fallback"]}
+    reason = reject_write("a.py", bare, packet=pkt, previous="import openai\n")
+    assert reason is not None
+    assert "deny_substring" in reason
+
+
+def test_banned_kwargs_on_hint():
+    content = (
+        "import openai\n"
+        "openai.chat.completions.create(model='m', engine='e')\n"
+    )
+    pkt = _packet()
+    pkt["anticheat"] = {
+        "banned_kwargs_on": {"chat.completions.create": ["engine"]}
+    }
+    reason = reject_write(
+        "c.py", content, packet=pkt, previous="import openai\n"
+    )
+    assert reason is not None
+    assert "engine=" in reason

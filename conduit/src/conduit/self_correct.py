@@ -810,6 +810,10 @@ def _llm_suggest_fixes(
             "Do not replace the SDK with requests/fetch or a fake/stub client.\n"
             "- Do NOT catch HTTP errors and return canned chat/embeddings.\n"
             "- Do NOT edit packets/, .conduit/, vendor/, or *.jsonl knowledge seeds.\n"
+            "- Do NOT patch Path.read_text / open / sitecustomize to rewrite leftover-oracle "
+            "file contents (no __LEGACY__ sanitizers or _test_shim installers).\n"
+            "- Do NOT monkeypatch the SDK module (e.g. openai.chat = Compat…) to preserve "
+            "0.x prompt=/dict shapes. Migrate to messages= and real SDK objects/attrs.\n"
             "- Prefer running tests via the run_tests tool before finalizing."
         ),
         "seeded_paths": failing_hint,
