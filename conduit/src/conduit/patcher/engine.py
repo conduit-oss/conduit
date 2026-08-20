@@ -15,6 +15,7 @@ from conduit.patcher.dependency_update import apply_dependency_rule
 from conduit.patcher.key_rename import apply_key_rename, is_env_file, iter_config_files
 from conduit.patcher.string_replace import exact_replace, regex_replace, write_if_changed
 from conduit.prune.grep_imports import SKIP_DIRS
+from conduit.test_gen import is_conduit_generated_rel
 
 SCAN_SUFFIXES = {
     ".py",
@@ -187,6 +188,12 @@ def apply_packet(
 
         target_files = rule.get("target_files") or ["*"]
         for path in files:
+            try:
+                rel = path.relative_to(root).as_posix()
+            except ValueError:
+                rel = path.name
+            if is_conduit_generated_rel(rel):
+                continue
             if not _glob_ok(path, target_files, root):
                 continue
             try:

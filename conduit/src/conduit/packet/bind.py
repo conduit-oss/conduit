@@ -20,8 +20,8 @@ def bind_packet_to_client(
     """Copy client ``installed_version`` onto floor ``from_version`` fields.
 
     Catalog snapshots use ``from_version`` ``0`` as a floor, not a PyPI release.
-    Apply/export-delta/oracle should use the consumer pin instead. The published
-    JSON on disk is not rewritten.
+    Apply/export-delta/oracle should use the consumer pin for the packet
+    ecosystem instead. The published JSON on disk is not rewritten.
     """
     installed = str(installed_version or "").strip()
     if not installed or is_snapshot_floor(installed):

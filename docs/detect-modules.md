@@ -22,7 +22,7 @@ class DetectModule(ABC):
 
 Before vendor modules run, Conduit scans the client repo per applicable package:
 
-1. **Regex (always)** — import-pruned source files + common config suffixes; vendor pattern packs extract model ids / API shape tokens. Manifests supply `installed_version` and ecosystems (pip vs npm).
+1. **Regex (always)** — import-pruned source files + common config suffixes; vendor pattern packs extract model ids / API shape tokens. Manifests supply per-ecosystem pins (`pypi` vs `npm`); catalog bind uses the packet’s ecosystem.
 2. **LLM (optional)** — when an LLM is configured and not `--demo`, a small structured pass may merge additional tokens **only if they appear verbatim in provided snippets**. Failures are soft warnings; regex state is kept.
 
 Empty `model_ids` means **unknown**, not all-clear (env/dynamic construction may hide usage).

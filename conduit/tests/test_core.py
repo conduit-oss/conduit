@@ -446,9 +446,8 @@ def test_rename_python_attr_and_call():
 
 
 def _disable_llm(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("CONDUIT_LLM_PROVIDER", "none")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("CONDUIT_LLM_PROVIDER", raising=False)
     monkeypatch.delenv("CONDUIT_LLM_API_KEY", raising=False)
     monkeypatch.delenv("CONDUIT_LLM_BASE_URL", raising=False)
 
@@ -647,6 +646,7 @@ def test_verify_cmd_writes_oracle(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
 
     _disable_llm(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-conduit")
     (tmp_path / "app.py").write_text(
         "import openai\nmodel = 'gpt-4-0613'\n", encoding="utf-8"
     )

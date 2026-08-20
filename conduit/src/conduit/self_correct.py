@@ -8,9 +8,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from conduit.integrity import (
+    dummy_except_findings,
+    integrity_failure_result,
+    integrity_findings,
+    unused_marker_literals,
+    packet_new_tokens,
+)
 from conduit.llm import attach_llm_log, get_llm_client
 from conduit.repair_ignore import IgnoreList, build_ignore_list
-from conduit.test_gen import oracle_forbidden_tokens
+from conduit.test_gen import (
+    CONDUIT_GENERATED_NAMES,
+    is_conduit_generated_rel,
+    oracle_forbidden_tokens,
+)
 from conduit.test_runner import TestResult, run_tests
 from conduit.text_tokens import obfuscated_forbidden_tokens
 
@@ -218,10 +229,7 @@ def _collect_context_files(
     return files
 
 
-_ORACLE_NAMES = {
-    "test_conduit_oracle.py",
-    "conduit_oracle.test.js",
-}
+_ORACLE_NAMES = set(CONDUIT_GENERATED_NAMES)
 
 
 def reject_self_correct_write(
@@ -237,11 +245,8 @@ def reject_self_correct_write(
     if ignore.path_ignored(rel_posix):
         return f"ignored path {rel_posix}"
     name = Path(rel_posix).name
-    if name in _ORACLE_NAMES or rel_posix in {
-        "tests/test_conduit_oracle.py",
-        "conduit_oracle.test.js",
-    }:
-        return "cannot edit leftover-token oracle"
+    if is_conduit_generated_rel(rel_posix) or name in _ORACLE_NAMES:
+        return "cannot edit leftover-token oracle, smoke, or functional tests"
     if "vendor" in Path(rel_posix).parts:
         return "cannot edit vendor decoys"
     forbidden = oracle_forbidden_tokens(packet)
@@ -254,12 +259,24 @@ def reject_self_correct_write(
         or "/tests/" in rel_posix
         or name.startswith("test_")
         or name.endswith(".test.js")
+        or name == "conftest.py"
     )
-    if is_test and any(
-        needle in lowered
-        for needle in ("pytest.mark.skip", "pytest.mark.xfail", ".skip(", ".xfail(")
-    ):
+    skip_needles = (
+        "pytest.mark.skip",
+        "pytest.mark.xfail",
+        "unittest.skip",
+        ".skip(",
+        ".xfail(",
+        "pytest.skip",
+    )
+    if is_test and any(needle in lowered for needle in skip_needles):
         return "cannot weaken tests with skip/xfail"
+    dummy = dummy_except_findings(content, rel_posix)
+    if dummy:
+        return dummy[0]
+    markers = unused_marker_literals(content, packet_new_tokens(packet))
+    if markers:
+        return "unused migration marker literals: " + ", ".join(markers)
     return None
 
 
@@ -812,6 +829,8 @@ def _llm_suggest_fixes(
             "- Do NOT modify ignored paths, vendor decoys, or tests/test_conduit_oracle.py.\n"
             "- Do NOT split/join/concat strings to hide leftover tokens "
             "(e.g. ''.join(['a','da'])). Migrate the API instead.\n"
+            "- Do NOT swallow exceptions with `except Exception: return dummy`.\n"
+            "- Do NOT add unused MIGRATION_MARKERS / token tuples to satisfy smoke tests.\n"
             "- Do NOT weaken consumer tests with skip/xfail or split assertion needles.\n"
             "- Do NOT rewrite ignored patterns when they appear as LEGACY_/FORBIDDEN_/"
             "EXPECTED_/ALLOWED_ contract constants — those define the migration oracle.\n"
@@ -909,6 +928,21 @@ def _evidence_url_note(evidence: str, *, limit: int = 5) -> str:
     return (" Evidence: " + ", ".join(uniq)) if uniq else ""
 
 
+def _run_verified_tests(
+    root: Path,
+    packet: dict[str, Any],
+    *,
+    scan_files: list[str] | None = None,
+) -> TestResult:
+    result = run_tests(root)
+    if not result.passed:
+        return result
+    findings = integrity_findings(root, packet, scan_files)
+    if findings:
+        return integrity_failure_result(findings)
+    return result
+
+
 def verify_with_self_correct(
     root: Path,
     packet: dict[str, Any],
@@ -924,7 +958,7 @@ def verify_with_self_correct(
     vlog: LogFn = emit if verbose else _noop_log
 
     corrected_files: list[str] = []
-    result = run_tests(root)
+    result = _run_verified_tests(root, packet)
     if result.passed:
         return result, corrected_files
 
@@ -1140,7 +1174,7 @@ def verify_with_self_correct(
             break
 
         previous = result
-        result = run_tests(root)
+        result = _run_verified_tests(root, packet)
         if result.passed:
             vlog(f"[self-correct] tests passed after attempt {attempt}")
             return result, sorted(set(corrected_files))
@@ -1160,7 +1194,7 @@ def verify_with_self_correct(
                 f"{len(restored)} file(s)"
                 + (f" ({'; '.join(lost_bits[:4])})" if lost_bits else "")
             )
-            result = run_tests(root)
+            result = _run_verified_tests(root, packet)
             empty_nudge_used = False
             pending_nudge = (
                 "Previous write regressed tests (collection/import failure). "

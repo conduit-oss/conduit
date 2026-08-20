@@ -1,6 +1,17 @@
 # Testing & self-correction
 
-After apply, Conduit verifies the consumer repo still works.
+After apply, Conduit verifies the consumer repo still works. **Skipped tests, dummy `except Exception` helpers, unused marker strings, and join-obfuscation never count as a pass.**
+
+## Credentials
+
+[`credentials.ensure_verify_credentials`](../conduit/src/conduit/credentials.py) runs at the start of **`conduit verify`** / **`conduit run`** (via `_verify_with_oracle`) **before** test generation:
+
+- If the packet package is `openai`, or consumer tests/conftest mention `OPENAI_API_KEY`, Conduit requires `OPENAI_API_KEY` (or `OPENAI_KEY`).
+- On a TTY it **prompts** (hidden input) and exports the value for this process and pytest subprocesses.
+- Non-interactive (CI) **exits 2** if the key is missing. It does not continue verify.
+- When an LLM will run (self-correct / functional test gen), it also requires `CONDUIT_LLM_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` unless the provider is `none`, `ollama`, or `custom`.
+
+Set `CONDUIT_LLM_PROVIDER=none` to disable LLM while still supplying a consumer `OPENAI_API_KEY`.
 
 ## Test runner detection
 
@@ -8,47 +19,59 @@ After apply, Conduit verifies the consumer repo still works.
 
 | Signal | Command |
 |--------|---------|
-| `pytest.ini`, `conftest.py`, `[tool.pytest`, or `tests/test_*.py` | `python -m pytest -q` |
+| `pytest.ini`, `conftest.py`, `[tool.pytest`, or `tests/test_*.py` | `python -m pytest -q --tb=short` |
 | `package.json` scripts.test | `npm test --silent` |
 | `go.mod` | `go test ./...` |
 
-If nothing is detected, the runner currently treats the suite as a soft pass — unless test generation creates files first (see below).
+`passed=True` only if the process exits 0 **and** pytest reports **at least one passed test**, with **zero failures/errors**. **All-skipped** (`N skipped, 0 passed`) is a failure (`all tests skipped`), including session autouse `pytest.skip` when `OPENAI_API_KEY` is unset. A missing suite is a failure, not a soft pass.
 
-## Packet-derived oracle tests
+Stdout that says `OPENAI_API_KEY … is not set` is treated as missing credentials, not a green run.
 
-[`test_gen.ensure_tests`](../conduit/src/conduit/test_gen.py) runs at the start of **`conduit verify`** (and therefore also `conduit run`, which calls the same helper). It **always** regenerates a leftover-token oracle from the migration packet (even if the repo already has a suite):
+## Packet-derived tests
 
-- Python: `tests/test_conduit_oracle.py`
-- npm: `conduit_oracle.test.js`
+[`test_gen.ensure_tests`](../conduit/src/conduit/test_gen.py) runs at the start of **`conduit verify`** (and therefore also `conduit run`). It regenerates:
 
-The file is self-contained (does not import Conduit). It scans the pruned/changed file set for **legacy tokens** from packet rules (`match`, `old_param`, `old_key`, `old_import`, `old_attr`, `old_callee`, and `DEPENDENCY_BUMP` pins). Matching uses the same whole-token boundaries as apply, so `gpt-4` does not flag `gpt-4-0613`. Concat/join reconstructions (e.g. `"".join(["a", "da"])`) also fail when they rebuild a forbidden token. If the client used an old callee/param, the oracle requires the packet’s `new_callee` / `new_param` to appear in an implementation file. `KEY_RENAME` also includes config/env files in the scan even when import-prune dropped them.
+| File | Role |
+|------|------|
+| `tests/test_conduit_oracle.py` (or `conduit_oracle.test.js`) | Leftover-token floor: old ids/paths/callees must be gone and not reconstructed via concat/join. `/v1/fine-tunes` also forbids `/fine-tunes`. |
+| `tests/test_conduit_smoke.py` | New callees/params must appear as **real attribute/call use**, not unused `MIGRATION_MARKERS` tuples. |
+| `tests/test_conduit_functional.py` | When an LLM is configured: live/functional tests of new endpoints and public APIs. **Must fail, not skip**, if the key is missing. |
 
-Ignored paths (packet `ignore`, `.conduit/ignore.json`, auto-discovered `LEGACY_`/`FORBIDDEN_` contract files) are omitted from the scan. `REGEX_REPLACE` rules are skipped (no safe leftover string).
+Leftover scan includes import-pruned files **plus** neighbor modules, `configs/`, `scripts/`, `.github/`, compose/Docker files — not only files that `import openai`. Packet apply **never rewrites** Conduit-generated `test_conduit_*` files (so the leftover `FORBIDDEN` list cannot be string-replaced into successor ids).
+
+Ignored paths (packet `ignore`, `.conduit/ignore.json`, auto-discovered contract files) are omitted from the leftover scan. Auto-ignore applies only to **tests/oracle/policy-style files** that **literally** assign `LEGACY_` / `FORBIDDEN_` to a quoted old token. Impl helpers named `LEGACY_ADA = "".join(["a","da"])` stay in the scan.
 
 If the packet has **no** extractable tokens and the repo has **no** other tests, Conduit writes a one-line **import smoke** instead (no tautological `or True` asserts).
 
-Conduit also always writes a deterministic **migration smoke** when there are in-scope rules (`tests/test_conduit_smoke.py` or `conduit_smoke.test.js`): required new tokens in impl files, plus import of changed Python modules (no network). Optional LLM extra tests run only when no consumer tests exist besides Conduit-generated files **and** the packet has no AST rules; they must not overwrite the leftover oracle or use skip/xfail/join to hide tokens.
+Existing consumer tests are **audited**, not trusted: skip/xfail/tautology notes are fed to functional test generation. They do not count as migration coverage.
 
-Generated paths are included in the patch report / PR body when `conduit run` opens a PR. Oracle failures look like normal pytest/npm failures (`app.py still contains 'gpt-4-0613'` or `obfuscates leftover …`), so the self-correct loop can repair them — by migrating call sites, not by splitting strings.
+`conduit apply` does **not** write these tests. `conduit run --skip-tests` skips generation and verify.
 
-`conduit apply` does **not** write the oracle (it only applies packet rules). `conduit run --skip-tests` skips oracle generation and verify.
+## Integrity audit (does not trust pytest)
 
-Runners already cover pytest, `npm test`, and `go test ./...`. Java/Maven suites are not auto-detected yet — pass existing tests in-repo or generate via LLM.
+[`integrity.py`](../conduit/src/conduit/integrity.py) runs after every pytest/npm result that would otherwise pass (including after self-correct). Findings fail verify:
+
+- Join/concat reconstruction of leftover tokens
+- `except Exception:` / bare `except:` that swallows and returns a dummy (`""`, `[]`, `prompt`, `"ok"`, hashed ids)
+- Unused `MIGRATION_MARKERS` / similar tuples whose only job is to satisfy token smoke
+- skip/xfail in Conduit-generated tests
+
+Self-correct may only fix implementation by using the real new API — not by adding fallbacks or renaming things `LEGACY_*`.
 
 ## Self-correction loop
 
 [`self_correct.verify_with_self_correct`](../conduit/src/conduit/self_correct.py):
 
-1. Run tests  
+1. Run tests + integrity audit  
 2. On failure, up to `--max-retries` (default **5**):
    - Collect traceback file paths + nearby source/tests  
    - Build a **dynamic ignore list** (see below)  
-   - If LLM configured → **Responses agent** (OpenAI: `gpt-5.4-mini`, `reasoning_effort=high`, tools such as `web_search` / `fetch_url` / local repo read-write / `grep` / `run_tests` / allowlisted `run_shell`). Seed URLs and suggested queries are provided; the model chooses tools. Writes that obfuscate leftover tokens (`"".join(...)`), edit the leftover oracle, weaken tests (`skip`/`xfail`), or touch `vendor/` are **rejected**. Final JSON may:
+   - If LLM configured → **Responses agent** (OpenAI: `gpt-5.4-mini`, `reasoning_effort=high`, tools such as `web_search` / `fetch_url` / local repo read-write / `grep` / `run_tests` / allowlisted `run_shell`). Writes that obfuscate leftover tokens (`"".join(...)`), swallow exceptions, add marker tuples, edit leftover/smoke/functional tests, weaken tests (`skip`/`xfail`), or touch `vendor/` are **rejected**. Final JSON may:
      - return `files` fixes (or write via `write_file`),
      - return `packet_patch` (rules/notes/sources) when the migration packet itself must change,
      - return `search_queries` on non-tool providers when evidence is still insufficient — Conduit runs those searches and asks again in the same attempt.
    - Else apply heuristic replaces derived from packet `EXACT_STRING_REPLACE` / `AST_PARAM_RENAME` (skipped on ignored files; contract-constant lines preserved)  
-3. Re-run tests  
+3. Re-run tests + integrity  
 4. If still failing after retries → `conduit run` aborts PR creation (exit code 2)
 
 Repair context seeds pytest short-trace paths (e.g. `openai_text/engines.py:25:`), packet/`import_files`, top-level package dirs, and `tests/` — not only `src/`.
@@ -65,9 +88,9 @@ Heuristics and LLMs share [`repair_ignore.build_ignore_list`](../conduit/src/con
 |--------|---------|
 | Packet `ignore` | `"ignore": { "globs": ["**/policy.py"], "paths": [], "patterns": [] }` |
 | Consumer `.conduit/ignore.json` | Same shape as packet `ignore` |
-| Auto | Files that define `LEGACY_` / `FORBIDDEN_` / `EXPECTED_` / `ALLOWED_` / `MODERN_` constants whose values appear in packet match/old_param/old_key strings |
+| Auto | Test/oracle/policy files that **literally** assign `LEGACY_` / `FORBIDDEN_` / `EXPECTED_` / `ALLOWED_` / `MODERN_` to a quoted packet match string |
 
-Ignored files are omitted from LLM context and heuristic scans. With `-v`, Conduit prints the ignore list at the start of self-correct.
+Impl files are never auto-ignored just because they define a `LEGACY_*` name. Ignored files are omitted from LLM context and heuristic scans. With `-v`, Conduit prints the ignore list at the start of self-correct.
 
 With `--verbose` / `-v`, each attempt also prints:
 
@@ -94,9 +117,10 @@ conduit run ... --skip-tests    # apply only; skips oracle + verify
 
 ## Tips
 
-- Prefer real unit tests in the consumer repo; leftover oracles prove old tokens are gone **and not obfuscated**, and that required new callees/params appear. They do not replace a live API suite.
-- For local iteration without burning API quota, leave LLM unset and rely on packet quality + heuristics.
-- CI should pass `CONDUIT_LLM_*` secrets only when you want the repair loop online.
+- Leftover oracles are a **floor**. Functional tests + the integrity audit are the **ceiling**.
+- Cheating the leftover scan (join obfuscation, marker tuples, skip-all conftest) fails verify even if pytest exits 0.
+- For local iteration without LLM quota, set `CONDUIT_LLM_PROVIDER=none` and still export `OPENAI_API_KEY` for consumer tests.
+- CI should pass `OPENAI_API_KEY` (consumer) and `CONDUIT_LLM_*` only when the repair loop should run.
 
 ## Related docs
 
