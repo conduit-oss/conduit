@@ -69,7 +69,7 @@ class RepoToolExecutor:
             if name == "write_file":
                 return self._write_file(arguments)
             if name == "run_tests":
-                return self._run_tests()
+                return self._run_tests(arguments)
             if name == "run_shell":
                 return self._run_shell(arguments)
             if name == "grep":
@@ -107,7 +107,10 @@ class RepoToolExecutor:
     def _list_files(self, args: dict[str, Any]) -> str:
         if self.path_allowlist is not None:
             return json.dumps(
-                {"error": "list_files not allowed in anticheat audit mode"}
+                {
+                    "error": "list_files not allowed when path_allowlist is set",
+                    "hint": "Use read_file/grep on seeded or allowlisted paths.",
+                }
             )
         directory = str(args.get("directory") or ".")
         pattern = str(args.get("glob") or "**/*")
@@ -140,14 +143,15 @@ class RepoToolExecutor:
         if not self._allowlisted(rel_posix):
             return json.dumps(
                 {
-                    "error": f"path not in migration audit allowlist: {rel_posix}",
-                    "hint": "Only read paths listed in the audit log.",
+                    "error": f"path not in allowlist: {rel_posix}",
+                    "hint": "Only read seeded / allowlisted paths.",
                 }
             )
         if self.ignore.path_ignored(rel_posix):
             return json.dumps({"error": f"path ignored: {rel}"})
         if not path.is_file():
             return json.dumps({"error": f"not a file: {rel}"})
+        self.log(f"[repair] read {rel_posix}")
         text = path.read_text(encoding="utf-8")
         truncated = len(text) > self.max_file_chars
         if truncated:
@@ -170,7 +174,7 @@ class RepoToolExecutor:
         if self.reject_write is not None:
             reason = self.reject_write(rel_posix, contents)
             if reason:
-                self.log(f"[llm-tool] rejected write_file {rel_posix}: {reason}")
+                self.log(f"[repair] rejected write {rel_posix}: {reason}")
                 return json.dumps({"error": f"write rejected: {reason}"})
         if rel_posix not in self.snapshots:
             if path.is_file():
@@ -185,22 +189,37 @@ class RepoToolExecutor:
         written = self._rel(path)
         if written not in self.written_files:
             self.written_files.append(written)
-        self.log(f"[llm-tool] write_file {written}")
+        self.log(f"[repair] write {written}")
         return json.dumps({"ok": True, "path": written, "bytes": len(contents)})
 
-    def _run_tests(self) -> str:
+    def _run_tests(self, args: dict[str, Any] | None = None) -> str:
         if not self.allow_run_tests:
             return json.dumps({"error": "run_tests not allowed in this mode"})
         from conduit.test_runner import run_tests
 
-        self.log("[llm-tool] run_tests")
-        result = run_tests(self.root)
+        args = args or {}
+        raw_nodes = args.get("nodeids") or []
+        nodeids: list[str] = []
+        if isinstance(raw_nodes, list):
+            for n in raw_nodes:
+                if isinstance(n, str) and n.strip():
+                    nodeids.append(n.strip())
+        elif isinstance(raw_nodes, str) and raw_nodes.strip():
+            nodeids.append(raw_nodes.strip())
+        self.log(
+            "[repair] run tests"
+            + (f" ({', '.join(nodeids[:3])}{'…' if len(nodeids) > 3 else ''})" if nodeids else "")
+        )
+        result = run_tests(self.root, nodeids=nodeids or None)
+        status = "passed" if result.passed else "failed"
+        self.log(f"[repair] tests {status}")
         return json.dumps(
             {
                 "passed": result.passed,
                 "returncode": result.returncode,
                 "runner": result.runner,
                 "command": result.command,
+                "nodeids": nodeids,
                 "stdout": (result.stdout or "")[-8000:],
                 "stderr": (result.stderr or "")[-4000:],
                 "summary": result.summary,
@@ -219,7 +238,7 @@ class RepoToolExecutor:
                     "command": command,
                 }
             )
-        self.log(f"[llm-tool] run_shell {command[:120]}")
+        self.log(f"[repair] shell {command[:100]}")
         try:
             # Prefer list argv when possible; fall back to shell=False with shlex.
             try:
@@ -305,9 +324,15 @@ class RepoToolExecutor:
                         {"path": rel, "line": i, "text": line[:400]}
                     )
                     if len(matches) >= limit:
+                        preview = pattern if len(pattern) <= 48 else pattern[:45] + "…"
+                        self.log(
+                            f"[repair] grep {preview!r} ({len(matches)}+ matches)"
+                        )
                         return json.dumps(
                             {"matches": matches, "count": len(matches), "truncated": True}
                         )
+        preview = pattern if len(pattern) <= 48 else pattern[:45] + "…"
+        self.log(f"[repair] grep {preview!r} ({len(matches)} match(es))")
         return json.dumps({"matches": matches, "count": len(matches), "truncated": False})
 
     def _fetch_url(self, args: dict[str, Any]) -> str:
@@ -316,7 +341,7 @@ class RepoToolExecutor:
             return json.dumps({"error": "url must be http(s)"})
         from conduit.context.fetch import fetch_url
 
-        self.log(f"[llm-tool] fetch_url {url}")
+        self.log(f"[repair] fetch {url}")
         try:
             text = fetch_url(url)
         except Exception as exc:  # noqa: BLE001

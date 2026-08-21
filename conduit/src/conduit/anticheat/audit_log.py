@@ -318,3 +318,90 @@ class MigrationAuditLog:
             raw = json.dumps(payload, ensure_ascii=False)
         payload["truncated"] = True
         return payload
+
+    def repair_journal(
+        self,
+        *,
+        attempt: int | None = None,
+        max_entries: int = 24,
+        max_chars: int = 8_000,
+    ) -> dict[str, Any]:
+        """Slim cross-attempt memory for the repair agent (not the full audit dump)."""
+        phases = {"write", "reject", "restore", "packet_patch"}
+        relevant = [e for e in self.entries if e.get("phase") in phases]
+        if attempt is not None:
+            prior = [
+                e
+                for e in relevant
+                if e.get("attempt") is None or int(e.get("attempt") or 0) < attempt
+            ]
+            if prior:
+                relevant = prior
+        relevant = relevant[-max_entries:]
+        entries: list[dict[str, Any]] = []
+        for e in relevant:
+            item: dict[str, Any] = {
+                "phase": e.get("phase"),
+                "path": e.get("path"),
+                "detail": e.get("detail"),
+                "attempt": e.get("attempt"),
+            }
+            if e.get("phase") == "reject":
+                item["reason"] = e.get("detail")
+            if e.get("phase") == "restore" and e.get("paths"):
+                item["paths"] = e.get("paths")
+            diff = e.get("diff")
+            if isinstance(diff, str) and diff.strip():
+                item["diff"] = diff[:400] + ("…" if len(diff) > 400 else "")
+            entries.append(item)
+        payload: dict[str, Any] = {"entries": entries}
+        raw = json.dumps(payload, ensure_ascii=False)
+        while len(raw) > max_chars and payload["entries"]:
+            payload["entries"].pop(0)
+            raw = json.dumps(payload, ensure_ascii=False)
+            payload["truncated"] = True
+        return payload
+
+    def repair_journal(
+        self,
+        *,
+        attempt: int | None = None,
+        max_entries: int = 24,
+        max_chars: int = 8_000,
+    ) -> dict[str, Any]:
+        """Slim cross-attempt memory for the repair agent (not the full audit dump)."""
+        phases = {"write", "reject", "restore", "packet_patch"}
+        relevant = [e for e in self.entries if e.get("phase") in phases]
+        if attempt is not None:
+            # Prefer entries from prior attempts, then any without attempt.
+            prior = [
+                e
+                for e in relevant
+                if e.get("attempt") is None or int(e.get("attempt") or 0) < attempt
+            ]
+            if prior:
+                relevant = prior
+        relevant = relevant[-max_entries:]
+        entries: list[dict[str, Any]] = []
+        for e in relevant:
+            item = {
+                "phase": e.get("phase"),
+                "path": e.get("path"),
+                "detail": e.get("detail"),
+                "attempt": e.get("attempt"),
+            }
+            if e.get("phase") == "reject":
+                item["reason"] = e.get("detail")
+            if e.get("phase") == "restore" and e.get("paths"):
+                item["paths"] = e.get("paths")
+            diff = e.get("diff")
+            if isinstance(diff, str) and diff.strip():
+                item["diff"] = diff[:400] + ("…" if len(diff) > 400 else "")
+            entries.append(item)
+        payload: dict[str, Any] = {"entries": entries}
+        raw = json.dumps(payload, ensure_ascii=False)
+        while len(raw) > max_chars and payload["entries"]:
+            payload["entries"].pop(0)
+            raw = json.dumps(payload, ensure_ascii=False)
+            payload["truncated"] = True
+        return payload

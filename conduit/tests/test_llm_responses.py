@@ -70,6 +70,8 @@ def test_agent_tools_modes():
     assert "run_tests" in repair_names
     assert "run_shell" in repair_names
     assert "grep" in repair_names
+    assert "list_files" not in repair_names
+    assert "list_files" in enrich_names
 
 
 def test_repo_executor_read_write(tmp_path: Path):
@@ -236,7 +238,7 @@ def test_responses_agent_emits_turn_logs(monkeypatch, tmp_path: Path):
         log=lines.append,
     )
     client._client = FakeOpenAI()
-    ex = RepoToolExecutor(root=tmp_path, allow_writes=False)
+    ex = RepoToolExecutor(root=tmp_path, allow_writes=False, log=lines.append)
     data = client.run_agent(
         system="s",
         user="u",
@@ -245,9 +247,10 @@ def test_responses_agent_emits_turn_logs(monkeypatch, tmp_path: Path):
         max_turns=4,
     )
     assert data == {"ok": True}
-    assert "[llm] turn 1/4" in lines
-    assert "[llm] tools: read_file" in lines
-    assert "[llm] turn 2/4" in lines
+    assert any("agent starting" in line for line in lines)
+    assert any("read a.py" in line for line in lines)
+    # Single-tool turns log via the executor, not a tools summary line.
+    assert not any(line.startswith("[llm] turn ") for line in lines)
 
 
 def test_responses_agent_last_turn_strips_tools(monkeypatch, tmp_path: Path):
@@ -309,7 +312,7 @@ def test_responses_agent_last_turn_strips_tools(monkeypatch, tmp_path: Path):
     )
     assert data == {"done": True}
     assert saw_tools == [True, False]
-    assert any("turn 2/2" in line for line in lines)
+    assert any("agent starting" in line for line in lines)
 
 
 def test_responses_agent_last_turn_ignores_tool_calls(monkeypatch, tmp_path: Path):
@@ -408,3 +411,51 @@ def test_resolve_max_turns(monkeypatch):
     assert resolve_max_turns() == 32
     monkeypatch.setenv("CONDUIT_LLM_MAX_TURNS", "8")
     assert resolve_max_turns() == 8
+
+
+def test_self_correct_executor_allowlist_blocks_inventory(tmp_path: Path):
+    (tmp_path / "seed.py").write_text("a = 1\n", encoding="utf-8")
+    (tmp_path / "other.py").write_text("b = 2\n", encoding="utf-8")
+    ex = RepoToolExecutor(
+        root=tmp_path,
+        allow_writes=True,
+        allow_run_tests=True,
+        path_allowlist={"seed.py"},
+    )
+    listed = json.loads(ex("list_files", {"directory": "."}))
+    assert "error" in listed
+    assert "list_files" in listed["error"]
+    bad = json.loads(ex("read_file", {"path": "other.py"}))
+    assert "allowlist" in bad["error"].lower()
+    ok = json.loads(ex("read_file", {"path": "seed.py"}))
+    assert "a = 1" in ok["contents"]
+
+
+def test_run_tests_tool_accepts_nodeids(tmp_path: Path, monkeypatch):
+    (tmp_path / "conftest.py").write_text("", encoding="utf-8")
+    captured: dict = {}
+
+    def fake_run_tests(root, *, timeout=300.0, nodeids=None):
+        captured["nodeids"] = nodeids
+        return SimpleNamespace(
+            passed=True,
+            returncode=0,
+            runner="pytest",
+            command=["python", "-m", "pytest", "-q", *(nodeids or [])],
+            stdout="1 passed",
+            stderr="",
+            summary="ok",
+        )
+
+    monkeypatch.setattr("conduit.test_runner.run_tests", fake_run_tests)
+    ex = RepoToolExecutor(
+        root=tmp_path, allow_writes=False, allow_run_tests=True
+    )
+    out = json.loads(
+        ex(
+            "run_tests",
+            {"nodeids": ["tests/test_x.py::test_a"]},
+        )
+    )
+    assert out["passed"] is True
+    assert captured["nodeids"] == ["tests/test_x.py::test_a"]

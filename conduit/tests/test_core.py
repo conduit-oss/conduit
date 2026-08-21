@@ -779,7 +779,7 @@ def test_self_correct_verbose_logs_failure_and_fix(tmp_path: Path, monkeypatch):
     joined = "\n".join(logs)
     assert "failure summary" in joined
     assert "assert False" in joined
-    assert "strategy=heuristic" in joined
+    assert "heuristic: updated" in joined
     assert "max_tokens" in joined
     assert "max_completion_tokens" in joined
 

@@ -195,7 +195,12 @@ def _from_proc(
     )
 
 
-def run_tests(root: Path, *, timeout: float = 300.0) -> TestResult:
+def run_tests(
+    root: Path,
+    *,
+    timeout: float = 300.0,
+    nodeids: list[str] | None = None,
+) -> TestResult:
     detected = detect_test_command(root)
     if detected is None:
         return TestResult(
@@ -209,6 +214,12 @@ def run_tests(root: Path, *, timeout: float = 300.0) -> TestResult:
         )
 
     runner, command = detected
+    command = list(command)
+    if nodeids and runner == "pytest":
+        for node in nodeids:
+            n = str(node).strip()
+            if n:
+                command.append(n)
 
     try:
         proc = subprocess.run(

@@ -78,6 +78,31 @@ def test_for_llm_truncates_and_lists_paths():
     assert "entries" in payload
 
 
+def test_repair_journal_summarizes_prior_attempts():
+    log = MigrationAuditLog.from_packet(_packet())
+    log.record_write(
+        "client.py",
+        before="old",
+        after="bad",
+        attempt=1,
+        detail="attempt 1 write",
+    )
+    log.record_reject("shim.py", "fake client", attempt=1)
+    log.record_restore(["client.py"], attempt=1, detail="regressed")
+    log.record_write("client.py", before="old", after="better", attempt=2)
+    journal = log.repair_journal(attempt=2)
+    phases = {e["phase"] for e in journal["entries"]}
+    assert "write" in phases
+    assert "reject" in phases
+    assert "restore" in phases
+    assert all(
+        e.get("attempt") is None or int(e.get("attempt") or 0) < 2
+        for e in journal["entries"]
+    )
+    reject = next(e for e in journal["entries"] if e["phase"] == "reject")
+    assert "fake client" in (reject.get("reason") or reject.get("detail") or "")
+
+
 def test_auditor_uses_log_and_score_non_gating(tmp_path: Path, monkeypatch):
     (tmp_path / "app.py").write_text("from openai import OpenAI\n", encoding="utf-8")
     audit = MigrationAuditLog.from_packet(_packet(), root=tmp_path)
