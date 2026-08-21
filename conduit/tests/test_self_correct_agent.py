@@ -302,3 +302,290 @@ def test_repair_regressed_detects_collection_error():
         stderr="",
     )
     assert _repair_regressed(prev, cur) is True
+
+
+def _empty_anticheat(*_a, **_k):
+    from conduit.anticheat.scan import AnticheatReport
+
+    return AnticheatReport(findings=[], source="mechanical")
+
+
+def test_self_correct_stops_on_initial_anticheat(monkeypatch, tmp_path: Path):
+    from conduit import self_correct as sc
+    from conduit.anticheat.scan import AnticheatReport
+
+    calls = {"llm": 0}
+
+    class FakeClient:
+        def run_agent(self, **kwargs):
+            calls["llm"] += 1
+            return {"files": {}, "packet_patch": {}}
+
+    monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        sc,
+        "run_anticheat",
+        lambda *_a, **_k: AnticheatReport(
+            findings=["fake sdk stub"], source="mechanical"
+        ),
+    )
+    logs: list[str] = []
+    result, changed = sc.verify_with_self_correct(
+        tmp_path,
+        {"rules": [], "notes": ""},
+        max_retries=5,
+        log=logs.append,
+    )
+    assert calls["llm"] == 0
+    assert not result.passed
+    assert result.runner == "anticheat"
+    assert "anticheat failure" in (result.fail_reason or "")
+    assert any("anticheat failure (not retryable)" in line for line in logs)
+    assert changed == []
+
+
+def test_self_correct_stops_on_anticheat_after_attempt(monkeypatch, tmp_path: Path):
+    from conduit import self_correct as sc
+    from conduit.anticheat.scan import anticheat_failure_result
+
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text(
+        "def test_a(): assert False\n", encoding="utf-8"
+    )
+
+    fail = RunnerResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["pytest"],
+        stdout="FAILED tests/test_a.py::test_a - assert False\n1 failed",
+        stderr="",
+        failed_count=1,
+    )
+    cheat = anticheat_failure_result(["dropped openai import"], source="mechanical")
+    results = [fail, cheat]
+    calls = {"llm": 0}
+
+    class FakeClient:
+        def run_agent(self, **kwargs):
+            calls["llm"] += 1
+            return {
+                "files": {"app.py": "x = 2\n"},
+                "packet_patch": {},
+            }
+
+    monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(sc, "run_anticheat", _empty_anticheat)
+    monkeypatch.setattr(sc, "run_tests", lambda _root: results.pop(0))
+    monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
+    monkeypatch.setattr(
+        sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], [])
+    )
+
+    logs: list[str] = []
+    result, _ = sc.verify_with_self_correct(
+        tmp_path,
+        {"rules": [], "notes": ""},
+        max_retries=5,
+        log=logs.append,
+    )
+    assert calls["llm"] == 1
+    assert result.runner == "anticheat"
+    assert any("anticheat failure (not retryable)" in line for line in logs)
+    assert not any("attempt 2/" in line for line in logs)
+
+
+def test_self_correct_stops_when_all_writes_rejected(monkeypatch, tmp_path: Path):
+    from conduit import self_correct as sc
+
+    (tmp_path / "app.py").write_text("import openai\nx=1\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text(
+        "def test_a(): assert False\n", encoding="utf-8"
+    )
+
+    fail = RunnerResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["pytest"],
+        stdout="FAILED tests/test_a.py::test_a\n1 failed",
+        stderr="",
+        failed_count=1,
+    )
+    calls = {"llm": 0}
+
+    class FakeClient:
+        def run_agent(self, **kwargs):
+            calls["llm"] += 1
+            return {
+                "files": {"app.py": "x = 1\n"},  # drops openai import → reject
+                "packet_patch": {},
+            }
+
+    monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(sc, "run_anticheat", _empty_anticheat)
+    monkeypatch.setattr(sc, "run_tests", lambda _root: fail)
+    monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
+    monkeypatch.setattr(
+        sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], [])
+    )
+
+    logs: list[str] = []
+    result, _ = sc.verify_with_self_correct(
+        tmp_path,
+        {"package": "openai", "rules": [], "notes": ""},
+        max_retries=5,
+        log=logs.append,
+    )
+    assert calls["llm"] == 1
+    assert "all repair writes rejected" in (result.fail_reason or "")
+    assert any("all repair writes rejected" in line for line in logs)
+    assert not any("attempt 2/" in line for line in logs)
+
+
+def test_self_correct_stops_on_stagnant_fingerprint(monkeypatch, tmp_path: Path):
+    from conduit import self_correct as sc
+
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text(
+        "def test_a(): assert False\n", encoding="utf-8"
+    )
+
+    same_fail = RunnerResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["pytest"],
+        stdout=(
+            "FAILED tests/test_conduit_oracle.py::test_conduit_no_legacy_tokens - "
+            "AssertionError: packets/x.json still contains 'davinci'\n"
+            "1 failed"
+        ),
+        stderr="",
+        failed_count=1,
+    )
+    results = [same_fail, same_fail]
+    calls = {"llm": 0}
+
+    class FakeClient:
+        def run_agent(self, **kwargs):
+            calls["llm"] += 1
+            return {
+                "files": {"app.py": f"x = {calls['llm']}\n"},
+                "packet_patch": {},
+            }
+
+    monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(sc, "run_anticheat", _empty_anticheat)
+    monkeypatch.setattr(sc, "run_tests", lambda _root: results.pop(0))
+    monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
+    monkeypatch.setattr(
+        sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], [])
+    )
+
+    logs: list[str] = []
+    result, _ = sc.verify_with_self_correct(
+        tmp_path,
+        {"rules": [], "notes": ""},
+        max_retries=5,
+        log=logs.append,
+    )
+    assert calls["llm"] == 1
+    assert "no progress" in (result.fail_reason or "")
+    assert any("same failures for 2 attempts" in line for line in logs)
+    assert not any("attempt 2/" in line for line in logs)
+
+
+def test_self_correct_stops_after_two_consecutive_restores(monkeypatch, tmp_path: Path):
+    from conduit import self_correct as sc
+
+    pkg = tmp_path / "openai_text"
+    pkg.mkdir()
+    original = "def configure():\n    return True\n"
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(original, encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "conftest.py").write_text(
+        "from openai_text.client import configure\n", encoding="utf-8"
+    )
+    (tests / "test_a.py").write_text("def test_a(): assert False\n", encoding="utf-8")
+
+    broken = "def other():\n    return 1\n"
+    # initial fail, regress, post-restore fail, regress again, post-restore fail
+    results = [
+        RunnerResult(
+            passed=False,
+            returncode=1,
+            runner="pytest",
+            command=["pytest"],
+            stdout="FAILED tests/test_a.py::test_a\n8 failed, 10 passed",
+            stderr="",
+            failed_count=8,
+        ),
+        RunnerResult(
+            passed=False,
+            returncode=4,
+            runner="pytest",
+            command=["pytest"],
+            stdout="ImportError while loading conftest\ncannot import name 'configure'",
+            stderr="",
+        ),
+        RunnerResult(
+            passed=False,
+            returncode=1,
+            runner="pytest",
+            command=["pytest"],
+            stdout="FAILED tests/test_a.py::test_a\n8 failed, 10 passed",
+            stderr="",
+            failed_count=8,
+        ),
+        RunnerResult(
+            passed=False,
+            returncode=4,
+            runner="pytest",
+            command=["pytest"],
+            stdout="ImportError while loading conftest\ncannot import name 'configure'",
+            stderr="",
+        ),
+        RunnerResult(
+            passed=False,
+            returncode=1,
+            runner="pytest",
+            command=["pytest"],
+            stdout="FAILED tests/test_a.py::test_a\n8 failed, 10 passed",
+            stderr="",
+            failed_count=8,
+        ),
+    ]
+
+    class FakeClient:
+        def run_agent(self, **kwargs):
+            return {
+                "files": {"openai_text/client.py": broken},
+                "packet_patch": {},
+            }
+
+    monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(sc, "run_anticheat", _empty_anticheat)
+    monkeypatch.setattr(sc, "run_tests", lambda _root: results.pop(0))
+    monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
+    monkeypatch.setattr(
+        sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], [])
+    )
+
+    logs: list[str] = []
+    result, _ = sc.verify_with_self_correct(
+        tmp_path,
+        {"package": "openai", "rules": [], "notes": ""},
+        max_retries=5,
+        log=logs.append,
+    )
+    assert any("repair regressed twice" in line for line in logs)
+    assert "repair regressed twice" in (result.fail_reason or "")
+    assert (pkg / "client.py").read_text(encoding="utf-8") == original
+    # Should not burn all 5 attempts
+    assert sum(1 for line in logs if "attempt " in line and "/" in line) <= 2

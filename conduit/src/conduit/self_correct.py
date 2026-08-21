@@ -23,10 +23,53 @@ _PYTEST_COUNT_RE = re.compile(
     r"(?P<failed>\d+)\s+failed|(?P<passed>\d+)\s+passed|(?P<error>\d+)\s+error",
     re.I,
 )
+_FAILED_NODE_RE = re.compile(r"^FAILED\s+(\S+)", re.M)
+_STILL_CONTAINS_RE = re.compile(r"still contains\s+'([^']+)'", re.I)
 
 
 def _noop_log(_: str) -> None:
     return None
+
+
+def _is_anticheat_failure(result: TestResult) -> bool:
+    return str(result.runner or "").lower() == "anticheat"
+
+
+def _failure_fingerprint(result: TestResult) -> str:
+    """Stable signature of what is still failing (for stagnant early-stop)."""
+    if _is_anticheat_failure(result):
+        body = (result.stdout or "").strip()
+        return f"anticheat:{body}"
+    blob = f"{result.stdout or ''}\n{result.stderr or ''}"
+    nodes = sorted(set(_FAILED_NODE_RE.findall(blob)))
+    leftovers = sorted(set(_STILL_CONTAINS_RE.findall(blob)))
+    counts = (
+        result.failed_count,
+        result.error_count,
+        result.passed_count,
+    )
+    if nodes or leftovers:
+        return f"nodes={nodes}|left={leftovers}|counts={counts}"
+    reason = (result.fail_reason or "").strip()
+    excerpt = re.sub(r"\s+", " ", blob).strip()[:400]
+    return f"reason={reason}|excerpt={excerpt}|counts={counts}"
+
+
+def _mark_unpassable(result: TestResult, reason: str) -> TestResult:
+    """Attach an early-stop reason visible in TestResult.summary."""
+    reason = reason.strip()
+    if not reason:
+        return result
+    if result.fail_reason:
+        if reason not in result.fail_reason:
+            result.fail_reason = f"{reason}; {result.fail_reason}"
+    else:
+        result.fail_reason = reason
+    return result
+
+
+def _emit_unpassable_stop(emit: LogFn, reason: str) -> None:
+    emit(f"[self-correct] stopping early: {reason}")
 
 
 @dataclass
@@ -996,6 +1039,12 @@ def verify_with_self_correct(
     if result.passed:
         return result, corrected_files
 
+    if _is_anticheat_failure(result):
+        _emit_unpassable_stop(emit, "anticheat failure (not retryable)")
+        return _mark_unpassable(
+            result, "anticheat failure (not retryable)"
+        ), corrected_files
+
     source = source or _load_source_packet(root, packet)
     ignore = build_ignore_list(root, packet)
     if verbose and (ignore.paths or ignore.globs or ignore.patterns):
@@ -1010,6 +1059,8 @@ def verify_with_self_correct(
     pending_queries: list[str] = []
     empty_nudge_used = False
     pending_nudge: str | None = None
+    prev_fingerprint = _failure_fingerprint(result)
+    consecutive_restores = 0
 
     for attempt in range(1, max_retries + 1):
         emit(f"[self-correct] attempt {attempt}/{max_retries} after test failure")
@@ -1122,6 +1173,10 @@ def verify_with_self_correct(
                 audit_log=audit_log,
                 attempt=attempt,
             )
+            if not changed and not patch_details:
+                _emit_unpassable_stop(emit, "all repair writes rejected")
+                result = _mark_unpassable(result, "all repair writes rejected")
+                break
             fix = FixAttempt(
                 strategy="llm",
                 files=changed,
@@ -1225,6 +1280,12 @@ def verify_with_self_correct(
         if result.passed:
             vlog(f"[self-correct] tests passed after attempt {attempt}")
             return result, sorted(set(corrected_files))
+
+        if _is_anticheat_failure(result):
+            _emit_unpassable_stop(emit, "anticheat failure (not retryable)")
+            result = _mark_unpassable(result, "anticheat failure (not retryable)")
+            break
+
         if snapshots and _repair_regressed(previous, result):
             restored = _restore_snapshots(root, snapshots)
             if restored:
@@ -1243,6 +1304,7 @@ def verify_with_self_correct(
                 f"{len(restored)} file(s)"
                 + (f" ({'; '.join(lost_bits[:4])})" if lost_bits else "")
             )
+            consecutive_restores += 1
             result = _run_verified_tests(
                 root, packet, llm_audit=True, log=emit, audit_log=audit_log
             )
@@ -1259,6 +1321,39 @@ def verify_with_self_correct(
             if result.passed:
                 vlog("[self-correct] tests passed after restoring snapshot")
                 return result, sorted(set(corrected_files))
+            if _is_anticheat_failure(result):
+                _emit_unpassable_stop(emit, "anticheat failure (not retryable)")
+                result = _mark_unpassable(
+                    result, "anticheat failure (not retryable)"
+                )
+                break
+            if consecutive_restores >= 2:
+                _emit_unpassable_stop(emit, "repair regressed twice")
+                result = _mark_unpassable(result, "repair regressed twice")
+                break
+            # Post-restore baseline for stagnant detection.
+            prev_fingerprint = _failure_fingerprint(result)
+            vlog(
+                f"[self-correct] still failing after attempt {attempt}: "
+                f"{result.summary}"
+            )
+            if suggestion.search_queries:
+                pending_queries = list(
+                    dict.fromkeys([*pending_queries, *suggestion.search_queries])
+                )
+            continue
+
+        consecutive_restores = 0
+        fp = _failure_fingerprint(result)
+        if fp == prev_fingerprint:
+            _emit_unpassable_stop(
+                emit, "no progress (same failures for 2 attempts)"
+            )
+            result = _mark_unpassable(
+                result, "no progress (same failures for 2 attempts)"
+            )
+            break
+        prev_fingerprint = fp
         vlog(f"[self-correct] still failing after attempt {attempt}: {result.summary}")
         # Next attempt should research again with the new failure signature
         if suggestion.search_queries:

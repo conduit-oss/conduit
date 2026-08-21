@@ -115,6 +115,15 @@ With `--verbose` / `-v`, each attempt also prints:
 
 If an attempt produces **no file edits** after the nudge (or with no LLM), Conduit stops early instead of repeating empty retries. Configure an LLM for deeper repairs, or fix remaining failures manually.
 
+Conduit also stops early (remaining `--max-retries` unused) when a failure is treated as **unpassable**:
+
+- **Anticheat** failure (initial or after an attempt) — integrity, not a migratable pytest fail
+- **All repair writes rejected** (and no successful `packet_patch`)
+- **No progress** — same failure fingerprint for 2 consecutive attempts (e.g. identical leftover-oracle nodes)
+- **Repair regressed twice** — two consecutive snapshot restores after collection/import breakage
+
+Early-stop reasons are printed as `[self-correct] stopping early: …` and recorded on `TestResult.fail_reason`.
+
 ```bash
 conduit run -v --path . --packet openai --skip-pr
 ```
