@@ -189,28 +189,78 @@ def _rule_touches_path(rule: dict[str, Any], path: str) -> bool:
     return False
 
 
+def _callee_match_aliases(token: str) -> set[str]:
+    """Same-generation callee forms (with/without .create, optional openai.).
+
+    Used so client token ``ChatCompletion`` matches rule ``ChatCompletion.create``
+    without treating the modern successor (``chat.completions``) as a migrate-from.
+    """
+    raw = (token or "").strip()
+    if not raw:
+        return set()
+    forms = {raw}
+    # Strip leading openai. for pairing, then re-add below.
+    bare = raw
+    if bare.lower().startswith("openai."):
+        bare = bare[7:]
+        forms.add(bare)
+    else:
+        forms.add(f"openai.{bare}")
+
+    expanded: set[str] = set()
+    for form in forms:
+        expanded.add(form)
+        lower = form.lower()
+        if lower.endswith(".create"):
+            expanded.add(form[: -len(".create")])
+        elif lower.endswith(".generate") or lower.endswith(".edit") or lower.endswith(
+            ".list"
+        ):
+            pass
+        else:
+            expanded.add(f"{form}.create")
+    return {f.lower() for f in expanded if f}
+
+
 def _rule_touches_callee(rule: dict[str, Any], callee: str) -> bool:
-    want = (callee or "").strip().lower()
+    want = _callee_match_aliases(callee)
     if not want:
         return False
     rtype = str(rule.get("type") or "")
     if rtype == "AST_CALL_REWRITE":
-        return want == str(rule.get("old_callee") or "").strip().lower()
+        return bool(want & _callee_match_aliases(str(rule.get("old_callee") or "")))
     if rtype == "AST_ATTR_RENAME":
-        return want == str(rule.get("old_attr") or "").strip().lower()
+        return bool(want & _callee_match_aliases(str(rule.get("old_attr") or "")))
     if rtype == "EXACT_STRING_REPLACE":
-        return want == str(rule.get("match") or "").strip().lower()
+        return bool(want & _callee_match_aliases(str(rule.get("match") or "")))
     return False
 
 
 def _signal_touches_callee(signal: ChangeSignal, callee: str) -> bool:
-    want = (callee or "").strip().lower()
+    want = _callee_match_aliases(callee)
     if not want:
         return False
-    for candidate in (signal.affected_pattern, signal.replacement_pattern):
-        if str(candidate or "").strip().lower() == want:
-            return True
+    # Only the migrate-from side — successors are KEEP via _successor_callees.
+    if want & _callee_match_aliases(str(signal.affected_pattern or "")):
+        return True
     return any(_rule_touches_callee(r, callee) for r in signal.suggested_rules)
+
+
+def _successor_callees(
+    rules: list[dict[str, Any]], signals: list[ChangeSignal]
+) -> set[str]:
+    """Replacement callees (new_callee / replacement_pattern) for KEEP scoring."""
+    out: set[str] = set()
+    for rule in rules:
+        rtype = str(rule.get("type") or "")
+        if rtype == "AST_CALL_REWRITE":
+            out |= _callee_match_aliases(str(rule.get("new_callee") or ""))
+        elif rtype == "AST_ATTR_RENAME":
+            out |= _callee_match_aliases(str(rule.get("new_attr") or ""))
+    for signal in signals:
+        if signal.replacement_pattern:
+            out |= _callee_match_aliases(str(signal.replacement_pattern))
+    return out
 
 
 def _migration_summary(
@@ -275,6 +325,7 @@ def build_coverage_report(
         repl = str(rule.get("replace") or "").strip().lower()
         if repl:
             successor_models.add(repl)
+    successor_callees = _successor_callees(rules, pkg_signals)
 
     usage_ids = {
         str(u.get("id") or "").strip().lower()
@@ -375,6 +426,15 @@ def build_coverage_report(
                         detail=f"path {path}{extra}",
                     )
                 )
+            elif _callee_match_aliases(str(pattern)) & successor_callees:
+                items.append(
+                    CoverageItem(
+                        kind="api_pattern",
+                        value=str(pattern),
+                        status=STATUS_KEEP,
+                        detail=f"maps to {path}; already a replacement target; leave as-is",
+                    )
+                )
             else:
                 items.append(
                     CoverageItem(
@@ -398,6 +458,15 @@ def build_coverage_report(
                         detail=f"callee rewrite{extra}",
                     )
                 )
+            elif _callee_match_aliases(str(pattern)) & successor_callees:
+                items.append(
+                    CoverageItem(
+                        kind="api_pattern",
+                        value=str(pattern),
+                        status=STATUS_KEEP,
+                        detail="already a replacement target; leave as-is",
+                    )
+                )
             else:
                 items.append(
                     CoverageItem(
@@ -418,16 +487,21 @@ def build_coverage_report(
             rule_hits = [r for r in rules if _rule_touches_callee(r, str(callee))]
             successor = _successor_from_rules(rule_hits, hits)
             extra = f" → {successor}" if successor else ""
+            if hits or rule_hits:
+                status = STATUS_WILL_MIGRATE
+                detail = f"from usage {usage.get('id')}{extra}"
+            elif _callee_match_aliases(str(callee)) & successor_callees:
+                status = STATUS_KEEP
+                detail = f"from usage {usage.get('id')}; already a replacement target"
+            else:
+                status = STATUS_NO_RULE
+                detail = f"from usage {usage.get('id')}; packet has no callee rewrite"
             items.append(
                 CoverageItem(
                     kind="callee",
                     value=str(callee),
-                    status=STATUS_WILL_MIGRATE if (hits or rule_hits) else STATUS_NO_RULE,
-                    detail=(
-                        f"from usage {usage.get('id')}{extra}"
-                        if hits or rule_hits
-                        else f"from usage {usage.get('id')}; packet has no callee rewrite"
-                    ),
+                    status=status,
+                    detail=detail,
                 )
             )
 

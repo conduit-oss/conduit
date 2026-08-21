@@ -112,7 +112,7 @@ Simple one-shot callers still use `complete_json` (Responses, high reasoning, no
 Even without `-v`, Conduit prints short stage lines so long agent work is visible:
 
 - Detect signal counts after detect
-- `LLM client enrichment…` / `LLM packet enrichment…` / `LLM coverage retry…` / `[self-correct] LLM repair…` with current effort and max turns. Client enrichment is **dossier-seeded** (mechanical hit map + path allowlist; scoped tools; default max **8** turns).
+- `LLM client enrichment…` / `LLM packet enrichment…` / `LLM coverage retry…` / `[self-correct] LLM repair…` with current effort and max turns. Client enrichment is **dossier-seeded** (mechanical hit map + path allowlist; scoped tools; default max **8** turns). When the dossier is already complete (`gaps_to_check` empty and hits covered), Conduit logs `LLM client enrichment skipped…` and does not start the agent. On the last agent turn, tools are stripped so the model must return JSON.
 - Per Responses turn: `[llm] turn N/M` and `[llm] tools: …` (tool names only)
 
 `-v` still adds heavier diagnostics (failure excerpts, packet version sources, export-delta details).

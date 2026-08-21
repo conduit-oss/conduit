@@ -524,6 +524,58 @@ def build_usage_dossier(
     return dossier
 
 
+def _dossier_hits_covered(dossier: dict[str, Any]) -> bool:
+    """True when every model/api hit token is already in already_found."""
+    already = dossier.get("already_found") or {}
+    models = {str(x) for x in (already.get("model_ids") or []) if x}
+    apis = {str(x) for x in (already.get("api_patterns") or []) if x}
+    for hit in dossier.get("hits") or []:
+        if not isinstance(hit, dict):
+            continue
+        tok = str(hit.get("token") or "")
+        if not tok:
+            continue
+        kind = str(hit.get("kind") or "")
+        if kind == "model" and tok not in models:
+            return False
+        if kind == "api" and tok not in apis:
+            return False
+    return True
+
+
+def _dossier_enrich_complete(dossier: dict[str, Any]) -> bool:
+    """Skip the enrich agent when the mechanical dossier has nothing left to find."""
+    gaps = dossier.get("gaps_to_check") or []
+    if gaps:
+        return False
+    return _dossier_hits_covered(dossier)
+
+
+def _enrich_instructions(gaps: list[Any]) -> str:
+    base = (
+        "Return JSON only with keys: model_ids (string[]), api_patterns (string[]), "
+        "usages (list of {id, callees, paths, files}). "
+        "Every id/callee/path must appear verbatim in a file you read. "
+        "Do not invent model ids or APIs. "
+        "Only read_file / grep paths in path_allowlist."
+    )
+    if gaps:
+        return (
+            "Extend the usage_dossier for this dependency. "
+            "Investigate only gaps_to_check (those paths/tokens). "
+            "Do not re-scan tokens already in already_found. "
+            f"{base} "
+            "Prefer tokens not already in already_found when you have evidence."
+        )
+    return (
+        "The usage_dossier is already complete (gaps_to_check is empty). "
+        "Do not call tools. "
+        "Reply immediately with JSON: "
+        '{"model_ids": [], "api_patterns": [], "usages": []}. '
+        f"{base}"
+    )
+
+
 def _agent_enrich(
     state: PackageClientState,
     *,
@@ -564,6 +616,20 @@ def _agent_enrich(
             "dossier_error": str(exc),
         }
 
+    gaps = list(dossier.get("gaps_to_check") or [])
+    if _dossier_enrich_complete(dossier):
+        if emit is not None:
+            emit(
+                f"LLM client enrichment skipped for {state.package} "
+                f"(dossier complete, gaps=0, "
+                f"dossier_hits={len(dossier.get('hits') or [])})"
+            )
+        state.notes.append(
+            "agent scan skipped (dossier complete, gaps=0); "
+            "merged model_ids=+0 api_patterns=+0 usages=+0"
+        )
+        return state
+
     allow = {
         str(p).replace("\\", "/")
         for p in (dossier.get("path_allowlist") or [])
@@ -572,22 +638,12 @@ def _agent_enrich(
     prompt = {
         "package": state.package,
         "usage_dossier": dossier,
-        "instructions": (
-            "Extend the usage_dossier for this dependency. "
-            "already_found and hits are mechanical seeds — confirm gaps and find "
-            "call surfaces the cheap scan missed. "
-            "Do not list the whole repo. Only read_file / grep paths in "
-            "path_allowlist. "
-            "Return JSON only with keys: model_ids (string[]), api_patterns (string[]), "
-            "usages (list of {id, callees, paths, files}). "
-            "Prefer tokens not already in already_found when you have evidence. "
-            "Every id/callee/path must appear verbatim in a file you read. "
-            "Do not invent model ids or APIs."
-        ),
+        "instructions": _enrich_instructions(gaps),
     }
     system = (
         "You map a client repository's real usage of one dependency. "
         "Start from the usage dossier. Prefer tools on allowlisted paths only. "
+        "If gaps_to_check is empty, do not use tools — return JSON immediately. "
         "Final reply is JSON only."
     )
     data: dict[str, Any] | None = None
@@ -602,11 +658,14 @@ def _agent_enrich(
         run_agent = getattr(client, "run_agent", None)
         if callable(run_agent):
             max_turns = min(_ENRICH_MAX_TURNS, resolve_max_turns(32))
+            if len(gaps) <= 3:
+                max_turns = min(3, max_turns)
             if emit is not None:
                 emit(
                     f"LLM client enrichment for {state.package} "
                     f"(effort={resolve_reasoning_effort()}, max_turns={max_turns}, "
-                    f"dossier_hits={len(dossier.get('hits') or [])})…"
+                    f"dossier_hits={len(dossier.get('hits') or [])}, "
+                    f"gaps={len(gaps)})…"
                 )
             executor = RepoToolExecutor(
                 root=root,
