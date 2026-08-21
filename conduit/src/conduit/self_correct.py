@@ -1253,6 +1253,21 @@ def verify_with_self_correct(
 
     for attempt in range(1, max_retries + 1):
         emit(f"[self-correct] attempt {attempt}/{max_retries} after test failure")
+        nodes = _failed_nodes(result)
+        leftovers = _leftover_tokens(result)
+        if nodes:
+            shown = ", ".join(nodes[:3])
+            if len(nodes) > 3:
+                shown += f" (+{len(nodes) - 3} more)"
+            emit(f"[self-correct] failing: {shown}")
+        elif leftovers:
+            shown = ", ".join(leftovers[:4])
+            if len(leftovers) > 4:
+                shown += f" (+{len(leftovers) - 4} more)"
+            emit(f"[self-correct] leftovers: {shown}")
+        else:
+            reason = (result.fail_reason or result.summary or "unknown failure").strip()
+            emit(f"[self-correct] failure: {reason[:120]}")
         vlog(f"[self-correct] failure summary:\n{_failure_excerpt(result)}")
 
         repair_ctx = collect_repair_context(
@@ -1266,6 +1281,10 @@ def verify_with_self_correct(
         allowlist = {
             p for p in repair_ctx.allowlist if not ignore.path_ignored(p)
         }
+        emit(
+            f"[self-correct] seeded {len(context_files)} span(s), "
+            f"allowlist={len(allowlist)}"
+        )
         vlog(
             f"[self-correct] context windows for repair: "
             f"{', '.join(sorted(context_files)) or '(none)'} "
@@ -1302,7 +1321,7 @@ def verify_with_self_correct(
                 ignore=ignore,
                 seed_urls=seeds,
                 suggested_queries=queries,
-                log=vlog,
+                log=emit,
                 nudge=nudge,
                 source=source,
                 coverage_missed=coverage_missed,
@@ -1340,7 +1359,7 @@ def verify_with_self_correct(
                         ignore=ignore,
                         seed_urls=seeds,
                         suggested_queries=suggestion.search_queries,
-                        log=vlog,
+                        log=emit,
                         nudge=nudge,
                         source=source,
                         coverage_missed=coverage_missed,
@@ -1425,15 +1444,15 @@ def verify_with_self_correct(
 
         corrected_files.extend(f for f in fix.files if f != "(packet)")
         if fix.files:
-            vlog(
-                f"[self-correct] strategy={fix.strategy}; "
-                f"updated {len([f for f in fix.files if f != '(packet)'])} file(s)"
-                + (
-                    f": {', '.join(f for f in fix.files if f != '(packet)')}"
-                    if any(f != "(packet)" for f in fix.files)
-                    else " (packet patch only)"
+            updated = [f for f in fix.files if f != "(packet)"]
+            if updated:
+                emit(
+                    f"[self-correct] {fix.strategy}: updated "
+                    f"{len(updated)} file(s): {', '.join(updated[:5])}"
+                    + ("…" if len(updated) > 5 else "")
                 )
-            )
+            else:
+                emit(f"[self-correct] {fix.strategy}: packet patch only")
             for detail in fix.details:
                 vlog(f"[self-correct]   {detail}")
         else:
@@ -1471,6 +1490,7 @@ def verify_with_self_correct(
             break
 
         previous = result
+        emit("[self-correct] re-running full test suite…")
         result = _run_verified_tests(
             root, packet, llm_audit=True, log=emit, audit_log=audit_log
         )
@@ -1479,7 +1499,7 @@ def verify_with_self_correct(
         except OSError:
             pass
         if result.passed:
-            vlog(f"[self-correct] tests passed after attempt {attempt}")
+            emit(f"[self-correct] tests passed after attempt {attempt}")
             return result, sorted(set(corrected_files))
 
         if _is_anticheat_failure(result):
@@ -1520,7 +1540,7 @@ def verify_with_self_correct(
                 + (" ".join(lost_bits[:6]) if lost_bits else "")
             )
             if result.passed:
-                vlog("[self-correct] tests passed after restoring snapshot")
+                emit("[self-correct] tests passed after restoring snapshot")
                 return result, sorted(set(corrected_files))
             if _is_anticheat_failure(result):
                 _emit_unpassable_stop(emit, "anticheat failure (not retryable)")
@@ -1534,6 +1554,10 @@ def verify_with_self_correct(
                 break
             # Post-restore baseline for stagnant detection.
             prev_fingerprint = _failure_fingerprint(result)
+            emit(
+                f"[self-correct] still failing after attempt {attempt}: "
+                f"{(result.fail_reason or result.summary or '')[:100]}"
+            )
             vlog(
                 f"[self-correct] still failing after attempt {attempt}: "
                 f"{result.summary}"
@@ -1555,6 +1579,10 @@ def verify_with_self_correct(
             )
             break
         prev_fingerprint = fp
+        emit(
+            f"[self-correct] still failing after attempt {attempt}: "
+            f"{(result.fail_reason or result.summary or '')[:100]}"
+        )
         vlog(f"[self-correct] still failing after attempt {attempt}: {result.summary}")
         # Next attempt should research again with the new failure signature
         if suggestion.search_queries:

@@ -238,7 +238,7 @@ def test_responses_agent_emits_turn_logs(monkeypatch, tmp_path: Path):
         log=lines.append,
     )
     client._client = FakeOpenAI()
-    ex = RepoToolExecutor(root=tmp_path, allow_writes=False)
+    ex = RepoToolExecutor(root=tmp_path, allow_writes=False, log=lines.append)
     data = client.run_agent(
         system="s",
         user="u",
@@ -247,9 +247,10 @@ def test_responses_agent_emits_turn_logs(monkeypatch, tmp_path: Path):
         max_turns=4,
     )
     assert data == {"ok": True}
-    assert "[llm] turn 1/4" in lines
-    assert "[llm] tools: read_file" in lines
-    assert "[llm] turn 2/4" in lines
+    assert any("agent starting" in line for line in lines)
+    assert any("read a.py" in line for line in lines)
+    # Single-tool turns log via the executor, not a tools summary line.
+    assert not any(line.startswith("[llm] turn ") for line in lines)
 
 
 def test_responses_agent_last_turn_strips_tools(monkeypatch, tmp_path: Path):
@@ -311,7 +312,7 @@ def test_responses_agent_last_turn_strips_tools(monkeypatch, tmp_path: Path):
     )
     assert data == {"done": True}
     assert saw_tools == [True, False]
-    assert any("turn 2/2" in line for line in lines)
+    assert any("agent starting" in line for line in lines)
 
 
 def test_responses_agent_last_turn_ignores_tool_calls(monkeypatch, tmp_path: Path):
