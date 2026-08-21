@@ -155,6 +155,39 @@ def test_structured_failure_fields():
     assert "nodes=" in structured["failure_fingerprint"]
 
 
+def test_collect_repair_context_seeds_leftover_oracle_paths(tmp_path: Path):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "deployments.json").write_text(
+        '{"model": "text-davinci-003"}\n', encoding="utf-8"
+    )
+    scripts = tmp_path / "scripts" / "ops"
+    scripts.mkdir(parents=True)
+    (scripts / "legacy_openai_smoke.sh").write_text(
+        "curl /v1/engines\n", encoding="utf-8"
+    )
+    result = RunnerResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["pytest"],
+        stdout=(
+            "FAILED tests/test_conduit_oracle.py::test_conduit_no_legacy_tokens\n"
+            "E   assert not [...]\n"
+            "configs/deployments.json still contains 'text-davinci-003'\n"
+            "scripts/ops/legacy_openai_smoke.sh still contains '/v1/engines'\n"
+        ),
+        stderr="",
+    )
+    ctx = collect_repair_context(tmp_path, result)
+    paths = {x["path"] for x in ctx.leftover_files}
+    assert "configs/deployments.json" in paths
+    assert "scripts/ops/legacy_openai_smoke.sh" in paths
+    assert "configs/deployments.json" in ctx.allowlist
+    assert "scripts/ops/legacy_openai_smoke.sh" in ctx.seeded_paths
+    assert "text-davinci-003" in ctx.files.get("configs/deployments.json", "")
+
+
 def test_packet_for_prompt_drops_notes():
     slim = _packet_for_prompt(
         {

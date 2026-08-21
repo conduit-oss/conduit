@@ -134,3 +134,29 @@ def test_heuristic_does_not_rewrite_conduit_oracle(tmp_path: Path):
     assert "tests/test_conduit_oracle.py" not in fix.files
     assert "tests/test_conduit_smoke.py" not in fix.files
     assert "gpt-5.6-terra" in (app / "chat.py").read_text(encoding="utf-8")
+
+
+def test_heuristic_updates_configs_not_tests(tmp_path: Path):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    registry = configs / "model_registry.json"
+    registry.write_text('{"primary": "text-davinci-003"}\n', encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    test_cfg = tests / "test_configs.py"
+    test_body = 'assert registry["primary"] == "text-davinci-003"\n'
+    test_cfg.write_text(test_body, encoding="utf-8")
+    packet = {
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "match": "text-davinci-003",
+                "replace": "gpt-5.6-terra",
+            }
+        ]
+    }
+    fix = _heuristic_fix(tmp_path, packet, ignore=build_ignore_list(tmp_path, packet))
+    assert "configs/model_registry.json" in fix.files
+    assert "gpt-5.6-terra" in registry.read_text(encoding="utf-8")
+    assert test_cfg.read_text(encoding="utf-8") == test_body
+    assert "tests/test_configs.py" not in fix.files

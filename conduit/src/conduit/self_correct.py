@@ -25,7 +25,13 @@ _PYTEST_COUNT_RE = re.compile(
 )
 _FAILED_NODE_RE = re.compile(r"^FAILED\s+(\S+)", re.M)
 _STILL_CONTAINS_RE = re.compile(r"still contains\s+'([^']+)'", re.I)
+# Oracle-style: "configs/foo.json still contains 'davinci'"
+_LEFTOVER_PATH_RE = re.compile(
+    r"(?m)^(?P<path>[^\s:]+?)\s+(?:still contains|obfuscates leftover)\s+'(?P<token>[^']+)'",
+    re.I,
+)
 _CONTEXT_IMPL_CAP = 8
+_LEFTOVER_PATH_CAP = 16
 _WINDOW_RADIUS = 60
 _PROMPT_STREAM_CHARS = 2000
 
@@ -68,6 +74,23 @@ def _failed_nodes(result: TestResult) -> list[str]:
 
 def _leftover_tokens(result: TestResult) -> list[str]:
     return sorted(set(_STILL_CONTAINS_RE.findall(_failure_blob(result))))
+
+
+def _leftover_path_hits(text: str) -> list[tuple[str, str]]:
+    """(rel_path, token) pairs from leftover-oracle assertion lines."""
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for m in _LEFTOVER_PATH_RE.finditer(text or ""):
+        rel = m.group("path").replace("\\", "/").strip().lstrip("./")
+        token = m.group("token")
+        if not rel or not token:
+            continue
+        key = (rel, token)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
 
 
 def _structured_failure(result: TestResult) -> dict[str, Any]:
@@ -307,6 +330,8 @@ class RepairContext:
     allowlist: set[str] = field(default_factory=set)
     # Path → window text for prompt "files" (compat with older callers)
     files: dict[str, str] = field(default_factory=dict)
+    # Leftover-oracle offenders: [{path, tokens}]
+    leftover_files: list[dict[str, Any]] = field(default_factory=list)
 
 
 def collect_repair_context(
@@ -390,6 +415,41 @@ def collect_repair_context(
     # Primary failing test file only (first traceback test hit).
     for path, line in test_hits[:1]:
         _register(path, line, as_window=True)
+
+    # Seed files named by leftover-oracle "path still contains 'token'" lines.
+    from conduit.test_gen import is_conduit_generated_rel
+
+    by_path: dict[str, list[str]] = {}
+    for rel, token in _leftover_path_hits(blob):
+        if is_conduit_generated_rel(rel):
+            continue
+        path = root / rel
+        if not path.is_file():
+            continue
+        by_path.setdefault(rel, [])
+        if token not in by_path[rel]:
+            by_path[rel].append(token)
+
+    leftover_added = 0
+    for rel, tokens in by_path.items():
+        if leftover_added >= _LEFTOVER_PATH_CAP:
+            break
+        path = root / rel
+        ctx.leftover_files.append({"path": rel, "tokens": tokens})
+        # Prefer a window around the first leftover token if present.
+        line: int | None = None
+        try:
+            text = path.read_text(encoding="utf-8")
+            for tok in tokens:
+                idx = text.find(tok)
+                if idx >= 0:
+                    line = text.count("\n", 0, idx) + 1
+                    break
+        except OSError:
+            pass
+        as_window = len(ctx.file_windows) < impl_cap + _LEFTOVER_PATH_CAP
+        _register(path, line, as_window=as_window)
+        leftover_added += 1
 
     return ctx
 
@@ -880,11 +940,64 @@ def _heuristic_fix(
     replacements = sorted(uniq, key=lambda p: len(p[0]), reverse=True)
 
     targets: list[Path] = []
-    if (root / "tests").is_dir():
-        targets += list((root / "tests").rglob("*.py"))
-    targets += list(root.glob("test_*.py"))
-    if (root / "src").is_dir():
-        targets += list((root / "src").rglob("*.py"))
+    # Prefer migration surfaces leftover-oracle already scans — not consumer tests.
+    for dirname in ("configs", "scripts", ".github", "src"):
+        d = root / dirname
+        if d.is_dir():
+            targets += [p for p in d.rglob("*") if p.is_file()]
+    for pat in (
+        "*.yml",
+        "*.yaml",
+        "*.json",
+        "*.sh",
+        "*.toml",
+        "Dockerfile",
+        "docker-compose*.yml",
+        "docker-compose*.yaml",
+    ):
+        targets += [p for p in root.glob(pat) if p.is_file()]
+    # Package / service trees (Python + TS) excluding tests/.
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        name = child.name.lower()
+        if name in {
+            "tests",
+            "test",
+            "docs",
+            "vendor",
+            ".conduit",
+            ".git",
+            "node_modules",
+            "venv",
+            ".venv",
+            "__pycache__",
+            "packets",
+        }:
+            continue
+        if name in {"configs", "scripts", ".github", "src"}:
+            continue  # already walked
+        targets += [
+            p
+            for p in child.rglob("*")
+            if p.is_file()
+            and p.suffix.lower()
+            in {".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".yml", ".yaml", ".sh"}
+        ]
+
+    # De-dupe paths while preserving order
+    seen_paths: set[Path] = set()
+    uniq_targets: list[Path] = []
+    for path in targets:
+        try:
+            key = path.resolve()
+        except OSError:
+            continue
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        uniq_targets.append(path)
+    targets = uniq_targets
 
     changed: list[str] = []
     details: list[str] = []
@@ -897,7 +1010,12 @@ def _heuristic_fix(
         except ValueError:
             continue
         # Never rewrite leftover/smoke/functional oracles (same as apply / LLM reject).
-        if is_conduit_generated_rel(rel) or ignore.path_ignored(rel):
+        # Heuristic also skips tests/ so it does not advance assertions ahead of configs.
+        if (
+            is_conduit_generated_rel(rel)
+            or ignore.path_ignored(rel)
+            or _is_test_rel(rel)
+        ):
             skipped_files += 1
             continue
         try:
@@ -959,6 +1077,7 @@ def _llm_suggest_fixes(
     file_windows: list[dict[str, Any]] | None = None,
     path_allowlist: set[str] | None = None,
     seeded_paths: list[str] | None = None,
+    leftover_files: list[dict[str, Any]] | None = None,
 ) -> LlmRepairSuggestion:
     emit = log or _noop_log
     client = attach_llm_log(
@@ -986,6 +1105,16 @@ def _llm_suggest_fixes(
     # Always allow reading anything already seeded as a window/path.
     allow.update(files.keys())
     allow.update(str(w.get("path") or "") for w in windows)
+    leftovers = [
+        item
+        for item in (leftover_files or [])
+        if isinstance(item, dict)
+        and not ignore.path_ignored(str(item.get("path") or ""))
+    ]
+    for item in leftovers:
+        rel = str(item.get("path") or "").replace("\\", "/")
+        if rel:
+            allow.add(rel)
     allow.discard("")
 
     def _reject(rel: str, contents: str) -> str | None:
@@ -1011,12 +1140,26 @@ def _llm_suggest_fixes(
 
     failing_hint = list(seeded_paths or sorted(files.keys()))
     failing_hint = [p for p in failing_hint if not ignore.path_ignored(p)]
+    for item in leftovers:
+        rel = str(item.get("path") or "").replace("\\", "/")
+        if rel and rel not in failing_hint:
+            failing_hint.append(rel)
     structured = _structured_failure(test_result)
     journal = (
         audit_log.repair_journal(attempt=attempt)
         if audit_log is not None
         else {"entries": []}
     )
+    leftover_block = ""
+    if leftovers:
+        leftover_block = (
+            "0) leftover_files is AUTHORITATIVE from the leftover oracle. "
+            "Your FIRST tool actions must read_file then write_file those paths "
+            "(replace legacy tokens with packet successors). Do NOT inventory "
+            "with grep; do NOT use run_shell to read/write files; do NOT rewrite "
+            "consumer tests to expect new tokens while leaving configs/scripts "
+            "unmigrated.\n"
+        )
     prompt = {
         "instructions": (
             "Tests failed after an automatic API migration. Fix IMPLEMENTATION "
@@ -1024,11 +1167,14 @@ def _llm_suggest_fixes(
             "packet's new API. The packet may be incomplete — you may also "
             "update packet_patch.\n"
             "Edit-first workflow (do this in order):\n"
-            "1) Act on seeded_paths / file_windows first — those are the failing "
-            "spans. Use read_file only when you need more than the window.\n"
+            + leftover_block
+            + "1) Act on seeded_paths / file_windows / leftover_files first — "
+            "those are the failing spans. Use read_file only when you need more "
+            "than the window.\n"
             "2) Do NOT inventory the repo. list_files is unavailable. Prefer "
-            "grep/read on allowlisted paths only.\n"
-            "3) Make the smallest write_file that fixes the traceback, then "
+            "grep/read on allowlisted paths only (and only after editing "
+            "leftovers if leftover_files is set).\n"
+            "3) Make the smallest write_file that fixes the failure, then "
             "call run_tests with optional nodeids from failed_nodes for a "
             "focused retest. Full suite still runs after your turn.\n"
             "4) Consult repair_journal so you do not repeat rejected writes "
@@ -1037,6 +1183,8 @@ def _llm_suggest_fixes(
             "API successor — do not guess undocumented APIs.\n"
             "6) Preserve existing public names (module-level def/class and "
             "__all__) unless tests require a rename.\n"
+            "7) run_shell is only for pytest / pip show|list / tiny read-only "
+            "SDK probes (import + version). Never Path/open/write/exec via shell.\n"
             "When finished, return JSON with any of:\n"
             '  "files": {"relative/path.py": "full new file contents"},\n'
             '  "packet_patch": {\n'
@@ -1072,6 +1220,7 @@ def _llm_suggest_fixes(
         ),
         "seeded_paths": failing_hint,
         "file_windows": windows,
+        "leftover_files": leftovers,
         "structured_failure": structured,
         "failed_nodes": structured["failed_nodes"],
         "leftover_tokens": structured["leftover_tokens"],
@@ -1091,10 +1240,10 @@ def _llm_suggest_fixes(
     }
     system = (
         "You are a migration repair agent with scoped local tools "
-        "(read/grep/write, focused run_tests, allowlisted run_shell) plus "
-        "web_search/fetch_url. Edit failing spans first. No repo inventory. "
-        "Preserve public names. Reply with a final JSON object only. "
-        "Honor ignore list and path_allowlist. "
+        "(read/grep/write, focused run_tests, tightly allowlisted run_shell) plus "
+        "web_search/fetch_url. Edit leftover_files and failing spans first. "
+        "No repo inventory. No shell file IO. Preserve public names. "
+        "Reply with a final JSON object only. Honor ignore list and path_allowlist. "
         "Update packet_patch when the migration packet must change."
     )
     try:
@@ -1286,6 +1435,11 @@ def verify_with_self_correct(
         emit(
             f"[self-correct] seeded {len(context_files)} span(s), "
             f"allowlist={len(allowlist)}"
+            + (
+                f", leftovers={len(repair_ctx.leftover_files)}"
+                if repair_ctx.leftover_files
+                else ""
+            )
         )
         vlog(
             f"[self-correct] context windows for repair: "
@@ -1296,10 +1450,15 @@ def verify_with_self_correct(
         nudge: str | None = pending_nudge
         pending_nudge = None
         if empty_nudge_used and not nudge:
+            leftover_hint = (
+                f" leftover_files={[x.get('path') for x in repair_ctx.leftover_files[:8]]};"
+                if repair_ctx.leftover_files
+                else ""
+            )
             nudge = (
                 "Previous attempt made no file edits. You MUST edit "
-                "seeded_paths / file_windows with write_file first "
-                f"(seeded_paths={sorted(context_files.keys())}), "
+                "seeded_paths / file_windows / leftover_files with write_file first "
+                f"(seeded_paths={sorted(context_files.keys())};{leftover_hint}), "
                 "then run_tests(nodeids=failed_nodes) before finishing."
             )
 
@@ -1332,6 +1491,7 @@ def verify_with_self_correct(
                 file_windows=repair_ctx.file_windows,
                 path_allowlist=allowlist,
                 seeded_paths=repair_ctx.seeded_paths,
+                leftover_files=repair_ctx.leftover_files,
             )
 
             # Fallback providers without tools may still return search_queries.
@@ -1370,6 +1530,7 @@ def verify_with_self_correct(
                         file_windows=repair_ctx.file_windows,
                         path_allowlist=allowlist,
                         seeded_paths=repair_ctx.seeded_paths,
+                        leftover_files=repair_ctx.leftover_files,
                     )
                 if suggestion.search_queries and not suggestion.files:
                     pending_queries = list(suggestion.search_queries)

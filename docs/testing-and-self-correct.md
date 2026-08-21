@@ -80,18 +80,19 @@ Self-correct may only fix implementation by using the real new API — not by ad
    - Build **Cursor-shaped repair context**:
      - structured failure (`failed_nodes`, leftover tokens, fingerprint)
      - **±60-line windows** from traceback paths (≤8 impl windows + primary failing test + `conftest`), not up to 24 full modules
+     - paths named by leftover-oracle lines (`path still contains 'token'`) are seeded into the allowlist / `leftover_files` (so oracle-only failures are not `allowlist=1`)
      - `import_files` only when they appear in the traceback (no flood)
      - **`repair_journal`** from the migration audit log (prior writes / rejects / restores)
    - Build a **dynamic ignore list** (see below)  
-   - If LLM configured → **Responses agent** with **scoped tools** (`read_file` / `grep` / `write_file` / focused `run_tests(nodeids=…)` / allowlisted `run_shell` / `web_search` / `fetch_url`). **`list_files` is omitted** so the agent cannot inventory the whole repo; off-allowlist reads are rejected. Writes that obfuscate leftover tokens (`"".join(...)`), swallow exceptions, add marker tuples, edit leftover/smoke/functional tests, weaken tests (`skip`/`xfail`), or touch `vendor/` are **rejected**. Instructions are **edit-first**: act on seeded windows, smallest write, then focused retest. Final JSON may:
+   - If LLM configured → **Responses agent** with **scoped tools** (`read_file` / `grep` / `write_file` / focused `run_tests(nodeids=…)` / tightly allowlisted `run_shell` / `web_search` / `fetch_url`). **`list_files` is omitted** so the agent cannot inventory the whole repo; off-allowlist reads are rejected. `run_shell` allows pytest / pip show|list / short read-only `python -c` SDK probes only — **not** Path/open/write. Writes that obfuscate leftover tokens (`"".join(...)`), swallow exceptions, add marker tuples, edit leftover/smoke/functional tests, weaken tests (`skip`/`xfail`), or touch `vendor/` are **rejected**. Instructions are **edit-first** (leftover_files first when present). Final JSON may:
      - return `files` fixes (or write via `write_file`),
      - return `packet_patch` (rules/notes/sources) when the migration packet itself must change,
      - return `search_queries` on non-tool providers when evidence is still insufficient — Conduit runs those searches and asks again in the same attempt.
-   - Else apply heuristic replaces derived from packet `EXACT_STRING_REPLACE` / `AST_PARAM_RENAME` (skipped on ignored files; contract-constant lines preserved)  
+   - Else apply heuristic replaces derived from packet `EXACT_STRING_REPLACE` / `AST_PARAM_RENAME` on **configs/scripts/.github/impl** (not under `tests/`; skipped on ignored files; contract-constant lines preserved)  
 3. Re-run **full** tests + integrity (mid-loop `run_tests` may use focused nodeids only)  
 4. If still failing after retries → `conduit run` aborts PR creation (exit code 2)
 
-Repair context prefers failing spans + journal over dumping every packet import. Same-dir siblings of traceback hits are allowlisted for `read_file`/`grep` even when not seeded as windows.
+Repair context prefers failing spans + leftover oracle paths + journal over dumping every packet import. Same-dir siblings of traceback hits are allowlisted for `read_file`/`grep` even when not seeded as windows.
 
 If an LLM attempt produces **no** file edits, Conduit **nudges once** with explicit failing-path instructions (when retries remain) before early-stopping. Configure `CONDUIT_LLM_MAX_TURNS` (default 32) for longer tool loops. 429 rate limits are retried with backoff.
 

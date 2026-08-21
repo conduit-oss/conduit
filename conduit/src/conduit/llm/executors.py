@@ -19,11 +19,23 @@ LogFn = Callable[[str], None]
 _SHELL_ALLOW: list[re.Pattern[str]] = [
     re.compile(r"^pytest(\s|$)", re.I),
     re.compile(r"^python(\s+-m)?\s+pytest(\s|$)", re.I),
-    re.compile(r"^python\s+-c\s+", re.I),
-    re.compile(r"^py\s+-c\s+", re.I),
     re.compile(r"^pip\s+(show|list)(\s|$)", re.I),
     re.compile(r"^python\s+-m\s+pip\s+(show|list)(\s|$)", re.I),
 ]
+
+# python -c is only for tiny read-only SDK probes (not file IO / exec).
+_PYTHON_C_RE = re.compile(r"^(?:python|py)\s+-c\s+", re.I)
+_PYTHON_C_DENY = re.compile(
+    r"Path\s*\(|open\s*\(|write_text|write_bytes|\.write\s*\(|"
+    r"\bexec\s*\(|\bcompile\s*\(|\beval\s*\(|base64|/mnt/data|"
+    r"__import__\s*\(\s*['\"]os['\"]|subprocess|shutil|"
+    r"pathlib|sitecustomize|importlib\.reload",
+    re.I,
+)
+_PYTHON_C_ALLOW_PROBE = re.compile(
+    r"\bimport\s+\w+|\bfrom\s+\w+",
+    re.I,
+)
 
 
 def _noop_log(_: str) -> None:
@@ -34,10 +46,20 @@ def shell_command_allowed(command: str) -> bool:
     cmd = (command or "").strip()
     if not cmd or len(cmd) > 2000:
         return False
-    # Reject shell chaining / substitution / pipes.
+    # Reject shell chaining / substitution / pipes (semicolons OK inside python -c).
     if any(tok in cmd for tok in ("&&", "||", "|", "`", "$(", "\n", "\r")):
         return False
-    return any(p.search(cmd) for p in _SHELL_ALLOW)
+    if any(p.search(cmd) for p in _SHELL_ALLOW):
+        return True
+    if _PYTHON_C_RE.search(cmd):
+        if _PYTHON_C_DENY.search(cmd):
+            return False
+        if len(cmd) > 400:
+            return False
+        return bool(_PYTHON_C_ALLOW_PROBE.search(cmd))
+    if ";" in cmd:
+        return False
+    return False
 
 
 @dataclass
