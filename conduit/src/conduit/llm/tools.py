@@ -130,55 +130,71 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
             ),
         ]
 
-    tools = [
-        _fn(
-            "list_files",
-            "List files under a relative directory in the consumer repo "
-            "(non-ignored paths only).",
-            {
-                "directory": {
-                    "type": "string",
-                    "description": "Relative directory (default '.').",
+    tools = []
+    if mode != "self_correct":
+        tools.append(
+            _fn(
+                "list_files",
+                "List files under a relative directory in the consumer repo "
+                "(non-ignored paths only).",
+                {
+                    "directory": {
+                        "type": "string",
+                        "description": "Relative directory (default '.').",
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "Optional glob, e.g. '**/*.py'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max paths to return (default 80).",
+                    },
                 },
-                "glob": {
-                    "type": "string",
-                    "description": "Optional glob, e.g. '**/*.py'.",
+            )
+        )
+    tools.extend(
+        [
+            _fn(
+                "read_file",
+                "Read a UTF-8 text file from the consumer repo by relative path."
+                + (
+                    " Paths must be on the repair path_allowlist."
+                    if mode == "self_correct"
+                    else ""
+                ),
+                {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative file path.",
+                    },
                 },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max paths to return (default 80).",
+                required=["path"],
+            ),
+            _fn(
+                "fetch_url",
+                "HTTP GET a documentation or API URL and return truncated text.",
+                {
+                    "url": {
+                        "type": "string",
+                        "description": "http(s) URL to fetch.",
+                    },
                 },
-            },
-        ),
-        _fn(
-            "read_file",
-            "Read a UTF-8 text file from the consumer repo by relative path.",
-            {
-                "path": {
-                    "type": "string",
-                    "description": "Relative file path.",
-                },
-            },
-            required=["path"],
-        ),
-        _fn(
-            "fetch_url",
-            "HTTP GET a documentation or API URL and return truncated text.",
-            {
-                "url": {
-                    "type": "string",
-                    "description": "http(s) URL to fetch.",
-                },
-            },
-            required=["url"],
-        ),
-    ]
+                required=["url"],
+            ),
+        ]
+    )
     # Readonly search is useful for enrich + repair.
     tools.append(
         _fn(
             "grep",
             "Search file contents under the consumer repo (non-ignored paths). "
-            "Returns matching lines with paths.",
+            "Returns matching lines with paths."
+            + (
+                " Prefer allowlisted / seeded paths."
+                if mode == "self_correct"
+                else ""
+            ),
             {
                 "pattern": {
                     "type": "string",
@@ -220,9 +236,18 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
                 ),
                 _fn(
                     "run_tests",
-                    "Run the consumer repo's detected test suite "
-                    "(python -m pytest -q when applicable).",
-                    {},
+                    "Run the consumer repo's test suite. Optionally pass pytest "
+                    "nodeids (from failed_nodes) for a focused mid-repair retest.",
+                    {
+                        "nodeids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional pytest node ids, e.g. "
+                                "tests/test_x.py::test_y. Omit to run the full suite."
+                            ),
+                        },
+                    },
                 ),
                 _fn(
                     "run_shell",

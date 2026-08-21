@@ -77,17 +77,21 @@ Self-correct may only fix implementation by using the real new API — not by ad
 
 1. Run tests + integrity audit  
 2. On failure, up to `--max-retries` (default **5**):
-   - Collect traceback file paths + nearby source/tests  
+   - Build **Cursor-shaped repair context**:
+     - structured failure (`failed_nodes`, leftover tokens, fingerprint)
+     - **±60-line windows** from traceback paths (≤8 impl windows + primary failing test + `conftest`), not up to 24 full modules
+     - `import_files` only when they appear in the traceback (no flood)
+     - **`repair_journal`** from the migration audit log (prior writes / rejects / restores)
    - Build a **dynamic ignore list** (see below)  
-   - If LLM configured → **Responses agent** (OpenAI: `gpt-5.4-mini`, `reasoning_effort=high`, tools such as `web_search` / `fetch_url` / local repo read-write / `grep` / `run_tests` / allowlisted `run_shell`). Writes that obfuscate leftover tokens (`"".join(...)`), swallow exceptions, add marker tuples, edit leftover/smoke/functional tests, weaken tests (`skip`/`xfail`), or touch `vendor/` are **rejected**. Final JSON may:
+   - If LLM configured → **Responses agent** with **scoped tools** (`read_file` / `grep` / `write_file` / focused `run_tests(nodeids=…)` / allowlisted `run_shell` / `web_search` / `fetch_url`). **`list_files` is omitted** so the agent cannot inventory the whole repo; off-allowlist reads are rejected. Writes that obfuscate leftover tokens (`"".join(...)`), swallow exceptions, add marker tuples, edit leftover/smoke/functional tests, weaken tests (`skip`/`xfail`), or touch `vendor/` are **rejected**. Instructions are **edit-first**: act on seeded windows, smallest write, then focused retest. Final JSON may:
      - return `files` fixes (or write via `write_file`),
      - return `packet_patch` (rules/notes/sources) when the migration packet itself must change,
      - return `search_queries` on non-tool providers when evidence is still insufficient — Conduit runs those searches and asks again in the same attempt.
    - Else apply heuristic replaces derived from packet `EXACT_STRING_REPLACE` / `AST_PARAM_RENAME` (skipped on ignored files; contract-constant lines preserved)  
-3. Re-run tests + integrity  
+3. Re-run **full** tests + integrity (mid-loop `run_tests` may use focused nodeids only)  
 4. If still failing after retries → `conduit run` aborts PR creation (exit code 2)
 
-Repair context seeds pytest short-trace paths (e.g. `openai_text/engines.py:25:`), packet/`import_files`, top-level package dirs, and `tests/` — not only `src/`.
+Repair context prefers failing spans + journal over dumping every packet import. Same-dir siblings of traceback hits are allowlisted for `read_file`/`grep` even when not seeded as windows.
 
 If an LLM attempt produces **no** file edits, Conduit **nudges once** with explicit failing-path instructions (when retries remain) before early-stopping. Configure `CONDUIT_LLM_MAX_TURNS` (default 32) for longer tool loops. 429 rate limits are retried with backoff.
 
@@ -108,7 +112,7 @@ Impl files are never auto-ignored just because they define a `LEGACY_*` name. Ig
 With `--verbose` / `-v`, each attempt also prints:
 
 - A truncated failure excerpt (stdout/stderr)
-- Which context files were sent to the repair step
+- Which context **windows** were seeded for repair (and allowlist size)
 - Strategy used (`llm` or `heuristic`)
 - Files updated and, for heuristics, each `old -> new` replacement
 - When heuristics find nothing left to replace, why (already migrated / no matching rules)

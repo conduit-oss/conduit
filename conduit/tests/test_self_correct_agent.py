@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,9 +13,12 @@ from conduit.llm.retry import (
 )
 from conduit.self_correct import (
     _collect_context_files,
+    _file_window,
     _packet_for_prompt,
     _paths_from_traceback,
     _repair_regressed,
+    _structured_failure,
+    collect_repair_context,
 )
 from conduit.test_runner import TestResult as RunnerResult
 
@@ -65,38 +69,90 @@ def test_collect_context_includes_package_and_import_files(tmp_path: Path):
     assert any(k.replace("\\", "/") == "openai_text/engines.py" for k in files)
 
 
-def test_collect_context_keeps_source_impl_over_test_flood(tmp_path: Path):
+def test_collect_context_caps_windows_not_import_flood(tmp_path: Path):
     pkg = tmp_path / "openai_text"
     pkg.mkdir()
     (pkg / "__init__.py").write_text("from .client import configure\n", encoding="utf-8")
-    (pkg / "client.py").write_text("def configure():\n    return 1\n", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        "\n".join(f"line_{i} = {i}" for i in range(1, 200)) + "\n",
+        encoding="utf-8",
+    )
+    # Extra impl modules listed in import_files but NOT in traceback.
+    flood = []
+    for i in range(20):
+        name = f"extra_{i}.py"
+        (pkg / name).write_text(f"X{i} = 1\n", encoding="utf-8")
+        flood.append(f"openai_text/{name}")
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "conftest.py").write_text("from openai_text.client import configure\n", encoding="utf-8")
-    stdout_lines = []
-    import_files = ["openai_text/__init__.py", "openai_text/client.py"]
-    for i in range(20):
-        name = f"test_extra_{i}.py"
-        (tests / name).write_text("def test_x(): pass\n", encoding="utf-8")
-        stdout_lines.append(f"tests/{name}:1: in test_x\n    assert False\n")
-        import_files.append(f"tests/{name}")
+    (tests / "test_client.py").write_text("def test_x(): assert False\n", encoding="utf-8")
     result = RunnerResult(
         passed=False,
         returncode=1,
         runner="pytest",
         command=["python", "-m", "pytest", "-q"],
-        stdout="".join(stdout_lines),
+        stdout=(
+            "FAILED tests/test_client.py::test_x\n"
+            "tests/test_client.py:1: in test_x\n"
+            "    assert False\n"
+            "openai_text\\client.py:100: in configure\n"
+            "E   AssertionError\n"
+        ),
         stderr="",
     )
-    files = _collect_context_files(
+    ctx = collect_repair_context(
         tmp_path,
         result,
-        source={"import_files": import_files},
+        source={"import_files": ["openai_text/__init__.py", "openai_text/client.py", *flood]},
     )
-    rels = {k.replace("\\", "/") for k in files}
+    rels = {k.replace("\\", "/") for k in ctx.files}
     assert "openai_text/client.py" in rels
-    assert "openai_text/__init__.py" in rels
     assert "tests/conftest.py" in rels
+    assert "tests/test_client.py" in rels
+    # Flood import_files not in traceback must not fill the seed set.
+    assert not any(r.startswith("openai_text/extra_") for r in rels)
+    impl_windows = [
+        w for w in ctx.file_windows if not str(w.get("path", "")).startswith("tests/")
+    ]
+    assert len(impl_windows) <= 8
+    # Span window around line 100, not the whole 200-line file.
+    client_win = next(w for w in ctx.file_windows if w["path"] == "openai_text/client.py")
+    assert client_win["start"] <= 100 <= client_win["end"]
+    assert "line_100" in client_win["text"]
+    assert "line_1 =" not in client_win["text"] or client_win["start"] == 1
+
+
+def test_file_window_radius(tmp_path: Path):
+    path = tmp_path / "mod.py"
+    path.write_text("\n".join(f"L{i}" for i in range(1, 201)) + "\n", encoding="utf-8")
+    win = _file_window(path, 100, radius=60)
+    assert win["start"] == 40
+    assert win["end"] == 160
+    assert "L100" in win["text"]
+    assert "L1\n" not in win["text"]
+
+
+def test_structured_failure_fields():
+    result = RunnerResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["pytest"],
+        stdout=(
+            "FAILED tests/test_x.py::test_a - AssertionError\n"
+            "E   AssertionError: still contains 'ChatCompletion'\n"
+        ),
+        stderr="",
+        failed_count=1,
+        passed_count=0,
+        error_count=0,
+        fail_reason="1 failed",
+    )
+    structured = _structured_failure(result)
+    assert structured["failed_nodes"] == ["tests/test_x.py::test_a"]
+    assert "ChatCompletion" in structured["leftover_tokens"]
+    assert "nodes=" in structured["failure_fingerprint"]
 
 
 def test_packet_for_prompt_drops_notes():
@@ -589,3 +645,58 @@ def test_self_correct_stops_after_two_consecutive_restores(monkeypatch, tmp_path
     assert (pkg / "client.py").read_text(encoding="utf-8") == original
     # Should not burn all 5 attempts
     assert sum(1 for line in logs if "attempt " in line and "/" in line) <= 2
+
+
+def test_llm_suggest_fixes_prompt_has_journal_and_structured(tmp_path: Path, monkeypatch):
+    from conduit.anticheat.audit_log import MigrationAuditLog
+    from conduit import self_correct as sc
+
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    captured: dict = {}
+
+    class FakeClient:
+        def run_agent(self, **kwargs):
+            captured["user"] = kwargs.get("user") or ""
+            return {"files": {}, "packet_patch": {}}
+
+    audit = MigrationAuditLog.from_packet({"packet_id": "t", "package": "openai"})
+    audit.record_reject("shim.py", "fake client", attempt=1)
+    result = RunnerResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["pytest"],
+        stdout=(
+            "FAILED tests/test_app.py::test_x\n"
+            "app.py:1: in <module>\n"
+            "E   still contains 'Legacy'\n"
+        ),
+        stderr="",
+        failed_count=1,
+    )
+    monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(sc, "attach_llm_log", lambda client, _log: client)
+
+    suggestion = sc._llm_suggest_fixes(
+        root=tmp_path,
+        test_result=result,
+        packet={"package": "openai", "rules": [], "to_version": "1.0.0"},
+        files={"app.py": "x = 1\n"},
+        audit_log=audit,
+        attempt=2,
+        file_windows=[
+            {"path": "app.py", "start": 1, "end": 1, "line": 1, "text": "x = 1\n"}
+        ],
+        path_allowlist={"app.py"},
+        seeded_paths=["app.py"],
+    )
+    assert isinstance(suggestion, sc.LlmRepairSuggestion)
+    prompt = json.loads(captured["user"])
+    assert "repair_journal" in prompt
+    assert any(e.get("phase") == "reject" for e in prompt["repair_journal"]["entries"])
+    assert prompt["failed_nodes"] == ["tests/test_app.py::test_x"]
+    assert "Legacy" in prompt["leftover_tokens"]
+    assert prompt["failure_fingerprint"]
+    assert len(prompt["error_stdout"]) <= 2100
+    assert "file_windows" in prompt
+    assert "Edit-first" in prompt["instructions"] or "seeded_paths" in prompt["instructions"]

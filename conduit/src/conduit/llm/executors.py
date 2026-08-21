@@ -69,7 +69,7 @@ class RepoToolExecutor:
             if name == "write_file":
                 return self._write_file(arguments)
             if name == "run_tests":
-                return self._run_tests()
+                return self._run_tests(arguments)
             if name == "run_shell":
                 return self._run_shell(arguments)
             if name == "grep":
@@ -107,7 +107,10 @@ class RepoToolExecutor:
     def _list_files(self, args: dict[str, Any]) -> str:
         if self.path_allowlist is not None:
             return json.dumps(
-                {"error": "list_files not allowed in anticheat audit mode"}
+                {
+                    "error": "list_files not allowed when path_allowlist is set",
+                    "hint": "Use read_file/grep on seeded or allowlisted paths.",
+                }
             )
         directory = str(args.get("directory") or ".")
         pattern = str(args.get("glob") or "**/*")
@@ -140,8 +143,8 @@ class RepoToolExecutor:
         if not self._allowlisted(rel_posix):
             return json.dumps(
                 {
-                    "error": f"path not in migration audit allowlist: {rel_posix}",
-                    "hint": "Only read paths listed in the audit log.",
+                    "error": f"path not in allowlist: {rel_posix}",
+                    "hint": "Only read seeded / allowlisted paths.",
                 }
             )
         if self.ignore.path_ignored(rel_posix):
@@ -188,19 +191,32 @@ class RepoToolExecutor:
         self.log(f"[llm-tool] write_file {written}")
         return json.dumps({"ok": True, "path": written, "bytes": len(contents)})
 
-    def _run_tests(self) -> str:
+    def _run_tests(self, args: dict[str, Any] | None = None) -> str:
         if not self.allow_run_tests:
             return json.dumps({"error": "run_tests not allowed in this mode"})
         from conduit.test_runner import run_tests
 
-        self.log("[llm-tool] run_tests")
-        result = run_tests(self.root)
+        args = args or {}
+        raw_nodes = args.get("nodeids") or []
+        nodeids: list[str] = []
+        if isinstance(raw_nodes, list):
+            for n in raw_nodes:
+                if isinstance(n, str) and n.strip():
+                    nodeids.append(n.strip())
+        elif isinstance(raw_nodes, str) and raw_nodes.strip():
+            nodeids.append(raw_nodes.strip())
+        self.log(
+            "[llm-tool] run_tests"
+            + (f" nodeids={nodeids}" if nodeids else "")
+        )
+        result = run_tests(self.root, nodeids=nodeids or None)
         return json.dumps(
             {
                 "passed": result.passed,
                 "returncode": result.returncode,
                 "runner": result.runner,
                 "command": result.command,
+                "nodeids": nodeids,
                 "stdout": (result.stdout or "")[-8000:],
                 "stderr": (result.stderr or "")[-4000:],
                 "summary": result.summary,

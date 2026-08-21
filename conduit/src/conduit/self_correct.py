@@ -25,10 +25,17 @@ _PYTEST_COUNT_RE = re.compile(
 )
 _FAILED_NODE_RE = re.compile(r"^FAILED\s+(\S+)", re.M)
 _STILL_CONTAINS_RE = re.compile(r"still contains\s+'([^']+)'", re.I)
+_CONTEXT_IMPL_CAP = 8
+_WINDOW_RADIUS = 60
+_PROMPT_STREAM_CHARS = 2000
 
 
 def _noop_log(_: str) -> None:
     return None
+
+
+def _failure_blob(result: TestResult) -> str:
+    return f"{result.stdout or ''}\n{result.stderr or ''}"
 
 
 def _is_anticheat_failure(result: TestResult) -> bool:
@@ -40,7 +47,7 @@ def _failure_fingerprint(result: TestResult) -> str:
     if _is_anticheat_failure(result):
         body = (result.stdout or "").strip()
         return f"anticheat:{body}"
-    blob = f"{result.stdout or ''}\n{result.stderr or ''}"
+    blob = _failure_blob(result)
     nodes = sorted(set(_FAILED_NODE_RE.findall(blob)))
     leftovers = sorted(set(_STILL_CONTAINS_RE.findall(blob)))
     counts = (
@@ -53,6 +60,28 @@ def _failure_fingerprint(result: TestResult) -> str:
     reason = (result.fail_reason or "").strip()
     excerpt = re.sub(r"\s+", " ", blob).strip()[:400]
     return f"reason={reason}|excerpt={excerpt}|counts={counts}"
+
+
+def _failed_nodes(result: TestResult) -> list[str]:
+    return sorted(set(_FAILED_NODE_RE.findall(_failure_blob(result))))
+
+
+def _leftover_tokens(result: TestResult) -> list[str]:
+    return sorted(set(_STILL_CONTAINS_RE.findall(_failure_blob(result))))
+
+
+def _structured_failure(result: TestResult) -> dict[str, Any]:
+    """Compact failure signal for the repair prompt (Cursor-shaped)."""
+    return {
+        "failed_nodes": _failed_nodes(result),
+        "leftover_tokens": _leftover_tokens(result)[:80],
+        "failure_fingerprint": _failure_fingerprint(result),
+        "fail_reason": (result.fail_reason or "").strip(),
+        "runner": result.runner,
+        "failed_count": result.failed_count,
+        "error_count": result.error_count,
+        "passed_count": result.passed_count,
+    }
 
 
 def _mark_unpassable(result: TestResult, reason: str) -> TestResult:
@@ -104,6 +133,9 @@ _PYTEST_PATH_RE = re.compile(
     r"(?m)^(?P<path>(?:[A-Za-z]:)?[^:\n]+\.(?:py|pyw|ts|js|tsx|jsx|go|java))"
     r":(?P<line>\d+)(?::|\s)"
 )
+_FILE_LINE_RE = re.compile(
+    r'File "(?P<path>[^"]+)", line (?P<line>\d+)'
+)
 
 
 def _candidate_path(root: Path, raw: str) -> Path | None:
@@ -126,21 +158,80 @@ def _candidate_path(root: Path, raw: str) -> Path | None:
     return None
 
 
-def _paths_from_traceback(root: Path, text: str, limit: int = 12) -> list[Path]:
-    found: list[Path] = []
-    for m in re.finditer(r'File "([^"]+)"', text):
-        path = _candidate_path(root, m.group(1))
-        if path is not None and path not in found:
-            found.append(path)
+def _traceback_hits(
+    root: Path, text: str, *, limit: int = 12
+) -> list[tuple[Path, int | None]]:
+    """(path, 1-based line or None) from pytest / Python tracebacks."""
+    found: list[tuple[Path, int | None]] = []
+    seen: set[str] = set()
+
+    def _add(path: Path, line: int | None) -> None:
+        key = str(path.resolve())
+        if key in seen:
+            return
+        seen.add(key)
+        found.append((path, line))
+
+    for m in _FILE_LINE_RE.finditer(text or ""):
+        path = _candidate_path(root, m.group("path"))
+        if path is not None:
+            try:
+                line = int(m.group("line"))
+            except ValueError:
+                line = None
+            _add(path, line)
         if len(found) >= limit:
             return found
     for m in _PYTEST_PATH_RE.finditer(text or ""):
         path = _candidate_path(root, m.group("path"))
-        if path is not None and path not in found:
-            found.append(path)
+        if path is not None:
+            try:
+                line = int(m.group("line"))
+            except ValueError:
+                line = None
+            _add(path, line)
         if len(found) >= limit:
             break
     return found
+
+
+def _paths_from_traceback(root: Path, text: str, limit: int = 12) -> list[Path]:
+    return [p for p, _ in _traceback_hits(root, text, limit=limit)]
+
+
+def _file_window(
+    path: Path, line: int | None, *, radius: int = _WINDOW_RADIUS
+) -> dict[str, Any]:
+    """Read ±radius lines around line (1-based); whole file if short / no line."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return {"start": 1, "end": 1, "text": "", "line": line}
+    if line is None or line < 1:
+        if len(lines) <= radius * 2 + 1:
+            return {
+                "start": 1,
+                "end": len(lines),
+                "text": text,
+                "line": line,
+            }
+        # Head of file when no line number
+        end = min(len(lines), radius * 2 + 1)
+        return {
+            "start": 1,
+            "end": end,
+            "text": "".join(lines[:end]),
+            "line": line,
+        }
+    idx = min(max(line, 1), len(lines)) - 1
+    start = max(0, idx - radius)
+    end = min(len(lines), idx + radius + 1)
+    return {
+        "start": start + 1,
+        "end": end,
+        "text": "".join(lines[start:end]),
+        "line": line,
+    }
 
 
 def _package_dirs(root: Path) -> list[Path]:
@@ -185,48 +276,94 @@ def _is_test_rel(rel: str) -> bool:
     )
 
 
-def _collect_context_files(
+def _neighbor_sources(path: Path, *, limit: int = 6) -> list[Path]:
+    parent = path.parent
+    if not parent.is_dir():
+        return []
+    out: list[Path] = []
+    try:
+        siblings = sorted(parent.iterdir())
+    except OSError:
+        return []
+    for sib in siblings:
+        if not sib.is_file():
+            continue
+        if sib.suffix.lower() not in {".py", ".ts", ".js", ".tsx", ".jsx"}:
+            continue
+        if sib == path:
+            continue
+        out.append(sib)
+        if len(out) >= limit:
+            break
+    return out
+
+
+@dataclass
+class RepairContext:
+    """Cursor-shaped repair seed: windows + allowlist, not full-module dumps."""
+
+    file_windows: list[dict[str, Any]] = field(default_factory=list)
+    seeded_paths: list[str] = field(default_factory=list)
+    allowlist: set[str] = field(default_factory=set)
+    # Path → window text for prompt "files" (compat with older callers)
+    files: dict[str, str] = field(default_factory=dict)
+
+
+def collect_repair_context(
     root: Path,
     test_result: TestResult,
-    limit: int = 24,
+    *,
     packet: dict[str, Any] | None = None,
     source: dict[str, Any] | None = None,
-) -> dict[str, str]:
-    files: dict[str, str] = {}
+    impl_cap: int = _CONTEXT_IMPL_CAP,
+) -> RepairContext:
+    """Build span windows + path allowlist for self-correct."""
+    root = root.resolve()
+    blob = _failure_blob(test_result)
+    hits = _traceback_hits(root, blob)
+    ctx = RepairContext()
 
-    def _add(path: Path) -> bool:
-        if len(files) >= limit:
-            return False
-        try:
-            rel = str(path.relative_to(root)).replace("\\", "/")
-        except ValueError:
-            return False
-        if rel in files:
-            return True
-        try:
-            files[rel] = path.read_text(encoding="utf-8")
-        except OSError:
-            return False
-        return True
-
-    traceback_paths = _paths_from_traceback(
-        root, (test_result.stdout or "") + "\n" + (test_result.stderr or "")
-    )
-
-    def _rel_of(path: Path) -> str:
+    def _rel(path: Path) -> str:
         try:
             return str(path.relative_to(root)).replace("\\", "/")
         except ValueError:
-            return path.name
+            return path.name.replace("\\", "/")
 
-    impl_trace = [p for p in traceback_paths if not _is_test_rel(_rel_of(p))]
-    test_trace = [p for p in traceback_paths if _is_test_rel(_rel_of(p))]
-    for path in impl_trace:
-        _add(path)
+    def _register(path: Path, line: int | None, *, as_window: bool) -> None:
+        rel = _rel(path)
+        ctx.allowlist.add(rel)
+        if rel not in ctx.seeded_paths:
+            ctx.seeded_paths.append(rel)
+        if not as_window or rel in ctx.files:
+            return
+        try:
+            win = _file_window(path, line)
+        except OSError:
+            return
+        ctx.files[rel] = win["text"]
+        ctx.file_windows.append(
+            {
+                "path": rel,
+                "start": win["start"],
+                "end": win["end"],
+                "line": win["line"],
+                "text": win["text"],
+            }
+        )
+
+    impl_hits = [(p, ln) for p, ln in hits if not _is_test_rel(_rel(p))]
+    test_hits = [(p, ln) for p, ln in hits if _is_test_rel(_rel(p))]
+
+    for path, line in impl_hits[:impl_cap]:
+        _register(path, line, as_window=True)
         init = path.parent / "__init__.py"
         if init.is_file():
-            _add(init)
+            _register(init, None, as_window=False)
+        for sib in _neighbor_sources(path):
+            ctx.allowlist.add(_rel(sib))
 
+    # Only import_files that appear in the traceback (avoid flood).
+    trace_rels = {_rel(p) for p, _ in hits}
     import_files: list[str] = []
     for rel in (source or {}).get("import_files") or []:
         if isinstance(rel, str):
@@ -234,32 +371,50 @@ def _collect_context_files(
     for rel in (packet or {}).get("import_files") or []:
         if isinstance(rel, str) and rel.replace("\\", "/") not in import_files:
             import_files.append(rel.replace("\\", "/"))
-    src_pkt = root / ".conduit" / "source-packets"
-    if src_pkt.is_dir():
-        for pkt_file in src_pkt.glob("*.json"):
-            try:
-                data = json.loads(pkt_file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            for rel in data.get("import_files") or []:
-                if isinstance(rel, str) and rel.replace("\\", "/") not in import_files:
-                    import_files.append(rel.replace("\\", "/"))
-
     for rel in import_files:
         if _is_test_rel(rel):
             continue
-        _add(root / rel)
+        if rel not in trace_rels:
+            continue
+        path = root / rel
+        if path.is_file():
+            _register(path, None, as_window=len(ctx.file_windows) < impl_cap)
 
     conftest = root / "tests" / "conftest.py"
     if conftest.is_file():
-        _add(conftest)
+        _register(conftest, None, as_window=True)
     root_conftest = root / "conftest.py"
     if root_conftest.is_file():
-        _add(root_conftest)
+        _register(root_conftest, None, as_window=True)
 
-    for path in test_trace:
-        _add(path)
-    return files
+    # Primary failing test file only (first traceback test hit).
+    for path, line in test_hits[:1]:
+        _register(path, line, as_window=True)
+
+    return ctx
+
+
+def _collect_context_files(
+    root: Path,
+    test_result: TestResult,
+    limit: int = 24,
+    packet: dict[str, Any] | None = None,
+    source: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Backward-compatible: window texts keyed by path (capped)."""
+    ctx = collect_repair_context(
+        root,
+        test_result,
+        packet=packet,
+        source=source,
+        impl_cap=min(_CONTEXT_IMPL_CAP, limit),
+    )
+    out: dict[str, str] = {}
+    for rel, text in ctx.files.items():
+        if len(out) >= limit:
+            break
+        out[rel] = text
+    return out
 
 
 def reject_self_correct_write(
@@ -799,6 +954,9 @@ def _llm_suggest_fixes(
     coverage_missed: list[dict[str, Any]] | None = None,
     audit_log: MigrationAuditLog | None = None,
     attempt: int | None = None,
+    file_windows: list[dict[str, Any]] | None = None,
+    path_allowlist: set[str] | None = None,
+    seeded_paths: list[str] | None = None,
 ) -> LlmRepairSuggestion:
     emit = log or _noop_log
     client = attach_llm_log(
@@ -816,6 +974,17 @@ def _llm_suggest_fixes(
 
     ignore = ignore or IgnoreList()
     files = {k: v for k, v in files.items() if not ignore.path_ignored(k)}
+    windows = [
+        w
+        for w in (file_windows or [])
+        if isinstance(w, dict) and not ignore.path_ignored(str(w.get("path") or ""))
+    ]
+    allow = set(path_allowlist or files.keys())
+    allow = {p for p in allow if not ignore.path_ignored(p)}
+    # Always allow reading anything already seeded as a window/path.
+    allow.update(files.keys())
+    allow.update(str(w.get("path") or "") for w in windows)
+    allow.discard("")
 
     def _reject(rel: str, contents: str) -> str | None:
         reason = reject_self_correct_write(
@@ -835,25 +1004,37 @@ def _llm_suggest_fixes(
         allow_shell=True,
         log=emit if emit is not _noop_log else _noop_log,
         reject_write=_reject,
+        path_allowlist=allow or None,
     )
 
-    failing_hint = sorted(files.keys())
+    failing_hint = list(seeded_paths or sorted(files.keys()))
+    failing_hint = [p for p in failing_hint if not ignore.path_ignored(p)]
+    structured = _structured_failure(test_result)
+    journal = (
+        audit_log.repair_journal(attempt=attempt)
+        if audit_log is not None
+        else {"entries": []}
+    )
     prompt = {
         "instructions": (
             "Tests failed after an automatic API migration. Fix IMPLEMENTATION "
             "code so tests pass by rewriting call sites and manifests to the "
             "packet's new API. The packet may be incomplete — you may also "
             "update packet_patch.\n"
-            "Workflow:\n"
-            "1) read_file every path you will edit (seeded_paths first).\n"
-            "2) Use web_search / fetch_url for grounded vendor docs.\n"
-            "3) Make the smallest write_file that fixes the traceback. "
-            "Do not rewrite modules that are not in the traceback or seeded "
-            "impl set unless an import forces it.\n"
-            "4) Preserve existing public names (module-level def/class and "
+            "Edit-first workflow (do this in order):\n"
+            "1) Act on seeded_paths / file_windows first — those are the failing "
+            "spans. Use read_file only when you need more than the window.\n"
+            "2) Do NOT inventory the repo. list_files is unavailable. Prefer "
+            "grep/read on allowlisted paths only.\n"
+            "3) Make the smallest write_file that fixes the traceback, then "
+            "call run_tests with optional nodeids from failed_nodes for a "
+            "focused retest. Full suite still runs after your turn.\n"
+            "4) Consult repair_journal so you do not repeat rejected writes "
+            "or restored diffs.\n"
+            "5) Use web_search / fetch_url only when docs are needed for an "
+            "API successor — do not guess undocumented APIs.\n"
+            "6) Preserve existing public names (module-level def/class and "
             "__all__) unless tests require a rename.\n"
-            "5) run_tests and iterate until green or changes are exhausted.\n"
-            "Do not guess undocumented API successors.\n"
             "When finished, return JSON with any of:\n"
             '  "files": {"relative/path.py": "full new file contents"},\n'
             '  "packet_patch": {\n'
@@ -885,13 +1066,20 @@ def _llm_suggest_fixes(
             "file contents (no __LEGACY__ sanitizers or _test_shim installers).\n"
             "- Do NOT monkeypatch the SDK module (e.g. openai.chat = Compat…) to preserve "
             "0.x prompt=/dict shapes. Migrate to messages= and real SDK objects/attrs.\n"
-            "- Prefer running tests via the run_tests tool before finalizing."
+            "- Prefer focused run_tests(nodeids=failed_nodes) before finalizing."
         ),
         "seeded_paths": failing_hint,
+        "file_windows": windows,
+        "structured_failure": structured,
+        "failed_nodes": structured["failed_nodes"],
+        "leftover_tokens": structured["leftover_tokens"],
+        "failure_fingerprint": structured["failure_fingerprint"],
+        "repair_journal": journal,
+        "path_allowlist": sorted(allow),
         "nudge": nudge or "",
         "ignore": ignore.to_prompt_dict(),
-        "error_stdout": (test_result.stdout or "")[-6000:],
-        "error_stderr": (test_result.stderr or "")[-6000:],
+        "error_stdout": (test_result.stdout or "")[-_PROMPT_STREAM_CHARS:],
+        "error_stderr": (test_result.stderr or "")[-_PROMPT_STREAM_CHARS:],
         "packet": _packet_for_prompt(packet),
         "source": _source_for_prompt(source),
         "coverage_missed": list(coverage_missed or []),
@@ -900,10 +1088,11 @@ def _llm_suggest_fixes(
         "suggested_queries": list(suggested_queries or [])[:12],
     }
     system = (
-        "You are a migration repair agent with local repo tools "
-        "(list/read/grep/write, run_tests, allowlisted run_shell) plus web_search/"
-        "fetch_url. Prefer surgical edits. Preserve public names. "
-        "Reply with a final JSON object only. Honor ignore list. "
+        "You are a migration repair agent with scoped local tools "
+        "(read/grep/write, focused run_tests, allowlisted run_shell) plus "
+        "web_search/fetch_url. Edit failing spans first. No repo inventory. "
+        "Preserve public names. Reply with a final JSON object only. "
+        "Honor ignore list and path_allowlist. "
         "Update packet_patch when the migration packet must change."
     )
     try:
@@ -1066,25 +1255,31 @@ def verify_with_self_correct(
         emit(f"[self-correct] attempt {attempt}/{max_retries} after test failure")
         vlog(f"[self-correct] failure summary:\n{_failure_excerpt(result)}")
 
-        context_files = _collect_context_files(
+        repair_ctx = collect_repair_context(
             root, result, packet=packet, source=source
         )
         context_files = {
-            k: v for k, v in context_files.items() if not ignore.path_ignored(k)
+            k: v
+            for k, v in repair_ctx.files.items()
+            if not ignore.path_ignored(k)
+        }
+        allowlist = {
+            p for p in repair_ctx.allowlist if not ignore.path_ignored(p)
         }
         vlog(
-            f"[self-correct] context files for repair: "
-            f"{', '.join(sorted(context_files)) or '(none)'}"
+            f"[self-correct] context windows for repair: "
+            f"{', '.join(sorted(context_files)) or '(none)'} "
+            f"(allowlist={len(allowlist)})"
         )
 
         nudge: str | None = pending_nudge
         pending_nudge = None
         if empty_nudge_used and not nudge:
             nudge = (
-                "Previous attempt made no file edits. You MUST use tools to "
-                "read failing implementation modules from the traceback "
+                "Previous attempt made no file edits. You MUST edit "
+                "seeded_paths / file_windows with write_file first "
                 f"(seeded_paths={sorted(context_files.keys())}), "
-                "rewrite them with write_file, then run_tests before finishing."
+                "then run_tests(nodeids=failed_nodes) before finishing."
             )
 
         suggestion = LlmRepairSuggestion()
@@ -1113,6 +1308,9 @@ def verify_with_self_correct(
                 coverage_missed=coverage_missed,
                 audit_log=audit_log,
                 attempt=attempt,
+                file_windows=repair_ctx.file_windows,
+                path_allowlist=allowlist,
+                seeded_paths=repair_ctx.seeded_paths,
             )
 
             # Fallback providers without tools may still return search_queries.
@@ -1148,6 +1346,9 @@ def verify_with_self_correct(
                         coverage_missed=coverage_missed,
                         audit_log=audit_log,
                         attempt=attempt,
+                        file_windows=repair_ctx.file_windows,
+                        path_allowlist=allowlist,
+                        seeded_paths=repair_ctx.seeded_paths,
                     )
                 if suggestion.search_queries and not suggestion.files:
                     pending_queries = list(suggestion.search_queries)
