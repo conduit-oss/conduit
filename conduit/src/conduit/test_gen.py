@@ -29,6 +29,8 @@ CONDUIT_GENERATED_NAMES = frozenset(
 _ORACLE_RELS = frozenset(
     {_ORACLE_PY, _ORACLE_JS, _SMOKE_PY, _SMOKE_JS, _FUNCTIONAL_PY, _FUNCTIONAL_JS}
 )
+# Public alias for ignore-list / repair callers.
+CONDUIT_GENERATED_RELS = _ORACLE_RELS
 
 
 def is_conduit_generated_rel(rel: str) -> bool:

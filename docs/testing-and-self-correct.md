@@ -37,7 +37,7 @@ Stdout that says `OPENAI_API_KEY … is not set` is treated as missing credentia
 | `tests/test_conduit_smoke.py` | New callees/params must appear as **real attribute/call use**, not unused `MIGRATION_MARKERS` tuples. |
 | `tests/test_conduit_functional.py` | When an LLM is configured: live/functional tests of new endpoints and public APIs. **Must fail, not skip**, if the key is missing. |
 
-Leftover scan includes import-pruned files **plus** neighbor modules, `configs/`, `scripts/`, `.github/`, compose/Docker files — not only files that `import openai`. Packet apply **never rewrites** Conduit-generated `test_conduit_*` files (so the leftover `FORBIDDEN` list cannot be string-replaced into successor ids).
+Leftover scan includes import-pruned files **plus** neighbor modules, `configs/`, `scripts/`, `.github/`, compose/Docker files — not only files that `import openai`. Packet apply **and** heuristic self-correct **never rewrite** Conduit-generated `test_conduit_*` files (so the leftover `FORBIDDEN` list cannot be string-replaced into successor ids). LLM repair writes to those paths are rejected the same way.
 
 Ignored paths (packet `ignore`, `.conduit/ignore.json`, auto-discovered contract files) are omitted from the leftover scan. Auto-ignore applies only to **tests/oracle/policy-style files** that **literally** assign `LEGACY_` / `FORBIDDEN_` to a quoted old token. Impl helpers named `LEGACY_ADA = "".join(["a","da"])` stay in the scan.
 

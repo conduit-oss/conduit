@@ -859,6 +859,7 @@ def _heuristic_fix(
 ) -> FixAttempt:
     from conduit.patcher.string_replace import exact_replace
     from conduit.repair_ignore import exact_replace_respecting_ignore
+    from conduit.test_gen import is_conduit_generated_rel
 
     ignore = ignore or IgnoreList()
     replacements: list[tuple[str, str]] = []
@@ -895,7 +896,8 @@ def _heuristic_fix(
             rel = str(path.relative_to(root)).replace("\\", "/")
         except ValueError:
             continue
-        if ignore.path_ignored(rel):
+        # Never rewrite leftover/smoke/functional oracles (same as apply / LLM reject).
+        if is_conduit_generated_rel(rel) or ignore.path_ignored(rel):
             skipped_files += 1
             continue
         try:

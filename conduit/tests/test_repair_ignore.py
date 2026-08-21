@@ -88,3 +88,49 @@ def test_conduit_ignore_json(tmp_path: Path):
     (tmp_path / "oracle.py").write_text("x = 1\n", encoding="utf-8")
     ignore = build_ignore_list(tmp_path, {"rules": []})
     assert ignore.path_ignored("oracle.py")
+
+
+def test_heuristic_does_not_rewrite_conduit_oracle(tmp_path: Path):
+    """match→replace must not poison FORBIDDEN/REQUIRED into successor identity pairs."""
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    oracle = tests / "test_conduit_oracle.py"
+    oracle_body = (
+        'FORBIDDEN = ["text-davinci-003", "/v1/engines"]\n'
+        "REQUIRED = [\n"
+        '    {"kind": "replace", "old": "text-davinci-003", "new": "gpt-5.6-terra"},\n'
+        '    {"kind": "replace", "old": "/v1/engines", "new": "/v1/models"},\n'
+        "]\n"
+    )
+    oracle.write_text(oracle_body, encoding="utf-8")
+    smoke = tests / "test_conduit_smoke.py"
+    smoke_body = 'REQUIRED = [{"old": "text-davinci-003", "new": "gpt-5.6-terra"}]\n'
+    smoke.write_text(smoke_body, encoding="utf-8")
+    app = tmp_path / "src"
+    app.mkdir()
+    (app / "chat.py").write_text('MODEL = "text-davinci-003"\n', encoding="utf-8")
+
+    packet = {
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "match": "text-davinci-003",
+                "replace": "gpt-5.6-terra",
+            },
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "match": "/v1/engines",
+                "replace": "/v1/models",
+            },
+        ]
+    }
+    ignore = build_ignore_list(tmp_path, packet)
+    assert ignore.path_ignored("tests/test_conduit_oracle.py")
+    assert ignore.path_ignored("tests/test_conduit_smoke.py")
+
+    fix = _heuristic_fix(tmp_path, packet, ignore=ignore)
+    assert oracle.read_text(encoding="utf-8") == oracle_body
+    assert smoke.read_text(encoding="utf-8") == smoke_body
+    assert "tests/test_conduit_oracle.py" not in fix.files
+    assert "tests/test_conduit_smoke.py" not in fix.files
+    assert "gpt-5.6-terra" in (app / "chat.py").read_text(encoding="utf-8")

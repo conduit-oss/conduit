@@ -184,6 +184,8 @@ def discover_contract_files(root: Path, match_strings: set[str]) -> dict[str, st
 
 def build_ignore_list(root: Path, packet: dict[str, Any]) -> IgnoreList:
     """Merge packet ignore, .conduit/ignore.json, and auto-discovered contract files."""
+    from conduit.test_gen import CONDUIT_GENERATED_RELS
+
     ignore = IgnoreList()
     packet_ignore = packet.get("ignore")
     if isinstance(packet_ignore, dict):
@@ -191,6 +193,12 @@ def build_ignore_list(root: Path, packet: dict[str, Any]) -> IgnoreList:
     file_ignore = _load_conduit_ignore_file(root)
     if file_ignore:
         _merge_ignore_dict(ignore, file_ignore, source=".conduit/ignore.json")
+
+    for rel in sorted(CONDUIT_GENERATED_RELS):
+        ignore.paths.add(rel)
+        ignore.reasons.setdefault(
+            rel, "conduit-generated leftover/smoke/functional oracle"
+        )
 
     matches = _packet_match_strings(packet) | set(ignore.patterns)
     for rel, reason in discover_contract_files(root, matches).items():
