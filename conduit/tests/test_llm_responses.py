@@ -250,6 +250,116 @@ def test_responses_agent_emits_turn_logs(monkeypatch, tmp_path: Path):
     assert "[llm] turn 2/4" in lines
 
 
+def test_responses_agent_last_turn_strips_tools(monkeypatch, tmp_path: Path):
+    (tmp_path / "a.py").write_text("print(1)\n", encoding="utf-8")
+    lines: list[str] = []
+    saw_tools: list[bool] = []
+
+    class FakeResponsesAPI:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            saw_tools.append("tools" in kwargs)
+            if self.calls == 1:
+                return SimpleNamespace(
+                    id="resp_1",
+                    output_text="",
+                    output=[
+                        SimpleNamespace(
+                            type="function_call",
+                            name="read_file",
+                            call_id="c1",
+                            arguments=json.dumps({"path": "a.py"}),
+                        )
+                    ],
+                )
+            # Last turn (max_turns=2): should have no tools; return JSON text.
+            return SimpleNamespace(
+                id="resp_2",
+                output_text='{"done": true}',
+                output=[],
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = FakeResponsesAPI()
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "openai",
+        SimpleNamespace(OpenAI=FakeOpenAI),
+    )
+
+    client = _OpenAIResponsesClient(
+        model="gpt-5.4-mini",
+        api_key="sk-test",
+        reasoning_effort="high",
+        log=lines.append,
+    )
+    client._client = FakeOpenAI()
+    ex = RepoToolExecutor(root=tmp_path, allow_writes=False)
+    data = client.run_agent(
+        system="s",
+        user="u",
+        tools=agent_tools(mode="enrich_scoped"),
+        tool_executor=ex,
+        max_turns=2,
+    )
+    assert data == {"done": True}
+    assert saw_tools == [True, False]
+    assert any("turn 2/2" in line for line in lines)
+
+
+def test_responses_agent_last_turn_ignores_tool_calls(monkeypatch, tmp_path: Path):
+    lines: list[str] = []
+
+    class FakeResponsesAPI:
+        def create(self, **kwargs):
+            # Single turn that still tries to call a tool — must not loop.
+            return SimpleNamespace(
+                id="resp_1",
+                output_text="",
+                output=[
+                    SimpleNamespace(
+                        type="function_call",
+                        name="read_file",
+                        call_id="c1",
+                        arguments=json.dumps({"path": "missing.py"}),
+                    )
+                ],
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = FakeResponsesAPI()
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "openai",
+        SimpleNamespace(OpenAI=FakeOpenAI),
+    )
+
+    client = _OpenAIResponsesClient(
+        model="gpt-5.4-mini",
+        api_key="sk-test",
+        reasoning_effort="high",
+        log=lines.append,
+    )
+    client._client = FakeOpenAI()
+    ex = RepoToolExecutor(root=tmp_path, allow_writes=False)
+    data = client.run_agent(
+        system="s",
+        user="u",
+        tools=agent_tools(mode="enrich_scoped"),
+        tool_executor=ex,
+        max_turns=1,
+    )
+    assert data.get("error")
+    assert any("ignored tool" in line.lower() for line in lines)
+
+
 def test_default_openai_model(monkeypatch):
     monkeypatch.delenv("CONDUIT_LLM_MODEL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

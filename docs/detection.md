@@ -12,6 +12,8 @@ Before vendor modules run, Conduit builds a **`PackageClientState`** per applica
 
 When an LLM is configured, enrichment still runs as an **agent**, but it is seeded with a mechanical **usage dossier** (path allowlist + regex/import hit index from the cheap scan). The agent may only `read_file` / `grep` allowlisted paths (no repo-wide `list_files`), with a lower turn cap. Merged tokens must still appear verbatim in the consumer corpus.
 
+If the dossier has **no `gaps_to_check`** and every hit token is already in `already_found`, enrichment is **skipped** (no agent turns). Otherwise the agent investigates only those gaps; small gap lists use a tighter turn budget (≤3).
+
 Vendor modules consume this as the client baseline. See [Detect modules](detect-modules.md).
 
 ### 1. Lockfile / manifest git diff

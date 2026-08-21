@@ -120,3 +120,86 @@ def test_agent_enrich_merges_corpus_gated(tmp_path: Path, monkeypatch):
     assert "chat.completions" in out.api_patterns
     assert "invented.api" not in out.api_patterns
     assert out.source == "agent"
+
+
+def test_agent_enrich_skips_when_dossier_complete(tmp_path: Path, monkeypatch):
+    (tmp_path / "app.py").write_text(
+        "import openai\n"
+        "openai.ChatCompletion.create(model='gpt-4')\n",
+        encoding="utf-8",
+    )
+    state = PackageClientState(
+        package="openai",
+        model_ids=["gpt-4"],
+        api_patterns=["ChatCompletion.create"],
+        import_files=["app.py"],
+        source="regex",
+    )
+    called = {"n": 0}
+
+    class _FakeClient:
+        def run_agent(self, **_kwargs):
+            called["n"] += 1
+            return {"model_ids": [], "api_patterns": [], "usages": []}
+
+    monkeypatch.setattr(
+        "conduit.llm.client.get_llm_client", lambda: _FakeClient()
+    )
+    monkeypatch.setattr(
+        "conduit.llm.client.attach_llm_log", lambda c, _log: c
+    )
+    monkeypatch.setattr(
+        "conduit.detect.client_state._dossier_enrich_complete",
+        lambda _d: True,
+    )
+    logs: list[str] = []
+    out = _agent_enrich(
+        state, root=tmp_path, files=[tmp_path / "app.py"], log=logs.append
+    )
+    assert called["n"] == 0
+    assert any("skipped" in line.lower() for line in logs)
+    assert any("dossier complete" in n for n in out.notes)
+    assert out.model_ids == ["gpt-4"]
+
+
+def test_agent_enrich_runs_when_gaps_exist(tmp_path: Path, monkeypatch):
+    (tmp_path / "app.py").write_text(
+        "import openai\n",
+        encoding="utf-8",
+    )
+    state = PackageClientState(
+        package="openai",
+        model_ids=[],
+        api_patterns=[],
+        import_files=["app.py"],
+        source="regex",
+    )
+    called = {"n": 0}
+
+    class _FakeClient:
+        def run_agent(self, **_kwargs):
+            called["n"] += 1
+            return {"model_ids": [], "api_patterns": [], "usages": []}
+
+    monkeypatch.setattr(
+        "conduit.llm.client.get_llm_client", lambda: _FakeClient()
+    )
+    monkeypatch.setattr(
+        "conduit.llm.client.attach_llm_log", lambda c, _log: c
+    )
+    monkeypatch.setattr(
+        "conduit.detect.vendor_profile.collect_known_ids",
+        lambda *_a, **_k: set(),
+    )
+    monkeypatch.setattr(
+        "conduit.detect.client_state._dossier_enrich_complete",
+        lambda _d: False,
+    )
+    _agent_enrich(
+        state,
+        root=tmp_path,
+        files=[tmp_path / "app.py"],
+        log=None,
+    )
+    assert called["n"] == 1
+

@@ -173,3 +173,37 @@ def test_empty_source_notes_unknown_baseline():
         packet={"packet_id": "x", "rules": []},
     )
     assert any("empty" in n.lower() or "unknown" in n.lower() for n in report.notes)
+
+
+def test_coverage_chatcompletion_aliases_call_rewrite():
+    """Client token ChatCompletion matches rule ChatCompletion.create."""
+    state = PackageClientState(
+        package="openai",
+        model_ids=[],
+        api_patterns=["ChatCompletion", "chat.completions", "Completion"],
+    )
+    packet = {
+        "packet_id": "p",
+        "package": "openai",
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "ChatCompletion.create",
+                "new_callee": "chat.completions.create",
+            },
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "Completion.create",
+                "new_callee": "chat.completions.create",
+            },
+        ],
+    }
+    report = build_coverage_report(
+        package="openai", state=state, signals=[], packet=packet
+    )
+    by_val = {i.value: i for i in report.items}
+    assert by_val["ChatCompletion"].status == "will_migrate"
+    assert by_val["Completion"].status == "will_migrate"
+    # Modern surface is a replacement target, not a migrate-from gap.
+    assert by_val["chat.completions"].status == "keep"
+

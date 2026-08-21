@@ -181,11 +181,16 @@ class _OpenAIResponsesClient:
         previous_id: str | None = None
         last_text = ""
         emit = self.log
+        force_final_nudge = (
+            "Stop using tools. Reply now with a single JSON object only "
+            "(no markdown fences, no tool calls)."
+        )
 
         for turn_idx in range(turns):
             beat("think")
             if emit is not None:
                 emit(f"[llm] turn {turn_idx + 1}/{turns}")
+            last_turn = turn_idx >= turns - 1
             create_kwargs: dict[str, Any] = {}
             if previous_id:
                 create_kwargs["previous_response_id"] = previous_id
@@ -193,7 +198,22 @@ class _OpenAIResponsesClient:
             else:
                 create_kwargs["input"] = input_items
 
-            if tool_list:
+            if last_turn:
+                # Force a final JSON answer: no tools on the last turn.
+                nudge_input: list[Any] = [
+                    {"role": "user", "content": force_final_nudge}
+                ]
+                if previous_id:
+                    create_kwargs["input"] = [
+                        *(input_items or []),
+                        *nudge_input,
+                    ]
+                else:
+                    create_kwargs["input"] = [
+                        *input_items,
+                        *nudge_input,
+                    ]
+            elif tool_list:
                 create_kwargs["tools"] = tool_list
                 create_kwargs["tool_choice"] = "auto"
 
@@ -203,6 +223,22 @@ class _OpenAIResponsesClient:
             calls = _function_calls(resp)
             if not calls:
                 return _parse_json_response(last_text)
+
+            if last_turn:
+                # Ignore tool calls past the budget; parse whatever text we got.
+                if emit is not None:
+                    emit(
+                        f"[llm] last turn ignored tool call(s): "
+                        f"{', '.join(str(c.get('name') or '?') for c in calls)}"
+                    )
+                parsed = _parse_json_response(last_text)
+                if parsed:
+                    return parsed
+                if emit is not None:
+                    emit(f"[llm] exceeded max_turns ({turns})")
+                return {
+                    "error": "agent exceeded max_turns without a final JSON answer",
+                }
 
             if tool_executor is None:
                 return _parse_json_response(last_text) or {
