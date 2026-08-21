@@ -251,9 +251,9 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
                 ),
                 _fn(
                     "run_shell",
-                    "Run an allowlisted shell command in the consumer repo "
-                    "(pytest, python -m pytest, python -c, pip show/list). "
-                    "Arbitrary commands are rejected.",
+                    "Run a tightly allowlisted shell command (pytest, pip show/list, "
+                    "or a short read-only python -c SDK probe). Not for reading or "
+                    "writing repo files — use read_file / write_file instead.",
                     {
                         "command": {
                             "type": "string",

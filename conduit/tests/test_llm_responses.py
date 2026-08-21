@@ -404,6 +404,34 @@ def test_repo_executor_grep_and_shell(tmp_path: Path):
     assert ok.get("returncode") == 0
 
 
+def test_shell_rejects_file_io_python_c(tmp_path: Path):
+    from conduit.llm.executors import shell_command_allowed
+
+    assert shell_command_allowed(
+        'python -c "import openai; print(getattr(openai, \'__version__\', None))"'
+    )
+    assert not shell_command_allowed(
+        "python -c \"from pathlib import Path; Path('x').write_text('y')\""
+    )
+    assert not shell_command_allowed("python -c \"print('hi')\"")
+    assert not shell_command_allowed("python -c \"1/0\"")
+    ex = RepoToolExecutor(
+        root=tmp_path, allow_writes=False, allow_run_tests=False, allow_shell=True
+    )
+    denied = json.loads(
+        ex(
+            "run_shell",
+            {
+                "command": (
+                    "python -c \"from pathlib import Path; "
+                    "Path('configs/x.json').write_text('{}')\""
+                )
+            },
+        )
+    )
+    assert "allowlisted" in denied["error"]
+
+
 def test_resolve_max_turns(monkeypatch):
     from conduit.llm.tools import resolve_max_turns
 
