@@ -108,6 +108,41 @@ def test_model_polling_emits_removed_for_discovered_legacy(tmp_path: Path):
     assert any(s.affected_pattern == "text-davinci-003" for s in signals)
 
 
+def test_llm_enrich_skips_when_dossier_complete(tmp_path: Path, monkeypatch):
+    """Regex already found everything — enrich agent must not run."""
+    (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        'import openai\nMODEL = "gpt-4o-mini"\n',
+        encoding="utf-8",
+    )
+
+    class FakeLLM:
+        def complete_json(self, *, system: str, user: str):
+            raise AssertionError("enrich should be skipped when dossier is complete")
+
+        def run_agent(self, **kwargs):
+            raise AssertionError("enrich should be skipped when dossier is complete")
+
+    monkeypatch.setattr(
+        "conduit.llm.client.get_llm_client",
+        lambda: FakeLLM(),
+    )
+    monkeypatch.setattr(
+        "conduit.detect.modules.openai.known_models.collect_known_model_ids",
+        lambda **kwargs: {"gpt-4o-mini"},
+    )
+    state = scan_package_state(
+        tmp_path,
+        "openai",
+        installed={"openai": "1.0.0"},
+        demo=False,
+        use_llm=True,
+    )
+    assert "gpt-4o-mini" in state.model_ids
+    assert state.source == "regex"
+    assert any("dossier complete" in n for n in state.notes)
+
+
 def test_llm_enrich_merges_grounded_tokens_only(tmp_path: Path, monkeypatch):
     (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
     (tmp_path / "app.py").write_text(
@@ -125,6 +160,11 @@ def test_llm_enrich_merges_grounded_tokens_only(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         "conduit.llm.client.get_llm_client",
         lambda: FakeLLM(),
+    )
+    # Force the agent/merge path even when the mechanical dossier looks complete.
+    monkeypatch.setattr(
+        "conduit.detect.client_state._dossier_enrich_complete",
+        lambda _d: False,
     )
     # Avoid live catalog/deprecation fetches in this unit test.
     monkeypatch.setattr(
@@ -173,6 +213,10 @@ def test_agent_scan_grounds_usages_and_drops_invented(tmp_path: Path, monkeypatc
             }
 
     monkeypatch.setattr("conduit.llm.client.get_llm_client", lambda: FakeLLM())
+    monkeypatch.setattr(
+        "conduit.detect.client_state._dossier_enrich_complete",
+        lambda _d: False,
+    )
     monkeypatch.setattr(
         "conduit.detect.modules.openai.known_models.collect_known_model_ids",
         lambda **kwargs: {"text-davinci-edit-001"},
@@ -227,6 +271,10 @@ def test_agent_scan_does_not_promote_usage_ids_to_models(tmp_path: Path, monkeyp
             }
 
     monkeypatch.setattr("conduit.llm.client.get_llm_client", lambda: FakeLLM())
+    monkeypatch.setattr(
+        "conduit.detect.client_state._dossier_enrich_complete",
+        lambda _d: False,
+    )
     monkeypatch.setattr(
         "conduit.detect.modules.openai.known_models.collect_known_model_ids",
         lambda **kwargs: {"text-davinci-edit-001"},
