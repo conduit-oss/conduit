@@ -14,6 +14,7 @@ from conduit.detect.modules.openai.path_callees import (
     path_for_api_pattern,
 )
 from conduit.detect.modules.openai.workers.base import resolve_profile
+from conduit.packet.rule_safety import is_valid_python_callee
 
 _LEGACY_CALLEE_RE = re.compile(
     r"(?:^|[.])(?:ChatCompletion|Completion|Edit|Engine|FineTune|Image|Moderation)"
@@ -58,7 +59,9 @@ def _call_rewrite_rule(
     old_callee: str,
     new_callee: str,
     reason: str,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
+    if not is_valid_python_callee(old_callee) or not is_valid_python_callee(new_callee):
+        return None
     return {
         "type": "AST_CALL_REWRITE",
         "target_files": list(AST_GLOBS),
@@ -180,8 +183,9 @@ def apply_sdk_callee_migration(
         return signals, notes
 
     rules = [
-        _call_rewrite_rule(old_callee=old, new_callee=new, reason=reason)
+        rule
         for (old, new), reason in sorted(rewrites.items())
+        if (rule := _call_rewrite_rule(old_callee=old, new_callee=new, reason=reason))
     ]
     notes.append(
         f"SDK callee migration: {len(rules)} AST_CALL_REWRITE rule(s)"

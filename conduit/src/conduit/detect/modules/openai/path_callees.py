@@ -29,14 +29,30 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
     "/v1/fine-tunes": [
         "FineTune.list",
         "openai.FineTune.list",
+        "FineTune.create",
+        "openai.FineTune.create",
     ],
-    "/v1/embeddings": [
-        "embeddings.create",
-        "openai.embeddings.create",
+    "/v1/fine_tuning/jobs": [
+        "fine_tuning.jobs.create",
+        "openai.fine_tuning.jobs.create",
+        "fine_tuning.jobs.list",
+        "openai.fine_tuning.jobs.list",
+    ],
+    "/v1/models": [
+        "models.list",
+        "openai.models.list",
+        "Engine.list",
+        "openai.Engine.list",
     ],
     "/v1/images/generations": [
         "images.generate",
         "openai.images.generate",
+        "Image.create",
+        "openai.Image.create",
+    ],
+    "/v1/embeddings": [
+        "embeddings.create",
+        "openai.embeddings.create",
     ],
     "/v1/images/edits": [
         "images.edit",
@@ -57,6 +73,8 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
     "/v1/moderations": [
         "moderations.create",
         "openai.moderations.create",
+        "Moderation.create",
+        "openai.Moderation.create",
     ],
     "/v1/responses": [
         "responses.create",
@@ -143,12 +161,14 @@ def callees_for_path(
     # Prefer client-observed patterns that map to this path.
     for raw in api_patterns or []:
         token = str(raw or "").strip()
-        if not token:
+        if not token or looks_like_api_path(token):
             continue
         mapped = path_for_api_pattern(token, profile=prof)
         if mapped != norm:
             continue
         if token.endswith(".create") or token.endswith(".generate") or token.endswith(".edit"):
+            candidate = token
+        elif token.endswith(".list"):
             candidate = token
         elif token.lower() == "chat.completions":
             candidate = "chat.completions.create"
@@ -158,6 +178,8 @@ def callees_for_path(
             candidate = "Completion.create"
         else:
             candidate = token
+        if looks_like_api_path(candidate):
+            continue
         if candidate not in seen:
             seen.add(candidate)
             out.append(candidate)

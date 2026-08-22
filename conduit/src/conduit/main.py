@@ -37,6 +37,7 @@ from conduit.packet.bind import bind_packet_to_client, is_snapshot_floor
 from conduit.packet.scope import scope_packet_to_source
 from conduit.packet.validate import validate_packet
 from conduit.patcher import apply_packet
+from conduit.patcher.rule_stages import partition_rules
 from conduit.patcher.dependency_update import dependency_packages
 from conduit.pr_generator import open_pull_request
 from conduit.prune.grep_imports import prune_by_imports
@@ -521,6 +522,9 @@ def apply_cmd(
         raise typer.Exit(1)
     data, _src = _prepare_client_packet(root, data)
     files = prune_by_imports(root, dependency_packages(data))
+    sdk_rules, rest_rules, _unknown = partition_rules(list(data.get("rules") or []))
+    console.print(f"Applying SDK rules ({len(sdk_rules)})…")
+    console.print(f"Applying REST rules ({len(rest_rules)})…")
     report = apply_packet(root, data, dry_run=dry_run, file_allowlist=files or None)
     for change in report.changes:
         prefix = "DRY-RUN " if dry_run else ""
@@ -825,6 +829,9 @@ def _run_pipeline(
             )
 
     beat("apply")
+    sdk_rules, rest_rules, _unknown = partition_rules(list(pkt.get("rules") or []))
+    console.print(f"Applying SDK rules ({len(sdk_rules)})…")
+    console.print(f"Applying REST rules ({len(rest_rules)})…")
     report = apply_packet(root, pkt, dry_run=False, file_allowlist=files or None)
     for change in report.changes:
         console.print(f"[{change.rule_type}] {change.path}: {change.detail}")
