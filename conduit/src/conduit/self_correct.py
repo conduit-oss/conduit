@@ -1173,6 +1173,8 @@ def _llm_suggest_fixes(
     ignore: IgnoreList | None = None,
     seed_urls: list[str] | None = None,
     suggested_queries: list[str] | None = None,
+    migration_evidence: dict[str, str] | None = None,
+    preloaded_evidence_chars: int = 0,
     log: LogFn | None = None,
     nudge: str | None = None,
     source: dict[str, Any] | None = None,
@@ -1232,6 +1234,14 @@ def _llm_suggest_fixes(
             )
         return reason
 
+    failing_hint = list(seeded_paths or sorted(files.keys()))
+    failing_hint = [p for p in failing_hint if not ignore.path_ignored(p)]
+    for item in leftovers:
+        rel = str(item.get("path") or "").replace("\\", "/")
+        if rel and rel not in failing_hint:
+            failing_hint.append(rel)
+    structured = _structured_failure(test_result)
+
     executor = RepoToolExecutor(
         root=root,
         ignore=ignore,
@@ -1241,15 +1251,26 @@ def _llm_suggest_fixes(
         log=emit if emit is not _noop_log else _noop_log,
         reject_write=_reject,
         path_allowlist=allow or None,
+        require_research_before_write=True,
+        preloaded_evidence_chars=preloaded_evidence_chars,
+        research_tokens={
+            t.lower()
+            for t in (
+                list(structured.get("leftover_tokens") or [])
+                + re.findall(
+                    r"/v1/[\w./_-]+",
+                    str(structured.get("failure_digest") or ""),
+                )
+                + [
+                    str(x.get("value") or "")
+                    for x in (coverage_missed or [])
+                    if isinstance(x, dict)
+                ]
+            )
+            if t and len(str(t)) >= 3
+        },
     )
 
-    failing_hint = list(seeded_paths or sorted(files.keys()))
-    failing_hint = [p for p in failing_hint if not ignore.path_ignored(p)]
-    for item in leftovers:
-        rel = str(item.get("path") or "").replace("\\", "/")
-        if rel and rel not in failing_hint:
-            failing_hint.append(rel)
-    structured = _structured_failure(test_result)
     journal = (
         audit_log.repair_journal(attempt=attempt)
         if audit_log is not None
@@ -1284,8 +1305,10 @@ def _llm_suggest_fixes(
             "focused retest. Full suite still runs after your turn.\n"
             "4) Consult repair_journal so you do not repeat rejected writes "
             "or restored diffs.\n"
-            "5) Use web_search / fetch_url only when docs are needed for an "
-            "API successor — do not guess undocumented APIs.\n"
+            "5) Research phase (required): Read migration_docs, code_examples, "
+            "and openapi_structs pre-loaded below. Use fetch_url on seed_urls for "
+            "any API successor not covered. Do NOT call write_file until you have "
+            "doc-backed migration facts for each failing callee/path/param.\n"
             "6) Preserve existing public names (module-level def/class and "
             "__all__) unless tests require a rename.\n"
             "7) run_shell is only for pytest / pip show|list / tiny read-only "
@@ -1345,11 +1368,14 @@ def _llm_suggest_fixes(
         "seed_urls": list(seed_urls or [])[:20],
         "suggested_queries": list(suggested_queries or [])[:12],
     }
+    if migration_evidence:
+        prompt.update(migration_evidence)
     system = (
         "You are a migration repair agent with scoped local tools "
         "(read/grep/write, focused run_tests, tightly allowlisted run_shell) plus "
-        "web_search/fetch_url. Edit leftover_files and failing spans first. "
-        "No repo inventory. No shell file IO. Preserve public names. "
+        "web_search/fetch_url. Research first: read migration_docs / examples / "
+        "openapi_structs, fetch_url any gaps, then edit leftover_files and failing "
+        "spans. No repo inventory. No shell file IO. Preserve public names. "
         "Reply with a final JSON object only. Honor ignore list and path_allowlist. "
         "Update packet_patch when the migration packet must change."
     )
@@ -1410,9 +1436,10 @@ def _llm_suggest_fixes(
 
 
 def _evidence_url_note(evidence: str, *, limit: int = 5) -> str:
-    if not evidence:
+    text = str(evidence or "")
+    if not text:
         return ""
-    urls = re.findall(r"https?://\S+", evidence)
+    urls = re.findall(r"https?://\S+", text)
     uniq: list[str] = []
     seen: set[str] = set()
     for u in urls:
@@ -1618,10 +1645,57 @@ def verify_with_self_correct(
                 result, packet, extra_queries=pending_queries, source=source
             )
             pending_queries = []
+
+            migration_payload: dict[str, str] = {}
+            preloaded_chars = 0
+            profile = None
+            try:
+                from conduit.detect.vendor_profile import profile_for_package
+
+                pkg = str(packet.get("package") or "")
+                profile = profile_for_package(pkg) if pkg else None
+            except Exception:
+                profile = None
+
+            if profile is not None:
+                from conduit.packet.migration_evidence import build_migration_evidence
+
+                ctx_chunks = [
+                    result.stdout or "",
+                    result.stderr or "",
+                    json.dumps(coverage_missed or [])[:4000],
+                ]
+                if source:
+                    ctx_chunks.extend(str(x) for x in source.get("api_patterns") or [])
+                    ctx_chunks.extend(str(x) for x in source.get("model_ids") or [])
+                try:
+                    prefetched = build_migration_evidence(
+                        context_chunks=ctx_chunks,
+                        profile=profile,
+                        search_queries=queries,
+                        model_ids=(source or {}).get("model_ids") if source else None,
+                        max_pages=6,
+                        open_search=True,
+                        demo_openapi=True,
+                    )
+                    migration_payload = prefetched.as_prompt_dict()
+                    preloaded_chars = len(prefetched.preloaded_text)
+                    seeds = list(dict.fromkeys(prefetched.router_urls + seeds))
+                    vlog(
+                        "[self-correct] prefetched migration evidence: "
+                        f"{len(prefetched.docs)} doc(s), "
+                        f"{len(prefetched.code_examples)} example(s), "
+                        f"{len(prefetched.openapi_structs)} openapi path(s)"
+                    )
+                    for w in prefetched.warnings[:4]:
+                        vlog(f"[self-correct] research: {w}")
+                except Exception as exc:
+                    vlog(f"[self-correct] migration evidence prefetch failed: {exc}")
+
             vlog(
                 "[self-correct] agent seeds/queries: "
                 f"{len(seeds)} URL(s), {len(queries)} quer(ies) "
-                "(model may web_search / fetch_url)"
+                "(fetch_url required before write_file)"
             )
 
             suggestion = _llm_suggest_fixes(
@@ -1632,6 +1706,8 @@ def verify_with_self_correct(
                 ignore=ignore,
                 seed_urls=seeds,
                 suggested_queries=queries,
+                migration_evidence=migration_payload,
+                preloaded_evidence_chars=preloaded_chars,
                 log=emit,
                 nudge=nudge,
                 source=source,
@@ -1671,6 +1747,8 @@ def verify_with_self_correct(
                         ignore=ignore,
                         seed_urls=seeds,
                         suggested_queries=suggestion.search_queries,
+                        migration_evidence=migration_payload,
+                        preloaded_evidence_chars=max(preloaded_chars, len(evidence)),
                         log=emit,
                         nudge=nudge,
                         source=source,

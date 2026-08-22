@@ -81,6 +81,32 @@ class RepoToolExecutor:
     reject_write: Callable[[str, str], str | None] | None = None
     # When set, read_file/grep may only touch these relative paths (audit agent).
     path_allowlist: set[str] | None = None
+    require_research_before_write: bool = False
+    preloaded_evidence_chars: int = 0
+    research_tokens: set[str] = field(default_factory=set)
+    fetch_url_count: int = 0
+    research_satisfied: bool = False
+
+    def _research_gate_ok(self) -> bool:
+        if not self.require_research_before_write or self.research_satisfied:
+            return True
+        if self.fetch_url_count >= 1 and self.preloaded_evidence_chars >= 200:
+            return True
+        if self.fetch_url_count >= 2:
+            return True
+        if self.preloaded_evidence_chars >= 800 and self.fetch_url_count >= 1:
+            return True
+        if self.research_tokens and self.preloaded_evidence_chars >= 500:
+            covered = sum(1 for t in self.research_tokens if len(t) >= 4)
+            if covered == 0:
+                return self.fetch_url_count >= 1
+        return False
+
+    def _research_gate_message(self) -> str:
+        return (
+            "research phase required: read migration_docs and call fetch_url on "
+            "seed_urls for API successors before write_file"
+        )
 
     def __call__(self, name: str, arguments: dict[str, Any]) -> str:
         try:
@@ -185,6 +211,15 @@ class RepoToolExecutor:
     def _write_file(self, args: dict[str, Any]) -> str:
         if not self.allow_writes:
             return json.dumps({"error": "write_file not allowed in this mode"})
+        if not self._research_gate_ok():
+            return json.dumps(
+                {
+                    "error": self._research_gate_message(),
+                    "hint": "Use fetch_url on seed_urls / migration docs first.",
+                    "fetch_url_calls": self.fetch_url_count,
+                    "preloaded_evidence_chars": self.preloaded_evidence_chars,
+                }
+            )
         rel = str(args.get("path") or "")
         contents = args.get("contents")
         if not isinstance(contents, str):
@@ -309,6 +344,17 @@ class RepoToolExecutor:
         pattern = str(args.get("pattern") or "")
         if not pattern:
             return json.dumps({"error": "pattern required"})
+        if (
+            self.require_research_before_write
+            and not self._research_gate_ok()
+            and pattern.strip() in {".", ".*", ".+", "^", ".{0,}"}
+        ):
+            return json.dumps(
+                {
+                    "error": self._research_gate_message(),
+                    "hint": "Repo-wide inventory grep blocked during research phase.",
+                }
+            )
         directory = str(args.get("directory") or ".")
         glob_pat = str(args.get("glob") or "**/*")
         limit = max(1, min(int(args.get("limit") or 40), 200))
@@ -380,6 +426,9 @@ class RepoToolExecutor:
             text = fetch_url(url)
         except Exception as exc:  # noqa: BLE001
             return json.dumps({"error": f"fetch failed: {exc}", "url": url})
+        self.fetch_url_count += 1
+        if self.fetch_url_count >= 1 and self.preloaded_evidence_chars >= 200:
+            self.research_satisfied = True
         truncated = len(text) > self.max_fetch_chars
         if truncated:
             text = text[: self.max_fetch_chars]

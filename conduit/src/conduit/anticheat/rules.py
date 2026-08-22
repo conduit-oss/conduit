@@ -51,6 +51,55 @@ _ORACLE_SHIM_NEEDLES = (
 _COMPAT_NAME_RE = re.compile(r"^_?Compat", re.I)
 _INSTALL_COMPAT_RE = re.compile(r"_install_compat|install_compat", re.I)
 _PATHISH_RE = re.compile(r"^/[A-Za-z0-9._~/-]+$")
+_LEGACY_CALLEE_IN_TEXT_RE = re.compile(
+    r"\b(?:openai\.)?(?:Completion|ChatCompletion|Edit|Engine|FineTune|Moderation|Image)"
+    r"\.(?:create|list|retrieve)\b"
+)
+
+
+def legacy_callee_still_present(
+    text: str, rel: str, packet: dict[str, Any]
+) -> str | None:
+    """Flag impl files that still call packet-known legacy SDK callees."""
+    if not is_impl_rel(rel):
+        return None
+    old_callees: set[str] = set()
+    for rule in packet.get("rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        if str(rule.get("type") or "") != "AST_CALL_REWRITE":
+            continue
+        old = str(rule.get("old_callee") or "").strip()
+        if old:
+            old_callees.add(old)
+    if not old_callees:
+        for match in _LEGACY_CALLEE_IN_TEXT_RE.findall(text or ""):
+            old_callees.add(match)
+    for old in sorted(old_callees):
+        if old in (text or ""):
+            return (
+                f"{rel} still calls legacy SDK callee {old!r}; "
+                "migrate to the packet successor"
+            )
+    return None
+
+
+def echo_script_stub_finding(rel: str, text: str) -> str | None:
+    """Reject shell scripts that echo legacy paths instead of migrating URLs."""
+    posix = _posix(rel)
+    if not posix.endswith(".sh"):
+        return None
+    body = text or ""
+    if "echo" not in body.lower():
+        return None
+    if any(tok in body for tok in ("curl ", "wget ", "httpx.", "requests.", "http")):
+        return None
+    if _PATHISH_RE.search(body) or "/v1/" in body:
+        return (
+            f"{posix} echo-stubs API paths without migrating URLs/models "
+            "(scripts must use real endpoints, not echo placeholders)"
+        )
+    return None
 
 
 def _posix(rel: str) -> str:
@@ -712,7 +761,14 @@ def file_findings(
     findings.extend(sdk_monkeypatch_findings(text, posix, pkg, packet))
     findings.extend(old_kwargs_on_new_callee_findings(text, posix, packet))
 
-    # Parallel HTTP without the SDK: only on rewrites that dropped the import,
+    legacy = legacy_callee_still_present(text, posix, packet)
+    if legacy:
+        findings.append(legacy)
+    echo_stub = echo_script_stub_finding(posix, text)
+    if echo_stub:
+        findings.append(echo_stub)
+
+    # Parallel HTTP without the SDK:
     # or brand-new files (previous == ""). Do not flag pre-existing generated clients.
     if previous is not None:
         if previous == "" or imports_package(previous, pkg):

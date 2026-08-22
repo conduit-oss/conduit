@@ -95,6 +95,7 @@ def _prepare_client_packet(
     *,
     source: dict | None = None,
     installed_version: str | None = None,
+    coverage_no_rule: list | None = None,
 ) -> tuple[dict, dict | None]:
     """Stamp floor from_version from the client pin and prune catalog rules."""
     pkg = str(packet.get("package") or "")
@@ -119,6 +120,24 @@ def _prepare_client_packet(
             f"Bound packet from_version {floor!r} → {bound.get('from_version')!r} "
             f"from client install"
         )
+    if coverage_no_rule:
+        from conduit.packet.doc_augment import augment_packet_from_docs
+
+        no_rule_payload = [
+            {"kind": i.kind, "value": i.value, "detail": i.detail}
+            for i in coverage_no_rule
+        ]
+        bound, aug_warnings = augment_packet_from_docs(
+            bound,
+            src,
+            no_rule_items=no_rule_payload,
+            log=console.print,
+        )
+        for w in aug_warnings:
+            if w.startswith("Doc-augmented"):
+                console.print(f"[green]{w}[/green]")
+            elif w and not w.startswith("evidence"):
+                console.print(f"[yellow]Warning:[/yellow] {w}")
     scoped, stats = scope_packet_to_source(bound, src)
     if stats.total:
         console.print(
@@ -762,7 +781,11 @@ def _run_pipeline(
 
     src_dict = coverage.source_packet if coverage is not None else None
     pkt, src_dict = _prepare_client_packet(
-        root, pkt, source=src_dict, installed_version=pin
+        root,
+        pkt,
+        source=src_dict,
+        installed_version=pin,
+        coverage_no_rule=coverage.no_rule if coverage is not None else None,
     )
 
     beat("prune")

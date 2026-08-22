@@ -680,6 +680,14 @@ def synthesize_from_evidence(
         )
         return base, warnings
 
+    profile = None
+    try:
+        from conduit.detect.vendor_profile import profile_for_package
+
+        profile = profile_for_package(package)
+    except Exception:
+        profile = None
+
     ignore = IgnoreList()
     ignore_payload: dict[str, Any] = {}
     if root is not None:
@@ -692,10 +700,57 @@ def synthesize_from_evidence(
         else filter_signals_to_source(signals, source_packet, package=package)
     )
     has_source_usage = bool(_source_usage_index(source_packet)["has_usage"])
+
+    context_chunks: list[str] = [
+        f"{s.change_type} {s.affected_pattern} {s.replacement_pattern} {s.description}"
+        for s in scoped_signals
+        if s.package.lower() == package.lower()
+    ]
+    if missed_items:
+        context_chunks.extend(
+            f"{i.get('kind')} {i.get('value')} {i.get('detail')}"
+            for i in missed_items
+            if isinstance(i, dict)
+        )
+    if isinstance(source_packet, dict):
+        context_chunks.extend(str(x) for x in source_packet.get("model_ids") or [])
+        context_chunks.extend(str(x) for x in source_packet.get("api_patterns") or [])
+
+    migration_payload: dict[str, str] = {}
+    router_urls = list(seeds)
+    if profile is not None:
+        from conduit.packet.migration_evidence import build_migration_evidence
+
+        evidence = build_migration_evidence(
+            context_chunks=context_chunks,
+            profile=profile,
+            search_queries=queries,
+            model_ids=(source_packet or {}).get("model_ids")
+            if isinstance(source_packet, dict)
+            else None,
+            max_pages=8,
+            demo_openapi=True,
+        )
+        migration_payload = evidence.as_prompt_dict()
+        router_urls = list(dict.fromkeys(evidence.router_urls + seeds))
+        warnings.extend(evidence.warnings)
+        if emit is not None:
+            emit(
+                f"[packet-enrich] prefetched {len(evidence.docs)} doc(s), "
+                f"{len(evidence.code_examples)} example(s), "
+                f"{len(evidence.openapi_structs)} openapi path(s)"
+            )
+
+    research_prefix = (
+        "Research phase (required): Read migration_docs, code_examples, and "
+        "openapi_structs pre-loaded below. Use fetch_url on seed_urls for any "
+        "gap before emitting rules. Do not guess API successors.\n"
+    )
     if publisher or not has_source_usage:
         instructions = (
-            "Use tools (web_search, fetch_url, read_file, grep) to gather "
-            "grounded migration facts from seed_urls / suggested_queries. "
+            research_prefix
+            + "Use tools (web_search, fetch_url, read_file, grep) to gather "
+            "more grounded migration facts from seed_urls / suggested_queries. "
             "This is a publisher catalog packet (no consumer source_packet). "
             "Emit rules covering detect_signals up to to_version. "
             "Do not invent path successors or call shapes. "
@@ -703,8 +758,9 @@ def synthesize_from_evidence(
         )
     else:
         instructions = (
-            "Use tools (web_search, fetch_url, read_file, grep) to gather "
-            "grounded migration facts from seed_urls / suggested_queries "
+            research_prefix
+            + "Use tools (web_search, fetch_url, read_file, grep) to gather "
+            "more grounded migration facts from seed_urls / suggested_queries "
             "and the consumer source_packet. "
             "Only emit rules for source_packet model_ids / usages / api_patterns. "
             "Do not invent path successors or call shapes. "
@@ -721,14 +777,16 @@ def synthesize_from_evidence(
         "existing_rule_count": len(base.get("rules") or []),
         "missed_coverage": missed_items or [],
         "ignore": ignore_payload,
-        "seed_urls": seeds,
+        "seed_urls": router_urls,
         "allow_hosts": hosts or ["github.com"],
         "suggested_queries": queries,
         "instructions": instructions,
     }
+    user_payload.update(migration_payload)
     system = (
         _EVIDENCE_SYSTEM
-        + " Use tools as needed before answering. Final reply must be JSON only."
+        + " Research first: read pre-loaded migration_docs / examples / openapi_structs, "
+        "then fetch_url any missing facts before emitting rules. Final reply must be JSON only."
     )
     executor: RepoToolExecutor | None = None
     if root is not None:
