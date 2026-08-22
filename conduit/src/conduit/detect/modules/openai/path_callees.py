@@ -143,6 +143,20 @@ def path_for_api_pattern(
     return None
 
 
+def modern_callees_for_path(
+    path: str | None,
+    *,
+    profile: VendorProfile | None = None,
+) -> list[str]:
+    """Return structural path_to_callees entries only (no client api_patterns)."""
+    norm = normalize_api_path(path)
+    if not norm:
+        return []
+    prof = _active_profile(profile)
+    table = (prof.path_to_callees if prof and prof.path_to_callees else _PATH_TO_CALLEES)
+    return list(table.get(norm, []))
+
+
 def callees_for_path(
     path: str | None,
     *,
@@ -184,8 +198,7 @@ def callees_for_path(
             seen.add(candidate)
             out.append(candidate)
 
-    table = (prof.path_to_callees if prof and prof.path_to_callees else _PATH_TO_CALLEES)
-    for candidate in table.get(norm, []):
+    for candidate in modern_callees_for_path(norm, profile=prof):
         if candidate not in seen:
             seen.add(candidate)
             out.append(candidate)

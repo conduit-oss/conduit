@@ -10,6 +10,7 @@ from conduit.detect.models import ChangeSignal
 from conduit.detect.modules.openai.normalize import AST_GLOBS
 from conduit.detect.modules.openai.path_callees import (
     callees_for_path,
+    modern_callees_for_path,
     normalize_api_path,
     path_for_api_pattern,
 )
@@ -20,6 +21,10 @@ _LEGACY_CALLEE_RE = re.compile(
     r"(?:^|[.])(?:ChatCompletion|Completion|Edit|Engine|FineTune|Image|Moderation)"
     r"(?:[.]create|[.]list|[.]retrieve)?$",
     re.I,
+)
+
+_CALLEE_VERBS = frozenset(
+    {"create", "list", "retrieve", "generate", "edit", "create_edit"}
 )
 
 
@@ -71,12 +76,37 @@ def _call_rewrite_rule(
     }
 
 
+def _callee_verb(name: str) -> str | None:
+    seg = str(name or "").strip().rsplit(".", 1)
+    if not seg:
+        return None
+    verb = seg[-1].lower()
+    return verb if verb in _CALLEE_VERBS else None
+
+
+def pick_modern_callee(old_callee: str, candidates: list[str]) -> str | None:
+    """Pick a structural successor: same verb preferred, never prefer legacy shapes."""
+    if not candidates:
+        return None
+    verb = _callee_verb(old_callee)
+    if verb:
+        for cand in candidates:
+            if _LEGACY_CALLEE_RE.search(cand):
+                continue
+            if _callee_verb(cand) == verb:
+                return cand
+    for cand in candidates:
+        if not _LEGACY_CALLEE_RE.search(cand):
+            return cand
+    return candidates[0]
+
+
 def _same_path_legacy_pairs(
     api_patterns: Iterable[str] | None,
     *,
     profile=None,
 ) -> list[tuple[str, str, str]]:
-    """Legacy callees on a path → modern first target for that path."""
+    """Legacy callees on a path → modern map target for that path."""
     out: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
     used = _collect_used_callees(api_patterns=api_patterns)
@@ -85,20 +115,20 @@ def _same_path_legacy_pairs(
         path = path_for_api_pattern(token, profile=prof)
         if not path:
             continue
-        targets = callees_for_path(path, api_patterns=api_patterns, profile=prof)
-        if not targets:
+        modern_targets = modern_callees_for_path(path, profile=prof)
+        if not modern_targets:
             continue
-        modern = targets[0]
         candidates = {token}
         if not token.endswith(".create") and "." not in token:
             candidates.add(f"{token}.create")
         for old in candidates:
-            if old == modern:
-                continue
             if not _LEGACY_CALLEE_RE.search(old) and old not in {
                 "Completion.create",
                 "ChatCompletion.create",
             }:
+                continue
+            modern = pick_modern_callee(old, modern_targets)
+            if not modern or old == modern:
                 continue
             key = (old, modern)
             if key in seen:
@@ -134,7 +164,7 @@ def apply_sdk_callee_migration(
         else "openai"
     )
 
-    rewrites: dict[tuple[str, str], str] = {}
+    rewrites: dict[str, tuple[str, str]] = {}
 
     for signal in signals:
         if signal.change_type != "API_BREAKING":
@@ -143,10 +173,9 @@ def apply_sdk_callee_migration(
         new_path = normalize_api_path(signal.replacement_pattern)
         if not old_path or not new_path or old_path == new_path:
             continue
-        new_targets = callees_for_path(new_path, api_patterns=api_patterns, profile=prof)
-        if not new_targets:
+        modern_targets = modern_callees_for_path(new_path, profile=prof)
+        if not modern_targets:
             continue
-        new_callee = new_targets[0]
         old_targets = callees_for_path(old_path, api_patterns=api_patterns, profile=prof)
         if not old_targets:
             old_targets = [
@@ -156,7 +185,8 @@ def apply_sdk_callee_migration(
             ]
         source_url = signal.source_url or ""
         for old_callee in old_targets:
-            if old_callee == new_callee:
+            new_callee = pick_modern_callee(old_callee, modern_targets)
+            if not new_callee or old_callee == new_callee:
                 continue
             if used and not _callee_in_scope(old_callee, used):
                 continue
@@ -166,7 +196,7 @@ def apply_sdk_callee_migration(
             )
             if source_url:
                 reason += f" Source: {source_url}"
-            rewrites[(old_callee, new_callee)] = reason
+            rewrites.setdefault(old_callee, (new_callee, reason))
 
     has_sdk_bump = any(
         s.change_type in {"SDK_MAJOR_BUMP", "SDK_BUMP"} for s in signals
@@ -177,14 +207,14 @@ def apply_sdk_callee_migration(
         ):
             if used and not _callee_in_scope(old, used):
                 continue
-            rewrites.setdefault((old, new), reason)
+            rewrites.setdefault(old, (new, reason))
 
     if not rewrites:
         return signals, notes
 
     rules = [
         rule
-        for (old, new), reason in sorted(rewrites.items())
+        for old, (new, reason) in sorted(rewrites.items())
         if (rule := _call_rewrite_rule(old_callee=old, new_callee=new, reason=reason))
     ]
     notes.append(
