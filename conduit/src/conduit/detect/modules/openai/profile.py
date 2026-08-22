@@ -49,6 +49,20 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
     "/v1/fine-tunes": [
         "FineTune.list",
         "openai.FineTune.list",
+        "FineTune.create",
+        "openai.FineTune.create",
+    ],
+    "/v1/fine_tuning/jobs": [
+        "fine_tuning.jobs.create",
+        "openai.fine_tuning.jobs.create",
+        "fine_tuning.jobs.list",
+        "openai.fine_tuning.jobs.list",
+    ],
+    "/v1/models": [
+        "models.list",
+        "openai.models.list",
+        "Engine.list",
+        "openai.Engine.list",
     ],
     "/v1/embeddings": [
         "embeddings.create",
@@ -57,6 +71,8 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
     "/v1/images/generations": [
         "images.generate",
         "openai.images.generate",
+        "Image.create",
+        "openai.Image.create",
     ],
     "/v1/images/edits": [
         "images.edit",
@@ -77,6 +93,8 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
     "/v1/moderations": [
         "moderations.create",
         "openai.moderations.create",
+        "Moderation.create",
+        "openai.Moderation.create",
     ],
     "/v1/responses": [
         "responses.create",

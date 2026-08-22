@@ -19,6 +19,7 @@ from conduit.detect.modules.openai.sdk_callee_migration import (
 )
 from conduit.detect.modules.openai.workers.base import resolve_profile
 from conduit.packet.migration_evidence import build_migration_evidence
+from conduit.packet.rule_safety import is_valid_python_callee
 from conduit.packet.synthesize import merge_packet_rules
 
 _PATH_PAIR_RE = re.compile(
@@ -76,12 +77,16 @@ def derive_callee_rules(
                 continue
             if used and not _callee_in_scope(old_callee, used):
                 continue
+            if not is_valid_python_callee(old_callee) or not is_valid_python_callee(new_callee):
+                continue
             rewrites.setdefault((old_callee, new_callee), reason)
 
     has_usage = bool(used)
     if has_usage:
         for old, new, reason in _same_path_legacy_pairs(api_patterns, profile=prof):
             if not _callee_in_scope(old, used):
+                continue
+            if not is_valid_python_callee(old) or not is_valid_python_callee(new):
                 continue
             rewrites.setdefault((old, new), reason)
 

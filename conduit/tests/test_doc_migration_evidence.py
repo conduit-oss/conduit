@@ -89,6 +89,22 @@ def test_derive_callee_rules_from_path_pair():
     )
 
 
+def test_derive_callee_rules_rejects_path_as_new_callee():
+    rules = derive_callee_rules(
+        path_pairs=[
+            (
+                "/v1/fine-tunes",
+                "/v1/fine_tuning/jobs",
+                "Endpoint migration",
+            )
+        ],
+        api_patterns=["/v1/fine-tunes", "/v1/fine_tuning/jobs", "openai.FineTune.list"],
+    )
+    for rule in rules:
+        assert not str(rule.get("new_callee") or "").startswith("/")
+        assert not str(rule.get("old_callee") or "").startswith("/")
+
+
 def test_openapi_snippets_from_fixture():
     snippets = extract_openapi_snippets(
         paths=["/v1/chat/completions"],
