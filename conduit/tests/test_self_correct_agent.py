@@ -457,16 +457,17 @@ def _empty_anticheat(*_a, **_k):
     return AnticheatReport(findings=[], source="mechanical")
 
 
-def test_self_correct_stops_on_initial_anticheat(monkeypatch, tmp_path: Path):
+def test_self_correct_retries_on_initial_anticheat(monkeypatch, tmp_path: Path):
     from conduit import self_correct as sc
     from conduit.anticheat.scan import AnticheatReport
 
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
     calls = {"llm": 0}
 
     class FakeClient:
         def run_agent(self, **kwargs):
             calls["llm"] += 1
-            return {"files": {}, "packet_patch": {}}
+            return {"files": {"app.py": "x = 2\n"}, "packet_patch": {}}
 
     monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
     monkeypatch.setattr(
@@ -476,22 +477,26 @@ def test_self_correct_stops_on_initial_anticheat(monkeypatch, tmp_path: Path):
             findings=["fake sdk stub"], source="mechanical"
         ),
     )
+    monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
+    monkeypatch.setattr(
+        sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], [])
+    )
     logs: list[str] = []
-    result, changed = sc.verify_with_self_correct(
+    result, _changed = sc.verify_with_self_correct(
         tmp_path,
         {"rules": [], "notes": ""},
-        max_retries=5,
+        max_retries=2,
         log=logs.append,
     )
-    assert calls["llm"] == 0
+    assert calls["llm"] >= 1
     assert not result.passed
     assert result.runner == "anticheat"
-    assert "anticheat failure" in (result.fail_reason or "")
-    assert any("anticheat failure (not retryable)" in line for line in logs)
-    assert changed == []
+    assert "anticheat failed" in (result.stdout or "")
+    assert not any("not retryable" in line for line in logs)
+    assert any("attempt 1/" in line for line in logs)
 
 
-def test_self_correct_stops_on_anticheat_after_attempt(monkeypatch, tmp_path: Path):
+def test_self_correct_retries_anticheat_after_attempt(monkeypatch, tmp_path: Path):
     from conduit import self_correct as sc
     from conduit.anticheat.scan import anticheat_failure_result
 
@@ -511,20 +516,26 @@ def test_self_correct_stops_on_anticheat_after_attempt(monkeypatch, tmp_path: Pa
         failed_count=1,
     )
     cheat = anticheat_failure_result(["dropped openai import"], source="mechanical")
-    results = [fail, cheat]
+    results = [fail]
+
+    def _run_tests(_root):
+        if results:
+            return results.pop(0)
+        return cheat
+
     calls = {"llm": 0}
 
     class FakeClient:
         def run_agent(self, **kwargs):
             calls["llm"] += 1
             return {
-                "files": {"app.py": "x = 2\n"},
+                "files": {"app.py": f"x = {calls['llm'] + 1}\n"},
                 "packet_patch": {},
             }
 
     monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
     monkeypatch.setattr(sc, "run_anticheat", _empty_anticheat)
-    monkeypatch.setattr(sc, "run_tests", lambda _root: results.pop(0))
+    monkeypatch.setattr(sc, "run_tests", _run_tests)
     monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
     monkeypatch.setattr(
         sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], [])
@@ -534,13 +545,13 @@ def test_self_correct_stops_on_anticheat_after_attempt(monkeypatch, tmp_path: Pa
     result, _ = sc.verify_with_self_correct(
         tmp_path,
         {"rules": [], "notes": ""},
-        max_retries=5,
+        max_retries=3,
         log=logs.append,
     )
-    assert calls["llm"] == 1
+    assert calls["llm"] >= 2
     assert result.runner == "anticheat"
-    assert any("anticheat failure (not retryable)" in line for line in logs)
-    assert not any("attempt 2/" in line for line in logs)
+    assert not any("not retryable" in line for line in logs)
+    assert any("attempt 2/" in line for line in logs)
 
 
 def test_self_correct_stops_when_all_writes_rejected(monkeypatch, tmp_path: Path):

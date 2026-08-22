@@ -445,6 +445,21 @@ def test_rename_python_attr_and_call():
     assert n2 >= 1
 
 
+def test_rewrite_python_call_scrubs_non_call_residues():
+    src = (
+        'LEGACY = "openai.Image.create"\n'
+        "def generate():\n"
+        "    return openai.Image.create(prompt='x')\n"
+    )
+    out, n = rewrite_python_call(
+        src, "openai.Image.create", "images.generate"
+    )
+    assert n >= 2
+    assert "openai.Image.create" not in out
+    assert "images.generate" in out
+    assert out.count("images.generate") >= 2
+
+
 def _disable_llm(monkeypatch):
     monkeypatch.setenv("CONDUIT_LLM_PROVIDER", "none")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

@@ -1478,6 +1478,26 @@ def _run_verified_tests(
     return result
 
 
+def _run_anticheat_then_tests(
+    root: Path,
+    packet: dict[str, Any],
+    *,
+    llm_audit: bool = False,
+    log: LogFn | None = None,
+    vlog: LogFn | None = None,
+    audit_log: MigrationAuditLog | None = None,
+) -> TestResult:
+    """Mechanical anticheat first, then tests (+ optional LLM anticheat)."""
+    mech = run_anticheat(
+        root, packet, llm=False, log=vlog or _noop_log, audit_log=audit_log
+    )
+    if mech.findings:
+        return anticheat_failure_result(mech.findings, source=mech.source)
+    return _run_verified_tests(
+        root, packet, llm_audit=llm_audit, log=log, audit_log=audit_log
+    )
+
+
 def verify_with_self_correct(
     root: Path,
     packet: dict[str, Any],
@@ -1497,27 +1517,20 @@ def verify_with_self_correct(
         audit_log = MigrationAuditLog.from_packet(packet, root=root)
 
     corrected_files: list[str] = []
-    mech = run_anticheat(
-        root, packet, llm=False, log=vlog, audit_log=audit_log
+    result = _run_anticheat_then_tests(
+        root,
+        packet,
+        llm_audit=True,
+        log=emit,
+        vlog=vlog,
+        audit_log=audit_log,
     )
-    if mech.findings:
-        result = anticheat_failure_result(mech.findings, source=mech.source)
-    else:
-        result = _run_verified_tests(
-            root, packet, llm_audit=True, log=emit, audit_log=audit_log
-        )
     try:
         audit_log.persist(root)
     except OSError:
         pass
     if result.passed:
         return result, corrected_files
-
-    if _is_anticheat_failure(result):
-        _emit_unpassable_stop(emit, "anticheat failure (not retryable)")
-        return _mark_unpassable(
-            result, "anticheat failure (not retryable)"
-        ), corrected_files
 
     source = source or _load_source_packet(root, packet)
     ignore = build_ignore_list(root, packet)
@@ -1882,8 +1895,13 @@ def verify_with_self_correct(
 
         previous = result
         emit("[self-correct] re-running full test suite…")
-        result = _run_verified_tests(
-            root, packet, llm_audit=True, log=emit, audit_log=audit_log
+        result = _run_anticheat_then_tests(
+            root,
+            packet,
+            llm_audit=True,
+            log=emit,
+            vlog=vlog,
+            audit_log=audit_log,
         )
         try:
             audit_log.persist(root)
@@ -1892,11 +1910,6 @@ def verify_with_self_correct(
         if result.passed:
             emit(f"[self-correct] tests passed after attempt {attempt}")
             return result, sorted(set(corrected_files))
-
-        if _is_anticheat_failure(result):
-            _emit_unpassable_stop(emit, "anticheat failure (not retryable)")
-            result = _mark_unpassable(result, "anticheat failure (not retryable)")
-            break
 
         if snapshots and _repair_regressed(previous, result):
             restored = _restore_snapshots(root, snapshots)
@@ -1917,8 +1930,13 @@ def verify_with_self_correct(
                 + (f" ({'; '.join(lost_bits[:4])})" if lost_bits else "")
             )
             consecutive_restores += 1
-            result = _run_verified_tests(
-                root, packet, llm_audit=True, log=emit, audit_log=audit_log
+            result = _run_anticheat_then_tests(
+                root,
+                packet,
+                llm_audit=True,
+                log=emit,
+                vlog=vlog,
+                audit_log=audit_log,
             )
             try:
                 audit_log.persist(root)
@@ -1933,12 +1951,6 @@ def verify_with_self_correct(
             if result.passed:
                 emit("[self-correct] tests passed after restoring snapshot")
                 return result, sorted(set(corrected_files))
-            if _is_anticheat_failure(result):
-                _emit_unpassable_stop(emit, "anticheat failure (not retryable)")
-                result = _mark_unpassable(
-                    result, "anticheat failure (not retryable)"
-                )
-                break
             if consecutive_restores >= 2:
                 _emit_unpassable_stop(emit, "repair regressed twice")
                 result = _mark_unpassable(result, "repair regressed twice")
