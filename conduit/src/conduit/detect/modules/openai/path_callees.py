@@ -23,6 +23,8 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
         "openai.Edit.create",
     ],
     "/v1/engines": [
+        "models.list",
+        "openai.models.list",
         "Engine.list",
         "openai.Engine.list",
     ],
@@ -76,6 +78,16 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
         "Moderation.create",
         "openai.Moderation.create",
     ],
+    "/v1/files": [
+        "files.create",
+        "openai.files.create",
+        "files.list",
+        "openai.files.list",
+        "File.create",
+        "openai.File.create",
+        "File.list",
+        "openai.File.list",
+    ],
     "/v1/responses": [
         "responses.create",
         "openai.responses.create",
@@ -84,14 +96,16 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
 
 _API_PATTERN_TO_PATH: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^chat\.completions(?:\.create)?$", re.I), "/v1/chat/completions"),
-    (re.compile(r"^ChatCompletion(?:\.create)?$", re.I), "/v1/chat/completions"),
+    (re.compile(r"^(?:openai\.)?ChatCompletion(?:\.create)?$", re.I), "/v1/chat/completions"),
     (re.compile(r"^(?:openai\.)?embeddings\.create$", re.I), "/v1/embeddings"),
+    (re.compile(r"^(?:openai\.)?Embedding\.create$", re.I), "/v1/embeddings"),
     (re.compile(r"^(?:openai\.)?Completion\.create$", re.I), "/v1/completions"),
     (re.compile(r"^(?:openai\.)?Edit\.create$", re.I), "/v1/edits"),
     (re.compile(r"^(?:openai\.)?Engine(?:\.list|\.retrieve)?$", re.I), "/v1/engines"),
     (re.compile(r"^(?:openai\.)?FineTune(?:\.list|\.create)?$", re.I), "/v1/fine-tunes"),
     (re.compile(r"^(?:openai\.)?Image\.(?:create|create_edit)$", re.I), "/v1/images/generations"),
     (re.compile(r"^(?:openai\.)?Moderation\.create$", re.I), "/v1/moderations"),
+    (re.compile(r"^(?:openai\.)?File\.(?:create|list)$", re.I), "/v1/files"),
 ]
 
 _PATH_RE = re.compile(r"^/v1/[A-Za-z0-9/_\-{}]+$")

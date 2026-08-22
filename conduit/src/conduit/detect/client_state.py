@@ -32,8 +32,10 @@ _OPENAI_MODEL_FIND_RE = re.compile(
 )
 
 _OPENAI_API_FIND_RE = re.compile(
-    r"(?:ChatCompletion|/v1/[a-z0-9/_-]+|chat\.completions|"
-    r"Completion\.create|embeddings\.create)",
+    r"(?:ChatCompletion(?:\.create)?|"
+    r"(?:openai\.)?(?:Completion|Edit|Engine|FineTune|Image|Moderation|Embedding|File)"
+    r"\.(?:create|list|retrieve|create_edit)|"
+    r"/v1/[a-z0-9/_-]+|chat\.completions|embeddings\.create)",
     re.IGNORECASE,
 )
 

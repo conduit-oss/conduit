@@ -70,13 +70,18 @@ def legacy_callee_still_present(
         if str(rule.get("type") or "") != "AST_CALL_REWRITE":
             continue
         old = str(rule.get("old_callee") or "").strip()
-        if old:
+        # Bare tokens (Engine, Edit) are too ambiguous for substring checks.
+        if old and "." in old:
             old_callees.add(old)
     if not old_callees:
         for match in _LEGACY_CALLEE_IN_TEXT_RE.findall(text or ""):
             old_callees.add(match)
+    body = text or ""
     for old in sorted(old_callees):
-        if old in (text or ""):
+        # Block word chars before/after so Engine.list does not match Engine,
+        # but allow openai.Completion.create to match Completion.create.
+        pat = re.compile(rf"(?<!\w){re.escape(old)}(?![\w.])")
+        if pat.search(body):
             return (
                 f"{rel} still calls legacy SDK callee {old!r}; "
                 "migrate to the packet successor"

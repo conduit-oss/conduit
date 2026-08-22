@@ -85,20 +85,26 @@ def _callee_verb(name: str) -> str | None:
 
 
 def pick_modern_callee(old_callee: str, candidates: list[str]) -> str | None:
-    """Pick a structural successor: same verb preferred, never prefer legacy shapes."""
+    """Pick a structural successor: same verb + openai. prefix preferred."""
     if not candidates:
         return None
     verb = _callee_verb(old_callee)
-    if verb:
-        for cand in candidates:
-            if _LEGACY_CALLEE_RE.search(cand):
-                continue
-            if _callee_verb(cand) == verb:
-                return cand
-    for cand in candidates:
-        if not _LEGACY_CALLEE_RE.search(cand):
-            return cand
-    return candidates[0]
+    want_openai = str(old_callee or "").startswith("openai.")
+
+    def _rank(cand: str) -> tuple[int, int, int]:
+        legacy = 1 if _LEGACY_CALLEE_RE.search(cand) else 0
+        verb_miss = 0
+        if verb:
+            verb_miss = 0 if _callee_verb(cand) == verb else 1
+        else:
+            verb_miss = 0
+        if want_openai:
+            prefix_miss = 0 if cand.startswith("openai.") else 1
+        else:
+            prefix_miss = 0 if not cand.startswith("openai.") else 1
+        return (legacy, verb_miss, prefix_miss)
+
+    return min(candidates, key=_rank)
 
 
 def _same_path_legacy_pairs(
@@ -129,6 +135,8 @@ def _same_path_legacy_pairs(
                 continue
             modern = pick_modern_callee(old, modern_targets)
             if not modern or old == modern:
+                continue
+            if _LEGACY_CALLEE_RE.search(modern):
                 continue
             key = (old, modern)
             if key in seen:
@@ -187,6 +195,8 @@ def apply_sdk_callee_migration(
         for old_callee in old_targets:
             new_callee = pick_modern_callee(old_callee, modern_targets)
             if not new_callee or old_callee == new_callee:
+                continue
+            if _LEGACY_CALLEE_RE.search(new_callee):
                 continue
             if used and not _callee_in_scope(old_callee, used):
                 continue
