@@ -63,6 +63,11 @@ def _rule_summary(rule: dict[str, Any]) -> str:
             f"`{rule.get('old_param')}` → `{rule.get('new_param')}` "
             f"({rule.get('function_target')})"
         )
+    if rtype == "AST_PARAM_DROP":
+        param = rule.get("param") or rule.get("old_param")
+        vals = rule.get("values")
+        suffix = f" values={vals}" if vals else ""
+        return f"drop `{param}`{suffix} ({rule.get('function_target')})"
     if rtype == "DEPENDENCY_BUMP":
         return (
             f"`{rule.get('package')}` "

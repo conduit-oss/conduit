@@ -235,6 +235,9 @@ class RepoToolExecutor:
         result = run_tests(self.root, nodeids=nodeids or None)
         status = "passed" if result.passed else "failed"
         self.log(f"[repair] tests {status}")
+        from conduit.self_correct import build_failure_digest, _pack_stream
+
+        digest = build_failure_digest(result)
         return json.dumps(
             {
                 "passed": result.passed,
@@ -242,8 +245,17 @@ class RepoToolExecutor:
                 "runner": result.runner,
                 "command": result.command,
                 "nodeids": nodeids,
-                "stdout": (result.stdout or "")[-8000:],
-                "stderr": (result.stderr or "")[-4000:],
+                "failed_nodes": digest["failed_nodes"],
+                "leftover_tokens": digest["leftover_tokens"],
+                "leftover_files": digest["leftover_files"],
+                "exception_snippets": digest["exception_snippets"],
+                "failure_digest": digest["text"],
+                "stdout": _pack_stream(
+                    result.stdout or "", head=2000, tail=6000
+                ),
+                "stderr": _pack_stream(
+                    result.stderr or "", head=1000, tail=3000
+                ),
                 "summary": result.summary,
             }
         )

@@ -117,6 +117,8 @@ def _signal_in_scope(signal: ChangeSignal, index: dict[str, Any]) -> bool:
         "SDK_MAJOR_BUMP",
         "SDK_BUMP",
         "PARAM_RENAME",
+        "PARAM_REMOVED",
+        "SDK_CALLEE_MIGRATION",
         "PACKAGE_ADDED",
         "PACKAGE_REMOVED",
     }:
@@ -439,6 +441,7 @@ def synthesize_from_docs(
             "Generate a Conduit migration packet JSON with keys: "
             "packet_id, package, ecosystem, from_version, to_version, sources, notes, rules. "
             "Rules may use EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
+            "AST_PARAM_DROP, "
             "DEPENDENCY_BUMP, DEPENDENCY_ADD, DEPENDENCY_REMOVE, AST_IMPORT_REWRITE, "
             "AST_ATTR_RENAME, AST_CALL_REWRITE, KEY_RENAME. "
             "Only propose replacements grounded in the provided changelog/docs. "
@@ -472,12 +475,15 @@ _EVIDENCE_SYSTEM = (
     "You are a Staff Software Engineer authoring Conduit Migration Packets. "
     "Emit JSON only with keys: notes (string), sources (list of {url, kind}), rules (list). "
     "Allowed rule types: EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
+    "AST_PARAM_DROP, "
     "DEPENDENCY_BUMP, DEPENDENCY_ADD, DEPENDENCY_REMOVE, AST_IMPORT_REWRITE, "
     "AST_ATTR_RENAME, AST_CALL_REWRITE, KEY_RENAME. "
     "Every path replace, param rename, and call rewrite MUST be supported by the evidence "
     "excerpts (cite URLs in notes). "
     "For AST_PARAM_RENAME include explicit function_target(s) taken from evidence — "
     "do not assume ChatCompletion vs chat.completions. "
+    "For AST_PARAM_DROP include function_target, param, and optional values "
+    "(literal kwargs to omit). "
     "If a removed endpoint/param has no stated successor, mention it in notes and do NOT "
     "invent replace/new_callee/new_param. "
     "Do not invent model ids. "
@@ -514,6 +520,16 @@ def _rule_dedupe_key(rule: dict[str, Any]) -> str:
                 "function_target": rule.get("function_target"),
                 "old_param": rule.get("old_param"),
                 "new_param": rule.get("new_param"),
+            },
+            sort_keys=True,
+        )
+    if rtype == "AST_PARAM_DROP":
+        return json.dumps(
+            {
+                "type": rtype,
+                "function_target": rule.get("function_target"),
+                "param": rule.get("param") or rule.get("old_param"),
+                "values": rule.get("values"),
             },
             sort_keys=True,
         )
