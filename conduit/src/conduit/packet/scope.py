@@ -11,6 +11,7 @@ from conduit.packet.synthesize import _DEP_RULE_TYPES, _source_usage_index
 _OLD_TOKEN_KEYS = {
     "EXACT_STRING_REPLACE": "match",
     "AST_PARAM_RENAME": "old_param",
+    "AST_PARAM_DROP": "param",
     "AST_IMPORT_REWRITE": "old_import",
     "AST_ATTR_RENAME": "old_attr",
     "AST_CALL_REWRITE": "old_callee",

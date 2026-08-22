@@ -140,6 +140,77 @@ def _param_signal(
     )
 
 
+def _param_removed_signal(
+    *,
+    old_path: str,
+    new_path: str,
+    param: str,
+    api_patterns: list[str],
+    source_url: str | None,
+    profile=None,
+) -> ChangeSignal:
+    prof = resolve_profile(profile)
+    pkg = (prof.packages[0] if prof.packages else prof.name)
+    source = f"module:{prof.name}"
+    openapi_url = prof.openapi_source_url or OPENAPI_SOURCE_URL
+    targets = callees_for_path(new_path, api_patterns=api_patterns, profile=prof)
+    reason = (
+        f"Endpoint {old_path} → {new_path}; request property {param!r} removed "
+        f"per OpenAPI schemas. Source: {source_url or openapi_url}"
+    )
+    rules: list[dict[str, Any]] = []
+    for target in targets:
+        rules.append(
+            {
+                "type": "AST_PARAM_DROP",
+                "target_files": list(AST_GLOBS),
+                "function_target": target,
+                "param": param,
+                "reason": reason,
+            }
+        )
+    return ChangeSignal(
+        source=source,
+        package=pkg,
+        change_type="PARAM_REMOVED",
+        severity="WARNING",
+        affected_pattern=param,
+        replacement_pattern=None,
+        description=reason,
+        source_url=source_url or openapi_url,
+        hints={
+            "vendor": prof.name,
+            "path": new_path,
+            "old_path": old_path,
+            "new_path": new_path,
+            "endpoint_param_compat": True,
+        },
+        suggested_rules=rules,
+    )
+
+
+def _existing_removed_keys(signals: list[ChangeSignal]) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    for s in signals:
+        if s.change_type not in {"PARAM_REMOVED", "API_BREAKING"}:
+            continue
+        param = str(s.affected_pattern or "")
+        path = ""
+        if isinstance(s.hints, dict):
+            path = str(s.hints.get("path") or s.hints.get("new_path") or "")
+        if s.change_type == "PARAM_REMOVED" and param:
+            keys.add((param, path))
+        for rule in s.suggested_rules:
+            if rule.get("type") == "AST_PARAM_DROP":
+                keys.add(
+                    (
+                        str(rule.get("param") or rule.get("old_param") or ""),
+                        str(rule.get("function_target") or path),
+                    )
+                )
+    return keys
+
+
 def apply_path_param_compat(
     signals: list[ChangeSignal],
     *,
@@ -182,6 +253,7 @@ def apply_path_param_compat(
     previous, latest = pair_specs
     api_patterns = list(client_state.api_patterns) if client_state else []
     existing = _existing_param_keys(signals)
+    existing_removed = _existing_removed_keys(signals)
     out = list(signals)
 
     for old_path, new_path, src in pairs:
@@ -266,9 +338,24 @@ def apply_path_param_compat(
                 note = (
                     f"Endpoint {old_path} → {new_path}: removed request props "
                     f"{', '.join(diff.removed)} with no 1:1 rename "
-                    f"(added: {', '.join(diff.added) or 'none'}). No invent."
+                    f"(added: {', '.join(diff.added) or 'none'})."
                 )
                 notes.append(note)
+                for prop in diff.removed:
+                    if any(k[0] == prop for k in existing_removed):
+                        continue
+                    sig = _param_removed_signal(
+                        old_path=old_path,
+                        new_path=new_path,
+                        param=prop,
+                        api_patterns=api_patterns,
+                        source_url=source_url,
+                        profile=profile,
+                    )
+                    if sig.suggested_rules:
+                        out.append(sig)
+                        existing_removed.add((prop, new_path))
+                        notes.append(sig.description or "")
                 # Annotate the path signal description when present
                 for i, s in enumerate(out):
                     if (

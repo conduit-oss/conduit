@@ -118,7 +118,7 @@ conduit packet validate ./my-packet/conduit-packet.json
 conduit packet show ./my-packet/conduit-packet.json
 ```
 
-`from-detect` freezes **what the scan sees now**. The next new latest is a new file whose `from_version` is the last file’s `to_version` for that package+ecosystem. It is not a git-history replay. `--enrich` optionally adds LLM rules; default is scrape-only. OpenAI snapshots also include documented SDK call-surface AST rules (`ChatCompletion.create`, `createChatCompletion`, `max_tokens` → `max_completion_tokens`, and similar).
+`from-detect` freezes **what the scan sees now**. The next new latest is a new file whose `from_version` is the last file’s `to_version` for that package+ecosystem. It is not a git-history replay. `--enrich` optionally adds LLM rules; default is scrape-only. OpenAI snapshots derive rules from detect signals (OpenAPI param rename/removal, endpoint path pairs → usage-scoped `AST_CALL_REWRITE`, deprecations) — not from a static Python seed list.
 
 Clients apply **one hop** (file or URL). They do not scrape OpenAI to author rules:
 
@@ -136,6 +136,7 @@ Give a Python client the **pypi** hops with `to_version` greater than their pin,
 | `EXACT_STRING_REPLACE` | Literal find/replace |
 | `REGEX_REPLACE` | Regex replace |
 | `AST_PARAM_RENAME` | Rename kwarg / object key / builder method / struct key near a call |
+| `AST_PARAM_DROP` | Omit a kwarg near a matching call (optional literal `values`) |
 | `AST_IMPORT_REWRITE` | Rewrite import module path (Python, JS/TS, Java, Go) |
 | `AST_ATTR_RENAME` | Rename attribute / member chain |
 | `AST_CALL_REWRITE` | Rewrite call callee path |

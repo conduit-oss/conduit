@@ -23,17 +23,25 @@ _PYTEST_COUNT_RE = re.compile(
     r"(?P<failed>\d+)\s+failed|(?P<passed>\d+)\s+passed|(?P<error>\d+)\s+error",
     re.I,
 )
-_FAILED_NODE_RE = re.compile(r"^FAILED\s+(\S+)", re.M)
+_FAILED_NODE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.M)
 _STILL_CONTAINS_RE = re.compile(r"still contains\s+'([^']+)'", re.I)
 # Oracle-style: "configs/foo.json still contains 'davinci'"
 _LEFTOVER_PATH_RE = re.compile(
     r"(?m)^(?P<path>[^\s:]+?)\s+(?:still contains|obfuscates leftover)\s+'(?P<token>[^']+)'",
     re.I,
 )
+# Pytest short-tb / bare exception lines (generic — not API-specific).
+_PYTEST_E_LINE_RE = re.compile(r"(?m)^E\s+(\S.+)$")
+_EXCEPTION_LINE_RE = re.compile(
+    r"(?m)^([A-Za-z_][\w.]*(?:Error|Exception|Warning):\s*.+)$"
+)
 _CONTEXT_IMPL_CAP = 8
 _LEFTOVER_PATH_CAP = 16
 _WINDOW_RADIUS = 60
-_PROMPT_STREAM_CHARS = 2000
+_PROMPT_STREAM_HEAD = 1000
+_PROMPT_STREAM_TAIL = 2000
+_PROMPT_STREAM_CHARS = _PROMPT_STREAM_TAIL  # back-compat alias
+_EXCEPTION_SNIPPET_CAP = 8
 
 
 def _noop_log(_: str) -> None:
@@ -63,6 +71,9 @@ def _failure_fingerprint(result: TestResult) -> str:
     )
     if nodes or leftovers:
         return f"nodes={nodes}|left={leftovers}|counts={counts}"
+    snippets = _exception_snippets(blob, limit=4)
+    if snippets:
+        return f"snippets={snippets}|counts={counts}"
     reason = (result.fail_reason or "").strip()
     excerpt = re.sub(r"\s+", " ", blob).strip()[:400]
     return f"reason={reason}|excerpt={excerpt}|counts={counts}"
@@ -93,11 +104,84 @@ def _leftover_path_hits(text: str) -> list[tuple[str, str]]:
     return out
 
 
+def _pack_stream(
+    text: str,
+    *,
+    head: int = _PROMPT_STREAM_HEAD,
+    tail: int = _PROMPT_STREAM_TAIL,
+) -> str:
+    """Keep start and end of a long stream so early FAILED lines are not dropped."""
+    text = text or ""
+    if len(text) <= head + tail:
+        return text
+    return f"{text[:head]}\n...\n{text[-tail:]}"
+
+
+def _exception_snippets(text: str, *, limit: int = _EXCEPTION_SNIPPET_CAP) -> list[str]:
+    """Unique exception / pytest-E lines from a failure blob (generic)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for pattern in (_PYTEST_E_LINE_RE, _EXCEPTION_LINE_RE):
+        for m in pattern.finditer(text or ""):
+            line = re.sub(r"\s+", " ", m.group(1)).strip()
+            if len(line) > 240:
+                line = line[:237] + "..."
+            if not line or line in seen:
+                continue
+            # Skip leftover-oracle noise already covered by leftover_* fields.
+            if "still contains" in line.lower() or "obfuscates leftover" in line.lower():
+                continue
+            seen.add(line)
+            out.append(line)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def build_failure_digest(result: TestResult) -> dict[str, Any]:
+    """Structured failure digest from full stdout/stderr (for prompt + tools)."""
+    blob = _failure_blob(result)
+    nodes = _failed_nodes(result)
+    leftovers = _leftover_tokens(result)
+    leftover_paths = [
+        {"path": path, "token": token} for path, token in _leftover_path_hits(blob)
+    ]
+    snippets = _exception_snippets(blob)
+    lines: list[str] = []
+    if nodes:
+        lines.append("failed_nodes: " + ", ".join(nodes[:12]))
+        if len(nodes) > 12:
+            lines[-1] += f" (+{len(nodes) - 12} more)"
+    if leftover_paths:
+        preview = "; ".join(
+            f"{p['path']} still contains '{p['token']}'" for p in leftover_paths[:8]
+        )
+        lines.append("leftovers: " + preview)
+        if len(leftover_paths) > 8:
+            lines[-1] += f" (+{len(leftover_paths) - 8} more)"
+    elif leftovers:
+        lines.append("leftover_tokens: " + ", ".join(leftovers[:12]))
+    for snip in snippets[:6]:
+        lines.append(snip)
+    return {
+        "failed_nodes": nodes,
+        "leftover_tokens": leftovers[:80],
+        "leftover_files": leftover_paths[:_LEFTOVER_PATH_CAP],
+        "exception_snippets": snippets,
+        "lines": lines,
+        "text": "\n".join(lines),
+    }
+
+
 def _structured_failure(result: TestResult) -> dict[str, Any]:
     """Compact failure signal for the repair prompt (Cursor-shaped)."""
+    digest = build_failure_digest(result)
     return {
-        "failed_nodes": _failed_nodes(result),
-        "leftover_tokens": _leftover_tokens(result)[:80],
+        "failed_nodes": digest["failed_nodes"],
+        "leftover_tokens": digest["leftover_tokens"],
+        "leftover_files": digest["leftover_files"],
+        "exception_snippets": digest["exception_snippets"],
+        "failure_digest": digest["text"],
         "failure_fingerprint": _failure_fingerprint(result),
         "fail_reason": (result.fail_reason or "").strip(),
         "runner": result.runner,
@@ -923,11 +1007,14 @@ def _heuristic_fix(
 
     ignore = ignore or IgnoreList()
     replacements: list[tuple[str, str]] = []
+    drop_rules: list[dict[str, Any]] = []
     for rule in packet.get("rules") or []:
         if rule.get("type") == "EXACT_STRING_REPLACE":
             replacements.append((str(rule["match"]), str(rule["replace"])))
         if rule.get("type") == "AST_PARAM_RENAME":
             replacements.append((str(rule["old_param"]), str(rule["new_param"])))
+        if rule.get("type") == "AST_PARAM_DROP":
+            drop_rules.append(rule)
 
     # De-dupe while preserving order; longer matches first (gpt-4-0613 before gpt-4)
     seen: set[tuple[str, str]] = set()
@@ -1004,6 +1091,8 @@ def _heuristic_fix(
     match_counts = {old: 0 for old, _ in replacements}
     skipped_files = 0
 
+    from conduit.patcher.ast_param_drop import apply_param_drop
+
     for path in targets:
         try:
             rel = str(path.relative_to(root)).replace("\\", "/")
@@ -1034,6 +1123,21 @@ def _heuristic_fix(
             if count:
                 match_counts[old] = match_counts.get(old, 0) + count
                 file_hits.append(f"{old!r} -> {new!r} ({count}x)")
+        for rule in drop_rules:
+            raw_values = rule.get("values")
+            values = list(raw_values) if isinstance(raw_values, list) else None
+            param = str(rule.get("param") or rule.get("old_param") or "")
+            if not param:
+                continue
+            updated, count = apply_param_drop(
+                path,
+                updated,
+                function_target=str(rule.get("function_target") or ""),
+                param=param,
+                values=values,
+            )
+            if count:
+                file_hits.append(f"drop {param!r} ({count}x)")
         if updated != original:
             path.write_text(updated, encoding="utf-8")
             changed.append(rel)
@@ -1044,9 +1148,10 @@ def _heuristic_fix(
         details.append(f"ignored {skipped_files} file(s) via ignore list")
 
     if not changed:
-        if not replacements:
+        if not replacements and not drop_rules:
             details.append(
-                "no EXACT_STRING_REPLACE / AST_PARAM_RENAME rules available for heuristics"
+                "no EXACT_STRING_REPLACE / AST_PARAM_RENAME / AST_PARAM_DROP "
+                "rules available for heuristics"
             )
         else:
             for old, new in replacements:
@@ -1224,13 +1329,15 @@ def _llm_suggest_fixes(
         "structured_failure": structured,
         "failed_nodes": structured["failed_nodes"],
         "leftover_tokens": structured["leftover_tokens"],
+        "exception_snippets": structured["exception_snippets"],
+        "failure_digest": structured["failure_digest"],
         "failure_fingerprint": structured["failure_fingerprint"],
         "repair_journal": journal,
         "path_allowlist": sorted(allow),
         "nudge": nudge or "",
         "ignore": ignore.to_prompt_dict(),
-        "error_stdout": (test_result.stdout or "")[-_PROMPT_STREAM_CHARS:],
-        "error_stderr": (test_result.stderr or "")[-_PROMPT_STREAM_CHARS:],
+        "error_stdout": _pack_stream(test_result.stdout or ""),
+        "error_stderr": _pack_stream(test_result.stderr or ""),
         "packet": _packet_for_prompt(packet),
         "source": _source_for_prompt(source),
         "coverage_missed": list(coverage_missed or []),
@@ -1406,6 +1513,7 @@ def verify_with_self_correct(
         emit(f"[self-correct] attempt {attempt}/{max_retries} after test failure")
         nodes = _failed_nodes(result)
         leftovers = _leftover_tokens(result)
+        digest = build_failure_digest(result)
         if nodes:
             shown = ", ".join(nodes[:3])
             if len(nodes) > 3:
@@ -1416,9 +1524,15 @@ def verify_with_self_correct(
             if len(leftovers) > 4:
                 shown += f" (+{len(leftovers) - 4} more)"
             emit(f"[self-correct] leftovers: {shown}")
+        elif digest["exception_snippets"]:
+            emit(f"[self-correct] failure: {digest['exception_snippets'][0][:160]}")
+        elif digest["text"]:
+            emit(f"[self-correct] failure: {digest['text'][:160]}")
         else:
             reason = (result.fail_reason or result.summary or "unknown failure").strip()
             emit(f"[self-correct] failure: {reason[:120]}")
+        if digest["text"]:
+            vlog(f"[self-correct] failure digest:\n{digest['text']}")
         vlog(f"[self-correct] failure summary:\n{_failure_excerpt(result)}")
 
         repair_ctx = collect_repair_context(
@@ -1446,6 +1560,42 @@ def verify_with_self_correct(
             f"{', '.join(sorted(context_files)) or '(none)'} "
             f"(allowlist={len(allowlist)})"
         )
+
+        from conduit.packet.failure_rules import suggest_rules_from_failure
+
+        failure_rules = suggest_rules_from_failure(
+            result,
+            file_windows=repair_ctx.file_windows,
+            packet=packet,
+        )
+        if failure_rules:
+            patch_details = _apply_packet_patch(packet, {"rules": failure_rules})
+            emit(
+                f"[self-correct] verify-learned {len(failure_rules)} rule(s): "
+                + ", ".join(
+                    f"drop {r.get('param')!r}"
+                    + (
+                        f"={r.get('values')}"
+                        if r.get("values") is not None
+                        else ""
+                    )
+                    for r in failure_rules[:3]
+                )
+                + ("…" if len(failure_rules) > 3 else "")
+            )
+            vlog(
+                "[self-correct] failure-learned rules: "
+                + "; ".join(patch_details or ["merged"])
+            )
+            if audit_log is not None:
+                audit_log.record_packet_patch(patch_details, attempt=attempt)
+            learned = _heuristic_fix(root, packet, ignore)
+            if learned.files:
+                corrected_files.extend(learned.files)
+                emit(
+                    f"[self-correct] applied verify-learned rules to "
+                    f"{len(learned.files)} file(s)"
+                )
 
         nudge: str | None = pending_nudge
         pending_nudge = None

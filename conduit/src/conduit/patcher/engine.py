@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from conduit.context_filter import file_has_vendor_context
 from conduit.patcher.ast_attr_call import apply_attr_rename, apply_call_rewrite
 from conduit.patcher.ast_import_rewrite import apply_import_rewrite
+from conduit.patcher.ast_param_drop import apply_param_drop
 from conduit.patcher.ast_param_rename import apply_param_rename
 from conduit.patcher.dependency_update import apply_dependency_rule
 from conduit.patcher.key_rename import apply_key_rename, is_env_file, iter_config_files
@@ -228,6 +229,21 @@ def apply_packet(
                 detail = (
                     f"Renamed param {rule.get('old_param')} -> "
                     f"{rule.get('new_param')} ({count}x)"
+                )
+            elif rule_type == "AST_PARAM_DROP":
+                raw_values = rule.get("values")
+                values = list(raw_values) if isinstance(raw_values, list) else None
+                updated, count = apply_param_drop(
+                    path,
+                    original,
+                    function_target=rule.get("function_target", ""),
+                    param=rule.get("param") or rule.get("old_param") or "",
+                    values=values,
+                )
+                detail = (
+                    f"Dropped param {rule.get('param') or rule.get('old_param')}"
+                    + (f" values={values}" if values else "")
+                    + f" ({count}x)"
                 )
             elif rule_type == "AST_IMPORT_REWRITE":
                 updated, count = apply_import_rewrite(

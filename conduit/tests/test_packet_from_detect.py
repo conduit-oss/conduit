@@ -109,9 +109,35 @@ def test_first_snapshot_from_floor(tmp_path: Path):
     assert bump["to_version"] == "2.0.0"
     assert bump["ecosystems"] == ["pip", "pyproject"]
     assert any(r.get("match") == "gpt-4-0613" for r in pkt["rules"])
-    assert any(
+    assert not any(
         r.get("type") == "AST_CALL_REWRITE"
         and r.get("old_callee") == "ChatCompletion.create"
+        for r in pkt["rules"]
+    )
+
+
+def test_snapshot_includes_callee_migration_from_endpoint_signals(tmp_path: Path):
+    endpoint = ChangeSignal(
+        source="module:openai",
+        package="openai",
+        change_type="API_BREAKING",
+        affected_pattern="/v1/completions",
+        replacement_pattern="/v1/chat/completions",
+        source_url="https://platform.openai.com/docs/deprecations",
+    )
+    from conduit.detect.modules.openai.sdk_callee_migration import apply_sdk_callee_migration
+
+    scoped, _ = apply_sdk_callee_migration([endpoint])
+    pkt = build_snapshot_packet(
+        scoped + [_bump_signal(eco="pypi", to_version="2.0.0")],
+        package="openai",
+        ecosystem="pypi",
+        from_version="0",
+        to_version="2.0.0",
+    )
+    assert any(
+        r.get("type") == "AST_CALL_REWRITE"
+        and r.get("old_callee") == "Completion.create"
         for r in pkt["rules"]
     )
 

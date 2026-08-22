@@ -59,6 +59,20 @@ Renames a keyword / named parameter near a matching call:
 
 `function_target` may be a dotted path; matching is suffix-aware (calls ending in `.create` can match).
 
+### `AST_PARAM_DROP`
+
+Omits a keyword / named parameter near a matching call (Python libcst; JS/TS heuristic). Optional `values` limits drops to those literals (e.g. only `temperature=0`).
+
+```json
+{
+  "type": "AST_PARAM_DROP",
+  "target_files": ["*.py", "*.ts", "*.js"],
+  "function_target": "chat.completions.create",
+  "param": "temperature",
+  "values": [0, 0.0]
+}
+```
+
 ### `AST_IMPORT_REWRITE`
 
 Rewrites import / module paths via the language engine for the file suffix (libcst for Python; tree-sitter import literals for JS/TS, Java, and Go).

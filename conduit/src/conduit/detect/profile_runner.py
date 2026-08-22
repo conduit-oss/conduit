@@ -9,6 +9,7 @@ from conduit.detect.modules.base import DetectContext
 from conduit.detect.modules.openai.endpoint_compat import apply_endpoint_compat
 from conduit.detect.modules.openai.normalize import default_rules_for, signal_to_event
 from conduit.detect.modules.openai.path_param_compat import apply_path_param_compat
+from conduit.detect.modules.openai.sdk_callee_migration import apply_sdk_callee_migration
 from conduit.detect.modules.openai.workers.model_polling import ModelPollingWorker
 from conduit.detect.modules.openai.workers.sdk_release import (
     SDKReleaseWorker,
@@ -206,5 +207,16 @@ def run_profile_module(
             ctx.extra.setdefault("decision_notes", []).extend(path_notes)
             for note in path_notes:
                 verbose_warnings.append(f"{label} path param compat: {note}")
+
+    if profile.name.lower() == "openai":
+        signals, callee_notes = apply_sdk_callee_migration(
+            signals,
+            client_state=client_state,
+            profile=profile,
+        )
+        if callee_notes:
+            ctx.extra.setdefault("decision_notes", []).extend(callee_notes)
+            for note in callee_notes:
+                verbose_warnings.append(f"{label} sdk callee migration: {note}")
 
     return signals

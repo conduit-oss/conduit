@@ -12,6 +12,8 @@ from conduit.llm.retry import (
     parse_retry_after_seconds,
 )
 from conduit.self_correct import (
+    _PROMPT_STREAM_HEAD,
+    _PROMPT_STREAM_TAIL,
     _collect_context_files,
     _file_window,
     _packet_for_prompt,
@@ -153,6 +155,62 @@ def test_structured_failure_fields():
     assert structured["failed_nodes"] == ["tests/test_x.py::test_a"]
     assert "ChatCompletion" in structured["leftover_tokens"]
     assert "nodes=" in structured["failure_fingerprint"]
+    assert structured["failure_digest"]
+
+
+def test_failure_digest_keeps_early_failed_and_exception_snippets():
+    from conduit.self_correct import build_failure_digest, _pack_stream
+
+    early = "FAILED tests/test_early.py::test_one\n"
+    mid = ("x" * 5000) + "\n"
+    late = (
+        "ERROR tests/test_late.py::test_two\n"
+        "openai.BadRequestError: Unsupported value: 'temperature' does not support 0\n"
+        "E   BadRequestError: Unsupported value: 'temperature' does not support 0\n"
+        "===== 2 failed =====\n"
+    )
+    blob = early + mid + late
+    result = RunnerResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["pytest"],
+        stdout=blob,
+        stderr="",
+        failed_count=2,
+    )
+    digest = build_failure_digest(result)
+    assert "tests/test_early.py::test_one" in digest["failed_nodes"]
+    assert "tests/test_late.py::test_two" in digest["failed_nodes"]
+    assert any("temperature" in s for s in digest["exception_snippets"])
+    assert "temperature" in digest["text"]
+    packed = _pack_stream(blob)
+    assert "tests/test_early.py::test_one" in packed
+    assert "===== 2 failed =====" in packed
+    assert "\n...\n" in packed
+    structured = _structured_failure(result)
+    assert "temperature" in structured["failure_digest"]
+
+
+def test_structured_failure_fingerprint_uses_snippets_without_nodes():
+    result = RunnerResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["pytest"],
+        stdout=(
+            ".....F\n"
+            "openai.BadRequestError: Unsupported value: 'temperature' does not support 0 "
+            "with this model.\n"
+        ),
+        stderr="",
+        failed_count=1,
+        fail_reason="",
+    )
+    structured = _structured_failure(result)
+    assert structured["failed_nodes"] == []
+    assert "snippets=" in structured["failure_fingerprint"]
+    assert any("temperature" in s for s in structured["exception_snippets"])
 
 
 def test_collect_repair_context_seeds_leftover_oracle_paths(tmp_path: Path):
@@ -730,6 +788,9 @@ def test_llm_suggest_fixes_prompt_has_journal_and_structured(tmp_path: Path, mon
     assert prompt["failed_nodes"] == ["tests/test_app.py::test_x"]
     assert "Legacy" in prompt["leftover_tokens"]
     assert prompt["failure_fingerprint"]
-    assert len(prompt["error_stdout"]) <= 2100
+    assert prompt["failure_digest"]
+    assert "exception_snippets" in prompt
+    # head+tail packing: early content preserved within budget
+    assert len(prompt["error_stdout"]) <= _PROMPT_STREAM_HEAD + _PROMPT_STREAM_TAIL + 10
     assert "file_windows" in prompt
     assert "Edit-first" in prompt["instructions"] or "seeded_paths" in prompt["instructions"]
