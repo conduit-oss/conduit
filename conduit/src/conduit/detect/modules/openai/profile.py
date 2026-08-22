@@ -131,6 +131,9 @@ OPENAI_PROFILE = VendorProfile(
     path_to_callees=dict(_PATH_TO_CALLEES),
     api_pattern_to_path=list(_API_PATTERN_TO_PATH),
     evidence_seeds=[
+        "https://developers.openai.com/api/llms.txt",
+        "https://developers.openai.com/api/docs/llms.txt",
+        "https://developers.openai.com/api/reference/llms.txt",
         "https://platform.openai.com/docs/deprecations",
         "https://developers.openai.com/api/docs/deprecations",
         "https://developers.openai.com/api/docs/models",

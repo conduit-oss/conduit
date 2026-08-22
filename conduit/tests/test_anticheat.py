@@ -50,6 +50,39 @@ def _packet_with_param_rename() -> dict:
     return pkt
 
 
+def test_echo_script_stub_finding():
+    from conduit.anticheat.rules import echo_script_stub_finding
+
+    msg = echo_script_stub_finding(
+        "scripts/legacy_smoke.sh",
+        "#!/bin/sh\necho '/v1/engines'\n",
+    )
+    assert msg is not None
+    assert "echo-stub" in msg
+
+
+def test_legacy_callee_still_present():
+    from conduit.anticheat.rules import legacy_callee_still_present
+
+    packet = {
+        "package": "openai",
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "Completion.create",
+                "new_callee": "chat.completions.create",
+            }
+        ],
+    }
+    msg = legacy_callee_still_present(
+        "import openai\nopenai.Completion.create()\n",
+        "quality.py",
+        packet,
+    )
+    assert msg is not None
+    assert "Completion.create" in msg
+
+
 def test_reject_fake_response_client():
     previous = "import openai\n\ndef chat():\n    return openai.ChatCompletion.create()\n"
     content = (

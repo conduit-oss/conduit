@@ -132,6 +132,12 @@ def suggest_rules_from_failure(
     for pattern in (_UNSUPPORTED_VALUE_RE, _NOT_SUPPORTED_PARAM_RE, _UNSUPPORTED_KWARG_RE):
         for m in pattern.finditer(blob):
             param = m.group("param")
+            blob_low = blob.lower()
+            param_low = param.lower()
+            if param_low == "max_tokens" and "temperature" in blob_low and "max_tokens" not in blob_low:
+                continue
+            if param_low == "max_tokens" and "max_completion_tokens" in blob_low and "max_tokens" not in blob_low:
+                continue
             if pattern is _UNSUPPORTED_VALUE_RE:
                 _add(param, _parse_literal(m.group("value")))
             else:
