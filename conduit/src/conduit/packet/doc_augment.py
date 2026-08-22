@@ -77,6 +77,8 @@ def derive_callee_rules(
             new_callee = pick_modern_callee(old_callee, modern_targets)
             if not new_callee or old_callee == new_callee:
                 continue
+            if _LEGACY_CALLEE_RE.search(new_callee):
+                continue
             if used and not _callee_in_scope(old_callee, used):
                 continue
             if not is_valid_python_callee(old_callee) or not is_valid_python_callee(new_callee):

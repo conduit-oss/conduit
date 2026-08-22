@@ -127,8 +127,8 @@ def test_derive_callee_rules_pairs_fine_tune_verbs():
     by_old = {r["old_callee"]: r["new_callee"] for r in rules if r}
     assert by_old["openai.FineTune.list"].endswith(".list")
     assert by_old["openai.FineTune.create"].endswith(".create")
-    assert by_old["openai.FineTune.list"] == "fine_tuning.jobs.list"
-    assert by_old["openai.FineTune.create"] == "fine_tuning.jobs.create"
+    assert by_old["openai.FineTune.list"] == "openai.fine_tuning.jobs.list"
+    assert by_old["openai.FineTune.create"] == "openai.fine_tuning.jobs.create"
 
 
 def test_openapi_snippets_from_fixture():
