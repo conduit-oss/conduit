@@ -79,14 +79,22 @@ def test_derive_callee_rules_from_path_pair():
                 "Endpoint /v1/completions → /v1/chat/completions. Source: https://example.com",
             )
         ],
-        api_patterns=["Completion.create"],
+        api_patterns=["Completion.create", "openai.Completion.create"],
     )
     assert rules
-    assert any(
-        r.get("type") == "AST_CALL_REWRITE"
-        and r.get("old_callee") == "Completion.create"
+    completion_rules = [
+        r
         for r in rules
-    )
+        if r
+        and r.get("type") == "AST_CALL_REWRITE"
+        and r.get("old_callee") in {"Completion.create", "openai.Completion.create"}
+    ]
+    assert completion_rules
+    for rule in completion_rules:
+        new = str(rule.get("new_callee") or "")
+        assert "chat.completions" in new
+        assert new != "Completion.create"
+        assert not new.startswith("Completion.")
 
 
 def test_derive_callee_rules_rejects_path_as_new_callee():
@@ -103,6 +111,24 @@ def test_derive_callee_rules_rejects_path_as_new_callee():
     for rule in rules:
         assert not str(rule.get("new_callee") or "").startswith("/")
         assert not str(rule.get("old_callee") or "").startswith("/")
+
+
+def test_derive_callee_rules_pairs_fine_tune_verbs():
+    rules = derive_callee_rules(
+        path_pairs=[
+            (
+                "/v1/fine-tunes",
+                "/v1/fine_tuning/jobs",
+                "Endpoint migration",
+            )
+        ],
+        api_patterns=["openai.FineTune.list", "openai.FineTune.create"],
+    )
+    by_old = {r["old_callee"]: r["new_callee"] for r in rules if r}
+    assert by_old["openai.FineTune.list"].endswith(".list")
+    assert by_old["openai.FineTune.create"].endswith(".create")
+    assert by_old["openai.FineTune.list"] == "fine_tuning.jobs.list"
+    assert by_old["openai.FineTune.create"] == "fine_tuning.jobs.create"
 
 
 def test_openapi_snippets_from_fixture():

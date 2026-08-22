@@ -7,8 +7,8 @@ from typing import Any, Iterable
 
 from conduit.detect.modules.openai.path_callees import (
     callees_for_path,
+    modern_callees_for_path,
     normalize_api_path,
-    path_for_api_pattern,
 )
 from conduit.detect.modules.openai.sdk_callee_migration import (
     _call_rewrite_rule,
@@ -16,6 +16,7 @@ from conduit.detect.modules.openai.sdk_callee_migration import (
     _callee_in_scope,
     _LEGACY_CALLEE_RE,
     _same_path_legacy_pairs,
+    pick_modern_callee,
 )
 from conduit.detect.modules.openai.workers.base import resolve_profile
 from conduit.packet.migration_evidence import build_migration_evidence
@@ -58,13 +59,13 @@ def derive_callee_rules(
     """Build AST_CALL_REWRITE rules from path successor pairs + client usage."""
     prof = resolve_profile(profile)
     used = _collect_used_callees(api_patterns=api_patterns)
-    rewrites: dict[tuple[str, str], str] = {}
+    # old_callee -> (new_callee, reason); path pairs win over same-path pairs
+    rewrites: dict[str, tuple[str, str]] = {}
 
     for old_path, new_path, reason in path_pairs:
-        new_targets = callees_for_path(new_path, api_patterns=api_patterns, profile=prof)
-        if not new_targets:
+        modern_targets = modern_callees_for_path(new_path, profile=prof)
+        if not modern_targets:
             continue
-        new_callee = new_targets[0]
         old_targets = callees_for_path(old_path, api_patterns=api_patterns, profile=prof)
         if not old_targets:
             old_targets = [
@@ -73,13 +74,14 @@ def derive_callee_rules(
                 if _LEGACY_CALLEE_RE.search(c) or c.endswith(".create")
             ]
         for old_callee in old_targets:
-            if old_callee == new_callee:
+            new_callee = pick_modern_callee(old_callee, modern_targets)
+            if not new_callee or old_callee == new_callee:
                 continue
             if used and not _callee_in_scope(old_callee, used):
                 continue
             if not is_valid_python_callee(old_callee) or not is_valid_python_callee(new_callee):
                 continue
-            rewrites.setdefault((old_callee, new_callee), reason)
+            rewrites.setdefault(old_callee, (new_callee, reason))
 
     has_usage = bool(used)
     if has_usage:
@@ -88,11 +90,12 @@ def derive_callee_rules(
                 continue
             if not is_valid_python_callee(old) or not is_valid_python_callee(new):
                 continue
-            rewrites.setdefault((old, new), reason)
+            rewrites.setdefault(old, (new, reason))
 
     return [
-        _call_rewrite_rule(old_callee=old, new_callee=new, reason=reason)
-        for (old, new), reason in sorted(rewrites.items())
+        rule
+        for old, (new, reason) in sorted(rewrites.items())
+        if (rule := _call_rewrite_rule(old_callee=old, new_callee=new, reason=reason))
     ]
 
 
