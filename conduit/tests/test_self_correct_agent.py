@@ -578,7 +578,8 @@ def test_self_correct_stops_when_all_writes_rejected(monkeypatch, tmp_path: Path
         def run_agent(self, **kwargs):
             calls["llm"] += 1
             return {
-                "files": {"app.py": "x = 1\n"},  # drops openai import → reject
+                # Still references openai. after dropping the import → reject_write
+                "files": {"app.py": "openai.ChatCompletion.create()\n"},
                 "packet_patch": {},
             }
 
