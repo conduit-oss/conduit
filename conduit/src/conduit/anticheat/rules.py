@@ -60,7 +60,11 @@ _LEGACY_CALLEE_IN_TEXT_RE = re.compile(
 def legacy_callee_still_present(
     text: str, rel: str, packet: dict[str, Any]
 ) -> str | None:
-    """Flag impl files that still call packet-known legacy SDK callees."""
+    """Flag impl files that still *call* packet-known legacy SDK callees.
+
+    Comments/docstrings mentioning old callees are allowed — only AST Call
+    sites count, so migration notes do not trip reject_write.
+    """
     if not is_impl_rel(rel):
         return None
     old_callees: set[str] = set()
@@ -73,19 +77,47 @@ def legacy_callee_still_present(
         # Bare tokens (Engine, Edit) are too ambiguous for substring checks.
         if old and "." in old:
             old_callees.add(old)
-    if not old_callees:
-        for match in _LEGACY_CALLEE_IN_TEXT_RE.findall(text or ""):
-            old_callees.add(match)
     body = text or ""
-    for old in sorted(old_callees):
-        # Block word chars before/after so Engine.list does not match Engine,
-        # but allow openai.Completion.create to match Completion.create.
-        pat = re.compile(rf"(?<!\w){re.escape(old)}(?![\w.])")
-        if pat.search(body):
-            return (
-                f"{rel} still calls legacy SDK callee {old!r}; "
-                "migrate to the packet successor"
-            )
+    if not old_callees:
+        for match in _LEGACY_CALLEE_IN_TEXT_RE.findall(body):
+            old_callees.add(match)
+    if not old_callees:
+        return None
+
+    try:
+        tree = ast.parse(body)
+    except SyntaxError:
+        # Unparseable writes: fall back to whole-text match.
+        for old in sorted(old_callees):
+            pat = re.compile(rf"(?<!\w){re.escape(old)}(?![\w.])")
+            if pat.search(body):
+                return (
+                    f"{rel} still calls legacy SDK callee {old!r}; "
+                    "migrate to the packet successor"
+                )
+        return None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        chain = _attr_chain(node.func)
+        if not chain:
+            continue
+        for old in old_callees:
+            # Path-pair augment sometimes lists already-modern callees as
+            # old_callee (e.g. openai.completions.create). Only flag true
+            # legacy PascalCase SDK shapes.
+            if not _LEGACY_CALLEE_IN_TEXT_RE.search(old) and not re.search(
+                r"(?:ChatCompletion|Completion|Edit|Engine|FineTune|Image|"
+                r"Moderation|Embedding|File)\.(?:create|list|retrieve)$",
+                old,
+            ):
+                continue
+            if chain == old or chain.endswith("." + old):
+                return (
+                    f"{rel} still calls legacy SDK callee {old!r}; "
+                    "migrate to the packet successor"
+                )
     return None
 
 
@@ -484,11 +516,23 @@ def dropped_sdk_import(
     content: str,
     package: str,
 ) -> str | None:
+    """Reject dropping the SDK import only when the file still needs it.
+
+    Centralizing ``OpenAI()`` / ``import openai`` behind a local client helper
+    is a valid migration — other modules may stop importing the package.
+    Flag only when this file still references ``package.`` without importing,
+    or when parallel HTTP detection already covers the cheat.
+    """
     if not package or not is_impl_rel(rel):
         return None
     if previous is None:
         return None
-    if imports_package(previous, package) and not imports_package(content, package):
+    if not (
+        imports_package(previous, package) and not imports_package(content, package)
+    ):
+        return None
+    # Still uses the package as a module attribute without importing it.
+    if re.search(rf"(?<![\w.]){re.escape(package)}\.", content or ""):
         return (
             f"{rel} dropped official {package} import; keep the SDK and migrate call sites"
         )
@@ -804,7 +848,7 @@ def file_findings(
         hidden = obfuscated_forbidden_tokens(text, leftover)
         if hidden:
             findings.append(
-                f"{posix} obfuscates leftover tokens via concat/join: "
+                f"{posix} obfuscates leftover tokens via concat/join/byte-decode: "
                 + ", ".join(hidden)
             )
         findings.extend(dummy_except_findings(text, posix))

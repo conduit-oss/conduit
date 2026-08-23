@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -124,8 +125,10 @@ def evaluate_npm_result(
 
 
 def detect_test_command(root: Path) -> tuple[str, list[str]] | None:
-    # Prefer `python -m pytest` so the active interpreter/venv is used.
-    pytest_cmd = ["python", "-m", "pytest", "-q", "--tb=short"]
+    # Always use the interpreter running Conduit — not PATH `python`, which on
+    # Windows often resolves to a different install (e.g. Store Python) that
+    # still has the pre-migration package version.
+    pytest_cmd = [sys.executable, "-m", "pytest", "-q", "--tb=short"]
     if (root / "pytest.ini").exists() or (root / "conftest.py").exists():
         return "pytest", list(pytest_cmd)
     if (root / "pyproject.toml").exists():

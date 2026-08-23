@@ -529,6 +529,10 @@ def apply_cmd(
     for change in report.changes:
         prefix = "DRY-RUN " if dry_run else ""
         console.print(f"{prefix}[{change.rule_type}] {change.path}: {change.detail}")
+    if not dry_run:
+        from conduit.patcher.sync_env import sync_bumped_packages
+
+        sync_bumped_packages(data, log=console.print)
     console.print(
         f"{'Would modify' if dry_run else 'Modified'} "
         f"{len(report.files_modified)} file(s)."
@@ -835,6 +839,10 @@ def _run_pipeline(
     report = apply_packet(root, pkt, dry_run=False, file_allowlist=files or None)
     for change in report.changes:
         console.print(f"[{change.rule_type}] {change.path}: {change.detail}")
+
+    from conduit.patcher.sync_env import sync_bumped_packages
+
+    sync_bumped_packages(pkt, log=console.print)
 
     from conduit.anticheat.audit_log import MigrationAuditLog
 

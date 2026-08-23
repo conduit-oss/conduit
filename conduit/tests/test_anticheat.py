@@ -83,6 +83,47 @@ def test_legacy_callee_still_present():
     assert "Completion.create" in msg
 
 
+def test_legacy_callee_ignores_comments_and_docstrings():
+    from conduit.anticheat.rules import legacy_callee_still_present
+
+    packet = {
+        "package": "openai",
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "ChatCompletion.create",
+                "new_callee": "chat.completions.create",
+            }
+        ],
+    }
+    text = (
+        '"""Was openai.ChatCompletion.create; now client.chat.completions.create."""\n'
+        "# ChatCompletion.create migrated\n"
+        "from openai import OpenAI\n"
+        "OpenAI().chat.completions.create(model='gpt-4o', messages=[])\n"
+    )
+    assert legacy_callee_still_present(text, "client.py", packet) is None
+
+
+def test_allow_dropped_import_when_using_local_client_helper():
+    previous = "import openai\n\ndef chat():\n    return openai.ChatCompletion.create()\n"
+    content = (
+        "from openai_text.client import get_client\n"
+        "\n"
+        "def chat():\n"
+        "    return get_client().chat.completions.create(model='gpt-4o', messages=[])\n"
+    )
+    assert (
+        reject_write(
+            "packages/openai_text/chat.py",
+            content,
+            packet=_packet(),
+            previous=previous,
+        )
+        is None
+    )
+
+
 def test_reject_fake_response_client():
     previous = "import openai\n\ndef chat():\n    return openai.ChatCompletion.create()\n"
     content = (
@@ -122,6 +163,19 @@ def test_fstring_obfuscates_engines():
     )
     hidden = obfuscated_forbidden_tokens(text, ["/engines", "/v1/engines"])
     assert hidden
+
+
+def test_byte_decode_obfuscates_legacy_model():
+    text = (
+        "def _decode(*codes: int) -> str:\n"
+        "    return bytes(codes).decode()\n"
+        "\n"
+        "SNAP = _decode(103, 112, 116, 45, 52, 45, 51, 50, 107, 45, 48, 54, 49, 51)\n"
+    )
+    rebuilt = reconstructed_literals(text)
+    assert "gpt-4-32k-0613" in rebuilt
+    hidden = obfuscated_forbidden_tokens(text, ["gpt-4-32k-0613", "davinci"])
+    assert "gpt-4-32k-0613" in hidden
 
 
 def test_reject_packet_json_write():

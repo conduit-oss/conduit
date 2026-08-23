@@ -18,7 +18,8 @@ from conduit.detect.modules.openai.workers.base import resolve_profile
 from conduit.packet.rule_safety import is_valid_python_callee
 
 _LEGACY_CALLEE_RE = re.compile(
-    r"(?:^|[.])(?:ChatCompletion|Completion|Edit|Engine|FineTune|Image|Moderation)"
+    r"(?:^|[.])(?:ChatCompletion|Completion|Edit|Engine|FineTune|Image|Moderation|"
+    r"Embedding|File)"
     r"(?:[.]create|[.]list|[.]retrieve)?$",
     re.I,
 )
@@ -193,6 +194,8 @@ def apply_sdk_callee_migration(
             ]
         source_url = signal.source_url or ""
         for old_callee in old_targets:
+            if not _LEGACY_CALLEE_RE.search(old_callee):
+                continue
             new_callee = pick_modern_callee(old_callee, modern_targets)
             if not new_callee or old_callee == new_callee:
                 continue

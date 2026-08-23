@@ -62,6 +62,22 @@ def shell_command_allowed(command: str) -> bool:
     return False
 
 
+def rewrite_shell_argv(argv: list[str]) -> list[str]:
+    """Pin python/pip/pytest to ``sys.executable`` (same env as Conduit)."""
+    import sys
+
+    if not argv:
+        return argv
+    head = Path(argv[0]).name.lower()
+    if head in {"python", "python.exe", "python3", "python3.exe", "py", "py.exe"}:
+        return [sys.executable, *argv[1:]]
+    if head in {"pip", "pip.exe", "pip3", "pip3.exe"}:
+        return [sys.executable, "-m", "pip", *argv[1:]]
+    if head in {"pytest", "pytest.exe"}:
+        return [sys.executable, "-m", "pytest", *argv[1:]]
+    return argv
+
+
 @dataclass
 class RepoToolExecutor:
     """Local tool executor for Responses function_call items."""
@@ -314,6 +330,7 @@ class RepoToolExecutor:
                 argv = shlex.split(command, posix=os_name_is_posix())
             except ValueError:
                 argv = shlex.split(command)
+            argv = rewrite_shell_argv(argv)
             completed = subprocess.run(
                 argv,
                 cwd=str(self.root),

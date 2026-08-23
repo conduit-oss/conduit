@@ -74,6 +74,10 @@ def derive_callee_rules(
                 if _LEGACY_CALLEE_RE.search(c) or c.endswith(".create")
             ]
         for old_callee in old_targets:
+            # Never treat already-modern SDK callees on the deprecated path as
+            # rewrite sources (openai.completions.create is current, not legacy).
+            if not _LEGACY_CALLEE_RE.search(old_callee):
+                continue
             new_callee = pick_modern_callee(old_callee, modern_targets)
             if not new_callee or old_callee == new_callee:
                 continue
