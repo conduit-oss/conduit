@@ -594,6 +594,7 @@ def _agent_enrich(
     emit = log if callable(log) else None
     client = attach_llm_log(get_llm_client(), emit)
     if client is None:
+        state.notes.append("llm enrichment skipped (no LLM configured)")
         return state
 
     corpus_lower = _file_corpus(files).lower()

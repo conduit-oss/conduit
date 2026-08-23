@@ -150,7 +150,7 @@ def test_run_file_packet_skips_vendor_and_writes_source(tmp_path: Path, monkeypa
     )
     assert result.exit_code == 0, result.output
     assert ran["n"] == 0
-    assert "skipping vendor detect scrape" in result.output
+    assert "vendor detect scrape skipped" in result.output
     sources = list((tmp_path / ".conduit" / "source-packets").glob("*.json"))
     assert sources, result.output
     text = (tmp_path / "app.py").read_text(encoding="utf-8")

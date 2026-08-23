@@ -54,7 +54,12 @@ def sync_bumped_packages(
     exe = python or sys.executable
     cmd = [exe, "-m", "pip", "install", "--upgrade", *specs]
     if log:
-        log(f"Installing bumped packages: {' '.join(specs)}")
+        joined = " ".join(specs)
+        log(f"Installing bumped packages: {joined}")
+        log(f"[dim]Into interpreter: {exe}[/dim]")
+    from conduit.pulse import beat
+
+    beat("wait")
     try:
         proc = subprocess.run(
             cmd,

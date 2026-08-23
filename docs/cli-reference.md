@@ -15,6 +15,8 @@ conduit <command> --help
 
 Normal (non-`-v`) runs still print stage progress: detect signal counts, LLM enrich/repair banners, and `[llm] turn N/M` / tool names during agent loops. See [LLM configuration](llm.md#progress-logs-always-on).
 
+**`conduit run` preflight** (before the pulse spinner): loads consumer `.env`, prints LLM provider status when configured, and yellow **Warning** lines for skipped steps (published packet, `--demo`, `--skip-*`, missing LLM). Verify still prompts for missing keys when tests need them.
+
 Place before or after the subcommand:
 
 ```bash

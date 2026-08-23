@@ -4,10 +4,12 @@ After apply, Conduit verifies the consumer repo still works. **Skipped tests, du
 
 ## Credentials
 
-[`credentials.ensure_verify_credentials`](../conduit/src/conduit/credentials.py) runs at the start of **`conduit verify`** / **`conduit run`** (via `_verify_with_oracle`) **before** test generation:
+[`credentials.load_consumer_env`](../conduit/src/conduit/credentials.py) runs at the **start of `conduit run`** (preflight) and again at verify via [`ensure_verify_credentials`](../conduit/src/conduit/credentials.py) before test generation:
 
-- If the packet package is `openai`, or consumer tests/conftest mention `OPENAI_API_KEY`, Conduit requires `OPENAI_API_KEY` (or `OPENAI_KEY`).
-- On a TTY it **prompts** (hidden input) and exports the value for this process and pytest subprocesses.
+- Loads **`/.env`** and **`/.env.local`** from `--path` (fill missing only; exported env wins).
+- Preflight prints loaded variable **names** (never values) and **yellow warnings** for predictable skips: published `--packet` (no vendor detect / packet LLM synth), `--demo`, `--skip-*`, and when no LLM is configured (client enrichment, packet evidence enrichment, self-correct LLM, and LLM anti-cheat reduced or skipped).
+- If the packet package is `openai`, or consumer tests/conftest mention `OPENAI_API_KEY`, Conduit requires `OPENAI_API_KEY` (or `OPENAI_KEY`, mapped to `OPENAI_API_KEY`).
+- On a TTY it **prompts** (hidden input) after **pausing the pulse spinner** with a visible banner; exports the value for this process and pytest subprocesses.
 - Non-interactive (CI) **exits 2** if the key is missing. It does not continue verify.
 - When an LLM will run (self-correct / functional test gen), it also requires `CONDUIT_LLM_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` unless the provider is `none`, `ollama`, or `custom`.
 

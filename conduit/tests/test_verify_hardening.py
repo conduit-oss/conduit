@@ -7,6 +7,7 @@ from pathlib import Path
 from conduit.credentials import (
     CredentialsError,
     ensure_verify_credentials,
+    load_consumer_env,
     needs_openai_consumer_key,
 )
 from conduit.integrity import integrity_findings, unused_marker_literals
@@ -145,6 +146,73 @@ def test_credentials_prompt_sets_env(tmp_path: Path, monkeypatch):
     import os
 
     assert os.environ.get("OPENAI_API_KEY") == "sk-from-prompt"
+
+
+def test_load_env_openai_key_maps_to_api_key(tmp_path: Path, monkeypatch):
+    import os
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_KEY", raising=False)
+    (tmp_path / ".env").write_text("OPENAI_KEY=sk-from-dotenv\n", encoding="utf-8")
+    loaded = load_consumer_env(tmp_path)
+    assert "OPENAI_KEY" in loaded or "OPENAI_API_KEY" in loaded
+    assert os.environ.get("OPENAI_API_KEY") == "sk-from-dotenv"
+    assert os.environ.get("OPENAI_KEY") == "sk-from-dotenv"
+
+
+def test_load_env_does_not_override_exported(tmp_path: Path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-exported")
+    (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-dotenv\n", encoding="utf-8")
+    load_consumer_env(tmp_path)
+    assert os.environ.get("OPENAI_API_KEY") == "sk-exported"
+
+
+def test_credentials_uses_env_without_prompt(tmp_path: Path, monkeypatch):
+    import os
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_KEY", raising=False)
+    (tmp_path / ".env").write_text("OPENAI_KEY=sk-dotenv\n", encoding="utf-8")
+    prompted = {"count": 0}
+
+    def _prompt(_label: str) -> str:
+        prompted["count"] += 1
+        return "should-not-run"
+
+    ensure_verify_credentials(
+        tmp_path,
+        {"package": "openai"},
+        want_llm=False,
+        interactive=True,
+        prompt=_prompt,
+    )
+    assert prompted["count"] == 0
+    assert os.environ.get("OPENAI_API_KEY") == "sk-dotenv"
+
+
+def test_credentials_prompt_pauses_pulse(tmp_path: Path, monkeypatch):
+    from conduit import pulse
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_KEY", raising=False)
+    calls: list[str] = []
+
+    monkeypatch.setattr(pulse, "pause_pulse", lambda: calls.append("pause"))
+    monkeypatch.setattr(
+        pulse, "resume_pulse", lambda _console: calls.append("resume")
+    )
+    from conduit.credentials import _prompt_or_fail
+
+    _prompt_or_fail(
+        "OPENAI_API_KEY",
+        interactive=True,
+        prompt=lambda _label: "sk-x",
+        log=lambda msg: calls.append("log"),
+        console=object(),
+    )
+    assert calls == ["pause", "log", "resume"]
 
 
 def test_needs_key_from_conftest(tmp_path: Path):

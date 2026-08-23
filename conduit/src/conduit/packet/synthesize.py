@@ -976,6 +976,9 @@ def ensure_packet(
             packet=packet,
             from_source="file",
             to_source="file",
+            warnings=[
+                "Using published packet file; LLM packet synthesis/enrichment skipped"
+            ],
         )
 
     source = source_packet
