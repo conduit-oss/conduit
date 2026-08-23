@@ -11,7 +11,12 @@ from rich.console import Console
 from rich.table import Table
 
 from conduit.context.fetch import read_local_text
-from conduit.credentials import CredentialsError, ensure_verify_credentials
+from conduit.credentials import (
+    CredentialsError,
+    ensure_verify_credentials,
+    load_consumer_env,
+)
+from conduit.run_preflight import collect_run_preflight_warnings, print_run_preflight
 from conduit.detect.coverage import (
     PacketCoverageReport,
     build_coverage_report,
@@ -284,13 +289,19 @@ def _verify_with_oracle(
         audit_log = MigrationAuditLog.from_packet(packet, root=root)
 
     want_llm = resolve_provider() not in {None, "none", "off", "disabled"}
+    beat("hatch")
     try:
-        ensure_verify_credentials(root, packet, want_llm=bool(want_llm or get_llm_client()))
+        ensure_verify_credentials(
+            root,
+            packet,
+            want_llm=bool(want_llm or get_llm_client()),
+            log=console.print,
+            console=console,
+        )
     except CredentialsError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from exc
 
-    beat("hatch")
     generated = ensure_tests(
         root,
         packet,
@@ -621,6 +632,22 @@ def run_cmd(
     packet_file, packet_package = _resolve_packet_arg(
         packet, root=root, refresh=refresh_packet
     )
+    loaded = load_consumer_env(root)
+    preflight_warnings = collect_run_preflight_warnings(
+        root,
+        packet_file=packet_file,
+        demo=demo,
+        skip_modules=skip_modules,
+        skip_lockfile=skip_lockfile,
+        skip_export_delta=skip_export_delta,
+        skip_tests=skip_tests,
+        skip_pr=skip_pr,
+    )
+    print_run_preflight(
+        console,
+        warnings=preflight_warnings,
+        env_loaded=loaded,
+    )
     start_pulse(console, "awakening")
     try:
         _run_pipeline(
@@ -686,13 +713,8 @@ def _run_pipeline(
             raise typer.Exit(2)
         scan_packages = dependency_packages(published)
         skip_vendor = True
-        console.print(
-            "[dim]Using published packet; skipping vendor detect scrape[/dim]"
-        )
 
     names = [module] if module else _detect_module_names_for_package(pkg_hint)
-    if demo:
-        console.print("[dim]Demo mode: using offline detect fixtures[/dim]")
     beat("detect")
     detected = run_detect(
         root,

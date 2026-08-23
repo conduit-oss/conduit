@@ -1,8 +1,8 @@
 """Require or prompt for API keys before consumer verify.
 
 Skipped live tests must never count as a pass. When the consumer (or packet)
-needs OpenAI, Conduit either exports a key from the environment, prompts on a
-TTY, or exits.
+needs OpenAI, Conduit loads ``.env``, exports a key from the environment,
+prompts on a TTY, or exits.
 """
 
 from __future__ import annotations
@@ -17,6 +17,9 @@ import typer
 from conduit.prune.grep_imports import SKIP_DIRS
 
 PromptFn = Callable[[str], str]
+LogFn = Callable[[str], None]
+
+_CREDENTIAL_ENV_FILES = (".env", ".env.local")
 
 
 class CredentialsError(RuntimeError):
@@ -26,6 +29,59 @@ class CredentialsError(RuntimeError):
 def prompt_secret(label: str) -> str:
     """Interactive hidden prompt. Tests monkeypatch this."""
     return str(typer.prompt(label, hide_input=True)).strip()
+
+
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    raw = line.strip()
+    if not raw or raw.startswith("#"):
+        return None
+    if raw.startswith("export "):
+        raw = raw[7:].strip()
+    if "=" not in raw:
+        return None
+    key, _, value = raw.partition("=")
+    key = key.strip()
+    if not key:
+        return None
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return key, value
+
+
+def load_consumer_env(root: Path) -> list[str]:
+    """
+    Load ``.env`` / ``.env.local`` from the consumer repo into ``os.environ``.
+
+    Existing exported variables win. Returns env var names newly set (no values).
+    """
+    root = root.resolve()
+    loaded: list[str] = []
+    for name in _CREDENTIAL_ENV_FILES:
+        path = root / name
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            parsed = _parse_env_line(line)
+            if not parsed:
+                continue
+            key, value = parsed
+            if os.environ.get(key, "").strip():
+                continue
+            os.environ[key] = value
+            loaded.append(key)
+    if (
+        not os.environ.get("OPENAI_API_KEY", "").strip()
+        and os.environ.get("OPENAI_KEY", "").strip()
+    ):
+        os.environ["OPENAI_API_KEY"] = os.environ["OPENAI_KEY"].strip()
+        if "OPENAI_API_KEY" not in loaded:
+            loaded.append("OPENAI_API_KEY")
+    return loaded
 
 
 def openai_consumer_key() -> str:
@@ -104,15 +160,35 @@ def _export_openai_key(value: str) -> None:
         os.environ["OPENAI_KEY"] = value
 
 
-def _prompt_or_fail(label: str, *, interactive: bool, prompt: PromptFn) -> str:
+def _prompt_or_fail(
+    label: str,
+    *,
+    interactive: bool,
+    prompt: PromptFn,
+    log: LogFn | None = None,
+    console: Any | None = None,
+) -> str:
     if not interactive:
         raise CredentialsError(
-            f"{label} is not set. Export it or re-run from a TTY to be prompted."
+            f"{label} is not set. Export it, add to .env, or re-run from a TTY "
+            "to be prompted."
         )
-    value = prompt(label).strip()
-    if not value:
-        raise CredentialsError(f"{label} is required.")
-    return value
+    from conduit.pulse import pause_pulse, resume_pulse
+
+    pause_pulse()
+    if log:
+        log(
+            f"[yellow]{label} is not set (checked environment and .env).[/yellow]\n"
+            "Enter API key (input hidden), or Ctrl+C to abort:"
+        )
+    try:
+        value = prompt(label).strip()
+        if not value:
+            raise CredentialsError(f"{label} is required.")
+        return value
+    finally:
+        if console is not None:
+            resume_pulse(console)
 
 
 def ensure_verify_credentials(
@@ -122,17 +198,26 @@ def ensure_verify_credentials(
     want_llm: bool = False,
     interactive: bool | None = None,
     prompt: PromptFn | None = None,
+    log: LogFn | None = None,
+    console: Any | None = None,
 ) -> None:
     """Ensure consumer (and optionally LLM) keys exist, prompting on a TTY."""
     prompt = prompt or prompt_secret
     if interactive is None:
         interactive = bool(getattr(sys.stdin, "isatty", lambda: False)())
 
+    loaded = load_consumer_env(root)
+    if loaded and log:
+        names = ", ".join(sorted(set(loaded)))
+        log(f"[dim]Loaded credentials from .env: {names}[/dim]")
+
     if needs_openai_consumer_key(root, packet) and not openai_consumer_key():
         value = _prompt_or_fail(
             "OPENAI_API_KEY",
             interactive=interactive,
             prompt=prompt,
+            log=log,
+            console=console,
         )
         _export_openai_key(value)
 
@@ -152,6 +237,8 @@ def ensure_verify_credentials(
             "ANTHROPIC_API_KEY (or CONDUIT_LLM_API_KEY)",
             interactive=interactive,
             prompt=prompt,
+            log=log,
+            console=console,
         )
         os.environ["ANTHROPIC_API_KEY"] = value
         return
@@ -162,6 +249,8 @@ def ensure_verify_credentials(
         "OPENAI_API_KEY (or CONDUIT_LLM_API_KEY)",
         interactive=interactive,
         prompt=prompt,
+        log=log,
+        console=console,
     )
     if not os.environ.get("CONDUIT_LLM_API_KEY", "").strip():
         os.environ["CONDUIT_LLM_API_KEY"] = value

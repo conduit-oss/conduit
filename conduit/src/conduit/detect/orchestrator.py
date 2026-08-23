@@ -81,7 +81,14 @@ def run_detect(
         )
         for state in package_states.values():
             for note in state.notes:
-                if note.startswith("llm enrichment failed"):
+                if note.startswith(
+                    (
+                        "llm enrichment failed",
+                        "llm enrichment skipped",
+                        "agent scan skipped",
+                        "llm enrichment returned",
+                    )
+                ):
                     warnings.append(f"client state {state.package}: {note}")
 
     if not skip_modules:
