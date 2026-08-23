@@ -55,6 +55,8 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
     "/v1/embeddings": [
         "embeddings.create",
         "openai.embeddings.create",
+        "Embedding.create",
+        "openai.Embedding.create",
     ],
     "/v1/images/edits": [
         "images.edit",

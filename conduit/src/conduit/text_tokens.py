@@ -80,6 +80,46 @@ def _join_call(node: ast.Call) -> str | None:
     return sep.join(parts)  # type: ignore[arg-type]
 
 
+def _int_const(node: ast.AST) -> int | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    return None
+
+
+def _byte_ints(node: ast.AST) -> list[int] | None:
+    if isinstance(node, (ast.List, ast.Tuple)):
+        vals = [_int_const(elt) for elt in node.elts]
+        if vals and all(v is not None for v in vals):
+            return [int(v) for v in vals]  # type: ignore[arg-type]
+    return None
+
+
+def _decode_byte_call(node: ast.Call) -> str | None:
+    """Fold ``_decode(ord, …)`` / ``bytes([…]).decode()`` into plaintext."""
+    func = node.func
+    # bytes([...]).decode() / bytes((...)).decode("utf-8")
+    if isinstance(func, ast.Attribute) and func.attr == "decode":
+        inner = func.value
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name):
+            if inner.func.id == "bytes" and inner.args:
+                codes = _byte_ints(inner.args[0])
+                if codes:
+                    try:
+                        return bytes(codes).decode("utf-8")
+                    except (ValueError, UnicodeDecodeError):
+                        return None
+        return None
+    # _decode(103, 112, …) or decode(103, …)
+    if isinstance(func, ast.Name) and func.id in {"_decode", "decode"}:
+        codes = [_int_const(arg) for arg in node.args]
+        if codes and all(c is not None for c in codes):
+            try:
+                return bytes(int(c) for c in codes).decode("utf-8")  # type: ignore[arg-type]
+            except (ValueError, UnicodeDecodeError):
+                return None
+    return None
+
+
 def _joined_const_str(node: ast.JoinedStr) -> str | None:
     """Fold f-strings whose interpolations are string constants (``f\"/{'engines'}\"``)."""
     parts: list[str] = []
@@ -116,6 +156,7 @@ def reconstructed_literals(text: str) -> list[str]:
         class _Visitor(ast.NodeVisitor):
             def visit_Call(self, node: ast.Call) -> None:
                 _add(_join_call(node))
+                _add(_decode_byte_call(node))
                 self.generic_visit(node)
 
             def visit_BinOp(self, node: ast.BinOp) -> None:
