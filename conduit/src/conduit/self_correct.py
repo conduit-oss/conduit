@@ -610,6 +610,11 @@ def reject_self_correct_write(
     ignore = ignore or IgnoreList()
     if ignore.path_ignored(rel_posix):
         return f"ignored path {rel_posix}"
+    from conduit.surface_paths import prose_ops_reject_reason
+
+    prose_reason = prose_ops_reject_reason(rel_posix)
+    if prose_reason:
+        return prose_reason
     if previous is None and root is not None:
         path = root / rel_posix
         if path.is_file():
@@ -1327,6 +1332,8 @@ def _llm_suggest_fixes(
             "code so tests pass by rewriting call sites and manifests to the "
             "packet's new API. The packet may be incomplete — you may also "
             "update packet_patch.\n"
+            "Do NOT edit docs/, README*, CHANGELOG*, SCENARIOS*, scripts/ops/, "
+            "or Dockerfile — those are synced after verify is green.\n"
             "Edit-first workflow (do this in order):\n"
             + leftover_block
             + "1) Act on seeded_paths / file_windows / leftover_files first — "
@@ -1548,14 +1555,14 @@ def verify_with_self_correct(
     root: Path,
     packet: dict[str, Any],
     *,
-    max_retries: int = 5,
+    max_retries: int = 10,
     verbose: bool = False,
     log: LogFn | None = None,
     source: dict[str, Any] | None = None,
     coverage_missed: list[dict[str, Any]] | None = None,
     audit_log: MigrationAuditLog | None = None,
 ) -> tuple[TestResult, list[str]]:
-    """Run tests; on failure, research + LLM/heuristic-fix and retry (default 5)."""
+    """Run tests; on failure, research + LLM/heuristic-fix and retry (default 10)."""
     emit: LogFn = log or print
     vlog: LogFn = emit if verbose else _noop_log
 

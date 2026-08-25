@@ -196,6 +196,9 @@ def _make_run_summary(
     pr_created: bool | None = None,
     pr_message: str | None = None,
     audit_log=None,
+    impact=None,
+    docs_synced: list[str] | None = None,
+    attempts: int | None = None,
 ):
     package = str(packet.get("package") or "")
     state = None
@@ -216,6 +219,9 @@ def _make_run_summary(
         pr_message=pr_message,
         detected_signals=list(getattr(detected, "signals", None) or []),
         audit_log=audit_log,
+        impact=impact,
+        docs_synced=docs_synced,
+        attempts=attempts,
     )
 
 
@@ -232,8 +238,11 @@ def _print_run_summary(
     pr_created: bool | None = None,
     pr_message: str | None = None,
     audit_log=None,
+    impact=None,
+    docs_synced: list[str] | None = None,
+    attempts: int | None = None,
 ) -> str:
-    """Print the changed / double-check summary. Returns markdown for the PR body."""
+    """Print the decision-ready run summary. Returns markdown for the PR body."""
     summary = _make_run_summary(
         packet=packet,
         report=report,
@@ -246,6 +255,9 @@ def _print_run_summary(
         pr_created=pr_created,
         pr_message=pr_message,
         audit_log=audit_log,
+        impact=impact,
+        docs_synced=docs_synced,
+        attempts=attempts,
     )
     console.print(format_run_summary(summary))
     return format_run_summary_markdown(summary)
@@ -591,7 +603,7 @@ def verify_cmd(
     packet: Optional[str] = typer.Option(
         None, "--packet", help="Path or http(s) URL to conduit-packet.json"
     ),
-    max_retries: int = typer.Option(5, "--max-retries"),
+    max_retries: int = typer.Option(10, "--max-retries"),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Print self-correct failure/fix details"
     ),
@@ -644,7 +656,7 @@ def run_cmd(
     skip_export_delta: bool = typer.Option(
         False, "--skip-export-delta", help="Skip package export delta pruning"
     ),
-    max_retries: int = typer.Option(5, "--max-retries"),
+    max_retries: int = typer.Option(10, "--max-retries"),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Print extra diagnostics"
     ),
@@ -998,6 +1010,7 @@ def _run_pipeline(
                 report.files_modified.append(rel)
 
     console.print(test_result.summary)
+    docs_synced: list[str] = []
     if not test_result.passed:
         console.print("[red]Tests still failing after self-correction; aborting PR.[/red]")
         if test_result.stdout:
@@ -1014,8 +1027,24 @@ def _run_pipeline(
             corrected=corrected,
             skip_tests=skip_tests,
             audit_log=audit_log,
+            impact=impact,
         )
         raise typer.Exit(2)
+
+    # Post-green: sync leftover tokens in docs/README/scripts/ops (not mid-repair).
+    from conduit.patcher.surface_sync import sync_surfaces
+
+    sync_report = sync_surfaces(root, pkt, log=console.print)
+    docs_synced = list(sync_report.files_modified)
+    for rel in docs_synced:
+        if rel not in report.files_modified:
+            report.files_modified.append(rel)
+    if docs_synced and audit_log is not None:
+        audit_log.record_surface_sync(docs_synced)
+        try:
+            audit_log.persist(root)
+        except OSError:
+            pass
 
     if skip_pr:
         console.print("[green]Patches applied and tests passed (PR skipped).[/green]")
@@ -1031,6 +1060,8 @@ def _run_pipeline(
             pr_created=None,
             pr_message="PR skipped (--skip-pr)",
             audit_log=audit_log,
+            impact=impact,
+            docs_synced=docs_synced,
         )
         raise typer.Exit(0)
 
@@ -1050,6 +1081,8 @@ def _run_pipeline(
             corrected=corrected,
             skip_tests=skip_tests,
             audit_log=audit_log,
+            impact=impact,
+            docs_synced=docs_synced,
         )
     )
     beat("pr")
@@ -1076,6 +1109,8 @@ def _run_pipeline(
         pr_created=pr.created,
         pr_message=pr.message,
         audit_log=audit_log,
+        impact=impact,
+        docs_synced=docs_synced,
     )
     raise typer.Exit(0 if pr.created or skip_pr else 3)
 

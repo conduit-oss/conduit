@@ -211,6 +211,15 @@ class MigrationAuditLog:
             attempt=attempt,
         )
 
+    def record_surface_sync(self, paths: Iterable[str], *, detail: str = "") -> str:
+        plist = [str(p).replace("\\", "/") for p in paths]
+        return self.record(
+            "surface_sync",
+            path=plist[0] if len(plist) == 1 else "",
+            paths=plist,
+            detail=detail or f"synced {len(plist)} prose/ops surface(s)",
+        )
+
     def record_mechanical(
         self, findings: Iterable[str], *, gate: str = ""
     ) -> str:

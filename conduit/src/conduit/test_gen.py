@@ -114,6 +114,12 @@ def _as_rel(root: Path, path: Path) -> str | None:
         return None
 
 
+def _is_prose_ops_surface(rel: str) -> bool:
+    from conduit.surface_paths import is_prose_ops_rel
+
+    return is_prose_ops_rel(rel)
+
+
 def oracle_scan_rels(
     root: Path,
     packet: dict[str, Any],
@@ -122,7 +128,7 @@ def oracle_scan_rels(
     file_allowlist: Iterable[Path | str] | None = None,
     ignore: IgnoreList | None = None,
 ) -> list[str]:
-    """Repo-relative paths the oracle should scan (ignore list applied)."""
+    """Repo-relative paths the leftover oracle should scan (ignore + prose excluded)."""
     root = root.resolve()
     ignore = ignore or IgnoreList()
     seen: set[str] = set()
@@ -138,6 +144,9 @@ def oracle_scan_rels(
             return
         if ignore.path_ignored(rel):
             return
+        # Docs/README/scripts/ops/Dockerfile sync after green — not leftover-fail.
+        if _is_prose_ops_surface(rel):
+            return
         seen.add(rel)
         out.append(rel)
 
@@ -151,10 +160,11 @@ def oracle_scan_rels(
 
     from conduit.patcher.key_rename import iter_config_files as _iter_cfg
 
-    # Always scan configs/scripts/workflows even when import-prune dropped them.
+    # Always scan configs even when import-prune dropped them.
     for path in _iter_cfg(root):
         _add(path)
-    for extra_dir in ("scripts", "configs", ".github"):
+    # configs/ and .github stay in leftover oracle; scripts/ops is prose/ops.
+    for extra_dir in ("configs", ".github"):
         folder = root / extra_dir
         if not folder.is_dir():
             continue
@@ -170,8 +180,6 @@ def oracle_scan_rels(
                 ".toml",
             }:
                 _add(path)
-    for name in ("docker-compose.yml", "docker-compose.yaml", "Dockerfile"):
-        _add(root / name)
     # Neighbor source files in the same directory as allowlisted impl.
     neighbors: list[Path] = []
     for rel in list(out):
