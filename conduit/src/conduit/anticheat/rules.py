@@ -133,8 +133,8 @@ def echo_script_stub_finding(rel: str, text: str) -> str | None:
         return None
     if _PATHISH_RE.search(body) or "/v1/" in body:
         return (
-            f"{posix} echo-stubs API paths without migrating URLs/models "
-            "(scripts must use real endpoints, not echo placeholders)"
+            f"{posix}: echo_script_stub — echo-stubs API paths without migrating "
+            "URLs/models (scripts must use real endpoints, not echo placeholders)"
         )
     return None
 

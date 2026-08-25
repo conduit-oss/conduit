@@ -42,6 +42,7 @@ def sync_bumped_packages(
     packet: dict[str, Any],
     *,
     python: str | None = None,
+    root: Path | None = None,
     log=None,
 ) -> list[str]:
     """
@@ -51,6 +52,10 @@ def sync_bumped_packages(
     specs = bumped_package_specs(packet)
     if not specs:
         return []
+    if python is None and root is not None:
+        from conduit.test_runner import resolve_consumer_python
+
+        python = resolve_consumer_python(root)
     exe = python or sys.executable
     cmd = [exe, "-m", "pip", "install", "--upgrade", *specs]
     if log:

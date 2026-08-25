@@ -16,9 +16,10 @@ def test_partition_rules_sdk_vs_rest():
         {"type": "KEY_RENAME", "old_key": "a", "new_key": "b"},
         {"type": "MYSTERY_RULE"},
     ]
-    sdk, rest, unknown = partition_rules(rules)
+    sdk, rest, post, unknown = partition_rules(rules)
     assert len(sdk) == 2
     assert len(rest) == 2
+    assert not post
     assert unknown
 
 

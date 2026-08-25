@@ -24,6 +24,82 @@ SKIP_DIRS = {
 }
 
 SCAN_SUFFIXES = {".py", ".ts", ".js", ".tsx", ".jsx", ".java", ".go"}
+_APPLY_SUFFIXES = SCAN_SUFFIXES | {
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".sh",
+    ".md",
+}
+_APPLY_NAMES = {"Dockerfile", "docker-compose.yml"}
+
+
+def expand_allowlist_for_exact_rules(
+    root: Path,
+    files: list[Path],
+    packet: dict,
+) -> list[Path]:
+    """Include config/script files that still contain EXACT_STRING_REPLACE matches."""
+    matches: list[str] = []
+    for rule in packet.get("rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        if rule.get("type") != "EXACT_STRING_REPLACE":
+            continue
+        match = rule.get("match")
+        if isinstance(match, str) and match:
+            matches.append(match)
+    if not matches:
+        return files
+
+    seen = {p.resolve() for p in files}
+    out = list(files)
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if any(part in SKIP_DIRS for part in path.parts):
+            continue
+        if path.suffix.lower() not in _APPLY_SUFFIXES and path.name not in _APPLY_NAMES:
+            if not path.name.startswith(".env"):
+                continue
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if any(m in text for m in matches):
+            out.append(resolved)
+            seen.add(resolved)
+    return out
+
+
+def expand_apply_allowlist_oracle(
+    root: Path,
+    files: list[Path],
+    packet: dict,
+    *,
+    changed_files: list[str] | None = None,
+) -> list[Path]:
+    """Add oracle scan paths so REST rules reach config/script files."""
+    from conduit.test_gen import oracle_scan_rels
+
+    seen = {p.resolve() for p in files}
+    out = list(files)
+    for rel in oracle_scan_rels(
+        root,
+        packet,
+        changed_files=changed_files,
+        file_allowlist=files,
+    ):
+        path = (root / rel).resolve()
+        if path.is_file() and path not in seen:
+            out.append(path)
+            seen.add(path)
+    return out
 
 
 def _import_patterns(package: str) -> list[re.Pattern[str]]:

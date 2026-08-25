@@ -87,6 +87,17 @@ def _leftover_tokens(result: TestResult) -> list[str]:
     return sorted(set(_STILL_CONTAINS_RE.findall(_failure_blob(result))))
 
 
+def _anticheat_finding_hits(text: str) -> list[tuple[str, str, str]]:
+    """(path, kind, detail) from anticheat failure stdout."""
+    from conduit.anticheat.findings import parse_anticheat_failure_blob
+
+    return [
+        (f.path, f.kind, f.detail)
+        for f in parse_anticheat_failure_blob(text)
+        if f.path
+    ]
+
+
 def _leftover_path_hits(text: str) -> list[tuple[str, str]]:
     """(rel_path, token) pairs from leftover-oracle assertion lines."""
     out: list[tuple[str, str]] = []
@@ -499,6 +510,30 @@ def collect_repair_context(
     # Primary failing test file only (first traceback test hit).
     for path, line in test_hits[:1]:
         _register(path, line, as_window=True)
+
+    if _is_anticheat_failure(test_result):
+        blob = _failure_blob(test_result)
+        anticheat_added = 0
+        for rel, _kind, _detail in _anticheat_finding_hits(blob):
+            path = root / rel
+            if not path.is_file():
+                continue
+            line: int | None = None
+            try:
+                text = path.read_text(encoding="utf-8")
+                needle = _detail[:40] if _detail else ""
+                if needle:
+                    idx = text.find(needle)
+                    if idx >= 0:
+                        line = text.count("\n", 0, idx) + 1
+            except OSError:
+                pass
+            _register(path, line, as_window=len(ctx.file_windows) < impl_cap + 4)
+            anticheat_added += 1
+            if anticheat_added >= 4:
+                break
+        if anticheat_added:
+            return ctx
 
     # Seed files named by leftover-oracle "path still contains 'token'" lines.
     from conduit.test_gen import is_conduit_generated_rel
@@ -1473,8 +1508,12 @@ def _run_verified_tests(
         log=log,
         audit_log=audit_log,
     )
-    if report.findings:
-        return anticheat_failure_result(report.findings, source=report.source)
+    if report.block_findings:
+        return anticheat_failure_result(
+            report.block_findings,
+            source=report.source,
+            advisory=report.advisory,
+        )
     return result
 
 
@@ -1488,11 +1527,18 @@ def _run_anticheat_then_tests(
     audit_log: MigrationAuditLog | None = None,
 ) -> TestResult:
     """Mechanical anticheat first, then tests (+ optional LLM anticheat)."""
+    from conduit.patcher.post_rules.engine import apply_post_rules
+
+    apply_post_rules(root, packet)
     mech = run_anticheat(
         root, packet, llm=False, log=vlog or _noop_log, audit_log=audit_log
     )
-    if mech.findings:
-        return anticheat_failure_result(mech.findings, source=mech.source)
+    if mech.block_findings:
+        return anticheat_failure_result(
+            mech.block_findings,
+            source=mech.source,
+            advisory=mech.advisory,
+        )
     return _run_verified_tests(
         root, packet, llm_audit=llm_audit, log=log, audit_log=audit_log
     )
@@ -1531,6 +1577,35 @@ def verify_with_self_correct(
         pass
     if result.passed:
         return result, corrected_files
+
+    from conduit.patcher.post_rules.engine import apply_post_rules
+    from conduit.patcher.post_rules.synthesize import synthesize_post_rules
+
+    synthesize_post_rules(
+        root,
+        packet,
+        result,
+        source=source or _load_source_packet(root, packet),
+        log=emit,
+    )
+    post_report = apply_post_rules(root, packet)
+    for change in post_report.changes:
+        emit(f"[post-rule] updated {change.path}")
+    if post_report.files_modified:
+        result = _run_anticheat_then_tests(
+            root,
+            packet,
+            llm_audit=True,
+            log=emit,
+            vlog=vlog,
+            audit_log=audit_log,
+        )
+        try:
+            audit_log.persist(root)
+        except OSError:
+            pass
+        if result.passed:
+            return result, corrected_files + post_report.files_modified
 
     source = source or _load_source_packet(root, packet)
     ignore = build_ignore_list(root, packet)
@@ -1586,6 +1661,26 @@ def verify_with_self_correct(
         allowlist = {
             p for p in repair_ctx.allowlist if not ignore.path_ignored(p)
         }
+        if _is_anticheat_failure(result):
+            cited = {p.replace("\\", "/") for p, _, _ in _anticheat_finding_hits(
+                _failure_blob(result)
+            )}
+            if cited:
+                narrowed: set[str] = set()
+                for rel in cited:
+                    narrowed.add(rel)
+                    for sib in _neighbor_sources(root / rel, limit=3):
+                        try:
+                            narrowed.add(sib.relative_to(root).as_posix())
+                        except ValueError:
+                            narrowed.add(sib.name)
+                allowlist = {p for p in narrowed if not ignore.path_ignored(p)}
+                context_files = {
+                    k: v for k, v in context_files.items() if k in allowlist
+                }
+                emit(
+                    f"[self-correct] anticheat surgical allowlist={len(allowlist)}"
+                )
         emit(
             f"[self-correct] seeded {len(context_files)} span(s), "
             f"allowlist={len(allowlist)}"
@@ -1892,6 +1987,13 @@ def verify_with_self_correct(
                 "(configure an LLM for deeper fixes, or resolve remaining failures manually)"
             )
             break
+
+        from conduit.patcher.post_rules.engine import apply_post_rules
+
+        post_report = apply_post_rules(root, packet)
+        for change in post_report.changes:
+            emit(f"[post-rule] updated {change.path}")
+            corrected_files.append(change.path)
 
         previous = result
         emit("[self-correct] re-running full test suite…")

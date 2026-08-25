@@ -1,0 +1,40 @@
+# Vendor anti-cheat catalog for OpenAI Python SDK migrations.
+cheat_kinds:
+  synthetic_except:
+    severity: block
+  parallel_http_without_sdk:
+    severity: block
+  legacy_kwargs_on_rewritten_callee:
+    severity: block
+  dropped_sdk_import:
+    severity: block
+  fake_client:
+    severity: block
+  compat_wrapper:
+    severity: block
+  incomplete_migration:
+    severity: advisory
+  echo_script_stub:
+    severity: advisory
+
+audit_scope:
+  exclude_globs:
+    - "docs/**"
+    - "**/README*"
+    - "**/CHANGELOG*"
+    - "**/SCENARIOS*"
+    - "scripts/ops/**"
+
+legal_surfaces:
+  modern_callees_from_packet: true
+  client_constructors:
+    - "OpenAI("
+    - "AzureOpenAI("
+    - "AsyncOpenAI("
+    - "AsyncAzureOpenAI("
+  callee_suffixes:
+    - ".chat.completions.create("
+    - ".completions.create("
+    - ".embeddings.create("
+    - ".files.list("
+    - ".fine_tuning.jobs."

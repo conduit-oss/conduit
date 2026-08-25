@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from conduit.anticheat.rules import reject_write
+from conduit.anticheat.findings import AnticheatFinding
 from conduit.anticheat.scan import run_anticheat, run_anticheat_mechanical
 from conduit.self_correct import reject_self_correct_write
 from conduit.text_tokens import obfuscated_forbidden_tokens, reconstructed_literals
@@ -219,7 +220,14 @@ def test_llm_auditor_adds_findings(tmp_path: Path, monkeypatch):
     (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
 
     def _fake_audit(*_a, **_k):
-        return ["app.py: cheat — dummy HTTP stub"], {
+        cheat = AnticheatFinding(
+            path="app.py",
+            kind="cheat",
+            detail="dummy HTTP stub",
+            severity="block",
+            source="llm",
+        )
+        return [cheat], [], {
             "honesty": 40,
             "migration_completeness": 70,
             "notes": ["stub"],
@@ -245,7 +253,7 @@ def test_mechanical_finding_not_cleared_by_empty_auditor(tmp_path: Path, monkeyp
     )
 
     def _clean(*_a, **_k):
-        return [], {"honesty": 90, "migration_completeness": 80, "notes": []}
+        return [], [], {"honesty": 90, "migration_completeness": 80, "notes": []}
 
     monkeypatch.setattr(
         "conduit.anticheat.llm_audit.llm_audit_findings", _clean

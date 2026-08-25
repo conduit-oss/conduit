@@ -1,0 +1,34 @@
+# Seed post-rules for openai Python SDK wrapper migrations (generic patterns).
+post_rules:
+  - type: WRAPPER_ENSURE_LIST
+    target_files: ["**/files.py"]
+    function_name: list_files
+    list_callee_hint: openai.files.list()
+    reason: SDK list endpoints return pages; tests expect plain lists.
+
+  - type: WRAPPER_ENSURE_LIST
+    target_files: ["**/fine_tunes.py"]
+    function_name: list_fine_tunes
+    list_callee_hint: openai.fine_tuning.jobs.list()
+    reason: Fine-tuning list endpoints return pages.
+
+  - type: WRAPPER_ENSURE_DICT_KEY
+    target_files: ["**/moderation.py"]
+    function_name: moderate_text
+    required_key: flagged
+    create_callee_hint: openai.moderations.create(**kwargs)
+    reason: Moderation helpers must expose flagged in return dict.
+
+  - type: RUNTIME_MODEL_ALIAS
+    target_files: ["**/completions.py"]
+    function_name: complete_prompt
+    replace_module: true
+    reason: Map packet fake models to live instruct/completion models.
+
+  - type: WRAPPER_DELEGATE
+    target_files: ["**/engines.py"]
+    function_name: complete_with_engine
+    delegate_module: openai_text.completions
+    delegate_symbol: complete_prompt
+    model_param: engine
+    reason: Avoid duplicate chat completion paths with wrong kwargs.

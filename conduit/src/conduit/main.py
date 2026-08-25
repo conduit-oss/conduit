@@ -288,6 +288,12 @@ def _verify_with_oracle(
     if audit_log is None:
         audit_log = MigrationAuditLog.from_packet(packet, root=root)
 
+    from conduit.patcher.post_rules.engine import apply_post_rules
+
+    post_report = apply_post_rules(root, packet, file_allowlist=allowlist)
+    for change in post_report.changes:
+        console.print(f"[post-rule] {change.path}: {change.detail}")
+
     want_llm = resolve_provider() not in {None, "none", "off", "disabled"}
     beat("hatch")
     try:
@@ -533,10 +539,25 @@ def apply_cmd(
         raise typer.Exit(1)
     data, _src = _prepare_client_packet(root, data)
     files = prune_by_imports(root, dependency_packages(data))
-    sdk_rules, rest_rules, _unknown = partition_rules(list(data.get("rules") or []))
+    sdk_rules, rest_rules, _post, _unknown = partition_rules(list(data.get("rules") or []))
     console.print(f"Applying SDK rules ({len(sdk_rules)})…")
     console.print(f"Applying REST rules ({len(rest_rules)})…")
-    report = apply_packet(root, data, dry_run=dry_run, file_allowlist=files or None)
+
+    from conduit.patcher.impact.engine import analyze_impacts, merge_runtime_packet
+
+    impact = analyze_impacts(root, data, file_allowlist=files or None, log=console.print)
+    if impact.blocked:
+        console.print(f"[red]Impact analysis blocked migration:[/red] {impact.block_reason}")
+        raise typer.Exit(2)
+
+    data = merge_runtime_packet(data, impact.packet_patches)
+    report = apply_packet(
+        root,
+        data,
+        dry_run=dry_run,
+        file_allowlist=files or None,
+        path_defer=impact.defer_paths,
+    )
     for change in report.changes:
         prefix = "DRY-RUN " if dry_run else ""
         console.print(f"{prefix}[{change.rule_type}] {change.path}: {change.detail}")
@@ -544,6 +565,20 @@ def apply_cmd(
         from conduit.patcher.sync_env import sync_bumped_packages
 
         sync_bumped_packages(data, log=console.print)
+
+        from conduit.patcher.post_rules.engine import apply_post_rules
+
+        post_report = apply_post_rules(
+            root,
+            data,
+            file_allowlist=files or None,
+            extra_rules=impact.post_rules,
+        )
+        for change in post_report.changes:
+            console.print(f"[post-rule] {change.path}: {change.detail}")
+            if change.path not in report.files_modified:
+                report.files_modified.append(change.path)
+
     console.print(
         f"{'Would modify' if dry_run else 'Modified'} "
         f"{len(report.files_modified)} file(s)."
@@ -855,20 +890,65 @@ def _run_pipeline(
             )
 
     beat("apply")
-    sdk_rules, rest_rules, _unknown = partition_rules(list(pkt.get("rules") or []))
+    from conduit.prune.grep_imports import (
+        expand_allowlist_for_exact_rules,
+        expand_apply_allowlist_oracle,
+    )
+
+    before_expand = len(files)
+    files = expand_allowlist_for_exact_rules(root, files, pkt)
+    files = expand_apply_allowlist_oracle(root, files, pkt, changed_files=None)
+    if len(files) != before_expand:
+        console.print(
+            f"Expanded apply allowlist to {len(files)} file(s) "
+            f"(+{len(files) - before_expand} for string-rule hits)"
+        )
+    sdk_rules, rest_rules, _post, _unknown = partition_rules(list(pkt.get("rules") or []))
     console.print(f"Applying SDK rules ({len(sdk_rules)})…")
     console.print(f"Applying REST rules ({len(rest_rules)})…")
-    report = apply_packet(root, pkt, dry_run=False, file_allowlist=files or None)
+
+    from conduit.anticheat.audit_log import MigrationAuditLog
+    from conduit.patcher.impact.engine import analyze_impacts, merge_runtime_packet
+
+    audit_log = MigrationAuditLog.from_packet(pkt, root=root)
+    impact = analyze_impacts(root, pkt, file_allowlist=files or None, log=console.print)
+    audit_log.record_impact(impact)
+    if impact.blocked:
+        console.print(f"[red]Impact analysis blocked migration:[/red] {impact.block_reason}")
+        try:
+            audit_log.persist(root)
+        except OSError:
+            pass
+        raise typer.Exit(2)
+
+    pkt = merge_runtime_packet(pkt, impact.packet_patches)
+    report = apply_packet(
+        root,
+        pkt,
+        dry_run=False,
+        file_allowlist=files or None,
+        path_defer=impact.defer_paths,
+    )
     for change in report.changes:
         console.print(f"[{change.rule_type}] {change.path}: {change.detail}")
 
     from conduit.patcher.sync_env import sync_bumped_packages
 
-    sync_bumped_packages(pkt, log=console.print)
+    sync_bumped_packages(pkt, root=root, log=console.print)
 
-    from conduit.anticheat.audit_log import MigrationAuditLog
+    from conduit.patcher.post_rules.engine import apply_post_rules
 
-    audit_log = MigrationAuditLog.from_packet(pkt, root=root)
+    post_report = apply_post_rules(
+        root,
+        pkt,
+        file_allowlist=files or None,
+        extra_rules=impact.post_rules,
+    )
+    for change in post_report.changes:
+        console.print(f"[post-rule] {change.path}: {change.detail}")
+        if change.path not in report.files_modified:
+            report.files_modified.append(change.path)
+
     audit_log.record_apply(report)
     try:
         audit_log.persist(root)
@@ -1094,6 +1174,37 @@ def packet_init_cmd(
         out_dir=out_dir,
     )
     console.print(f"[green]Created[/green] {path}")
+
+
+@packet_app.command("export-post-rules")
+def packet_export_post_rules_cmd(
+    path: Path = typer.Option(Path("."), "--path", help="Consumer repo root"),
+    packet_file: Path = typer.Option(..., "--packet", help="Migration packet JSON"),
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Output packet path (default: overwrite --packet)"
+    ),
+    merge: bool = typer.Option(
+        True, "--merge/--no-merge", help="Merge learned rules into packet post_rules"
+    ),
+) -> None:
+    """Promote .conduit/post_rules.json into a portable packet."""
+    from conduit.patcher.post_rules.store import (
+        export_post_rules_to_packet,
+        load_learned_post_rules,
+    )
+
+    root = _resolve_root(path)
+    pkt = json.loads(packet_file.read_text(encoding="utf-8"))
+    learned = load_learned_post_rules(root) if merge else []
+    if not learned:
+        console.print("[yellow]No learned post-rules in .conduit/post_rules.json[/yellow]")
+        raise typer.Exit(1)
+    merged = export_post_rules_to_packet(pkt, learned)
+    dest = out or packet_file
+    dest.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    console.print(
+        f"[green]Wrote[/green] {len(merged.get('post_rules') or [])} post_rule(s) to {dest}"
+    )
 
 
 @packet_app.command("validate")

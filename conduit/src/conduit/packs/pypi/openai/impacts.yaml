@@ -1,0 +1,40 @@
+# Vendor impact catalog: pattern classes for OpenAI Python SDK migrations.
+impact_classes:
+  - id: azure_classic_client
+    markers:
+      - 'api_type = "azure"'
+      - "api_type = 'azure'"
+      - AZURE_OPENAI_
+      - openai.api_base
+      - openai.api_type
+    target_globs:
+      - "**/azure_bridge/**"
+      - "**/*azure*bridge*"
+    required_if:
+      - oracle_scan
+      - planned_touch
+    fix:
+      defer_during_apply: true
+      post_rule:
+        type: FUNCTION_BODY_REPLACE
+        replace_module: true
+        reason: Migrate Azure bridge from 0.x module globals to AzureOpenAI client.
+
+  - id: dict_response_access
+    markers:
+      - 'response["choices"]'
+      - "response['choices']"
+    required_if:
+      - planned_touch
+    fix:
+      advisory: true
+
+default_banned_kwargs_on:
+  chat.completions.create:
+    - engine
+  completions.create:
+    - engine
+  openai.chat.completions.create:
+    - engine
+  openai.completions.create:
+    - engine

@@ -124,11 +124,26 @@ def evaluate_npm_result(
     return True, ""
 
 
+def resolve_consumer_python(root: Path) -> str:
+    """Prefer the consumer repo venv over Conduit's interpreter."""
+    root = root.resolve()
+    for parts in (
+        (".venv", "Scripts", "python.exe"),
+        (".venv", "bin", "python"),
+        ("venv", "Scripts", "python.exe"),
+        ("venv", "bin", "python"),
+    ):
+        candidate = root.joinpath(*parts)
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
+
+
 def detect_test_command(root: Path) -> tuple[str, list[str]] | None:
-    # Always use the interpreter running Conduit — not PATH `python`, which on
-    # Windows often resolves to a different install (e.g. Store Python) that
-    # still has the pre-migration package version.
-    pytest_cmd = [sys.executable, "-m", "pytest", "-q", "--tb=short"]
+    # Use the consumer venv when present — not Conduit's interpreter or PATH
+    # `python` (Store Python often still has the pre-migration package).
+    python = resolve_consumer_python(root)
+    pytest_cmd = [python, "-m", "pytest", "-q", "--tb=short"]
     if (root / "pytest.ini").exists() or (root / "conftest.py").exists():
         return "pytest", list(pytest_cmd)
     if (root / "pyproject.toml").exists():

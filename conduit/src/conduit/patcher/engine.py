@@ -136,9 +136,11 @@ def _apply_rules_to_files(
     dry_run: bool,
     require_context: bool,
     stage_label: str,
+    path_defer: set[str] | None = None,
 ) -> PatchReport:
     report = PatchReport()
     report.stage_counts[stage_label] = len(rules)
+    deferred = {p.replace("\\", "/") for p in (path_defer or set())}
 
     for rule in rules:
         rule_type = rule.get("type")
@@ -191,6 +193,19 @@ def _apply_rules_to_files(
             except ValueError:
                 rel = path.name
             if is_conduit_generated_rel(rel):
+                continue
+            if rel in deferred and rule_type in {
+                "EXACT_STRING_REPLACE",
+                "AST_CALL_REWRITE",
+                "AST_PARAM_RENAME",
+                "AST_PARAM_DROP",
+                "AST_IMPORT_REWRITE",
+                "AST_ATTR_RENAME",
+                "REGEX_REPLACE",
+            }:
+                skip = f"[{stage_label}] deferred impact path {rel}"
+                if skip not in report.skips:
+                    report.skips.append(skip)
                 continue
             if not _glob_ok(path, target_files, root):
                 continue
@@ -314,6 +329,7 @@ def apply_packet(
     require_context: bool = True,
     file_allowlist: Iterable[Path] | None = None,
     stages: ApplyStages = "all",
+    path_defer: set[str] | None = None,
 ) -> PatchReport:
     """Apply a single conduit-packet.json in SDK then REST stages."""
     root = root.resolve()
@@ -346,7 +362,7 @@ def apply_packet(
     packet_id = packet.get("packet_id", "packet")
     vendor = packet.get("package", "")
     rules = _net_dependency_bumps(list(packet.get("rules") or []))
-    sdk_rules, rest_rules, unknown = partition_rules(rules)
+    sdk_rules, rest_rules, post_rules, unknown = partition_rules(rules)
     for msg in unknown:
         if msg not in report.skips:
             report.skips.append(msg)
@@ -361,6 +377,7 @@ def apply_packet(
             dry_run=dry_run,
             require_context=require_context,
             stage_label="sdk",
+            path_defer=path_defer,
         )
         report.merge(sdk_report)
 
@@ -374,6 +391,7 @@ def apply_packet(
             dry_run=dry_run,
             require_context=require_context,
             stage_label="rest",
+            path_defer=path_defer,
         )
         report.merge(rest_report)
 

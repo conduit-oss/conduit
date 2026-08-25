@@ -67,6 +67,30 @@
         }
       }
     },
+    "runtime_model_aliases": {
+      "type": "object",
+      "description": "Map packet fake or legacy model ids to live API models at runtime.",
+      "additionalProperties": { "type": "string" }
+    },
+    "live_test": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "alias_prefixes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "default_completion_model": {
+          "type": "string",
+          "description": "Fallback instruct/completion model for aliased ids."
+        }
+      }
+    },
+    "post_rules": {
+      "type": "array",
+      "description": "Body/wrapper fixes applied after SDK and REST rule stages.",
+      "items": { "$ref": "#/$defs/post_rule" }
+    },
     "rules": {
       "type": "array",
       "items": { "$ref": "#/$defs/rule" }
@@ -78,6 +102,7 @@
         { "$ref": "#/$defs/exact_string_replace" },
         { "$ref": "#/$defs/regex_replace" },
         { "$ref": "#/$defs/ast_param_rename" },
+        { "$ref": "#/$defs/ast_param_drop" },
         { "$ref": "#/$defs/dependency_bump" },
         { "$ref": "#/$defs/dependency_add" },
         { "$ref": "#/$defs/dependency_remove" },
@@ -143,6 +168,26 @@
         "function_target": { "type": "string" },
         "old_param": { "type": "string" },
         "new_param": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "ast_param_drop": {
+      "type": "object",
+      "required": ["type", "target_files", "function_target", "param"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "AST_PARAM_DROP" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_target": { "type": "string" },
+        "param": { "type": "string" },
+        "values": {
+          "type": "array",
+          "items": {}
+        },
         "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },
@@ -260,6 +305,108 @@
         "old_key": { "type": "string", "minLength": 1 },
         "new_key": { "type": "string", "minLength": 1 },
         "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "post_rule": {
+      "oneOf": [
+        { "$ref": "#/$defs/wrapper_ensure_list" },
+        { "$ref": "#/$defs/wrapper_ensure_dict_key" },
+        { "$ref": "#/$defs/wrapper_delegate" },
+        { "$ref": "#/$defs/function_body_replace" },
+        { "$ref": "#/$defs/runtime_model_alias_rule" }
+      ]
+    },
+    "wrapper_ensure_list": {
+      "type": "object",
+      "required": ["type", "target_files", "function_name"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "WRAPPER_ENSURE_LIST" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_name": { "type": "string", "minLength": 1 },
+        "list_callee_hint": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" },
+        "source": { "type": "string" }
+      }
+    },
+    "wrapper_ensure_dict_key": {
+      "type": "object",
+      "required": ["type", "target_files", "function_name", "required_key"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "WRAPPER_ENSURE_DICT_KEY" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_name": { "type": "string", "minLength": 1 },
+        "required_key": { "type": "string", "minLength": 1 },
+        "create_callee_hint": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" },
+        "source": { "type": "string" }
+      }
+    },
+    "wrapper_delegate": {
+      "type": "object",
+      "required": ["type", "target_files", "function_name", "delegate_module", "delegate_symbol"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "WRAPPER_DELEGATE" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_name": { "type": "string", "minLength": 1 },
+        "delegate_module": { "type": "string", "minLength": 1 },
+        "delegate_symbol": { "type": "string", "minLength": 1 },
+        "model_param": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" },
+        "source": { "type": "string" }
+      }
+    },
+    "function_body_replace": {
+      "type": "object",
+      "required": ["type", "target_files", "function_name", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "FUNCTION_BODY_REPLACE" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_name": { "type": "string", "minLength": 1 },
+        "body": { "type": "string", "minLength": 1 },
+        "replace_module": { "type": "boolean" },
+        "reason": { "$ref": "#/$defs/rule_reason" },
+        "source": { "type": "string" }
+      }
+    },
+    "runtime_model_alias_rule": {
+      "type": "object",
+      "required": ["type", "target_files", "function_name"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "RUNTIME_MODEL_ALIAS" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_name": { "type": "string", "minLength": 1 },
+        "default_model": { "type": "string" },
+        "alias_prefixes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "reason": { "$ref": "#/$defs/rule_reason" },
+        "source": { "type": "string" }
       }
     }
   }

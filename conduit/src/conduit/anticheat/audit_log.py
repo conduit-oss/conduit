@@ -130,6 +130,29 @@ class MigrationAuditLog:
         for skip in report.skips:
             self.record("apply_skip", detail=str(skip))
 
+    def record_impact(self, impact: Any) -> None:
+        """Record pre-apply impact analysis findings."""
+        blocked = bool(getattr(impact, "blocked", False))
+        self.record(
+            "impact",
+            detail="blocked" if blocked else "ok",
+            blocked=blocked,
+            block_reason=str(getattr(impact, "block_reason", "") or ""),
+            finding_count=len(getattr(impact, "findings", []) or []),
+            post_rule_count=len(getattr(impact, "post_rules", []) or []),
+            defer_paths=sorted(getattr(impact, "defer_paths", []) or []),
+        )
+        for finding in getattr(impact, "findings", []) or []:
+            if not isinstance(finding, dict):
+                continue
+            self.record(
+                "impact_finding",
+                path=str(finding.get("path") or ""),
+                detail=str(finding.get("detail") or finding.get("kind") or ""),
+                action=str(finding.get("action") or ""),
+                source=str(finding.get("source") or ""),
+            )
+
     def record_generated(self, paths: Iterable[str]) -> None:
         for rel in paths:
             self.record("test_gen", path=str(rel), detail="generated conduit test")

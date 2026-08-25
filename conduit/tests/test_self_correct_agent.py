@@ -331,7 +331,29 @@ def test_self_correct_nudge_continues(monkeypatch, tmp_path: Path):
             return {"files": {}, "packet_patch": {}}
 
     monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
-    monkeypatch.setattr(sc, "run_tests", lambda _root: results.pop(0))
+    monkeypatch.setattr(
+        "conduit.patcher.post_rules.synthesize.synthesize_post_rules",
+        lambda *_a, **_k: [],
+    )
+
+    def _anticheat_then_tests(root, packet, **kwargs):
+        return sc.run_tests(root)
+
+    monkeypatch.setattr(sc, "_run_anticheat_then_tests", _anticheat_then_tests)
+
+    def _run_tests(_root):
+        if results:
+            return results.pop(0)
+        return RunnerResult(
+            passed=True,
+            returncode=0,
+            runner="pytest",
+            command=["pytest"],
+            stdout="ok",
+            stderr="",
+        )
+
+    monkeypatch.setattr(sc, "run_tests", _run_tests)
     monkeypatch.setattr(
         sc,
         "_extract_research_targets",
