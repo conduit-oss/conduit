@@ -44,6 +44,23 @@ def is_conduit_generated_rel(rel: str) -> bool:
         return True
     return False
 
+
+def generated_test_nodeids(root: Path) -> list[str]:
+    """Oracle/smoke/functional files Conduit wrote; empty if none exist yet."""
+    out: list[str] = []
+    for rel in (
+        _ORACLE_PY,
+        _SMOKE_PY,
+        _FUNCTIONAL_PY,
+        _ORACLE_JS,
+        _SMOKE_JS,
+        _FUNCTIONAL_JS,
+    ):
+        if (root / rel).is_file():
+            out.append(rel)
+    return out
+
+
 _RULE_TOKEN_KEYS = {
     "EXACT_STRING_REPLACE": "match",
     "AST_PARAM_RENAME": "old_param",
@@ -496,18 +513,11 @@ IMPL_FILES = {impl_lit}
 FORBIDDEN = {forbidden_lit}
 REQUIRED = {required_lit}
 _TOKEN_CHAR = r"A-Za-z0-9_." + r"-"
+_JS_SUFFIXES = {{".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs"}}
+_PY_SUFFIXES = {{".py", ".pyi"}}
 _STR_LIT = re.compile(r"""(['"])(?:\\\\.|(?!\\1).)*\\1""")
-_PY_JOIN = re.compile(
-    r"(?P<sep>(['\\"])(?:\\\\.|(?!\\2).)*\\2)\\s*\\.\\s*join\\s*\\(\\s*\\[\\s*"
-    r"(?P<parts>(?:(['\\"])(?:\\\\.|(?!\\4).)*\\4\\s*,\\s*)*(['\\"])(?:\\\\.|(?!\\5).)*\\5)"
-    r"\\s*\\]\\s*\\)",
-    re.DOTALL,
-)
-_JS_JOIN = re.compile(
-    r"\\[\\s*(?P<parts>(?:(['\\"])(?:\\\\.|(?!\\2).)*\\2\\s*,\\s*)*(['\\"])(?:\\\\.|(?!\\3).)*\\3)"
-    r"\\s*\\]\\s*\\.\\s*join\\s*\\(\\s*(?P<sep>(['\\"])(?:\\\\.|(?!\\5).)*\\5)\\s*\\)",
-    re.DOTALL,
-)
+_PY_JOIN_TAIL = re.compile(r"""\\.\\s*join\\s*\\(\\s*\\[""")
+_JS_JOIN_OPEN = re.compile(r"""\\[\\s*['"]""")
 
 
 def _has_token(text: str, token: str) -> bool:
@@ -603,14 +613,115 @@ def _unquote(lit: str) -> str:
         return lit
 
 
-def _join_from_parts(parts_blob: str, sep_lit: str) -> str | None:
-    parts = [_unquote(m.group(0)) for m in _STR_LIT.finditer(parts_blob)]
-    if not parts:
+def _parse_str_list_body(body: str):
+    parts = []
+    i = 0
+    n = len(body)
+    while i < n:
+        while i < n and body[i] in " \\t\\r\\n,":
+            i += 1
+        if i >= n:
+            break
+        if body[i] == "]":
+            return parts
+        if body[i] not in {{"'", '"'}}:
+            return None
+        m = _STR_LIT.match(body, i)
+        if not m:
+            return None
+        parts.append(_unquote(m.group(0)))
+        i = m.end()
+    return None
+
+
+def _string_lit_ending_at(text: str, end: int):
+    if end <= 0:
         return None
-    return _unquote(sep_lit).join(parts)
+    q = text[end - 1]
+    if q not in {{"'", '"'}}:
+        return None
+    j = end - 2
+    while j >= 0:
+        if text[j] == q:
+            bs = 0
+            k = j - 1
+            while k >= 0 and text[k] == "\\\\":
+                bs += 1
+                k -= 1
+            if bs % 2 == 1:
+                j -= 1
+                continue
+            cand = text[j:end]
+            if _STR_LIT.fullmatch(cand):
+                return cand
+            return None
+        j -= 1
+    return None
 
 
-def _reconstructed_literals(text: str) -> list[str]:
+def _scan_py_joins(text: str):
+    found = []
+    for m in _PY_JOIN_TAIL.finditer(text):
+        left = m.start()
+        while left > 0 and text[left - 1] in " \\t\\r\\n":
+            left -= 1
+        sep_lit = _string_lit_ending_at(text, left)
+        if sep_lit is None:
+            continue
+        parts = _parse_str_list_body(text[m.end():])
+        if parts is not None:
+            found.append(_unquote(sep_lit).join(parts))
+    return found
+
+
+def _scan_js_joins(text: str):
+    found = []
+    for m in _JS_JOIN_OPEN.finditer(text):
+        start = m.start()
+        parts = _parse_str_list_body(text[start + 1:])
+        if parts is None:
+            continue
+        i = start + 1
+        n = len(text)
+        ok = True
+        while i < n:
+            while i < n and text[i] in " \\t\\r\\n,":
+                i += 1
+            if i < n and text[i] == "]":
+                i += 1
+                break
+            if i >= n or text[i] not in {{"'", '"'}}:
+                ok = False
+                break
+            lit = _STR_LIT.match(text, i)
+            if not lit:
+                ok = False
+                break
+            i = lit.end()
+        else:
+            ok = False
+        if not ok:
+            continue
+        while i < n and text[i] in " \\t\\r\\n":
+            i += 1
+        if not text.startswith(".join", i):
+            continue
+        i += len(".join")
+        while i < n and text[i] in " \\t\\r\\n":
+            i += 1
+        if i >= n or text[i] != "(":
+            continue
+        i += 1
+        while i < n and text[i] in " \\t\\r\\n":
+            i += 1
+        sep_m = _STR_LIT.match(text, i)
+        if not sep_m:
+            continue
+        found.append(_unquote(sep_m.group(0)).join(parts))
+    return found
+
+
+def _reconstructed_literals(text: str, *, path: str = "") -> list[str]:
     found: list[str] = []
     seen: set[str] = set()
 
@@ -619,44 +730,51 @@ def _reconstructed_literals(text: str) -> list[str]:
             seen.add(value)
             found.append(value)
 
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        tree = None
-    if tree is not None:
-        class _V(ast.NodeVisitor):
-            def visit_Call(self, node: ast.Call) -> None:
-                func = node.func
-                if isinstance(func, ast.Attribute) and func.attr == "join":
-                    sep = func.value.value if isinstance(func.value, ast.Constant) else None
-                    if isinstance(sep, str) and node.args and isinstance(node.args[0], (ast.List, ast.Tuple)):
-                        parts = [
-                            elt.value
-                            for elt in node.args[0].elts
-                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-                        ]
-                        if len(parts) == len(node.args[0].elts):
-                            _add(sep.join(parts))
-                self.generic_visit(node)
+    suf = Path(path.replace("\\\\", "/")).suffix.lower() if path else ""
+    js = suf in _JS_SUFFIXES
+    py = (not suf) or suf in _PY_SUFFIXES
 
-            def visit_BinOp(self, node: ast.BinOp) -> None:
-                if isinstance(node.op, ast.Add):
-                    def fold(n):
-                        if isinstance(n, ast.Constant) and isinstance(n.value, str):
-                            return n.value
-                        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
-                            left, right = fold(n.left), fold(n.right)
-                            if left is not None and right is not None:
-                                return left + right
-                        return None
-                    _add(fold(node))
-                self.generic_visit(node)
+    tree = None
+    if py and not js:
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            tree = None
+        if tree is not None:
+            class _V(ast.NodeVisitor):
+                def visit_Call(self, node: ast.Call) -> None:
+                    func = node.func
+                    if isinstance(func, ast.Attribute) and func.attr == "join":
+                        sep = func.value.value if isinstance(func.value, ast.Constant) else None
+                        if isinstance(sep, str) and node.args and isinstance(node.args[0], (ast.List, ast.Tuple)):
+                            parts = [
+                                elt.value
+                                for elt in node.args[0].elts
+                                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                            ]
+                            if len(parts) == len(node.args[0].elts):
+                                _add(sep.join(parts))
+                    self.generic_visit(node)
 
-        _V().visit(tree)
-    for match in _PY_JOIN.finditer(text):
-        _add(_join_from_parts(match.group("parts"), match.group("sep")))
-    for match in _JS_JOIN.finditer(text):
-        _add(_join_from_parts(match.group("parts"), match.group("sep")))
+                def visit_BinOp(self, node: ast.BinOp) -> None:
+                    if isinstance(node.op, ast.Add):
+                        def fold(n):
+                            if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                                return n.value
+                            if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add):
+                                left, right = fold(n.left), fold(n.right)
+                                if left is not None and right is not None:
+                                    return left + right
+                            return None
+                        _add(fold(node))
+                    self.generic_visit(node)
+
+            _V().visit(tree)
+        for value in _scan_py_joins(text):
+            _add(value)
+    if js or (not path and tree is None):
+        for value in _scan_js_joins(text):
+            _add(value)
     return found
 
 
@@ -667,7 +785,7 @@ def test_conduit_no_legacy_tokens():
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
-        rebuilt = _reconstructed_literals(text)
+        rebuilt = _reconstructed_literals(text, path=rel)
         for token in FORBIDDEN:
             if _has_token(text, token):
                 failures.append(f"{{rel}} still contains {{token!r}}")
@@ -750,16 +868,44 @@ function hasToken(text, token) {
 
 function reconstructedLiterals(text) {
   const out = [];
-  const re = /\\[\\s*((?:(['"])(?:\\\\.|(?!\\2).)*\\2\\s*,\\s*)*(['"])(?:\\\\.|(?!\\3).)*\\3)\\s*\\]\\s*\\.\\s*join\\s*\\(\\s*(['"])((?:\\\\.|(?!\\4).)*)\\4\\s*\\)/g;
+  const openRe = /\\[\\s*['"]/g;
   let m;
-  while ((m = re.exec(text)) !== null) {
+  while ((m = openRe.exec(text)) !== null) {
+    let i = m.index + 1;
     const parts = [];
-    const partRe = /(['"])((?:\\\\.|(?!\\1).)*)\\1/g;
-    let p;
-    while ((p = partRe.exec(m[1])) !== null) {
-      parts.push(p[2]);
+    let ok = true;
+    while (i < text.length) {
+      while (i < text.length && /[\\s,]/.test(text[i])) i++;
+      if (i < text.length && text[i] === ']') { i++; break; }
+      const q = text[i];
+      if (q !== "'" && q !== '"') { ok = false; break; }
+      i++;
+      let part = '';
+      while (i < text.length) {
+        if (text[i] === '\\\\') { part += text[i] + (text[i + 1] || ''); i += 2; continue; }
+        if (text[i] === q) { i++; break; }
+        part += text[i++];
+      }
+      parts.push(part);
     }
-    out.push(parts.join(m[5]));
+    if (!ok) continue;
+    while (i < text.length && /\\s/.test(text[i])) i++;
+    if (!text.startsWith('.join', i)) continue;
+    i += 5;
+    while (i < text.length && /\\s/.test(text[i])) i++;
+    if (text[i] !== '(') continue;
+    i++;
+    while (i < text.length && /\\s/.test(text[i])) i++;
+    const sq = text[i];
+    if (sq !== "'" && sq !== '"') continue;
+    i++;
+    let sep = '';
+    while (i < text.length) {
+      if (text[i] === '\\\\') { sep += text[i] + (text[i + 1] || ''); i += 2; continue; }
+      if (text[i] === sq) break;
+      sep += text[i++];
+    }
+    out.push(parts.join(sep));
   }
   return out;
 }
@@ -868,6 +1014,34 @@ test('conduit smoke required shapes', () => {
     tests = root / "tests"
     tests.mkdir(parents=True, exist_ok=True)
     path = tests / "test_conduit_smoke.py"
+    from conduit.test_runner import interpreter_belongs_to_root, resolve_consumer_python
+
+    include_importable = interpreter_belongs_to_root(
+        resolve_consumer_python(root), root
+    ) and bool(py_changed)
+    changed_decl = (
+        f"CHANGED_PY = {json.dumps(py_changed, indent=4)}\n"
+        if include_importable
+        else ""
+    )
+    importable_test = ""
+    if include_importable:
+        importable_test = '''
+
+def test_conduit_smoke_changed_modules_importable():
+    import importlib.util
+
+    for rel in CHANGED_PY:
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module is not None
+'''
     content = f'''"""Auto-generated by Conduit — migration smoke for {package} {from_v} -> {to_v}."""
 
 from __future__ import annotations
@@ -879,8 +1053,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 IMPL_FILES = {json.dumps(impl_files, indent=4)}
 REQUIRED = {json.dumps(required, indent=4)}
-CHANGED_PY = {json.dumps(py_changed, indent=4)}
-_TOKEN_CHAR = r"A-Za-z0-9_." + r"-"
+{changed_decl}_TOKEN_CHAR = r"A-Za-z0-9_." + r"-"
 
 
 def _has_token(text: str, token: str) -> bool:
@@ -958,22 +1131,7 @@ def test_conduit_smoke_required_shapes():
         if not ok:
             failures.append(new)
     assert not failures, "missing migrated tokens: " + ", ".join(failures)
-
-
-def test_conduit_smoke_changed_modules_importable():
-    import importlib.util
-
-    for rel in CHANGED_PY:
-        path = ROOT / rel
-        if not path.is_file():
-            continue
-        spec = importlib.util.spec_from_file_location(path.stem, path)
-        if spec is None or spec.loader is None:
-            continue
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        assert module is not None
-'''
+{importable_test}'''
     path.write_text(content, encoding="utf-8")
     return _SMOKE_PY
 

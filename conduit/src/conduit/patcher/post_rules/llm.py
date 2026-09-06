@@ -19,7 +19,11 @@ def synthesize_post_rules_llm(
     log: Any = print,
 ) -> list[dict[str, Any]]:
     """Ask LLM for post-rules JSON; return validated rules only."""
-    client = get_llm_client()
+    try:
+        client = get_llm_client()
+    except Exception as exc:
+        log(f"[post-rules] LLM synthesis skipped: {exc}")
+        return []
     if client is None:
         return []
 
@@ -57,6 +61,10 @@ def synthesize_post_rules_llm(
         return []
 
     cleaned = [dict(r, source="llm") for r in rules if isinstance(r, dict)]
+    fallback = [p.replace("\\", "/") for p in allowlist if p]
+    for rule in cleaned:
+        if not rule.get("target_files") and fallback:
+            rule["target_files"] = fallback[:8]
     errors = validate_post_rules(cleaned, packet=packet)
     if errors:
         log(f"[post-rules] LLM rules rejected: {errors[:5]}")

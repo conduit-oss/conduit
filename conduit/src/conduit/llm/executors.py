@@ -245,6 +245,13 @@ class RepoToolExecutor:
         rel_posix = self._rel(path) if path.exists() else rel.replace("\\", "/")
         if self.ignore.path_ignored(rel_posix):
             return json.dumps({"error": f"path ignored: {rel_posix}"})
+        if not self._allowlisted(rel_posix):
+            return json.dumps(
+                {
+                    "error": f"path not on repair allowlist: {rel_posix}",
+                    "allowlist": sorted(self.path_allowlist or [])[:20],
+                }
+            )
         if self.reject_write is not None:
             reason = self.reject_write(rel_posix, contents)
             if reason:
@@ -271,6 +278,8 @@ class RepoToolExecutor:
             return json.dumps({"error": "run_tests not allowed in this mode"})
         from conduit.test_runner import run_tests
 
+        from conduit.test_gen import generated_test_nodeids, is_conduit_generated_rel
+
         args = args or {}
         raw_nodes = args.get("nodeids") or []
         nodeids: list[str] = []
@@ -280,6 +289,14 @@ class RepoToolExecutor:
                     nodeids.append(n.strip())
         elif isinstance(raw_nodes, str) and raw_nodes.strip():
             nodeids.append(raw_nodes.strip())
+        scoped = [
+            n
+            for n in nodeids
+            if is_conduit_generated_rel(n.split("::", 1)[0])
+        ]
+        if not scoped:
+            scoped = generated_test_nodeids(self.root)
+        nodeids = scoped
         self.log(
             "[repair] run tests"
             + (f" ({', '.join(nodeids[:3])}{'…' if len(nodeids) > 3 else ''})" if nodeids else "")

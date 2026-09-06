@@ -137,27 +137,30 @@ def unused_marker_literals(text: str, interesting: Iterable[str]) -> list[str]:
 
 
 def _is_dummy_value(node: ast.AST | None) -> bool:
+    """True only for trivial stub sinks (not legitimate returns/calls)."""
     if node is None:
         return True
-    if isinstance(node, ast.Constant) and node.value in _DUMMY_CONST:
+    if isinstance(node, ast.Constant):
+        return node.value in _DUMMY_CONST
+    if isinstance(node, ast.Dict) and not node.keys:
         return True
-    if isinstance(node, (ast.List, ast.Tuple, ast.Dict)) and (
-        (isinstance(node, ast.Dict) and not node.keys)
-        or (hasattr(node, "elts") and not getattr(node, "elts", None))
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)) and not getattr(
+        node, "elts", None
     ):
         return True
-    if isinstance(node, ast.Name):
-        return True
     if isinstance(node, ast.BoolOp):
-        return all(_is_dummy_value(v) for v in node.values) or True
-    if isinstance(node, ast.JoinedStr):
-        return True
-    if isinstance(node, ast.Call):
-        return True
-    if isinstance(node, ast.BinOp):
-        return True
-    if isinstance(node, ast.Attribute):
-        return True
+        # Catch `x or "ok"` / `x or {}` stub fallbacks; not every BoolOp.
+        has_dummy_operand = False
+        for v in node.values:
+            if isinstance(v, ast.Constant) and v.value in _DUMMY_CONST:
+                has_dummy_operand = True
+            elif isinstance(v, ast.Dict) and not v.keys:
+                has_dummy_operand = True
+            elif isinstance(v, (ast.List, ast.Tuple, ast.Set)) and not getattr(
+                v, "elts", None
+            ):
+                has_dummy_operand = True
+        return has_dummy_operand and any(_is_dummy_value(v) for v in node.values)
     return False
 
 

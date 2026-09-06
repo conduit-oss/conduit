@@ -39,6 +39,16 @@ _HTTP_SWALLOW_TYPES = {
     "BaseException",
 }
 
+_STUB_TOPLEVEL = frozenset(
+    {
+        "celery",
+        "django",
+        "xmltodict",
+        "tldextract",
+        "environ",
+        "validators",
+    }
+)
 _FORBIDDEN_DIR_PARTS = frozenset({".conduit", "vendor", "packets"})
 
 _ORACLE_SHIM_NEEDLES = (
@@ -191,6 +201,9 @@ def forbidden_write_reason(rel: str) -> str | None:
         return f"cannot edit {posix}"
     if name == "conduit-packet.json":
         return "cannot edit published packet files"
+    top = Path(posix).parts[0] if posix else ""
+    if Path(top).stem in _STUB_TOPLEVEL:
+        return "cannot invent third-party package stubs"
     lowered = posix.lower()
     if lowered.endswith(".jsonl") and (
         "/data/" in lowered or "knowledge" in lowered
@@ -413,13 +426,28 @@ def _handler_type_names(node: ast.ExceptHandler) -> set[str]:
     return names
 
 
+_SDK_STUB_KEYS = frozenset({"choices", "usage", "results"})
+
+
 def _is_literal_response(node: ast.AST | None) -> bool:
+    """True for in-process SDK *success* stubs, not app error envelopes."""
     if node is None:
         return True
     if isinstance(node, ast.Constant):
-        return isinstance(node.value, (str, bytes, int, float, bool)) or node.value is None
+        return node.value is None
     if isinstance(node, ast.Dict):
-        return True
+        keys = {
+            str(k.value)
+            for k in node.keys
+            if isinstance(k, ast.Constant)
+        }
+        if not keys:
+            return True
+        if keys & _SDK_STUB_KEYS:
+            return True
+        if "id" in keys and ("data" in keys or "object" in keys):
+            return True
+        return False
     if isinstance(node, (ast.List, ast.Tuple)) and not node.elts:
         return True
     if isinstance(node, ast.Call):
@@ -428,6 +456,21 @@ def _is_literal_response(node: ast.AST | None) -> bool:
             return True
         if isinstance(node.func, ast.Name) and node.func.id in {"dict", "list"}:
             return True
+    return False
+
+
+def _try_body_calls_package(try_node: ast.Try, package: str) -> bool:
+    pkg = (package or "").strip()
+    if not pkg:
+        return False
+    for stmt in try_node.body:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Name) and node.id == pkg:
+                return True
+            if isinstance(node, ast.Attribute):
+                chain = _attr_chain(node)
+                if chain == pkg or chain.startswith(pkg + "."):
+                    return True
     return False
 
 
@@ -451,7 +494,16 @@ def _handler_calls_package(handler: ast.ExceptHandler, package: str) -> bool:
 def synthetic_except_findings(
     text: str, rel: str, package: str
 ) -> list[str]:
-    """Flag except handlers that return in-process literal responses (no SDK call)."""
+    """Flag except handlers that return in-process literal responses (no SDK call).
+
+    Only runs on files that import or reference the migrated package so ordinary
+    app ``except`` paths (port lookups, redirects, etc.) are not blocked.
+    """
+    pkg = (package or "").strip()
+    if not pkg:
+        return []
+    if not (imports_package(text, pkg) or references_package(text, pkg)):
+        return []
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -469,6 +521,9 @@ def synthetic_except_findings(
                 if raises:
                     continue
                 if _handler_calls_package(handler, package):
+                    continue
+                try_calls = _try_body_calls_package(node, package)
+                if try_calls:
                     continue
                 for stmt in handler.body:
                     if isinstance(stmt, ast.Return) and _is_literal_response(
@@ -845,7 +900,7 @@ def file_findings(
             findings.append(f"{posix} cannot weaken tests with skip/xfail")
 
     if is_impl_rel(posix):
-        hidden = obfuscated_forbidden_tokens(text, leftover)
+        hidden = obfuscated_forbidden_tokens(text, leftover, path=posix)
         if hidden:
             findings.append(
                 f"{posix} obfuscates leftover tokens via concat/join/byte-decode: "

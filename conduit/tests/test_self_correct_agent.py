@@ -341,7 +341,7 @@ def test_self_correct_nudge_continues(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(sc, "_run_anticheat_then_tests", _anticheat_then_tests)
 
-    def _run_tests(_root):
+    def _run_tests(_root, **_k):
         if results:
             return results.pop(0)
         return RunnerResult(
@@ -385,6 +385,9 @@ def test_self_correct_reverts_regressed_rewrite(monkeypatch, tmp_path: Path):
         "from openai_text.client import configure\n", encoding="utf-8"
     )
     (tests / "test_a.py").write_text("def test_a(): assert False\n", encoding="utf-8")
+    (tests / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
+    )
 
     broken = "def other():\n    return 1\n"
     results = [
@@ -393,7 +396,11 @@ def test_self_correct_reverts_regressed_rewrite(monkeypatch, tmp_path: Path):
             returncode=1,
             runner="pytest",
             command=["pytest"],
-            stdout="8 failed, 10 passed",
+            stdout=(
+                "openai_text\\client.py:1: in configure\n"
+                "    return True\n"
+                "8 failed, 10 passed"
+            ),
             stderr="",
         ),
         RunnerResult(
@@ -409,7 +416,11 @@ def test_self_correct_reverts_regressed_rewrite(monkeypatch, tmp_path: Path):
             returncode=1,
             runner="pytest",
             command=["pytest"],
-            stdout="8 failed, 10 passed",
+            stdout=(
+                "openai_text\\client.py:1: in configure\n"
+                "    return True\n"
+                "8 failed, 10 passed"
+            ),
             stderr="",
         ),
         RunnerResult(
@@ -436,7 +447,12 @@ def test_self_correct_reverts_regressed_rewrite(monkeypatch, tmp_path: Path):
             }
 
     monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
-    monkeypatch.setattr(sc, "run_tests", lambda _root: results.pop(0))
+    monkeypatch.setattr(sc, "run_tests", lambda _root, **_k: results.pop(0))
+    monkeypatch.setattr(sc, "_run_anticheat_then_tests", lambda root, packet, **kwargs: sc.run_tests(root))
+    monkeypatch.setattr(
+        "conduit.patcher.post_rules.synthesize.synthesize_post_rules",
+        lambda *_a, **_k: [],
+    )
     monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
     monkeypatch.setattr(sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], []))
 
@@ -476,11 +492,12 @@ def test_repair_regressed_detects_collection_error():
 def _empty_anticheat(*_a, **_k):
     from conduit.anticheat.scan import AnticheatReport
 
-    return AnticheatReport(findings=[], source="mechanical")
+    return AnticheatReport(source="mechanical")
 
 
 def test_self_correct_retries_on_initial_anticheat(monkeypatch, tmp_path: Path):
     from conduit import self_correct as sc
+    from conduit.anticheat.findings import AnticheatFinding
     from conduit.anticheat.scan import AnticheatReport
 
     (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
@@ -496,7 +513,15 @@ def test_self_correct_retries_on_initial_anticheat(monkeypatch, tmp_path: Path):
         sc,
         "run_anticheat",
         lambda *_a, **_k: AnticheatReport(
-            findings=["fake sdk stub"], source="mechanical"
+            structured=[
+                AnticheatFinding(
+                    path="app.py",
+                    kind="fake_client",
+                    detail="fake sdk stub",
+                    severity="block",
+                )
+            ],
+            source="mechanical",
         ),
     )
     monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
@@ -527,6 +552,9 @@ def test_self_correct_retries_anticheat_after_attempt(monkeypatch, tmp_path: Pat
     (tmp_path / "tests" / "test_a.py").write_text(
         "def test_a(): assert False\n", encoding="utf-8"
     )
+    (tmp_path / "tests" / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
+    )
 
     fail = RunnerResult(
         passed=False,
@@ -540,7 +568,7 @@ def test_self_correct_retries_anticheat_after_attempt(monkeypatch, tmp_path: Pat
     cheat = anticheat_failure_result(["dropped openai import"], source="mechanical")
     results = [fail]
 
-    def _run_tests(_root):
+    def _run_tests(_root, **_k):
         if results:
             return results.pop(0)
         return cheat
@@ -584,6 +612,9 @@ def test_self_correct_stops_when_all_writes_rejected(monkeypatch, tmp_path: Path
     (tmp_path / "tests" / "test_a.py").write_text(
         "def test_a(): assert False\n", encoding="utf-8"
     )
+    (tmp_path / "tests" / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
+    )
 
     fail = RunnerResult(
         passed=False,
@@ -607,7 +638,7 @@ def test_self_correct_stops_when_all_writes_rejected(monkeypatch, tmp_path: Path
 
     monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
     monkeypatch.setattr(sc, "run_anticheat", _empty_anticheat)
-    monkeypatch.setattr(sc, "run_tests", lambda _root: fail)
+    monkeypatch.setattr(sc, "run_tests", lambda _root, **_k: fail)
     monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
     monkeypatch.setattr(
         sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], [])
@@ -633,6 +664,9 @@ def test_self_correct_stops_on_stagnant_fingerprint(monkeypatch, tmp_path: Path)
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_a.py").write_text(
         "def test_a(): assert False\n", encoding="utf-8"
+    )
+    (tmp_path / "tests" / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
     )
 
     same_fail = RunnerResult(
@@ -661,7 +695,7 @@ def test_self_correct_stops_on_stagnant_fingerprint(monkeypatch, tmp_path: Path)
 
     monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
     monkeypatch.setattr(sc, "run_anticheat", _empty_anticheat)
-    monkeypatch.setattr(sc, "run_tests", lambda _root: results.pop(0))
+    monkeypatch.setattr(sc, "run_tests", lambda _root, **_k: results.pop(0))
     monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
     monkeypatch.setattr(
         sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], [])
@@ -694,6 +728,9 @@ def test_self_correct_stops_after_two_consecutive_restores(monkeypatch, tmp_path
         "from openai_text.client import configure\n", encoding="utf-8"
     )
     (tests / "test_a.py").write_text("def test_a(): assert False\n", encoding="utf-8")
+    (tests / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
+    )
 
     broken = "def other():\n    return 1\n"
     # initial fail, regress, post-restore fail, regress again, post-restore fail
@@ -703,7 +740,10 @@ def test_self_correct_stops_after_two_consecutive_restores(monkeypatch, tmp_path
             returncode=1,
             runner="pytest",
             command=["pytest"],
-            stdout="FAILED tests/test_a.py::test_a\n8 failed, 10 passed",
+            stdout=(
+                "openai_text\\client.py:1: in configure\n"
+                "FAILED tests/test_a.py::test_a\n8 failed, 10 passed"
+            ),
             stderr="",
             failed_count=8,
         ),
@@ -720,7 +760,10 @@ def test_self_correct_stops_after_two_consecutive_restores(monkeypatch, tmp_path
             returncode=1,
             runner="pytest",
             command=["pytest"],
-            stdout="FAILED tests/test_a.py::test_a\n8 failed, 10 passed",
+            stdout=(
+                "openai_text\\client.py:1: in configure\n"
+                "FAILED tests/test_a.py::test_a\n8 failed, 10 passed"
+            ),
             stderr="",
             failed_count=8,
         ),
@@ -737,7 +780,10 @@ def test_self_correct_stops_after_two_consecutive_restores(monkeypatch, tmp_path
             returncode=1,
             runner="pytest",
             command=["pytest"],
-            stdout="FAILED tests/test_a.py::test_a\n8 failed, 10 passed",
+            stdout=(
+                "openai_text\\client.py:1: in configure\n"
+                "FAILED tests/test_a.py::test_a\n8 failed, 10 passed"
+            ),
             stderr="",
             failed_count=8,
         ),
@@ -752,7 +798,16 @@ def test_self_correct_stops_after_two_consecutive_restores(monkeypatch, tmp_path
 
     monkeypatch.setattr(sc, "get_llm_client", lambda: FakeClient())
     monkeypatch.setattr(sc, "run_anticheat", _empty_anticheat)
-    monkeypatch.setattr(sc, "run_tests", lambda _root: results.pop(0))
+    monkeypatch.setattr(sc, "run_tests", lambda _root, **_k: results.pop(0))
+    monkeypatch.setattr(
+        sc,
+        "_run_anticheat_then_tests",
+        lambda root, packet, **kwargs: sc.run_tests(root),
+    )
+    monkeypatch.setattr(
+        "conduit.patcher.post_rules.synthesize.synthesize_post_rules",
+        lambda *_a, **_k: [],
+    )
     monkeypatch.setattr(sc, "_extract_research_targets", lambda *_a, **_k: ([], []))
     monkeypatch.setattr(
         sc, "_heuristic_fix", lambda *_a, **_k: sc.FixAttempt("heuristic", [], [])

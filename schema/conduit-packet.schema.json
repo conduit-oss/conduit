@@ -32,6 +32,11 @@
       }
     },
     "notes": { "type": ["string", "null"] },
+    "anticheat": {
+      "type": "object",
+      "description": "Optional packet-local anti-cheat extras (deny_substrings, banned_kwargs_on).",
+      "additionalProperties": true
+    },
     "side_effects": {
       "type": "array",
       "description": "Human checklist for webhooks, databases, and other non-code ripples.",

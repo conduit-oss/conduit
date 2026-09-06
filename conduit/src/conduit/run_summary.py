@@ -277,6 +277,20 @@ def _next_lines(
         items.append(pr_message)
     if generated:
         items.append("Review generated tests: " + ", ".join(generated))
+    notes = list(getattr(test_result, "extra_notes", None) or [])
+    if any("verify_mode=oracle" in n for n in notes) and test_result.passed:
+        items.append(
+            "Verify ran oracle/smoke only (no consumer venv under the repo); "
+            "full pytest was not run"
+        )
+    if any("verify_kind=missing_dep" in n for n in notes) or (
+        test_result.fail_reason or ""
+    ).startswith("missing_dep"):
+        items.append("Stopped on missing_dep; do not treat this as a leftover-token failure")
+    if any("verify_kind=no_consumer_python" in n for n in notes) or (
+        test_result.fail_reason or ""
+    ).startswith("no_consumer_python"):
+        items.append("Stopped on no_consumer_python; full consumer pytest did not run")
     return items or ["(none)"]
 
 

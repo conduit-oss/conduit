@@ -245,3 +245,38 @@ def test_bind_pypi_packet_does_not_stamp_npm_only_pin(tmp_path: Path):
     bound, _src = _prepare_client_packet(tmp_path, packet)
     assert bound["from_version"] == "0"
     assert bound["rules"][0]["from_version"] == "0"
+
+
+def test_nested_requirements_pin_binds_from_version(tmp_path: Path):
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "requirements.txt").write_text("openai==0.28.1\n", encoding="utf-8")
+    by_eco = read_installed_by_ecosystem(tmp_path)
+    assert by_eco["pypi"]["openai"] == "0.28.1"
+    packet = {
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0",
+        "to_version": "3.3.1",
+        "rules": [
+            {
+                "type": "DEPENDENCY_BUMP",
+                "package": "openai",
+                "from_version": "0",
+                "to_version": "3.3.1",
+            }
+        ],
+    }
+    bound, _src = _prepare_client_packet(tmp_path, packet)
+    assert bound["from_version"] == "0.28.1"
+    assert bound["rules"][0]["from_version"] == "0.28.1"
+
+
+def test_root_pin_wins_over_nested_conflict(tmp_path: Path):
+    (tmp_path / "requirements.txt").write_text("openai==0.28.1\n", encoding="utf-8")
+    nested = tmp_path / "services" / "api"
+    nested.mkdir(parents=True)
+    (nested / "requirements.txt").write_text("openai==1.40.0\n", encoding="utf-8")
+    by_eco = read_installed_by_ecosystem(tmp_path)
+    assert by_eco["pypi"]["openai"] == "0.28.1"
+    assert pin_for_packet_ecosystem(by_eco, "openai", "pypi") == "0.28.1"

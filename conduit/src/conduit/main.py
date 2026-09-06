@@ -332,6 +332,14 @@ def _verify_with_oracle(
     if generated:
         audit_log.record_generated(generated)
 
+    edited: list[str] = []
+    seen: set[str] = set()
+    for rel in list(changed_files or []) + list(generated):
+        key = str(rel).replace("\\", "/")
+        if key and key not in seen:
+            seen.add(key)
+            edited.append(key)
+
     beat("repair")
     result, corrected = verify_with_self_correct(
         root,
@@ -342,6 +350,7 @@ def _verify_with_oracle(
         source=source,
         coverage_missed=coverage_missed,
         audit_log=audit_log,
+        edited_files=edited,
     )
     try:
         audit_log.persist(root)
@@ -1010,6 +1019,13 @@ def _run_pipeline(
                 report.files_modified.append(rel)
 
     console.print(test_result.summary)
+    verify_notes = [
+        n
+        for n in (getattr(test_result, "extra_notes", None) or [])
+        if n.startswith("verify_")
+    ]
+    if verify_notes:
+        console.print("[verify] " + "; ".join(verify_notes))
     docs_synced: list[str] = []
     if not test_result.passed:
         console.print("[red]Tests still failing after self-correction; aborting PR.[/red]")

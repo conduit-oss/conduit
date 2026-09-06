@@ -131,3 +131,78 @@ def test_merge_post_rules_dedupes():
     b = list(a)
     merged = merge_post_rules(a, b)
     assert len(merged) == 1
+
+
+def test_infer_string_rewrite_on_legacy_response_access(tmp_path: Path):
+    from conduit.patcher.post_rules.mechanical import infer_from_repo_scan
+
+    rel = "web/llm.py"
+    path = tmp_path / "web"
+    path.mkdir()
+    (path / "llm.py").write_text(
+        "import openai\n"
+        "resp = openai.chat.completions.create(model='gpt-4o')\n"
+        "text = resp['choices'][0]['message']['content']\n",
+        encoding="utf-8",
+    )
+    rules = infer_from_repo_scan(tmp_path, [rel], packet={"package": "openai"})
+    rewrites = [r for r in rules if r.get("type") == "STRING_REWRITE"]
+    assert rewrites
+    assert rewrites[0]["target_files"] == ["web/llm.py"]
+    assert ".choices[0].message.content" in rewrites[0]["replace"]
+
+
+def test_apply_string_rewrite_on_edited_file(tmp_path: Path):
+    path = tmp_path / "llm.py"
+    path.write_text(
+        "resp = openai.chat.completions.create()\n"
+        "return resp['choices'][0]['message']['content']\n",
+        encoding="utf-8",
+    )
+    packet = {
+        "packet_id": "t",
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0",
+        "to_version": "1",
+        "rules": [],
+        "post_rules": [
+            {
+                "type": "STRING_REWRITE",
+                "target_files": ["llm.py"],
+                "match": "['choices'][0]['message']['content']",
+                "replace": ".choices[0].message.content",
+            }
+        ],
+    }
+    report = apply_post_rules(tmp_path, packet, vendor=False, learned=False)
+    assert report.files_modified
+    text = path.read_text(encoding="utf-8")
+    assert "['choices']" not in text
+    assert ".choices[0].message.content" in text
+
+
+def test_synthesize_post_rules_llm_stamps_targets_before_validate(monkeypatch):
+    from conduit.patcher.post_rules.llm import synthesize_post_rules_llm
+
+    class FakeLLM:
+        def complete_json(self, *, system: str, user: str):
+            return {
+                "post_rules": [
+                    {
+                        "type": "WRAPPER_ENSURE_LIST",
+                        "function_name": "list_files",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("conduit.patcher.post_rules.llm.get_llm_client", lambda: FakeLLM())
+    rules = synthesize_post_rules_llm(
+        packet={"package": "openai", "rules": []},
+        failure_digest="list_files failed",
+        file_windows=[{"path": "files.py", "text": "def list_files(): pass"}],
+        allowlist=["files.py", "other.py"],
+        log=lambda _m: None,
+    )
+    assert rules
+    assert rules[0]["target_files"] == ["files.py", "other.py"]

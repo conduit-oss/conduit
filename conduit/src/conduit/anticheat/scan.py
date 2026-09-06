@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from conduit.anticheat.findings import (
     AnticheatFinding,
@@ -19,6 +20,25 @@ from conduit.anticheat.rules import (
 from conduit.prune.grep_imports import SKIP_DIRS
 
 _SCAN_SUFFIXES = {".py", ".ts", ".js", ".tsx", ".jsx"}
+_PROGRESS_EVERY = 25
+_SLOW_FILE_SEC = 1.0
+
+LogFn = Callable[[str], None]
+
+
+def scannable_rels(rels: Iterable[str] | None) -> list[str]:
+    """Keep unique posix paths with anti-cheat source suffixes."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in rels or []:
+        rel = str(raw or "").replace("\\", "/").strip()
+        if not rel or rel in seen:
+            continue
+        if Path(rel).suffix.lower() not in _SCAN_SUFFIXES:
+            continue
+        seen.add(rel)
+        out.append(rel)
+    return out
 
 
 @dataclass
@@ -47,7 +67,7 @@ class AnticheatReport:
 
 def _iter_rels(root: Path, files: Iterable[str] | None) -> list[str]:
     root = root.resolve()
-    if files:
+    if files is not None:
         return [str(r).replace("\\", "/") for r in files]
     rels: list[str] = []
     for path in root.rglob("*"):
@@ -70,11 +90,17 @@ def run_anticheat_mechanical(
     files: Iterable[str] | None = None,
     *,
     previous: dict[str, str] | None = None,
+    log: LogFn | None = None,
+    verbose: bool = False,
 ) -> AnticheatReport:
     root = root.resolve()
+    emit: LogFn = log if callable(log) else (lambda _m: None)
+    rels = _iter_rels(root, files)
+    emit(f"[anticheat] mechanical scan: {len(rels)} file(s)…")
     messages: list[str] = []
     impl_texts: list[tuple[str, str]] = []
-    for rel in _iter_rels(root, files):
+    scanned = 0
+    for rel in rels:
         path = root / rel
         if not path.is_file():
             continue
@@ -83,7 +109,17 @@ def run_anticheat_mechanical(
         except (OSError, UnicodeDecodeError):
             continue
         prev = (previous or {}).get(rel)
+        t0 = time.perf_counter()
         messages.extend(file_findings(rel, text, packet, previous=prev))
+        dt = time.perf_counter() - t0
+        scanned += 1
+        if verbose and (
+            scanned % _PROGRESS_EVERY == 0 or dt >= _SLOW_FILE_SEC
+        ):
+            emit(
+                f"[anticheat] scanned {scanned}/{len(rels)} {rel}"
+                + (f" ({dt:.1f}s)" if dt >= _SLOW_FILE_SEC else "")
+            )
         if is_impl_rel(rel):
             impl_texts.append((rel, text))
 
@@ -115,7 +151,13 @@ def run_anticheat_mechanical(
             seen.add(item)
             uniq.append(item)
     structured = classify_mechanical_messages(uniq, packet=packet)
-    return AnticheatReport(structured=structured, source="mechanical")
+    report = AnticheatReport(structured=structured, source="mechanical")
+    emit(
+        f"[anticheat] mechanical done "
+        f"(block={len(report.block_findings)}, "
+        f"advisory={len(report.advisory)})"
+    )
+    return report
 
 
 def run_anticheat(
@@ -126,11 +168,17 @@ def run_anticheat(
     llm: bool = False,
     previous: dict[str, str] | None = None,
     log: Any | None = None,
+    verbose: bool = False,
     audit_log: Any | None = None,
 ) -> AnticheatReport:
     """Mechanical scan, then optional additive LLM auditor (never subtracts)."""
     report = run_anticheat_mechanical(
-        root, packet, files, previous=previous
+        root,
+        packet,
+        files,
+        previous=previous,
+        log=log,
+        verbose=verbose,
     )
     if audit_log is not None:
         audit_log.record_mechanical(
@@ -146,6 +194,13 @@ def run_anticheat(
         return report
     from conduit.anticheat.llm_audit import llm_audit_findings
 
+    if callable(log):
+        try:
+            from conduit.pulse import beat
+
+            beat("think")
+        except Exception:
+            pass
     block, advisory, score = llm_audit_findings(
         root,
         packet,

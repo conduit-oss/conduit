@@ -160,3 +160,28 @@ def test_heuristic_updates_configs_not_tests(tmp_path: Path):
     assert "gpt-5.6-terra" in registry.read_text(encoding="utf-8")
     assert test_cfg.read_text(encoding="utf-8") == test_body
     assert "tests/test_configs.py" not in fix.files
+
+
+def test_heuristic_skips_non_utf8_file(tmp_path: Path):
+    """Binary/legacy-encoded siblings must not abort heuristic repair."""
+    web = tmp_path / "web" / "static"
+    web.mkdir(parents=True)
+    bad = web / "vendor.min.js"
+    # Invalid UTF-8 (same class of failure as rengine static assets).
+    bad.write_bytes(b"\x88\x00binary text-davinci-003 junk")
+    good = web / "app.js"
+    good.write_text('const model = "text-davinci-003";\n', encoding="utf-8")
+    packet = {
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "match": "text-davinci-003",
+                "replace": "gpt-5.6-terra",
+            }
+        ]
+    }
+    fix = _heuristic_fix(tmp_path, packet, ignore=build_ignore_list(tmp_path, packet))
+    assert "web/static/app.js" in fix.files
+    assert "gpt-5.6-terra" in good.read_text(encoding="utf-8")
+    assert "web/static/vendor.min.js" not in fix.files
+    assert bad.read_bytes().startswith(b"\x88")

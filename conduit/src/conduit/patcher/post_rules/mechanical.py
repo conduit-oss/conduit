@@ -10,10 +10,6 @@ from conduit.test_runner import TestResult
 
 _LIST_FAIL_RE = re.compile(r"isinstance\(.*,\s*list\)|not a list|return list", re.I)
 _FLAGGED_FAIL_RE = re.compile(r"flagged|moderation", re.I)
-_MAX_TOKENS_RE = re.compile(
-    r"Unsupported parameter: 'max_tokens'.*max_completion_tokens",
-    re.I | re.S,
-)
 
 
 def _glob_target(rel: str) -> list[str]:
@@ -36,6 +32,7 @@ def infer_from_test_result(
             rule.get("type"),
             tuple(rule.get("target_files") or ()),
             rule.get("function_name"),
+            rule.get("match"),
         )
         if key in seen:
             return
@@ -122,13 +119,21 @@ def infer_from_test_result(
                     }
                 )
 
-    if _MAX_TOKENS_RE.search(blob):
-        for rule in (packet or {}).get("rules") or []:
-            if not isinstance(rule, dict):
-                continue
-            if rule.get("type") == "AST_PARAM_RENAME":
-                continue
-        # Param rename handled by failure_rules; post stage uses same AST apply via packet merge
+        if "chat.completions.create" in text:
+            for match, replace in (
+                ("['choices'][0]['message']['content']", ".choices[0].message.content"),
+                ('["choices"][0]["message"]["content"]', ".choices[0].message.content"),
+            ):
+                if match in text:
+                    _add(
+                        {
+                            "type": "STRING_REWRITE",
+                            "target_files": _glob_target(rel),
+                            "match": match,
+                            "replace": replace,
+                            "reason": "New SDK returns objects, not dicts.",
+                        }
+                    )
 
     return rules
 

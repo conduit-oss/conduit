@@ -236,6 +236,54 @@ def test_integrity_dummy_except(tmp_path: Path):
     assert any("dummy" in f or "swallows Exception" in f for f in findings)
 
 
+def test_integrity_dummy_except_allows_legitimate_returns(tmp_path: Path):
+    from conduit.integrity import dummy_except_findings
+
+    clean = (
+        "def view(request):\n"
+        "    try:\n"
+        "        return work()\n"
+        "    except Exception as e:\n"
+        "        return self.handle_exception(e)\n"
+        "\n"
+        "def redirect_missing(slug):\n"
+        "    try:\n"
+        "        return Project.objects.get(slug=slug)\n"
+        "    except Exception:\n"
+        "        return HttpResponseRedirect('/404')\n"
+        "\n"
+        "def parse(section):\n"
+        "    data = {}\n"
+        "    try:\n"
+        "        data['x'] = section\n"
+        "    except Exception:\n"
+        "        return data\n"
+    )
+    assert dummy_except_findings(clean, "views.py") == []
+
+    dirty = (
+        "def bad():\n"
+        "    try:\n"
+        "        return call()\n"
+        "    except Exception:\n"
+        "        return {}\n"
+        "\n"
+        "def also_bad():\n"
+        "    try:\n"
+        "        return call()\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "\n"
+        "def stub_ok():\n"
+        "    try:\n"
+        "        return call()\n"
+        "    except Exception:\n"
+        "        return 'ok'\n"
+    )
+    hits = dummy_except_findings(dirty, "cheat.py")
+    assert len(hits) >= 3
+
+
 def test_integrity_migration_markers(tmp_path: Path):
     (tmp_path / "client.py").write_text(
         "MIGRATION_MARKERS = (\n"
@@ -302,3 +350,266 @@ def test_run_tests_no_suite_is_failure(tmp_path: Path):
     assert isinstance(result, TestResult)
     assert result.passed is False
     assert "no test suite" in result.fail_reason
+
+
+def test_classify_verify_failure_kinds():
+    from conduit.test_runner import classify_verify_failure
+
+    pkt = {"package": "openai"}
+    missing = TestResult(
+        runner="pytest",
+        passed=False,
+        returncode=2,
+        stdout="ModuleNotFoundError: No module named 'celery'\n",
+        stderr="",
+        command=["pytest"],
+    )
+    assert classify_verify_failure(missing, packet=pkt) == "missing_dep"
+
+    leftover = TestResult(
+        runner="pytest",
+        passed=False,
+        returncode=1,
+        stdout="tests/test_conduit_oracle.py still contains 'davinci'\n",
+        stderr="",
+        command=["pytest"],
+    )
+    assert classify_verify_failure(leftover, packet=pkt) == "leftover_token"
+
+    none = TestResult(
+        runner="none",
+        passed=False,
+        returncode=1,
+        stdout="",
+        stderr="",
+        command=[],
+        fail_reason="no_consumer_python: no venv under repo and no oracle tests",
+        extra_notes=["verify_kind=no_consumer_python"],
+    )
+    assert classify_verify_failure(none, packet=pkt) == "no_consumer_python"
+
+    ac = TestResult(
+        runner="anticheat",
+        passed=False,
+        returncode=1,
+        stdout="block",
+        stderr="",
+        command=[],
+    )
+    assert classify_verify_failure(ac, packet=pkt) == "anticheat"
+
+    same_pkg = TestResult(
+        runner="pytest",
+        passed=False,
+        returncode=2,
+        stdout="ModuleNotFoundError: No module named 'openai'\n",
+        stderr="",
+        command=["pytest"],
+    )
+    assert classify_verify_failure(same_pkg, packet=pkt) != "missing_dep"
+
+
+def test_classify_repo_local_package_is_not_missing_dep(tmp_path: Path):
+    from conduit.test_runner import classify_verify_failure
+
+    pkt = {"package": "openai"}
+    (tmp_path / "web" / "reNgine").mkdir(parents=True)
+    rengine_miss = TestResult(
+        runner="pytest",
+        passed=False,
+        returncode=1,
+        stdout="ModuleNotFoundError: No module named 'reNgine'\n",
+        stderr="",
+        command=["pytest"],
+    )
+    assert (
+        classify_verify_failure(rengine_miss, packet=pkt, root=tmp_path)
+        != "missing_dep"
+    )
+
+    leftover_and_local = TestResult(
+        runner="pytest",
+        passed=False,
+        returncode=1,
+        stdout=(
+            "tests/test_conduit_oracle.py still contains 'davinci'\n"
+            "ModuleNotFoundError: No module named 'reNgine'\n"
+        ),
+        stderr="",
+        command=["pytest"],
+    )
+    assert (
+        classify_verify_failure(leftover_and_local, packet=pkt, root=tmp_path)
+        == "leftover_token"
+    )
+
+    celery = TestResult(
+        runner="pytest",
+        passed=False,
+        returncode=2,
+        stdout="ModuleNotFoundError: No module named 'celery'\n",
+        stderr="",
+        command=["pytest"],
+    )
+    assert classify_verify_failure(celery, packet=pkt, root=tmp_path) == "missing_dep"
+
+
+def test_verified_tests_oracle_only_without_venv(tmp_path: Path, monkeypatch):
+    from conduit.anticheat.scan import AnticheatReport
+    from conduit.self_correct import _run_verified_tests
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
+    )
+    calls: list[list[str] | None] = []
+
+    def fake_run_tests(root, *, timeout=300.0, nodeids=None):
+        calls.append(list(nodeids) if nodeids else None)
+        return TestResult(
+            runner="pytest",
+            passed=True,
+            returncode=0,
+            stdout="1 passed",
+            stderr="",
+            command=["pytest"],
+        )
+
+    monkeypatch.setattr("conduit.self_correct.run_tests", fake_run_tests)
+    monkeypatch.setattr(
+        "conduit.self_correct.run_anticheat",
+        lambda *_a, **_k: AnticheatReport(),
+    )
+    result = _run_verified_tests(tmp_path, {"package": "openai", "rules": []})
+    assert result.passed
+    assert calls == [["tests/test_conduit_oracle.py"]]
+    assert any("verify_mode=oracle" in n for n in result.extra_notes)
+
+
+def test_verified_tests_full_suite_with_venv(tmp_path: Path, monkeypatch):
+    from conduit.anticheat.scan import AnticheatReport
+    from conduit.self_correct import _run_verified_tests
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
+    )
+    venv_py = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("", encoding="utf-8")
+    calls: list[list[str] | None] = []
+
+    def fake_run_tests(root, *, timeout=300.0, nodeids=None):
+        calls.append(list(nodeids) if nodeids else None)
+        return TestResult(
+            runner="pytest",
+            passed=True,
+            returncode=0,
+            stdout="1 passed",
+            stderr="",
+            command=["pytest"],
+        )
+
+    monkeypatch.setattr("conduit.self_correct.run_tests", fake_run_tests)
+    monkeypatch.setattr(
+        "conduit.self_correct.run_anticheat",
+        lambda *_a, **_k: AnticheatReport(),
+    )
+    result = _run_verified_tests(tmp_path, {"package": "openai", "rules": []})
+    assert result.passed
+    assert calls == [["tests/test_conduit_oracle.py"], None]
+    assert any("verify_mode=full" in n for n in result.extra_notes)
+
+
+def test_missing_dep_skips_llm_and_post_rules(tmp_path: Path, monkeypatch):
+    from conduit.self_correct import verify_with_self_correct
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
+    )
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+    def fake_run_tests(root, **_kwargs):
+        return TestResult(
+            runner="pytest",
+            passed=False,
+            returncode=2,
+            stdout=(
+                "ERROR collecting web/tests/test_nmap.py\n"
+                "ModuleNotFoundError: No module named 'celery'\n"
+            ),
+            stderr="",
+            command=["pytest"],
+        )
+
+    synth = {"n": 0}
+    llm = {"n": 0}
+
+    def fake_synth(*_a, **_k):
+        synth["n"] += 1
+        return []
+
+    class BoomClient:
+        def run_agent(self, **_kwargs):
+            llm["n"] += 1
+            return {"files": {"celery/__init__.py": ""}}
+
+    monkeypatch.setattr("conduit.self_correct.run_tests", fake_run_tests)
+    monkeypatch.setattr(
+        "conduit.patcher.post_rules.synthesize.synthesize_post_rules",
+        fake_synth,
+    )
+    monkeypatch.setattr("conduit.self_correct.get_llm_client", lambda: BoomClient())
+
+    logs: list[str] = []
+    result, changed = verify_with_self_correct(
+        tmp_path,
+        {"package": "openai", "rules": []},
+        max_retries=3,
+        log=logs.append,
+        edited_files=["app.py"],
+    )
+    assert not result.passed
+    assert synth["n"] == 0
+    assert llm["n"] == 0
+    assert changed == []
+    assert not (tmp_path / "celery").exists()
+    assert "missing_dep" in (result.fail_reason or "")
+    assert any("skipping LLM" in m for m in logs)
+
+
+def test_apply_file_updates_rejects_stub_and_off_allowlist(tmp_path: Path):
+    from conduit.self_correct import _apply_file_updates
+
+    logs: list[str] = []
+    changed = _apply_file_updates(
+        tmp_path,
+        {
+            "celery/__init__.py": "app = None\n",
+            "other.py": "x = 1\n",
+            "app.py": "x = 2\n",
+        },
+        packet={"package": "openai", "rules": []},
+        log=logs.append,
+        path_allowlist={"app.py"},
+    )
+    assert changed == ["app.py"]
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "x = 2\n"
+    assert not (tmp_path / "celery").exists()
+    assert not (tmp_path / "other.py").exists()
+    assert any("celery" in m for m in logs)
+    assert any("allowlist" in m for m in logs)
+
+    stub_only = _apply_file_updates(
+        tmp_path,
+        {"celery/__init__.py": "app = None\n"},
+        packet={"package": "openai", "rules": []},
+        log=logs.append,
+        path_allowlist={"celery/__init__.py"},
+    )
+    assert stub_only == []
+    assert not (tmp_path / "celery").exists()

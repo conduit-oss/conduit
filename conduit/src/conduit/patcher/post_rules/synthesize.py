@@ -40,6 +40,12 @@ def synthesize_post_rules(
     """
     emit = log or _noop
     root = root.resolve()
+    from conduit.test_runner import UNREPAIRABLE_VERIFY_KINDS, classify_verify_failure
+
+    kind = classify_verify_failure(result, packet=packet, root=root)
+    if kind in UNREPAIRABLE_VERIFY_KINDS:
+        emit(f"[post-rules] skipping synthesis ({kind})")
+        return []
     existing = load_learned_post_rules(root)
     repair_ctx = collect_repair_context(
         root, result, packet=packet, source=source
@@ -82,6 +88,17 @@ def synthesize_post_rules(
 
     if not new_rules:
         return []
+
+    fallback_targets = [
+        str(w.get("path") or "").replace("\\", "/")
+        for w in (repair_ctx.file_windows or [])
+        if w.get("path")
+    ]
+    if not fallback_targets:
+        fallback_targets = [str(p).replace("\\", "/") for p in repair_ctx.allowlist]
+    for rule in new_rules:
+        if isinstance(rule, dict) and not rule.get("target_files") and fallback_targets:
+            rule["target_files"] = fallback_targets[:8]
 
     errors = validate_post_rules(new_rules, packet=packet)
     if errors:

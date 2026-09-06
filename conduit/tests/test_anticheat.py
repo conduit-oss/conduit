@@ -244,6 +244,7 @@ def test_llm_auditor_adds_findings(tmp_path: Path, monkeypatch):
 
 def test_mechanical_finding_not_cleared_by_empty_auditor(tmp_path: Path, monkeypatch):
     (tmp_path / "client.py").write_text(
+        "import openai\n"
         "def call():\n"
         "    try:\n"
         "        raise ConnectionError('down')\n"
@@ -420,6 +421,57 @@ def test_synthetic_except_without_fake_name():
     assert "synthetic" in reason.lower()
 
 
+def test_synthetic_except_skips_error_envelope_after_sdk_call():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    content = (
+        "import openai\n"
+        "def call():\n"
+        "    try:\n"
+        "        gpt_response = openai.chat.completions.create(model='m', messages=[])\n"
+        "        return gpt_response.choices[0].message.content\n"
+        "    except Exception as e:\n"
+        "        return {'status': False, 'error': str(e)}\n"
+    )
+    assert synthetic_except_findings(content, "web/reNgine/llm.py", "openai") == []
+
+
+def test_synthetic_except_skips_files_without_package():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    content = (
+        "def lookup(port):\n"
+        "    try:\n"
+        "        return real(port)\n"
+        "    except Exception:\n"
+        "        return {'service_name': '', 'description': ''}\n"
+    )
+    assert synthetic_except_findings(content, "ports.py", "openai") == []
+
+
+def test_mechanical_scan_respects_edited_files_only(tmp_path: Path):
+    (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
+    (tmp_path / "untouched.py").write_text(
+        "def bad():\n"
+        "    try:\n"
+        "        return 1\n"
+        "    except Exception:\n"
+        "        return {}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "edited.py").write_text(
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n",
+        encoding="utf-8",
+    )
+    full = run_anticheat_mechanical(tmp_path, _packet())
+    assert full.failed
+    scoped = run_anticheat_mechanical(tmp_path, _packet(), files=["edited.py"])
+    assert not scoped.failed
+    empty = run_anticheat_mechanical(tmp_path, _packet(), files=[])
+    assert not empty.failed
+
+
 def test_deny_substring_from_packet_only():
     bare = (
         "import openai\n"
@@ -451,3 +503,53 @@ def test_banned_kwargs_on_hint():
     )
     assert reason is not None
     assert "engine=" in reason
+
+
+def test_js_join_obfuscation_detected():
+    text = 'const legacy = ["a", "da"].join("");\n'
+    rebuilt = reconstructed_literals(text, path="client.js")
+    assert "ada" in rebuilt
+    hidden = obfuscated_forbidden_tokens(text, ["ada"], path="client.js")
+    assert hidden == ["ada"]
+
+
+def test_minified_js_reconstruction_is_fast():
+    import time
+
+    # Quote-dense blob similar to vendor.min.js — must not hang.
+    chunk = 'a="x";b=["y","z"];' * 8000
+    text = chunk + 'var x=["a","da"].join("");' + chunk
+    t0 = time.perf_counter()
+    rebuilt = reconstructed_literals(text, path="vendor.min.js")
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 1.0, f"JS reconstruction too slow: {elapsed:.2f}s"
+    assert "ada" in rebuilt
+
+
+def test_large_python_join_still_detected_quickly():
+    import time
+
+    padding = 'x = "hello world"\n' * 2000
+    text = padding + 'LEGACY = "".join(["a", "da"])\n' + padding
+    t0 = time.perf_counter()
+    rebuilt = reconstructed_literals(text, path="big.py")
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 2.0, f"Python reconstruction too slow: {elapsed:.2f}s"
+    assert "ada" in rebuilt
+    hidden = obfuscated_forbidden_tokens(text, ["ada"], path="big.py")
+    assert hidden == ["ada"]
+
+
+def test_mechanical_scan_emits_start_and_done(tmp_path: Path):
+    (tmp_path / "app.py").write_text(
+        "import openai\nopenai.chat.completions.create()\n", encoding="utf-8"
+    )
+    logs: list[str] = []
+    run_anticheat_mechanical(
+        tmp_path,
+        _packet(),
+        log=logs.append,
+    )
+    joined = "\n".join(logs)
+    assert "[anticheat] mechanical scan:" in joined
+    assert "[anticheat] mechanical done" in joined

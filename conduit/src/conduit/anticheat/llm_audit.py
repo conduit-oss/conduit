@@ -80,7 +80,10 @@ def llm_audit_findings(
         return [], [], None
 
     emit = log if callable(log) else None
-    client = attach_llm_log(get_llm_client(), emit)
+    try:
+        client = attach_llm_log(get_llm_client(), emit)
+    except Exception:
+        return [], [], None
     if client is None:
         return [], [], None
 

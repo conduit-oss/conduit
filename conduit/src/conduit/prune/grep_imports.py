@@ -24,16 +24,16 @@ SKIP_DIRS = {
 }
 
 SCAN_SUFFIXES = {".py", ".ts", ".js", ".tsx", ".jsx", ".java", ".go"}
-_APPLY_SUFFIXES = SCAN_SUFFIXES | {
-    ".json",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".ini",
-    ".sh",
-    ".md",
+_CONFIG_EXPAND_SUFFIXES = {".json", ".yaml", ".yml", ".toml", ".ini"}
+_EXPAND_SKIP_PARTS = {
+    "migrations",
+    "static",
+    "plugins",
+    "media",
+    "docs",
+    "node_modules",
+    "vendor",
 }
-_APPLY_NAMES = {"Dockerfile", "docker-compose.yml"}
 
 
 def expand_allowlist_for_exact_rules(
@@ -41,7 +41,11 @@ def expand_allowlist_for_exact_rules(
     files: list[Path],
     packet: dict,
 ) -> list[Path]:
-    """Include config/script files that still contain EXACT_STRING_REPLACE matches."""
+    """Include config files that still contain EXACT_STRING_REPLACE matches.
+
+    Extra files are configs only (``.env*``, yaml/json/toml/ini) — not every
+    ``.py`` that mentions a model id. Importers stay the apply core.
+    """
     matches: list[str] = []
     for rule in packet.get("rules") or []:
         if not isinstance(rule, dict):
@@ -59,9 +63,9 @@ def expand_allowlist_for_exact_rules(
     for path in root.rglob("*"):
         if not path.is_file():
             continue
-        if any(part in SKIP_DIRS for part in path.parts):
+        if any(part in SKIP_DIRS or part in _EXPAND_SKIP_PARTS for part in path.parts):
             continue
-        if path.suffix.lower() not in _APPLY_SUFFIXES and path.name not in _APPLY_NAMES:
+        if path.suffix.lower() not in _CONFIG_EXPAND_SUFFIXES:
             if not path.name.startswith(".env"):
                 continue
         resolved = path.resolve()

@@ -32,6 +32,8 @@ def _rule_key(rule: dict[str, Any]) -> tuple[Any, ...]:
         rule.get("required_key"),
         rule.get("list_callee_hint"),
         rule.get("body"),
+        rule.get("match"),
+        rule.get("replace"),
     )
 
 

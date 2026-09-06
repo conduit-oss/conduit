@@ -340,6 +340,9 @@ def test_self_correct_researches_and_passes_evidence(tmp_path: Path, monkeypatch
     (tmp_path / "tests" / "test_app.py").write_text(
         "def test_ok():\n    assert False\n", encoding="utf-8"
     )
+    (tmp_path / "tests" / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
+    )
     packet = {
         "packet_id": "p",
         "package": "openai",
@@ -360,7 +363,7 @@ def test_self_correct_researches_and_passes_evidence(tmp_path: Path, monkeypatch
 
     calls = {"n": 0}
 
-    def fake_run_tests(root: Path):
+    def fake_run_tests(root: Path, **_kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             return RunnerResult(
@@ -398,6 +401,10 @@ def test_self_correct_researches_and_passes_evidence(tmp_path: Path, monkeypatch
 
     monkeypatch.setattr("conduit.self_correct.run_tests", fake_run_tests)
     monkeypatch.setattr("conduit.self_correct.get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        "conduit.patcher.post_rules.synthesize.synthesize_post_rules",
+        lambda *_a, **_k: [],
+    )
 
     result, corrected = verify_with_self_correct(
         tmp_path, packet, max_retries=2, verbose=True, log=lambda _m: None
@@ -416,6 +423,9 @@ def test_self_correct_search_then_packet_patch(tmp_path: Path, monkeypatch):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_app.py").write_text(
         "def test_ok():\n    assert False\n", encoding="utf-8"
+    )
+    (tmp_path / "tests" / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
     )
     packet = {
         "packet_id": "p",
@@ -439,7 +449,7 @@ def test_self_correct_search_then_packet_patch(tmp_path: Path, monkeypatch):
     calls = {"n": 0}
     llm_calls = {"n": 0}
 
-    def fake_run_tests(root: Path):
+    def fake_run_tests(root: Path, **_kwargs):
         calls["n"] += 1
         app = (root / "src" / "app.py").read_text(encoding="utf-8")
         if "gpt-4o" in app:
@@ -523,6 +533,10 @@ def test_self_correct_search_then_packet_patch(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("conduit.self_correct.run_tests", fake_run_tests)
     monkeypatch.setattr("conduit.self_correct.get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        "conduit.patcher.post_rules.synthesize.synthesize_post_rules",
+        lambda *_a, **_k: [],
+    )
     monkeypatch.setattr("conduit.packet.evidence.build_evidence", fake_build_evidence)
 
     result, corrected = verify_with_self_correct(

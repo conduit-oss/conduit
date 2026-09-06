@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 
@@ -57,6 +58,16 @@ def sync_bumped_packages(
 
         python = resolve_consumer_python(root)
     exe = python or sys.executable
+    if root is not None:
+        from conduit.test_runner import interpreter_belongs_to_root
+
+        if not interpreter_belongs_to_root(exe, root):
+            if log:
+                log(
+                    f"[yellow]Skipped pip install[/yellow] "
+                    f"(interpreter {exe} is not inside {root})"
+                )
+            return specs
     cmd = [exe, "-m", "pip", "install", "--upgrade", *specs]
     if log:
         joined = " ".join(specs)

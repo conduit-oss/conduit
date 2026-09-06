@@ -334,6 +334,13 @@ def _apply_one_rule(
             return updated, f"WRAPPER_DELEGATE {fn} in {rel}"
         return original, None
 
+    if rtype == "STRING_REWRITE":
+        match = rule.get("match")
+        replace = rule.get("replace")
+        if isinstance(match, str) and isinstance(replace, str) and match in original:
+            return original.replace(match, replace), f"STRING_REWRITE in {rel}"
+        return original, None
+
     if rtype == "RUNTIME_MODEL_ALIAS":
         if path.name == "completions.py" or rule.get("replace_module"):
             return _completions_module_from_packet(packet), f"RUNTIME_MODEL_ALIAS module {rel}"
