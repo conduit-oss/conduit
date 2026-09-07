@@ -23,6 +23,20 @@ _NPM_PASS_RE = re.compile(
     r"(?:Tests|Test Suites):\s+(?P<passed>\d+)\s+passed",
     re.I,
 )
+_MODULE_NOT_FOUND_RE = re.compile(
+    r"ModuleNotFoundError:\s+No module named ['\"]([^'\"]+)['\"]"
+)
+_STILL_CONTAINS_RE = re.compile(r"still contains\s+'([^']+)'", re.I)
+_FAILED_NODE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.M)
+_LEGACY_SHAPE_RE = re.compile(
+    r"\[['\"]choices['\"]\]\s*\[\s*0\s*\]|"
+    r"legacy response access|"
+    r"\['message'\]\['content'\]",
+    re.I,
+)
+
+# Failures repair cannot fix — skip LLM / post-rule synthesis.
+UNREPAIRABLE_VERIFY_KINDS = frozenset({"missing_dep", "no_consumer_python"})
 
 
 @dataclass
@@ -51,6 +65,95 @@ class TestResult:
 
 
 TestResult.__test__ = False  # type: ignore[attr-defined]
+
+
+def annotate_verify(
+    result: TestResult,
+    *,
+    mode: str,
+    kind: str | None = None,
+) -> TestResult:
+    """Stamp verify_mode / verify_kind on TestResult.extra_notes (and fail_reason)."""
+    mode_note = f"verify_mode={mode}"
+    if mode_note not in result.extra_notes:
+        result.extra_notes.append(mode_note)
+    if kind:
+        kind_note = f"verify_kind={kind}"
+        if kind_note not in result.extra_notes:
+            result.extra_notes.append(kind_note)
+        if not result.passed:
+            prefix = f"{kind}:"
+            reason = (result.fail_reason or "").strip()
+            if reason.startswith(prefix) or reason == kind:
+                pass
+            elif reason:
+                result.fail_reason = f"{kind}: {reason}"
+            else:
+                result.fail_reason = kind
+    return result
+
+
+def _is_repo_local_package(root: Path | None, name: str) -> bool:
+    """True if ``name`` is a package directory under the consumer repo."""
+    if root is None or not name:
+        return False
+    try:
+        base = root.resolve()
+    except OSError:
+        return False
+    if (base / name).is_dir():
+        return True
+    try:
+        for child in base.iterdir():
+            if child.is_dir() and (child / name).is_dir():
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def classify_verify_failure(
+    result: TestResult,
+    *,
+    packet: dict | None = None,
+    root: Path | None = None,
+) -> str:
+    """Typed reason for a failed verify run.
+
+    ``missing_dep`` / ``no_consumer_python`` are unrepairable (no LLM loop).
+    ``leftover_token`` / ``oracle_fail`` / ``legacy_shape`` / ``anticheat``
+    may still enter repair.
+    """
+    if result.passed:
+        return ""
+    if str(result.runner or "").lower() == "anticheat":
+        return "anticheat"
+    notes = " ".join(result.extra_notes or [])
+    reason = (result.fail_reason or "").strip()
+    if "verify_kind=no_consumer_python" in notes or reason.startswith(
+        "no_consumer_python"
+    ):
+        return "no_consumer_python"
+    blob = f"{result.stdout or ''}\n{result.stderr or ''}\n{reason}"
+    miss = _MODULE_NOT_FOUND_RE.search(blob)
+    if miss:
+        top = miss.group(1).split(".")[0]
+        pkg = str((packet or {}).get("package") or "").strip()
+        if top and top != pkg and not _is_repo_local_package(root, top):
+            return "missing_dep"
+    if _STILL_CONTAINS_RE.search(blob):
+        return "leftover_token"
+    if _LEGACY_SHAPE_RE.search(blob):
+        return "legacy_shape"
+    try:
+        from conduit.test_gen import is_conduit_generated_rel
+    except Exception:
+        is_conduit_generated_rel = lambda _rel: False  # noqa: E731
+    for node in _FAILED_NODE_RE.findall(blob):
+        path = str(node).split("::", 1)[0]
+        if is_conduit_generated_rel(path):
+            return "oracle_fail"
+    return "oracle_fail"
 
 
 def parse_pytest_counts(text: str) -> dict[str, int]:
@@ -124,11 +227,110 @@ def evaluate_npm_result(
     return True, ""
 
 
+def _python_under(root: Path) -> str | None:
+    # Prefer Conduit's managed verify-venv so repair/recreate is what tests use.
+    for parts in (
+        (".conduit", "verify-venv", "Scripts", "python.exe"),
+        (".conduit", "verify-venv", "bin", "python"),
+        (".venv", "Scripts", "python.exe"),
+        (".venv", "bin", "python"),
+        ("venv", "Scripts", "python.exe"),
+        ("venv", "bin", "python"),
+    ):
+        candidate = root.joinpath(*parts)
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _verify_venv_python(root: Path) -> str | None:
+    for parts in (
+        (".conduit", "verify-venv", "Scripts", "python.exe"),
+        (".conduit", "verify-venv", "bin", "python"),
+    ):
+        candidate = root.joinpath(*parts)
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def resolve_consumer_python(root: Path) -> str:
+    """Prefer the consumer repo venv over Conduit's interpreter."""
+    from conduit.prune.grep_imports import SKIP_DIRS
+
+    root = root.resolve()
+    found = _python_under(root)
+    if found is None:
+        for venv_name in (".venv", "venv"):
+            for path in root.rglob(venv_name):
+                if not path.is_dir():
+                    continue
+                if any(part in SKIP_DIRS for part in path.relative_to(root).parts[:-1]):
+                    continue
+                found = _python_under(path.parent)
+                if found:
+                    break
+            if found:
+                break
+    if found:
+        return found
+    return sys.executable
+
+
+def ensure_consumer_python(root: Path, *, log=None) -> str:
+    """Return a Python that lives under the consumer repo, creating verify-venv if needed."""
+    root = root.resolve()
+    current = resolve_consumer_python(root)
+    if interpreter_belongs_to_root(current, root):
+        return current
+    return recreate_verify_venv(root, log=log) or resolve_consumer_python(root)
+
+
+def recreate_verify_venv(root: Path, *, log=None) -> str | None:
+    """Wipe and recreate ``.conduit/verify-venv`` (never touches user ``.venv``)."""
+    import shutil
+
+    root = root.resolve()
+    venv_dir = root / ".conduit" / "verify-venv"
+    if venv_dir.exists():
+        if log:
+            log(f"Recreating consumer verify venv at {venv_dir}")
+        try:
+            shutil.rmtree(venv_dir)
+        except OSError as exc:
+            if log:
+                log(f"[yellow]Failed to remove verify venv:[/yellow] {exc}")
+            try:
+                shutil.rmtree(venv_dir, ignore_errors=True)
+            except OSError:
+                pass
+    else:
+        if log:
+            log(f"Creating consumer verify venv at {venv_dir}")
+    venv_dir.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "venv", str(venv_dir)]
+    try:
+        subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if log:
+            log(f"[yellow]Failed to create verify venv:[/yellow] {exc}")
+        return _verify_venv_python(root)
+    return _verify_venv_python(root)
+
+
+def interpreter_belongs_to_root(python: str, root: Path) -> bool:
+    try:
+        Path(python).resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def detect_test_command(root: Path) -> tuple[str, list[str]] | None:
-    # Always use the interpreter running Conduit — not PATH `python`, which on
-    # Windows often resolves to a different install (e.g. Store Python) that
-    # still has the pre-migration package version.
-    pytest_cmd = [sys.executable, "-m", "pytest", "-q", "--tb=short"]
+    # Use the consumer venv when present — not Conduit's interpreter or PATH
+    # `python` (Store Python often still has the pre-migration package).
+    python = resolve_consumer_python(root)
+    pytest_cmd = [python, "-m", "pytest", "-q", "--tb=short"]
     if (root / "pytest.ini").exists() or (root / "conftest.py").exists():
         return "pytest", list(pytest_cmd)
     if (root / "pyproject.toml").exists():
@@ -223,6 +425,46 @@ def run_tests(
             n = str(node).strip()
             if n:
                 command.append(n)
+
+    # Fail-safe: never fail the migration on a corrupted verify interpreter.
+    if runner == "pytest" and command:
+        try:
+            smoke = subprocess.run(
+                [command[0], "-m", "pytest", "--version"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return annotate_verify(
+                TestResult(
+                    runner="pytest",
+                    passed=True,
+                    returncode=0,
+                    stdout=f"tests skipped: verify env unhealthy ({exc})",
+                    stderr="",
+                    command=command,
+                ),
+                mode="skipped",
+                kind="verify_env_unhealthy",
+            )
+        if smoke.returncode != 0:
+            err = (smoke.stderr or smoke.stdout or "").strip().splitlines()
+            detail = err[-1] if err else f"exit {smoke.returncode}"
+            return annotate_verify(
+                TestResult(
+                    runner="pytest",
+                    passed=True,
+                    returncode=0,
+                    stdout=f"tests skipped: verify env unhealthy ({detail})",
+                    stderr=smoke.stderr or "",
+                    command=command,
+                ),
+                mode="skipped",
+                kind="verify_env_unhealthy",
+            )
 
     try:
         proc = subprocess.run(

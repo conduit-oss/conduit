@@ -461,6 +461,10 @@ def test_self_correct_executor_allowlist_blocks_inventory(tmp_path: Path):
 
 def test_run_tests_tool_accepts_nodeids(tmp_path: Path, monkeypatch):
     (tmp_path / "conftest.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_conduit_oracle.py").write_text(
+        "def test_a():\n    assert True\n", encoding="utf-8"
+    )
     captured: dict = {}
 
     def fake_run_tests(root, *, timeout=300.0, nodeids=None):
@@ -482,8 +486,51 @@ def test_run_tests_tool_accepts_nodeids(tmp_path: Path, monkeypatch):
     out = json.loads(
         ex(
             "run_tests",
-            {"nodeids": ["tests/test_x.py::test_a"]},
+            {"nodeids": ["tests/test_conduit_oracle.py::test_a"]},
         )
     )
     assert out["passed"] is True
-    assert captured["nodeids"] == ["tests/test_x.py::test_a"]
+    assert captured["nodeids"] == ["tests/test_conduit_oracle.py::test_a"]
+
+
+def test_write_file_allowlisted_ok(tmp_path: Path):
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    ex = RepoToolExecutor(
+        root=tmp_path,
+        allow_writes=True,
+        path_allowlist={"app.py"},
+    )
+    ok = json.loads(ex("write_file", {"path": "app.py", "contents": "x = 2\n"}))
+    assert ok.get("ok") is True
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "x = 2\n"
+
+
+def test_write_file_rejects_celery_stub(tmp_path: Path):
+    from conduit.anticheat.rules import forbidden_write_reason
+
+    ex = RepoToolExecutor(
+        root=tmp_path,
+        allow_writes=True,
+        path_allowlist=None,
+        reject_write=lambda rel, _c: forbidden_write_reason(rel),
+    )
+    denied = json.loads(
+        ex("write_file", {"path": "celery/__init__.py", "contents": "app = None\n"})
+    )
+    assert "error" in denied
+    assert "stub" in denied["error"].lower() or "rejected" in denied["error"].lower()
+    assert not (tmp_path / "celery").exists()
+
+
+def test_write_file_rejects_off_allowlist(tmp_path: Path):
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    ex = RepoToolExecutor(
+        root=tmp_path,
+        allow_writes=True,
+        path_allowlist={"app.py"},
+    )
+    denied = json.loads(
+        ex("write_file", {"path": "django/__init__.py", "contents": ""})
+    )
+    assert "allowlist" in denied["error"].lower()
+    assert not (tmp_path / "django").exists()

@@ -6,7 +6,7 @@ import os
 from typing import Any, Literal
 
 ToolMode = Literal[
-    "self_correct", "enrich", "readonly", "anticheat_audit", "enrich_scoped"
+    "self_correct", "enrich", "readonly", "anticheat_audit", "enrich_scoped", "post_rule_synth"
 ]
 
 _REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
@@ -81,11 +81,13 @@ def _fn(
 
 def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
     """Local tools Conduit executes. Mode controls write/test access."""
-    if mode in {"anticheat_audit", "enrich_scoped"}:
+    if mode in {"anticheat_audit", "enrich_scoped", "post_rule_synth"}:
         scope = (
             "migration audit log"
             if mode == "anticheat_audit"
             else "usage dossier allowlist"
+            if mode == "enrich_scoped"
+            else "repair allowlist"
         )
         return [
             _fn(
@@ -269,7 +271,7 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
 
 def agent_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
     """Built-ins + Conduit functions for a Responses agent turn."""
-    if mode in {"anticheat_audit", "enrich_scoped"}:
+    if mode in {"anticheat_audit", "enrich_scoped", "post_rule_synth"}:
         # Local inventory / audit only — no web_search / code_interpreter.
         return list(conduit_function_tools(mode=mode))
     return [*openai_builtin_tools(), *conduit_function_tools(mode=mode)]

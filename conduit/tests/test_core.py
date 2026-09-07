@@ -504,6 +504,9 @@ def test_ensure_tests_oracle_fails_on_leftover_match(tmp_path: Path, monkeypatch
     created = ensure_tests(tmp_path, packet, file_allowlist=[app])
     assert created[0] == "tests/test_conduit_oracle.py"
     assert "tests/test_conduit_smoke.py" in created
+    smoke = (tmp_path / "tests" / "test_conduit_smoke.py").read_text(encoding="utf-8")
+    assert "test_conduit_smoke_changed_modules_importable" not in smoke
+    assert "pytest.skip" not in smoke
     assert token_in_text(app.read_text(encoding="utf-8"), "gpt-4-0613")
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", str(tmp_path / created[0]), "-q"],
@@ -514,6 +517,130 @@ def test_ensure_tests_oracle_fails_on_leftover_match(tmp_path: Path, monkeypatch
     )
     assert proc.returncode != 0
     assert "gpt-4-0613" in (proc.stdout + proc.stderr)
+
+
+def test_ensure_tests_importable_smoke_only_with_consumer_venv(
+    tmp_path: Path, monkeypatch
+):
+    _disable_llm(monkeypatch)
+    app = tmp_path / "app.py"
+    app.write_text("x = 1\n", encoding="utf-8")
+    packet = {
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "1.0.0",
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "target_files": ["*.py"],
+                "match": "gpt-4-0613",
+                "replace": "gpt-4o",
+            }
+        ],
+    }
+    for parts in ((".venv", "Scripts", "python.exe"), (".venv", "bin", "python")):
+        venv_py = tmp_path.joinpath(*parts)
+        venv_py.parent.mkdir(parents=True, exist_ok=True)
+        venv_py.write_text("", encoding="utf-8")
+    created = ensure_tests(tmp_path, packet, file_allowlist=[app], changed_files=["app.py"])
+    assert "tests/test_conduit_smoke.py" in created
+    smoke = (tmp_path / "tests" / "test_conduit_smoke.py").read_text(encoding="utf-8")
+    assert "test_conduit_smoke_changed_modules_importable" in smoke
+    assert "pytest.skip" not in smoke
+    assert "sys.modules[spec.name] = module" in smoke
+    assert "sys.path.insert(0, root_s)" in smoke
+
+
+def test_oracle_required_shapes_accept_client_bound_callees(
+    tmp_path: Path, monkeypatch
+):
+    """CLIENT_CHAIN uses client.chat…; REQUIRED may still list openai.chat…."""
+    _disable_llm(monkeypatch)
+    app = tmp_path / "app.py"
+    app.write_text(
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "client.chat.completions.create(model='gpt-4o', messages=[])\n"
+        "client.audio.transcriptions.create(model='whisper-1', file=open('a'))\n",
+        encoding="utf-8",
+    )
+    packet = {
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "3.3.1",
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "openai.ChatCompletion.create",
+                "new_callee": "openai.chat.completions.create",
+            },
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "openai.Audio.transcribe",
+                "new_callee": "openai.audio.transcriptions.create",
+            },
+        ],
+    }
+    source = {
+        "package": "openai",
+        "api_patterns": [
+            "openai.ChatCompletion.create",
+            "openai.Audio.transcribe",
+        ],
+        "usages": [],
+    }
+    for parts in ((".venv", "Scripts", "python.exe"), (".venv", "bin", "python")):
+        venv_py = tmp_path.joinpath(*parts)
+        venv_py.parent.mkdir(parents=True, exist_ok=True)
+        venv_py.write_text("", encoding="utf-8")
+
+    created = ensure_tests(
+        tmp_path,
+        packet,
+        file_allowlist=[app],
+        changed_files=["app.py"],
+        source=source,
+    )
+    assert "tests/test_conduit_oracle.py" in created
+    oracle = (tmp_path / "tests" / "test_conduit_oracle.py").read_text(encoding="utf-8")
+    assert "CLIENT_CHAIN binds OpenAI" in oracle
+    assert "openai.chat.completions.create" in oracle
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(tmp_path / "tests" / "test_conduit_oracle.py")
+            + "::test_conduit_required_shapes_present",
+            "-q",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    smoke = (tmp_path / "tests" / "test_conduit_smoke.py").read_text(encoding="utf-8")
+    assert "CLIENT_CHAIN binds OpenAI" in smoke
+    proc2 = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(tmp_path / "tests" / "test_conduit_smoke.py")
+            + "::test_conduit_smoke_required_shapes",
+            "-q",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc2.returncode == 0, proc2.stdout + proc2.stderr
 
 
 def test_ensure_tests_oracle_fails_on_join_obfuscation(tmp_path: Path, monkeypatch):
@@ -737,6 +864,13 @@ def test_self_correct_verbose_logs_failure_and_fix(tmp_path: Path, monkeypatch):
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "test_app.py").write_text("def test_ok():\n    assert False\n", encoding="utf-8")
+    (tests / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
+    )
+    # Consumer verify-venv so oracle+full suite is allowed (not no_consumer_python).
+    venv_py = tmp_path / ".conduit" / "verify-venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("", encoding="utf-8")
 
     packet = {
         "packet_id": "t",
@@ -756,7 +890,7 @@ def test_self_correct_verbose_logs_failure_and_fix(tmp_path: Path, monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_run_tests(root):
+    def fake_run_tests(root, **_kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             return TestResult(
@@ -778,6 +912,10 @@ def test_self_correct_verbose_logs_failure_and_fix(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("conduit.self_correct.run_tests", fake_run_tests)
     monkeypatch.setattr("conduit.self_correct.get_llm_client", lambda: None)
+    monkeypatch.setattr(
+        "conduit.patcher.post_rules.synthesize.synthesize_post_rules",
+        lambda *_a, **_k: [],
+    )
 
     logs: list[str] = []
     result, corrected = verify_with_self_correct(
@@ -792,7 +930,7 @@ def test_self_correct_verbose_logs_failure_and_fix(tmp_path: Path, monkeypatch):
         "app.py" in c for c in corrected
     )
     joined = "\n".join(logs)
-    assert "failure summary" in joined
+    assert "failure summary" in joined or "failure reasons" in joined
     assert "assert False" in joined
     assert "heuristic: updated" in joined
     assert "max_tokens" in joined
@@ -805,6 +943,11 @@ def test_self_correct_stops_early_when_heuristic_noop(tmp_path: Path, monkeypatc
     src = tmp_path / "src"
     src.mkdir()
     (src / "app.py").write_text("max_completion_tokens = 1\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_conduit_oracle.py").write_text(
+        "def test_oracle():\n    assert True\n", encoding="utf-8"
+    )
 
     packet = {
         "packet_id": "t",
@@ -824,7 +967,7 @@ def test_self_correct_stops_early_when_heuristic_noop(tmp_path: Path, monkeypatc
 
     calls = {"n": 0}
 
-    def fake_run_tests(root):
+    def fake_run_tests(root, **_kwargs):
         calls["n"] += 1
         return TestResult(
             runner="pytest",
@@ -837,6 +980,10 @@ def test_self_correct_stops_early_when_heuristic_noop(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr("conduit.self_correct.run_tests", fake_run_tests)
     monkeypatch.setattr("conduit.self_correct.get_llm_client", lambda: None)
+    monkeypatch.setattr(
+        "conduit.patcher.post_rules.synthesize.synthesize_post_rules",
+        lambda *_a, **_k: [],
+    )
 
     logs: list[str] = []
     result, corrected = verify_with_self_correct(

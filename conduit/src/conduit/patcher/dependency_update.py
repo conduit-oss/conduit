@@ -12,6 +12,7 @@ import tomlkit
 from tomlkit.exceptions import TOMLKitError
 from tomlkit.items import Array, Table
 
+from conduit.detect.pip_manifests import iter_pip_manifests
 from conduit.prune.grep_imports import SKIP_DIRS
 
 Op = Literal["bump", "add", "remove"]
@@ -454,28 +455,7 @@ def _path_skipped(path: Path, root: Path) -> bool:
 
 def _iter_pip_manifests(root: Path, *, scope: str) -> list[Path]:
     """Root plus nested requirements/constraints files (venv/vendor skipped)."""
-    names = (
-        {"requirements-dev.txt"}
-        if scope == "dev"
-        else {"requirements.txt", "constraints.txt"}
-    )
-    found: list[Path] = []
-    seen: set[Path] = set()
-    for path in root.rglob("*"):
-        if not path.is_file() or _path_skipped(path, root):
-            continue
-        name = path.name.lower()
-        if name in {n.lower() for n in names} or (
-            scope != "dev"
-            and name.endswith(".txt")
-            and "requirements" in name
-            and name != "requirements-dev.txt"
-        ):
-            resolved = path.resolve()
-            if resolved not in seen:
-                seen.add(resolved)
-                found.append(path)
-    return found
+    return iter_pip_manifests(root, scope=scope)
 
 
 def _iter_npm_manifests(root: Path) -> list[Path]:

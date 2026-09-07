@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-ApplyStage = Literal["sdk", "rest"]
+ApplyStage = Literal["sdk", "rest", "post"]
 
 SDK_RULE_TYPES = frozenset(
     {
@@ -27,6 +27,16 @@ REST_RULE_TYPES = frozenset(
     }
 )
 
+POST_RULE_TYPES = frozenset(
+    {
+        "WRAPPER_ENSURE_LIST",
+        "WRAPPER_ENSURE_DICT_KEY",
+        "WRAPPER_DELEGATE",
+        "FUNCTION_BODY_REPLACE",
+        "RUNTIME_MODEL_ALIAS",
+    }
+)
+
 
 def rule_stage(rule: dict[str, Any]) -> ApplyStage | None:
     rtype = str(rule.get("type") or "")
@@ -34,19 +44,22 @@ def rule_stage(rule: dict[str, Any]) -> ApplyStage | None:
         return "sdk"
     if rtype in REST_RULE_TYPES:
         return "rest"
+    if rtype in POST_RULE_TYPES:
+        return "post"
     return None
 
 
 def partition_rules(
     rules: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     """
-    Split rules into (sdk_rules, rest_rules, unknown_warnings).
+    Split rules into (sdk_rules, rest_rules, post_rules, unknown_warnings).
 
     Preserves relative order within each stage.
     """
     sdk: list[dict[str, Any]] = []
     rest: list[dict[str, Any]] = []
+    post: list[dict[str, Any]] = []
     warnings: list[str] = []
     for rule in rules:
         if not isinstance(rule, dict):
@@ -56,9 +69,11 @@ def partition_rules(
             sdk.append(rule)
         elif stage == "rest":
             rest.append(rule)
+        elif stage == "post":
+            post.append(rule)
         else:
             rtype = str(rule.get("type") or "UNKNOWN")
             msg = f"unknown rule type skipped during apply: {rtype}"
             if msg not in warnings:
                 warnings.append(msg)
-    return sdk, rest, warnings
+    return sdk, rest, post, warnings

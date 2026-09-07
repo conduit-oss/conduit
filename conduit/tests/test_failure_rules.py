@@ -40,3 +40,32 @@ def test_failure_rules_uses_packet_call_rewrite_target():
         },
     )
     assert rules[0]["function_target"] == "chat.completions.create"
+
+
+def test_failure_rules_suggests_param_rename_from_api_error():
+    result = TestResult(
+        passed=False,
+        returncode=1,
+        runner="pytest",
+        command=["pytest"],
+        stdout=(
+            "BadRequestError: Error code: 400 - Unsupported parameter: 'max_tokens' "
+            "is not supported with this model. Use 'max_completion_tokens' instead."
+        ),
+        stderr="",
+    )
+    rules = suggest_rules_from_failure(
+        result,
+        packet={
+            "rules": [
+                {
+                    "type": "AST_CALL_REWRITE",
+                    "new_callee": "chat.completions.create",
+                }
+            ]
+        },
+    )
+    rename = [r for r in rules if r.get("type") == "AST_PARAM_RENAME"]
+    assert rename
+    assert rename[0]["old_param"] == "max_tokens"
+    assert rename[0]["new_param"] == "max_completion_tokens"

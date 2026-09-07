@@ -39,6 +39,16 @@ _HTTP_SWALLOW_TYPES = {
     "BaseException",
 }
 
+_STUB_TOPLEVEL = frozenset(
+    {
+        "celery",
+        "django",
+        "xmltodict",
+        "tldextract",
+        "environ",
+        "validators",
+    }
+)
 _FORBIDDEN_DIR_PARTS = frozenset({".conduit", "vendor", "packets"})
 
 _ORACLE_SHIM_NEEDLES = (
@@ -133,8 +143,8 @@ def echo_script_stub_finding(rel: str, text: str) -> str | None:
         return None
     if _PATHISH_RE.search(body) or "/v1/" in body:
         return (
-            f"{posix} echo-stubs API paths without migrating URLs/models "
-            "(scripts must use real endpoints, not echo placeholders)"
+            f"{posix}: echo_script_stub — echo-stubs API paths without migrating "
+            "URLs/models (scripts must use real endpoints, not echo placeholders)"
         )
     return None
 
@@ -191,6 +201,9 @@ def forbidden_write_reason(rel: str) -> str | None:
         return f"cannot edit {posix}"
     if name == "conduit-packet.json":
         return "cannot edit published packet files"
+    top = Path(posix).parts[0] if posix else ""
+    if Path(top).stem in _STUB_TOPLEVEL:
+        return "cannot invent third-party package stubs"
     lowered = posix.lower()
     if lowered.endswith(".jsonl") and (
         "/data/" in lowered or "knowledge" in lowered
@@ -413,13 +426,27 @@ def _handler_type_names(node: ast.ExceptHandler) -> set[str]:
     return names
 
 
-def _is_literal_response(node: ast.AST | None) -> bool:
+_SDK_STUB_KEYS = frozenset({"choices", "usage", "results"})
+_SOFT_FAIL_CONST = frozenset({None, "", 0, False})
+
+
+def _is_success_stub(node: ast.AST | None) -> bool:
+    """True for in-process SDK *success* stubs (fake payloads), not soft-fails."""
     if node is None:
-        return True
-    if isinstance(node, ast.Constant):
-        return isinstance(node.value, (str, bytes, int, float, bool)) or node.value is None
+        return False
     if isinstance(node, ast.Dict):
-        return True
+        keys = {
+            str(k.value)
+            for k in node.keys
+            if isinstance(k, ast.Constant)
+        }
+        if not keys:
+            return True
+        if keys & _SDK_STUB_KEYS:
+            return True
+        if "id" in keys and ("data" in keys or "object" in keys):
+            return True
+        return False
     if isinstance(node, (ast.List, ast.Tuple)) and not node.elts:
         return True
     if isinstance(node, ast.Call):
@@ -431,33 +458,46 @@ def _is_literal_response(node: ast.AST | None) -> bool:
     return False
 
 
-def _handler_calls_package(handler: ast.ExceptHandler, package: str) -> bool:
-    pkg = (package or "").strip()
-    if not pkg:
-        return False
-    for node in ast.walk(handler):
-        if isinstance(node, ast.Name) and node.id == pkg:
-            return True
-        if isinstance(node, ast.Attribute):
-            chain = _attr_chain(node)
-            if chain == pkg or chain.startswith(pkg + "."):
-                return True
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if node.value == pkg or node.value.startswith(pkg + "."):
-                return True
+def _is_soft_fail_literal(node: ast.AST | None) -> bool:
+    """True for trivial failure sinks (None / empty / False), not success stubs."""
+    if node is None:
+        return True
+    if isinstance(node, ast.Constant):
+        return node.value in _SOFT_FAIL_CONST
     return False
 
 
-def synthetic_except_findings(
-    text: str, rel: str, package: str
-) -> list[str]:
-    """Flag except handlers that return in-process literal responses (no SDK call)."""
+def _is_literal_response(node: ast.AST | None) -> bool:
+    """True for synthetic success stubs or soft-fail literals."""
+    return _is_success_stub(node) or _is_soft_fail_literal(node)
+
+
+def _clear_lineno(node: ast.AST) -> None:
+    for child in ast.walk(node):
+        for attr in ("lineno", "end_lineno", "col_offset", "end_col_offset"):
+            if hasattr(child, attr):
+                setattr(child, attr, None)
+
+
+def _except_handler_fingerprint(handler: ast.ExceptHandler) -> str:
+    """Stable fingerprint of except types + body (lineno-agnostic)."""
+    clone = ast.ExceptHandler(
+        type=handler.type,
+        name=handler.name,
+        body=handler.body,
+    )
+    _clear_lineno(clone)
+    return ast.dump(clone, include_attributes=False)
+
+
+def _collect_soft_fail_fingerprints(text: str) -> set[str]:
+    """Fingerprints of blanket/HTTP except handlers that soft-fail (not success stubs)."""
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return []
-    findings: list[str] = []
+        return set()
     care = _HTTP_SWALLOW_TYPES | {"Exception", "BaseException"}
+    out: set[str] = set()
 
     class _V(ast.NodeVisitor):
         def visit_Try(self, node: ast.Try) -> None:
@@ -468,12 +508,169 @@ def synthetic_except_findings(
                 raises = any(isinstance(s, ast.Raise) for s in ast.walk(handler))
                 if raises:
                     continue
-                if _handler_calls_package(handler, package):
-                    continue
+                soft = False
                 for stmt in handler.body:
-                    if isinstance(stmt, ast.Return) and _is_literal_response(
+                    if isinstance(stmt, ast.Pass):
+                        soft = True
+                    elif isinstance(stmt, ast.Return) and _is_success_stub(stmt.value):
+                        soft = False
+                        break
+                    elif isinstance(stmt, ast.Return) and _is_soft_fail_literal(
                         stmt.value
                     ):
+                        soft = True
+                if soft:
+                    out.add(_except_handler_fingerprint(handler))
+            self.generic_visit(node)
+
+    _V().visit(tree)
+    return out
+
+
+def _sdk_name_roots(tree: ast.AST, package: str) -> set[str]:
+    """Names that mean a call into the migrated SDK (module, imports, client binds)."""
+    pkg = (package or "").strip()
+    if not pkg:
+        return set()
+    roots: set[str] = {pkg}
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == pkg or alias.name.startswith(pkg + "."):
+                    roots.add(alias.asname or alias.name.split(".", 1)[0])
+        elif isinstance(node, ast.ImportFrom):
+            mod = (node.module or "").strip()
+            if mod != pkg and not mod.startswith(pkg + "."):
+                continue
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                imported.add(alias.asname or alias.name)
+    roots |= imported
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value, targets = node.value, node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            value, targets = node.value, [node.target]
+        else:
+            continue
+        if not isinstance(value, ast.Call):
+            continue
+        func = value.func
+        callee = ""
+        if isinstance(func, ast.Name):
+            callee = func.id
+        elif isinstance(func, ast.Attribute):
+            callee = _attr_chain(func)
+        head = callee.split(".", 1)[0] if callee else ""
+        if head not in imported and not (
+            callee == pkg or callee.startswith(pkg + ".")
+        ):
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                roots.add(target.id)
+    return roots
+
+
+def _subtree_calls_roots(node: ast.AST, roots: set[str]) -> bool:
+    if not roots:
+        return False
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id in roots:
+            return True
+        if isinstance(child, ast.Attribute):
+            chain = _attr_chain(child)
+            if any(chain == r or chain.startswith(r + ".") for r in roots):
+                return True
+    return False
+
+
+def _try_body_calls_package(
+    try_node: ast.Try, package: str, roots: set[str] | None = None
+) -> bool:
+    active = roots if roots is not None else ({package} if package else set())
+    for stmt in try_node.body:
+        if _subtree_calls_roots(stmt, active):
+            return True
+    return False
+
+
+def _handler_calls_package(
+    handler: ast.ExceptHandler, package: str, roots: set[str] | None = None
+) -> bool:
+    active = roots if roots is not None else ({package} if package else set())
+    if _subtree_calls_roots(handler, active):
+        return True
+    pkg = (package or "").strip()
+    if not pkg:
+        return False
+    for node in ast.walk(handler):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value == pkg or node.value.startswith(pkg + "."):
+                return True
+    return False
+
+
+def synthetic_except_findings(
+    text: str,
+    rel: str,
+    package: str,
+    *,
+    previous: str | None = None,
+) -> list[str]:
+    """Flag except handlers that swallow a real SDK call with a synthetic stub.
+
+    Only when the try body invokes the migrated package (incl. OpenAI/client
+    aliases). Unrelated fallbacks in the same file are ignored.
+
+    Soft-fail returns (``None``, etc.) are skipped when an equivalent except
+    handler fingerprint already existed in ``previous``. Success-shaped stubs
+    are always flagged.
+    """
+    pkg = (package or "").strip()
+    if not pkg:
+        return []
+    if not (imports_package(text, pkg) or references_package(text, pkg)):
+        return []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    roots = _sdk_name_roots(tree, pkg)
+    findings: list[str] = []
+    care = _HTTP_SWALLOW_TYPES | {"Exception", "BaseException"}
+    prior_soft = (
+        _collect_soft_fail_fingerprints(previous) if previous is not None else None
+    )
+
+    class _V(ast.NodeVisitor):
+        def visit_Try(self, node: ast.Try) -> None:
+            for handler in node.handlers:
+                types = _handler_type_names(handler)
+                if not (types & care):
+                    continue
+                raises = any(isinstance(s, ast.Raise) for s in ast.walk(handler))
+                if raises:
+                    continue
+                if not _try_body_calls_package(node, package, roots):
+                    continue
+                if _handler_calls_package(handler, package, roots):
+                    continue
+                for stmt in handler.body:
+                    if not isinstance(stmt, ast.Return):
+                        continue
+                    if _is_success_stub(stmt.value):
+                        findings.append(
+                            f"{rel}:{handler.lineno} except path returns a "
+                            "synthetic response without calling the official SDK"
+                        )
+                        break
+                    if _is_soft_fail_literal(stmt.value):
+                        fp = _except_handler_fingerprint(handler)
+                        if prior_soft is not None and fp in prior_soft:
+                            break
                         findings.append(
                             f"{rel}:{handler.lineno} except path returns a "
                             "synthetic response without calling the official SDK"
@@ -805,7 +1002,7 @@ def file_findings(
         findings.append(dropped)
 
     findings.extend(fake_client_findings(text, posix, packet))
-    findings.extend(synthetic_except_findings(text, posix, pkg))
+    findings.extend(synthetic_except_findings(text, posix, pkg, previous=previous))
     findings.extend(oracle_io_shim_findings(text, posix))
     findings.extend(sdk_monkeypatch_findings(text, posix, pkg, packet))
     findings.extend(old_kwargs_on_new_callee_findings(text, posix, packet))
@@ -845,13 +1042,13 @@ def file_findings(
             findings.append(f"{posix} cannot weaken tests with skip/xfail")
 
     if is_impl_rel(posix):
-        hidden = obfuscated_forbidden_tokens(text, leftover)
+        hidden = obfuscated_forbidden_tokens(text, leftover, path=posix)
         if hidden:
             findings.append(
                 f"{posix} obfuscates leftover tokens via concat/join/byte-decode: "
                 + ", ".join(hidden)
             )
-        findings.extend(dummy_except_findings(text, posix))
+        findings.extend(dummy_except_findings(text, posix, pkg, previous=previous))
         markers = unused_marker_literals(text, interesting)
         if markers:
             findings.append(

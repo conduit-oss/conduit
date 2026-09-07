@@ -14,8 +14,16 @@ _UNSUPPORTED_VALUE_RE = re.compile(
 _UNSUPPORTED_KWARG_RE = re.compile(
     r"(?i)unexpected keyword argument\s+'(?P<param>[\w]+)'"
 )
+_PARAM_RENAME_HINT_RE = re.compile(
+    r"(?i)'(?P<old_param>max_tokens)'\s+is not supported.*Use\s+'(?P<new_param>max_completion_tokens)'",
+    re.S,
+)
 _NOT_SUPPORTED_PARAM_RE = re.compile(
     r"(?i)'(?P<param>[\w]+)'\s+is not supported"
+)
+_ONLY_DEFAULT_VALUE_RE = re.compile(
+    r"(?i)'(?P<param>[\w]+)'\s+does not support.*Only the default \(1\) value is supported",
+    re.S,
 )
 _CREATE_CALL_RE = re.compile(
     r"(?P<callee>[\w.]+)\s*\(",
@@ -143,9 +151,39 @@ def suggest_rules_from_failure(
             else:
                 _add(param)
 
+    for m in _ONLY_DEFAULT_VALUE_RE.finditer(blob):
+        _add(m.group("param"))
+
     existing = {
         _rule_key(r)
         for r in (packet or {}).get("rules") or []
         if isinstance(r, dict) and r.get("type") == "AST_PARAM_DROP"
     }
-    return [r for r in rules if _rule_key(r) not in existing]
+    drop_rules = [r for r in rules if _rule_key(r) not in existing]
+
+    rename_rules: list[dict[str, Any]] = []
+    for m in _PARAM_RENAME_HINT_RE.finditer(blob):
+        old_p = m.group("old_param")
+        new_p = m.group("new_param")
+        if not function_target or not old_p or not new_p:
+            continue
+        rename = {
+            "type": "AST_PARAM_RENAME",
+            "target_files": list(_TARGET_GLOBS),
+            "function_target": function_target,
+            "old_param": old_p,
+            "new_param": new_p,
+            "reason": f"Live verify failure: rename kwarg {old_p!r} -> {new_p!r}.",
+        }
+        rename_key = _rule_key(rename)
+        already = any(
+            isinstance(r, dict)
+            and r.get("type") == "AST_PARAM_RENAME"
+            and r.get("function_target") == function_target
+            and r.get("old_param") == old_p
+            for r in (packet or {}).get("rules") or []
+        )
+        if not already and rename_key not in seen:
+            rename_rules.append(rename)
+
+    return drop_rules + rename_rules

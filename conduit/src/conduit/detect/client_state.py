@@ -120,8 +120,17 @@ def _detect_ecosystems(root: Path, package: str) -> list[str]:
     """Which manifests declare this package (pip vs npm)."""
     found: list[str] = []
     pkg_l = package.lower()
+    from conduit.detect.pip_manifests import iter_pip_manifests
+
+    for path in iter_pip_manifests(root, scope="main"):
+        try:
+            text = path.read_text(encoding="utf-8").lower()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if pkg_l in text and "pip" not in found:
+            found.append("pip")
+            break
     for name, eco in (
-        ("requirements.txt", "pip"),
         ("pyproject.toml", "pip"),
         ("package.json", "npm"),
     ):
@@ -257,6 +266,34 @@ def _file_corpus(files: list[Path]) -> str:
 def _token_in_corpus(token: str, corpus_lower: str) -> bool:
     tok = (token or "").strip()
     return bool(tok) and tok.lower() in corpus_lower
+
+
+def looks_like_sdk_api_pattern(token: str, package: str = "") -> bool:
+    """True for SDK callees/paths — not repo files or Django ORM."""
+    t = (token or "").strip()
+    if not t:
+        return False
+    posix = t.replace("\\", "/")
+    lower = posix.lower()
+    if lower.endswith((".py", ".js", ".ts", ".tsx", ".jsx")):
+        return False
+    if ".objects." in lower:
+        return False
+    if "/" in posix:
+        return posix.startswith("/v1/") or "/v1/" in posix
+    pack = pattern_pack_for(package or "")
+    api_re = pack.get("api_pattern")
+    if api_re is not None and api_re.search(t):
+        return True
+    pkg = (package or "").strip()
+    if pkg and (t == pkg or t.startswith(f"{pkg}.")):
+        return True
+    if any(
+        n in lower
+        for n in ("chatcompletion", "chat.completions", "embeddings.create")
+    ):
+        return True
+    return False
 
 
 def _normalize_usage(raw: Any, *, corpus_lower: str, known_files: set[str]) -> dict[str, Any] | None:
@@ -728,6 +765,8 @@ def _agent_enrich(
         token = str(raw).strip()
         if not _token_in_corpus(token, corpus_lower):
             continue
+        if not looks_like_sdk_api_pattern(token, state.package):
+            continue
         if token not in state.api_patterns:
             state.api_patterns.append(token)
             added_apis += 1
@@ -745,10 +784,14 @@ def _agent_enrich(
             by_id[key] = usage
             added_usages += 1
         for callee in usage.get("callees") or []:
+            if not looks_like_sdk_api_pattern(callee, state.package):
+                continue
             if callee not in state.api_patterns:
                 state.api_patterns.append(callee)
                 added_apis += 1
         for path in usage.get("paths") or []:
+            if not looks_like_sdk_api_pattern(path, state.package):
+                continue
             if path not in state.api_patterns:
                 state.api_patterns.append(path)
                 added_apis += 1

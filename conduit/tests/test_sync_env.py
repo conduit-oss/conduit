@@ -97,4 +97,151 @@ def test_sync_bumped_packages_invokes_pip(monkeypatch):
     assert specs == ["openai==3.3.1"]
     assert calls and calls[0][:4] == ["python", "-m", "pip", "install"]
     assert "openai==3.3.1" in calls[0]
-    assert logs and "Installing bumped packages" in logs[0]
+    assert "pytest" in calls[0]
+    assert any("Installing bumped packages" in line for line in logs)
+    # Smoke checks after successful install.
+    assert any(c[1:3] == ["-c", "import openai"] for c in calls)
+    assert any(c[1:4] == ["-m", "pytest", "--version"] for c in calls)
+
+
+def test_sync_installs_consumer_requirements(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    class _Proc:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return _Proc()
+
+    (tmp_path / "requirements.txt").write_text(
+        "openai==0.28.1\npython-dotenv==1.0.1\n", encoding="utf-8"
+    )
+    venv_py = tmp_path / ".conduit" / "verify-venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("conduit.patcher.sync_env.subprocess.run", _run)
+    monkeypatch.setattr(
+        "conduit.test_runner.ensure_consumer_python",
+        lambda root, *, log=None: str(venv_py),
+    )
+    monkeypatch.setattr(
+        "conduit.test_runner.interpreter_belongs_to_root",
+        lambda python, root: True,
+    )
+
+    logs: list[str] = []
+    sync_bumped_packages(
+        {
+            "rules": [
+                {
+                    "type": "DEPENDENCY_BUMP",
+                    "package": "openai",
+                    "to_version": "3.3.1",
+                    "ecosystems": ["pip"],
+                }
+            ]
+        },
+        root=tmp_path,
+        log=logs.append,
+    )
+    req_calls = [c for c in calls if "-r" in c]
+    bump_calls = [c for c in calls if "openai==3.3.1" in c]
+    assert req_calls, "expected pip install -r requirements.txt"
+    assert any(str(tmp_path / "requirements.txt") in c or "requirements.txt" in " ".join(c) for c in req_calls)
+    assert bump_calls, "expected openai pin after requirements"
+    # Bump install should come after requirements install.
+    assert calls.index(req_calls[0]) < calls.index(bump_calls[0])
+    assert any("consumer requirements" in line.lower() for line in logs)
+
+
+def test_sync_bumped_packages_repairs_corrupt_venv(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    class _Proc:
+        def __init__(self, code=0, stderr=""):
+            self.returncode = code
+            self.stdout = "ok"
+            self.stderr = stderr
+
+    venv_py = tmp_path / ".conduit" / "verify-venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("", encoding="utf-8")
+
+    recreated: list[str] = []
+
+    def _recreate(root, *, log=None):
+        recreated.append(str(root))
+        return str(venv_py)
+
+    monkeypatch.setattr("conduit.test_runner.recreate_verify_venv", _recreate)
+    monkeypatch.setattr(
+        "conduit.test_runner.ensure_consumer_python",
+        lambda root, *, log=None: str(venv_py),
+    )
+    monkeypatch.setattr(
+        "conduit.test_runner.interpreter_belongs_to_root",
+        lambda python, root: True,
+    )
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd))
+        # Fail smoke until verify-venv has been recreated.
+        if not recreated and (
+            (len(cmd) >= 3 and cmd[1:3] == ["-c", "import openai"])
+            or (len(cmd) >= 4 and cmd[1:4] == ["-m", "pytest", "--version"])
+        ):
+            return _Proc(1, stderr="corrupt")
+        return _Proc(0)
+
+    monkeypatch.setattr("conduit.patcher.sync_env.subprocess.run", _run)
+
+    logs: list[str] = []
+    specs = sync_bumped_packages(
+        {
+            "rules": [
+                {
+                    "type": "DEPENDENCY_BUMP",
+                    "package": "openai",
+                    "to_version": "3.3.1",
+                    "ecosystems": ["pip"],
+                }
+            ]
+        },
+        root=tmp_path,
+        log=logs.append,
+    )
+    assert specs == ["openai==3.3.1"]
+    assert recreated
+    assert any("repairing verify-venv" in line.lower() for line in logs)
+    assert any("--force-reinstall" in c for c in calls)
+    assert any("Verify env repaired" in line for line in logs)
+
+
+def test_run_tests_skips_when_pytest_unhealthy(tmp_path, monkeypatch):
+    from conduit.test_runner import run_tests
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+
+    class _Proc:
+        def __init__(self, code=0, stderr=""):
+            self.returncode = code
+            self.stdout = ""
+            self.stderr = stderr
+
+    def _run(cmd, **kwargs):
+        if len(cmd) >= 4 and cmd[1:4] == ["-m", "pytest", "--version"]:
+            return _Proc(1, stderr="No module named pytest.__main__")
+        return _Proc(0)
+
+    monkeypatch.setattr("conduit.test_runner.subprocess.run", _run)
+    result = run_tests(tmp_path)
+    assert result.passed is True
+    assert "verify_mode=skipped" in result.extra_notes
+    assert "verify_kind=verify_env_unhealthy" in result.extra_notes

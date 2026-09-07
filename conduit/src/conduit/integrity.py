@@ -137,27 +137,30 @@ def unused_marker_literals(text: str, interesting: Iterable[str]) -> list[str]:
 
 
 def _is_dummy_value(node: ast.AST | None) -> bool:
+    """True only for trivial stub sinks (not legitimate returns/calls)."""
     if node is None:
         return True
-    if isinstance(node, ast.Constant) and node.value in _DUMMY_CONST:
+    if isinstance(node, ast.Constant):
+        return node.value in _DUMMY_CONST
+    if isinstance(node, ast.Dict) and not node.keys:
         return True
-    if isinstance(node, (ast.List, ast.Tuple, ast.Dict)) and (
-        (isinstance(node, ast.Dict) and not node.keys)
-        or (hasattr(node, "elts") and not getattr(node, "elts", None))
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)) and not getattr(
+        node, "elts", None
     ):
         return True
-    if isinstance(node, ast.Name):
-        return True
     if isinstance(node, ast.BoolOp):
-        return all(_is_dummy_value(v) for v in node.values) or True
-    if isinstance(node, ast.JoinedStr):
-        return True
-    if isinstance(node, ast.Call):
-        return True
-    if isinstance(node, ast.BinOp):
-        return True
-    if isinstance(node, ast.Attribute):
-        return True
+        # Catch `x or "ok"` / `x or {}` stub fallbacks; not every BoolOp.
+        has_dummy_operand = False
+        for v in node.values:
+            if isinstance(v, ast.Constant) and v.value in _DUMMY_CONST:
+                has_dummy_operand = True
+            elif isinstance(v, ast.Dict) and not v.keys:
+                has_dummy_operand = True
+            elif isinstance(v, (ast.List, ast.Tuple, ast.Set)) and not getattr(
+                v, "elts", None
+            ):
+                has_dummy_operand = True
+        return has_dummy_operand and any(_is_dummy_value(v) for v in node.values)
     return False
 
 
@@ -178,11 +181,37 @@ def _handler_is_blanket(node: ast.ExceptHandler) -> bool:
     return False
 
 
-def dummy_except_findings(text: str, rel: str) -> list[str]:
+def dummy_except_findings(
+    text: str,
+    rel: str,
+    package: str = "",
+    *,
+    previous: str | None = None,
+) -> list[str]:
+    """Flag blanket excepts that swallow an SDK call with a dummy return.
+
+    When ``package`` is set, only try bodies that invoke that SDK (incl. client
+    aliases) are considered. Without a package, keeps the legacy whole-file scan
+    used by post-rule body validation.
+
+    Soft-fail dummies matching an except fingerprint in ``previous`` are skipped.
+    Success-shaped stubs are always flagged.
+    """
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return []
+    roots: set[str] | None = None
+    pkg = (package or "").strip()
+    if pkg:
+        from conduit.anticheat.rules import _sdk_name_roots
+
+        roots = _sdk_name_roots(tree, pkg)
+    prior_soft: set[str] | None = None
+    if previous is not None:
+        from conduit.anticheat.rules import _collect_soft_fail_fingerprints
+
+        prior_soft = _collect_soft_fail_fingerprints(previous)
     findings: list[str] = []
 
     class _V(ast.NodeVisitor):
@@ -193,17 +222,36 @@ def dummy_except_findings(text: str, rel: str) -> list[str]:
                 raises = any(isinstance(s, ast.Raise) for s in ast.walk(handler))
                 if raises:
                     continue
+                if roots is not None:
+                    from conduit.anticheat.rules import _try_body_calls_package
+
+                    if not _try_body_calls_package(node, pkg, roots):
+                        continue
                 dummy = False
+                success_stub = False
                 for stmt in handler.body:
                     if isinstance(stmt, ast.Pass):
                         dummy = True
-                    elif isinstance(stmt, ast.Return) and _is_dummy_value(stmt.value):
-                        dummy = True
+                    elif isinstance(stmt, ast.Return):
+                        from conduit.anticheat.rules import _is_success_stub
+
+                        if _is_success_stub(stmt.value):
+                            success_stub = True
+                            dummy = True
+                        elif _is_dummy_value(stmt.value):
+                            dummy = True
                     elif isinstance(stmt, ast.Expr) and isinstance(
                         stmt.value, ast.Constant
                     ):
                         continue
                 if dummy:
+                    if not success_stub and prior_soft is not None:
+                        from conduit.anticheat.rules import (
+                            _except_handler_fingerprint,
+                        )
+
+                        if _except_handler_fingerprint(handler) in prior_soft:
+                            continue
                     findings.append(
                         f"{rel}:{handler.lineno} swallows Exception and returns a dummy"
                     )

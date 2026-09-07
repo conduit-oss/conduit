@@ -10,6 +10,7 @@ from conduit.detect.lockfile_diff import (
     _parse_pyproject_deps,
     _parse_requirements_lines,
 )
+from conduit.detect.pip_manifests import iter_pip_manifests
 
 # Flatten order: earlier wins. npm last so it cannot overwrite a PyPI pin.
 _FLATTEN_ECOSYSTEMS = ("pypi", "go", "maven", "npm")
@@ -29,29 +30,40 @@ def normalize_packet_ecosystem(value: str | None) -> str | None:
 
 
 def read_installed_by_ecosystem(root: Path) -> dict[str, dict[str, str]]:
-    """Return ecosystem -> package -> version from root manifests.
+    """Return ecosystem -> package -> version from manifests.
 
-    Pip/pyproject land in ``pypi``; ``package.json`` in ``npm``. Same package
-    name can exist in both without one overwriting the other.
+    Pip includes nested ``requirements*.txt`` / ``constraints.txt`` (shallowest
+    pin wins). Root ``pyproject.toml`` / ``package.json`` / ``go.mod`` as today.
+    Same package name can exist in pip and npm without one overwriting the other.
     """
     root = root.resolve()
     by_eco: dict[str, dict[str, str]] = {}
 
-    def _put(eco: str, mapping: dict[str, str]) -> None:
+    def _put(eco: str, mapping: dict[str, str], *, overwrite: bool = True) -> None:
         bucket = by_eco.setdefault(eco, {})
         for name, ver in mapping.items():
             key = str(name).lower()
             val = str(ver or "").strip()
-            if key and val:
+            if not key or not val:
+                continue
+            if overwrite or key not in bucket:
                 bucket[key] = val
 
-    req = root / "requirements.txt"
-    if req.is_file():
-        _put("pypi", _parse_requirements_lines(req.read_text(encoding="utf-8")))
+    # Shallowest-first: first pin wins across nested requirements files.
+    for req in iter_pip_manifests(root, scope="main"):
+        try:
+            text = req.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        _put("pypi", _parse_requirements_lines(text), overwrite=False)
 
     pyproject = root / "pyproject.toml"
     if pyproject.is_file():
-        _put("pypi", _parse_pyproject_deps(pyproject.read_text(encoding="utf-8")))
+        _put(
+            "pypi",
+            _parse_pyproject_deps(pyproject.read_text(encoding="utf-8")),
+            overwrite=False,
+        )
 
     pkg = root / "package.json"
     if pkg.is_file():
@@ -74,7 +86,7 @@ def flatten_installed(by_eco: dict[str, dict[str, str]]) -> dict[str, str]:
 
 
 def read_installed(root: Path) -> dict[str, str]:
-    """Return package -> version from common manifests at repo root.
+    """Return package -> version from manifests (including nested pip requirements).
 
     When the same name is pinned in pip and npm, the PyPI pin is kept.
     Use ``read_installed_by_ecosystem`` / ``pin_for_packet_ecosystem`` when

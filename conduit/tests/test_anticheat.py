@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from conduit.anticheat.rules import reject_write
+from conduit.anticheat.findings import AnticheatFinding
 from conduit.anticheat.scan import run_anticheat, run_anticheat_mechanical
 from conduit.self_correct import reject_self_correct_write
 from conduit.text_tokens import obfuscated_forbidden_tokens, reconstructed_literals
@@ -219,7 +220,14 @@ def test_llm_auditor_adds_findings(tmp_path: Path, monkeypatch):
     (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
 
     def _fake_audit(*_a, **_k):
-        return ["app.py: cheat — dummy HTTP stub"], {
+        cheat = AnticheatFinding(
+            path="app.py",
+            kind="cheat",
+            detail="dummy HTTP stub",
+            severity="block",
+            source="llm",
+        )
+        return [cheat], [], {
             "honesty": 40,
             "migration_completeness": 70,
             "notes": ["stub"],
@@ -236,16 +244,17 @@ def test_llm_auditor_adds_findings(tmp_path: Path, monkeypatch):
 
 def test_mechanical_finding_not_cleared_by_empty_auditor(tmp_path: Path, monkeypatch):
     (tmp_path / "client.py").write_text(
+        "import openai\n"
         "def call():\n"
         "    try:\n"
-        "        raise ConnectionError('down')\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
         "    except ConnectionError:\n"
         "        return {'id': 'stub', 'choices': []}\n",
         encoding="utf-8",
     )
 
     def _clean(*_a, **_k):
-        return [], {"honesty": 90, "migration_completeness": 80, "notes": []}
+        return [], [], {"honesty": 90, "migration_completeness": 80, "notes": []}
 
     monkeypatch.setattr(
         "conduit.anticheat.llm_audit.llm_audit_findings", _clean
@@ -401,7 +410,7 @@ def test_synthetic_except_without_fake_name():
         "import openai\n"
         "def call():\n"
         "    try:\n"
-        "        raise ConnectionError('x')\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
         "    except ConnectionError:\n"
         "        return {'id': 'x', 'data': []}\n"
     )
@@ -410,6 +419,253 @@ def test_synthetic_except_without_fake_name():
     )
     assert reason is not None
     assert "synthetic" in reason.lower()
+
+
+def test_synthetic_except_skips_non_sdk_fallback_in_same_file():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    content = (
+        "import openai\n"
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def listennotes(url):\n"
+        "    try:\n"
+        "        return fetch(url)\n"
+        "    except Exception:\n"
+        "        return None\n"
+        "def whisper(f):\n"
+        "    try:\n"
+        "        resp = client.audio.transcriptions.create(model='whisper-1', file=f)\n"
+        "        return resp.text\n"
+        "    except Exception as e:\n"
+        "        return {'status': False, 'error': str(e)}\n"
+    )
+    assert synthetic_except_findings(content, "podcast_ingest.py", "openai") == []
+
+
+def test_synthetic_except_skips_error_envelope_after_sdk_call():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    content = (
+        "import openai\n"
+        "def call():\n"
+        "    try:\n"
+        "        gpt_response = openai.chat.completions.create(model='m', messages=[])\n"
+        "        return gpt_response.choices[0].message.content\n"
+        "    except Exception as e:\n"
+        "        return {'status': False, 'error': str(e)}\n"
+    )
+    assert synthetic_except_findings(content, "web/reNgine/llm.py", "openai") == []
+
+
+def test_synthetic_except_skips_files_without_package():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    content = (
+        "def lookup(port):\n"
+        "    try:\n"
+        "        return real(port)\n"
+        "    except Exception:\n"
+        "        return {'service_name': '', 'description': ''}\n"
+    )
+    assert synthetic_except_findings(content, "ports.py", "openai") == []
+
+
+def test_synthetic_except_skips_preexisting_whisper_soft_fail():
+    from conduit.anticheat.rules import synthetic_except_findings
+    from conduit.integrity import dummy_except_findings
+
+    previous = (
+        "import openai\n"
+        "def _transcribe_with_whisper(f):\n"
+        "    try:\n"
+        "        resp = openai.Audio.transcribe(model='whisper-1', file=f)\n"
+        "        return (resp.get('text') or '').strip() or None\n"
+        "    except Exception as e:\n"
+        "        print(f'Whisper failed: {e}')\n"
+        "        return None\n"
+    )
+    content = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def _transcribe_with_whisper(f):\n"
+        "    try:\n"
+        "        resp = client.audio.transcriptions.create(model='whisper-1', file=f)\n"
+        "        return (resp.text or '').strip() or None\n"
+        "    except Exception as e:\n"
+        "        print(f'Whisper failed: {e}')\n"
+        "        return None\n"
+    )
+    assert (
+        synthetic_except_findings(
+            content, "podcast_ingest.py", "openai", previous=previous
+        )
+        == []
+    )
+    assert (
+        dummy_except_findings(
+            content, "podcast_ingest.py", "openai", previous=previous
+        )
+        == []
+    )
+
+
+def test_synthetic_except_soft_fail_fail_closed_without_previous():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    content = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def whisper(f):\n"
+        "    try:\n"
+        "        resp = client.audio.transcriptions.create(model='whisper-1', file=f)\n"
+        "        return resp.text\n"
+        "    except Exception as e:\n"
+        "        print(e)\n"
+        "        return None\n"
+    )
+    hits = synthetic_except_findings(content, "podcast_ingest.py", "openai")
+    assert hits and "synthetic" in hits[0].lower()
+
+
+def test_synthetic_except_flags_new_soft_fail_not_in_previous():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    previous = "from openai import OpenAI\nclient = OpenAI()\n"
+    content = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def whisper(f):\n"
+        "    try:\n"
+        "        resp = client.audio.transcriptions.create(model='whisper-1', file=f)\n"
+        "        return resp.text\n"
+        "    except Exception:\n"
+        "        return None\n"
+    )
+    hits = synthetic_except_findings(
+        content, "podcast_ingest.py", "openai", previous=previous
+    )
+    assert hits and "synthetic" in hits[0].lower()
+
+
+def test_synthetic_except_flags_success_stub_even_if_in_previous():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    body = (
+        "import openai\n"
+        "def call():\n"
+        "    try:\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
+        "    except Exception:\n"
+        "        return {'choices': []}\n"
+    )
+    hits = synthetic_except_findings(
+        body, "client.py", "openai", previous=body
+    )
+    assert hits and "synthetic" in hits[0].lower()
+
+
+def test_anticheat_baseline_roundtrip(tmp_path: Path):
+    from conduit.anticheat.baseline import (
+        load_anticheat_baseline,
+        save_anticheat_baseline,
+    )
+
+    (tmp_path / "app.py").write_text("import openai\nx = 1\n", encoding="utf-8")
+    save_anticheat_baseline(tmp_path, ["app.py"])
+    loaded = load_anticheat_baseline(tmp_path)
+    assert loaded["app.py"] == "import openai\nx = 1\n"
+    assert list(loaded) == ["app.py"]
+
+
+def test_anticheat_baseline_normalizes_absolute_paths(tmp_path: Path):
+    from conduit.anticheat.baseline import (
+        load_anticheat_baseline,
+        save_anticheat_baseline,
+    )
+
+    app = tmp_path / "podcast_ingest.py"
+    app.write_text("import openai\nreturn None\n", encoding="utf-8")
+    # Allowlist often contains absolute paths after expand_apply_allowlist.
+    save_anticheat_baseline(tmp_path, [str(app.resolve())])
+    loaded = load_anticheat_baseline(tmp_path)
+    assert "podcast_ingest.py" in loaded
+    assert not any(k.startswith("D:") or k.startswith("/") for k in loaded)
+
+    # Legacy absolute keys on disk still load as relative.
+    import json
+
+    legacy = {
+        str(app.resolve()).replace("\\", "/"): "import openai\nold\n",
+    }
+    path = tmp_path / ".conduit" / "anticheat_baseline.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    loaded2 = load_anticheat_baseline(tmp_path)
+    assert loaded2["podcast_ingest.py"] == "import openai\nold\n"
+
+
+def test_format_failure_reasons_anticheat_and_pytest():
+    from conduit.self_correct import format_failure_reasons
+    from conduit.test_runner import TestResult
+
+    anti = TestResult(
+        runner="anticheat",
+        passed=False,
+        returncode=1,
+        stdout=(
+            "anticheat failed:\n"
+            "podcast_ingest.py: synthetic_except — 514 except path returns a "
+            "synthetic response without calling the official SDK\n"
+            "podcast_ingest.py: mechanical — 514 swallows Exception and returns a dummy\n"
+        ),
+        stderr="",
+        command=[],
+    )
+    reasons = format_failure_reasons(anti)
+    assert len(reasons) == 2
+    assert "synthetic_except" in reasons[0]
+    assert "mechanical" in reasons[1]
+
+    py = TestResult(
+        runner="pytest",
+        passed=False,
+        returncode=1,
+        stdout=(
+            "FAILED tests/test_conduit_oracle.py::test_chat - assert 0\n"
+            "FAILED tests/test_x.py::test_y - TypeError: boom\n"
+            "E   AssertionError: expected client\n"
+            "E   TypeError: boom\n"
+        ),
+        stderr="",
+        command=[],
+    )
+    py_reasons = format_failure_reasons(py)
+    assert any("test_conduit_oracle" in r for r in py_reasons)
+    assert any("—" in r for r in py_reasons)
+
+
+def test_mechanical_scan_respects_edited_files_only(tmp_path: Path):
+    (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
+    (tmp_path / "untouched.py").write_text(
+        "import openai\n"
+        "def bad():\n"
+        "    try:\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
+        "    except Exception:\n"
+        "        return {}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "edited.py").write_text(
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n",
+        encoding="utf-8",
+    )
+    full = run_anticheat_mechanical(tmp_path, _packet())
+    assert full.failed
+    scoped = run_anticheat_mechanical(tmp_path, _packet(), files=["edited.py"])
+    assert not scoped.failed
+    empty = run_anticheat_mechanical(tmp_path, _packet(), files=[])
+    assert not empty.failed
 
 
 def test_deny_substring_from_packet_only():
@@ -443,3 +699,53 @@ def test_banned_kwargs_on_hint():
     )
     assert reason is not None
     assert "engine=" in reason
+
+
+def test_js_join_obfuscation_detected():
+    text = 'const legacy = ["a", "da"].join("");\n'
+    rebuilt = reconstructed_literals(text, path="client.js")
+    assert "ada" in rebuilt
+    hidden = obfuscated_forbidden_tokens(text, ["ada"], path="client.js")
+    assert hidden == ["ada"]
+
+
+def test_minified_js_reconstruction_is_fast():
+    import time
+
+    # Quote-dense blob similar to vendor.min.js — must not hang.
+    chunk = 'a="x";b=["y","z"];' * 8000
+    text = chunk + 'var x=["a","da"].join("");' + chunk
+    t0 = time.perf_counter()
+    rebuilt = reconstructed_literals(text, path="vendor.min.js")
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 1.0, f"JS reconstruction too slow: {elapsed:.2f}s"
+    assert "ada" in rebuilt
+
+
+def test_large_python_join_still_detected_quickly():
+    import time
+
+    padding = 'x = "hello world"\n' * 2000
+    text = padding + 'LEGACY = "".join(["a", "da"])\n' + padding
+    t0 = time.perf_counter()
+    rebuilt = reconstructed_literals(text, path="big.py")
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 2.0, f"Python reconstruction too slow: {elapsed:.2f}s"
+    assert "ada" in rebuilt
+    hidden = obfuscated_forbidden_tokens(text, ["ada"], path="big.py")
+    assert hidden == ["ada"]
+
+
+def test_mechanical_scan_emits_start_and_done(tmp_path: Path):
+    (tmp_path / "app.py").write_text(
+        "import openai\nopenai.chat.completions.create()\n", encoding="utf-8"
+    )
+    logs: list[str] = []
+    run_anticheat_mechanical(
+        tmp_path,
+        _packet(),
+        log=logs.append,
+    )
+    joined = "\n".join(logs)
+    assert "[anticheat] mechanical scan:" in joined
+    assert "[anticheat] mechanical done" in joined

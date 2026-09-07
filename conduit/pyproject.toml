@@ -59,7 +59,7 @@ openai = "conduit.detect.modules.openai:OpenAIModule"
 where = ["src"]
 
 [tool.setuptools.package-data]
-conduit = ["py.typed"]
+conduit = ["py.typed", "schema/*.json", "packs/**/*.yaml"]
 
 [tool.setuptools]
 include-package-data = true
