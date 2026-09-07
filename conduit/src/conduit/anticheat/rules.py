@@ -371,6 +371,90 @@ def deny_substrings(packet: dict[str, Any]) -> list[str]:
     return [str(x).lower() for x in raw if str(x).strip()]
 
 
+def _patches_official_package(text: str, package: str) -> bool:
+    """True when a mock targets the packet package module (not substring mentions)."""
+    pkg = (package or "").strip()
+    if not pkg or not text:
+        return False
+    esc = re.escape(pkg)
+    patterns = (
+        rf"""(?i)(?:mock\.)?patch(?:\.object)?\s*\(\s*['"]{esc}(?:\.|['"/])""",
+        rf"""(?i)@patch(?:\.object)?\s*\(\s*['"]{esc}(?:\.|['"/])""",
+        rf"""(?i)patch\.object\s*\(\s*{esc}\b""",
+    )
+    return any(re.search(p, text) for p in patterns)
+
+
+def _finding_core(msg: str) -> str:
+    """Normalize finding text for pre-apply baseline comparison (drop line numbers)."""
+    text = (msg or "").strip()
+    return re.sub(r"^([^:\n]+):\d+(?=\s)", r"\1:", text)
+
+
+def _baseline_soft_exempt(msg: str) -> bool:
+    """Findings that keep their own previous/success-stub rules — never soft-drop."""
+    lower = (msg or "").lower()
+    return (
+        "synthetic response" in lower
+        or "swallows exception" in lower
+        or ("dummy" in lower and "except" in lower)
+        or ("dropped" in lower and "import" in lower)
+    )
+
+
+_STILL_USES_KW_RE = re.compile(
+    r"still uses (?P<kw>\w+)=\s*\(migrate",
+    re.I,
+)
+
+
+def _legacy_kw_from_finding(msg: str) -> str | None:
+    m = _STILL_USES_KW_RE.search(msg or "")
+    return m.group("kw") if m else None
+
+
+def _is_create_like_callee(chain: str) -> bool:
+    """True for Completion.create / completions.create / chat.completions.create."""
+    c = (chain or "").lower()
+    return (
+        c.endswith("completion.create")
+        or c.endswith("completions.create")
+        or "chat.completions.create" in c
+    )
+
+
+def _prior_has_legacy_kwarg(previous: str, kw: str) -> bool:
+    """True when ``kw=`` already appeared on an openai create-like call in previous."""
+    kw = (kw or "").strip()
+    if not kw or not previous:
+        return False
+    try:
+        tree = ast.parse(previous)
+    except SyntaxError:
+        return bool(re.search(rf"\b{re.escape(kw)}\s*=", previous))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not _is_create_like_callee(_attr_chain(node.func)):
+            continue
+        keys = {arg for arg in (k.arg for k in node.keywords) if isinstance(arg, str)}
+        if kw in keys:
+            return True
+    return False
+
+
+def _baseline_soft_drop(finding: str, *, previous: str, prior_cores: set[str]) -> bool:
+    """True when finding should be dropped as pre-apply debt."""
+    if _baseline_soft_exempt(finding):
+        return False
+    if _finding_core(finding) in prior_cores:
+        return True
+    kw = _legacy_kw_from_finding(finding)
+    if kw and _prior_has_legacy_kwarg(previous, kw):
+        return True
+    return False
+
+
 def fake_client_findings(
     text: str, rel: str, packet: dict[str, Any]
 ) -> list[str]:
@@ -390,7 +474,28 @@ def fake_client_findings(
         or "jest.mock" in lowered
         or "sinon." in lowered
     )
-    if mocks and references_package(text, pkg):
+    # Unit tests routinely mock providers. Only flag when they explicitly patch
+    # the packet package module — not substring mentions like allowed_openai_params.
+    if is_test_rel(rel):
+        if (
+            mocks
+            and _patches_official_package(text, pkg)
+            and (
+                "patch(" in lowered
+                or "magicmock" in lowered
+                or "jest.mock" in lowered
+                or "sinon." in lowered
+            )
+        ):
+            hits.append(
+                f"{rel} mocks the official {pkg} SDK instead of migrating"
+            )
+        return hits
+
+    # Require a real SDK import or a patch of the package module — not bare
+    # ``allowed_openai_params`` / ``openai/gpt-5`` string mentions.
+    sdk_target = imports_package(text, pkg) or _patches_official_package(text, pkg)
+    if mocks and sdk_target:
         if (
             "patch(" in lowered
             or "magicmock" in lowered
@@ -402,7 +507,7 @@ def fake_client_findings(
             )
 
     if "vcr" in lowered and ("use_cassette" in lowered or "@vcr" in lowered):
-        if references_package(text, pkg) or packet_http_paths(packet):
+        if imports_package(text, pkg) or packet_http_paths(packet):
             hits.append(
                 f"{rel} records/replays HTTP instead of calling the new SDK"
             )
@@ -974,6 +1079,7 @@ def file_findings(
     *,
     previous: str | None = None,
     mode: str = "scan",
+    _baseline_filter: bool = True,
 ) -> list[str]:
     """Mechanical findings for one file (write reject or repo scan)."""
     posix = _posix(rel)
@@ -1054,6 +1160,36 @@ def file_findings(
             findings.append(
                 f"{posix} unused migration marker literals: " + ", ".join(markers)
             )
+
+    # Soft-fail pre-apply patterns: if the same finding already existed on the
+    # baseline snapshot, do not block the migration (success stubs / import drops
+    # keep their own rules and are exempt). Also soft-fail legacy kwargs that
+    # already appeared on Completion.create / completions.create-like calls even
+    # when the callee renamed (singular → plural) so the exact finding text differs.
+    if (
+        _baseline_filter
+        and mode == "scan"
+        and previous is not None
+        and previous != ""
+        and findings
+    ):
+        prior = file_findings(
+            rel,
+            previous,
+            packet,
+            previous=None,
+            mode="scan",
+            _baseline_filter=False,
+        )
+        prior_cores = {_finding_core(m) for m in prior}
+        findings = [
+            f
+            for f in findings
+            if not _baseline_soft_drop(
+                f, previous=previous, prior_cores=prior_cores
+            )
+        ]
+
     return findings
 
 

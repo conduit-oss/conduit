@@ -68,6 +68,15 @@ def test_coverage_marks_missed_and_caught_models(tmp_path):
     assert "NO RULE" in text
     assert "will replace with gpt-4o" in text
 
+    # deadline advisory when signal carries shutdown
+    signals[0].deadline = "2026-10-23T00:00:00Z"
+    report2 = build_coverage_report(
+        package="openai", state=state, signals=signals, packet=packet
+    )
+    text2 = format_coverage_report(report2)
+    assert "shutdown 2026-10-23" in text2
+    assert "deprecated" in text2
+
     path = save_source_packet(tmp_path, report.source_packet)
     assert path.is_file()
     assert "gpt-4-0613" in path.read_text(encoding="utf-8")

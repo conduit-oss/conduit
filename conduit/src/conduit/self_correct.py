@@ -713,6 +713,9 @@ def reject_self_correct_write(
     wipe = _wipe_or_shrink_reason(previous, content)
     if wipe:
         return wipe
+    structure = _non_sdk_structure_reason(previous, content)
+    if structure:
+        return structure
     return reject_write(
         rel_posix, content, packet=packet, previous=previous
     )
@@ -933,6 +936,59 @@ def _top_level_names(source: str) -> set[str]:
     for match in re.finditer(r"(?m)^(def|class)\s+([A-Za-z_][A-Za-z0-9_]*)", source or ""):
         names.add(match.group(2))
     return names
+
+
+_MAIN_GUARD_RE = re.compile(
+    r"""if\s+__name__\s*==\s*['"]__main__['"]\s*:""",
+)
+_MODULE_RUN_RE = re.compile(r"(?m)^(?P<indent>\s*)(?P<call>\w+\.run\s*\()")
+_SHORT_CIRCUIT_RUN_RE = re.compile(
+    r"(?m)^\s*\S.+\band\b.+\.run\s*\(",
+)
+
+
+def _module_level_if_count(source: str) -> int:
+    return len(re.findall(r"(?m)^if\s+", source or ""))
+
+
+def _module_level_run_calls(source: str) -> set[str]:
+    return {
+        m.group("call").rstrip("(").strip()
+        for m in _MODULE_RUN_RE.finditer(source or "")
+        if len(m.group("indent") or "") == 0
+    }
+
+
+def _non_sdk_structure_reason(previous: str | None, content: str) -> str | None:
+    """Reject style/structure edits outside SDK migration (main guards, renames)."""
+    if previous is None:
+        return None
+    prev = previous or ""
+    new = content or ""
+    if not _MAIN_GUARD_RE.search(prev) and _MAIN_GUARD_RE.search(new):
+        return "added if __name__ == '__main__' guard (non-SDK structure)"
+    if _module_level_if_count(new) > _module_level_if_count(prev):
+        return "added module-level if guard (non-SDK structure)"
+    prev_runs = _module_level_run_calls(prev)
+    new_runs = _module_level_run_calls(new)
+    if prev_runs and prev_runs != new_runs:
+        return "changed module-level .run() entrypoint (non-SDK structure)"
+    if prev_runs and _SHORT_CIRCUIT_RUN_RE.search(new) and not _SHORT_CIRCUIT_RUN_RE.search(
+        prev
+    ):
+        return "rewrote module-level .run() into short-circuit guard"
+    before = _top_level_names(prev)
+    after = _top_level_names(new)
+    if before != after:
+        lost = sorted(before - after)
+        gained = sorted(after - before)
+        bits: list[str] = []
+        if lost:
+            bits.append("dropped " + ", ".join(lost))
+        if gained:
+            bits.append("added " + ", ".join(gained))
+        return "changed top-level def/class names (" + "; ".join(bits) + ")"
+    return None
 
 
 def _error_search_snippets(test_result: TestResult, *, limit: int = 4) -> list[str]:
@@ -1464,7 +1520,9 @@ def _llm_suggest_fixes(
             "any API successor not covered. Do NOT call write_file until you have "
             "doc-backed migration facts for each failing callee/path/param.\n"
             "6) Preserve existing public names (module-level def/class and "
-            "__all__) unless tests require a rename.\n"
+            "__all__). Do NOT rename them. Do NOT add if __name__ == '__main__' "
+            "guards, comment-only cleanup, or formatting-only refactors — "
+            "SDK migration only (imports, callees, kwargs, deps, leftover tokens).\n"
             "7) run_shell is only for pytest / pip show|list / tiny read-only "
             "SDK probes (import + version). Never Path/open/write/exec via shell.\n"
             "When finished, return JSON with any of:\n"
@@ -1529,7 +1587,8 @@ def _llm_suggest_fixes(
         "(read/grep/write, focused run_tests, tightly allowlisted run_shell) plus "
         "web_search/fetch_url. Research first: read migration_docs / examples / "
         "openapi_structs, fetch_url any gaps, then edit leftover_files and failing "
-        "spans. No repo inventory. No shell file IO. Preserve public names. "
+        "spans. No repo inventory. No shell file IO. Preserve public names; "
+        "do not add __main__ guards or renames; SDK call-site edits only. "
         "Reply with a final JSON object only. Honor ignore list and path_allowlist. "
         "Update packet_patch when the migration packet must change."
     )
@@ -2337,7 +2396,8 @@ def verify_with_self_correct(
             empty_nudge_used = False
             pending_nudge = (
                 "Previous write regressed tests (collection/import failure). "
-                "Original files were restored. Preserve public names. "
+                "Original files were restored. Preserve public names; "
+                "do not add __main__ guards or renames. "
                 + (" ".join(lost_bits[:6]) if lost_bits else "")
             )
             if result.passed:

@@ -749,3 +749,181 @@ def test_mechanical_scan_emits_start_and_done(tmp_path: Path):
     joined = "\n".join(logs)
     assert "[anticheat] mechanical scan:" in joined
     assert "[anticheat] mechanical done" in joined
+
+
+def test_fake_client_skips_tests_and_substring_openai_mentions():
+    from conduit.anticheat.rules import fake_client_findings, file_findings
+
+    litellm_test = (
+        "from unittest.mock import AsyncMock, patch\n"
+        "import pytest\n\n"
+        "async def test_gpt5_prefix():\n"
+        "    with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion') as m:\n"
+        "        m.return_value = AsyncMock()\n"
+        "        kwargs = {'allowed_openai_params': ['reasoning_effort'], "
+        "'model': 'openai/gpt-5'}\n"
+        "        assert 'reasoning_effort' in kwargs['allowed_openai_params']\n"
+    )
+    assert (
+        fake_client_findings(
+            litellm_test,
+            "tests/unittest/test_litellm_reasoning_effort.py",
+            _packet(),
+        )
+        == []
+    )
+    assert (
+        file_findings(
+            "tests/unittest/test_litellm_reasoning_effort.py",
+            litellm_test,
+            _packet(),
+        )
+        == []
+    )
+
+
+def test_fake_client_still_flags_impl_that_mocks_openai_import():
+    from conduit.anticheat.rules import fake_client_findings
+
+    content = (
+        "from unittest.mock import MagicMock, patch\n"
+        "import openai\n"
+        "with patch('openai.chat.completions.create', MagicMock()):\n"
+        "    pass\n"
+    )
+    hits = fake_client_findings(content, "client.py", _packet())
+    assert hits and "mocks the official openai SDK" in hits[0]
+
+
+def test_baseline_soft_fails_preexisting_legacy_kwargs(tmp_path: Path):
+    from conduit.anticheat.baseline import save_anticheat_baseline
+
+    rel = "azure_recommendation.py"
+    previous = (
+        "import openai\n"
+        "openai.api_key = 'x'\n"
+        "def generate():\n"
+        "    return openai.chat.completions.create(\n"
+        "        model='gpt-3.5-turbo', messages=[], max_tokens=64\n"
+        "    )\n"
+    )
+    current = previous.replace("gpt-3.5-turbo", "gpt-5.6-terra")
+    (tmp_path / rel).write_text(current, encoding="utf-8")
+    save_anticheat_baseline(tmp_path, [rel])
+
+    pkt = _packet()
+    pkt["rules"] = list(pkt["rules"]) + [
+        {
+            "type": "AST_PARAM_RENAME",
+            "function_target": "chat.completions.create",
+            "old_param": "max_tokens",
+            "new_param": "max_completion_tokens",
+            "new_callee": "chat.completions.create",
+        },
+    ]
+    report = run_anticheat_mechanical(
+        tmp_path,
+        pkt,
+        [rel],
+        previous={rel: previous},
+    )
+    assert not report.failed, report.findings
+
+
+def test_baseline_still_flags_new_legacy_kwargs(tmp_path: Path):
+    rel = "client.py"
+    previous = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "client.chat.completions.create(model='m', messages=[])\n"
+    )
+    current = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "client.chat.completions.create(model='m', messages=[], max_tokens=64)\n"
+    )
+    (tmp_path / rel).write_text(current, encoding="utf-8")
+    pkt = _packet()
+    pkt["rules"] = list(pkt["rules"]) + [
+        {
+            "type": "AST_PARAM_RENAME",
+            "function_target": "chat.completions.create",
+            "old_param": "max_tokens",
+            "new_param": "max_completion_tokens",
+            "new_callee": "chat.completions.create",
+        },
+    ]
+    report = run_anticheat_mechanical(
+        tmp_path,
+        pkt,
+        [rel],
+        previous={rel: previous},
+    )
+    assert report.failed
+    assert any("max_tokens" in f for f in report.findings)
+
+
+def test_baseline_soft_fails_engine_across_completion_callee_rename(tmp_path: Path):
+    """Pre-apply Completion.create(engine=) → post completions.create(engine=) is debt."""
+    rel = "azure_recommendation.py"
+    previous = (
+        "import openai\n"
+        "openai.api_key = 'x'\n"
+        "def generate():\n"
+        "    return openai.Completion.create(\n"
+        "        engine='text-davinci-003', prompt='hi', max_tokens=64\n"
+        "    )\n"
+    )
+    current = (
+        "import openai\n"
+        "openai.api_key = 'x'\n"
+        "def generate():\n"
+        "    return openai.completions.create(\n"
+        "        engine='gpt-5.6-terra', prompt='hi', max_tokens=64\n"
+        "    )\n"
+    )
+    (tmp_path / rel).write_text(current, encoding="utf-8")
+    pkt = _packet()
+    pkt["anticheat"] = {
+        "banned_kwargs_on": {
+            "completions.create": ["engine"],
+            "openai.completions.create": ["engine"],
+        }
+    }
+    report = run_anticheat_mechanical(
+        tmp_path,
+        pkt,
+        [rel],
+        previous={rel: previous},
+    )
+    assert not report.failed, report.findings
+
+
+def test_baseline_still_flags_new_engine_kwarg(tmp_path: Path):
+    rel = "client.py"
+    previous = (
+        "import openai\n"
+        "def generate():\n"
+        "    return openai.completions.create(model='m', prompt='hi')\n"
+    )
+    current = (
+        "import openai\n"
+        "def generate():\n"
+        "    return openai.completions.create(engine='m', prompt='hi')\n"
+    )
+    (tmp_path / rel).write_text(current, encoding="utf-8")
+    pkt = _packet()
+    pkt["anticheat"] = {
+        "banned_kwargs_on": {
+            "completions.create": ["engine"],
+            "openai.completions.create": ["engine"],
+        }
+    }
+    report = run_anticheat_mechanical(
+        tmp_path,
+        pkt,
+        [rel],
+        previous={rel: previous},
+    )
+    assert report.failed
+    assert any("engine=" in f for f in report.findings)

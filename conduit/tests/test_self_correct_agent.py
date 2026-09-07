@@ -389,7 +389,14 @@ def test_self_correct_reverts_regressed_rewrite(monkeypatch, tmp_path: Path):
         "def test_oracle():\n    assert True\n", encoding="utf-8"
     )
 
-    broken = "def other():\n    return 1\n"
+    # Keep public name ``configure`` (rename would be rejected as non-SDK structure)
+    # but break the module so conftest collection fails — triggers restore path.
+    broken = (
+        "def configure():\n"
+        "    return True\n"
+        "\n"
+        "raise ImportError('broken repair')\n"
+    )
     results = [
         RunnerResult(
             passed=False,
@@ -408,7 +415,10 @@ def test_self_correct_reverts_regressed_rewrite(monkeypatch, tmp_path: Path):
             returncode=4,
             runner="pytest",
             command=["pytest"],
-            stdout="ImportError while loading conftest\ncannot import name 'configure'",
+            stdout=(
+                "ImportError while loading conftest\n"
+                "ImportError: broken repair"
+            ),
             stderr="",
         ),
         RunnerResult(
@@ -732,7 +742,13 @@ def test_self_correct_stops_after_two_consecutive_restores(monkeypatch, tmp_path
         "def test_oracle():\n    assert True\n", encoding="utf-8"
     )
 
-    broken = "def other():\n    return 1\n"
+    # Keep ``configure``; module-level ImportError still causes collection failure.
+    broken = (
+        "def configure():\n"
+        "    return True\n"
+        "\n"
+        "raise ImportError('broken repair')\n"
+    )
     # initial fail, regress, post-restore fail, regress again, post-restore fail
     results = [
         RunnerResult(
@@ -752,7 +768,10 @@ def test_self_correct_stops_after_two_consecutive_restores(monkeypatch, tmp_path
             returncode=4,
             runner="pytest",
             command=["pytest"],
-            stdout="ImportError while loading conftest\ncannot import name 'configure'",
+            stdout=(
+                "ImportError while loading conftest\n"
+                "ImportError: broken repair"
+            ),
             stderr="",
         ),
         RunnerResult(
@@ -772,7 +791,10 @@ def test_self_correct_stops_after_two_consecutive_restores(monkeypatch, tmp_path
             returncode=4,
             runner="pytest",
             command=["pytest"],
-            stdout="ImportError while loading conftest\ncannot import name 'configure'",
+            stdout=(
+                "ImportError while loading conftest\n"
+                "ImportError: broken repair"
+            ),
             stderr="",
         ),
         RunnerResult(

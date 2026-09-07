@@ -5,8 +5,21 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+class VerifyEnvError(RuntimeError):
+    """Consumer verify env cannot be installed (abort migration early)."""
+
+
+_CONFLICT_MARKERS = (
+    "resolutionimpossible",
+    "conflicting dependencies",
+    "cannot install",
+    "dependency conflict",
+)
 
 
 def bumped_package_specs(packet: dict[str, Any]) -> list[str]:
@@ -66,6 +79,270 @@ def _import_name(spec: str) -> str:
     return name.replace("-", "_")
 
 
+_PROGRESS_PREFIXES = (
+    "collecting ",
+    "downloading ",
+    "using cached",
+    "installing collected",
+    "building wheel",
+    "created wheel",
+    "stored in",
+    "obtaining ",
+    "looking in indexes",
+    "requirement already satisfied",
+    "preparing metadata",
+)
+
+_ERROR_HINTS = (
+    "error:",
+    "exception",
+    "traceback",
+    "failed",
+    "could not",
+    "no matching distribution",
+    "resolutionimpossible",
+    "conflicting dependencies",
+    "cannot install",
+    "dependency conflict",
+    "the conflict is caused by",
+    "depends on ",
+    "the user requested ",
+)
+
+_DEPENDS_ON_RE = re.compile(
+    r"(?i)^\s*(?P<pkg>[A-Za-z0-9_.\-]+)\s+(?P<ver>[^\s]+)\s+depends on\s+(?P<req>.+?)\s*$"
+)
+_USER_REQUESTED_RE = re.compile(
+    r"(?i)^\s*the user requested\s+(?P<spec>[A-Za-z0-9_.\-]+(?:\s*[=<>!~]=?\s*[^\s]+)?)\s*$"
+)
+# pip: Cannot install -r PATH (line N) and openai==3.3.1 because …
+_LINE_CONFLICT_RE = re.compile(
+    r"(?is)cannot install\s+-r\s+(?P<path>.+?)\s+\(line\s+(?P<line>\d+)\)"
+    r"\s+and\s+(?P<spec>[A-Za-z0-9_.\-]+(?:\s*[=<>!~]=?\s*[^,\s]+)?)"
+)
+
+
+def resolve_requirements_line(path: str | Path, lineno: int) -> str | None:
+    """Return the pin text at 1-based ``lineno`` in a requirements file."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    if lineno < 1 or lineno > len(lines):
+        return None
+    raw = lines[lineno - 1].strip()
+    if not raw or raw.startswith("#"):
+        return None
+    # Drop inline comments; keep the requirement token(s).
+    if " #" in raw:
+        raw = raw.split(" #", 1)[0].rstrip()
+    return raw or None
+
+
+def parse_line_conflict(detail: str) -> tuple[str, int, str] | None:
+    """Parse ``(path, lineno, conflicting_spec)`` from a pip line-conflict ERROR."""
+    m = _LINE_CONFLICT_RE.search(detail or "")
+    if not m:
+        return None
+    path = m.group("path").strip().strip("\"'")
+    try:
+        lineno = int(m.group("line"))
+    except ValueError:
+        return None
+    spec = re.sub(r"\s+", "", m.group("spec").strip())
+    if not path or lineno < 1 or not spec:
+        return None
+    return path, lineno, spec
+
+
+
+def _is_noise_line(line: str) -> bool:
+    low = (line or "").strip().lower()
+    if not low:
+        return True
+    if low.startswith("[notice]"):
+        return True
+    if "a new release of pip" in low or "to update, run:" in low:
+        return True
+    if low.startswith("ignoring ") and "markers" in low:
+        return True
+    if "for help visit http" in low:
+        return True
+    if any(low.startswith(p) for p in _PROGRESS_PREFIXES):
+        return True
+    # Progress bars / byte counters
+    if re.match(r"^[\-─=\s\d\.]+(?:%[|\s]|mb/s|kb/s|b/s)", low):
+        return True
+    if re.match(r"^\d+(\.\d+)?\s*/\s*\d+", low):
+        return True
+    return False
+
+
+def _is_errorish_line(line: str) -> bool:
+    low = (line or "").strip().lower()
+    return any(h in low for h in _ERROR_HINTS)
+
+
+def format_pip_failure(blob: str, *, max_lines: int = 16) -> str:
+    """Keep real ERROR/conflict lines; drop Collecting/Downloading progress noise."""
+    lines = [ln.rstrip() for ln in (blob or "").splitlines() if ln.strip()]
+    if not lines:
+        return "(no pip output)"
+
+    errorish = [ln for ln in lines if _is_errorish_line(ln) and not _is_noise_line(ln)]
+    if errorish:
+        # Include a little context around the first errorish hit when present.
+        start = next(
+            (i for i, ln in enumerate(lines) if _is_errorish_line(ln)), 0
+        )
+        chunk = [
+            ln
+            for ln in lines[start : start + max_lines + 12]
+            if not _is_noise_line(ln)
+        ][:max_lines]
+        return "\n".join(chunk) if chunk else "\n".join(errorish[:max_lines])
+
+    useful = [ln for ln in lines if not _is_noise_line(ln)]
+    if useful:
+        picked = useful[-max_lines:]
+        return (
+            "pip failed (no ERROR line captured):\n" + "\n".join(picked)
+        )
+    return "pip failed (no ERROR line captured):\n" + "\n".join(lines[-6:])
+
+
+def is_dep_conflict(detail: str) -> bool:
+    low = (detail or "").lower()
+    return any(m in low for m in _CONFLICT_MARKERS)
+
+
+def parse_dep_blockers(detail: str) -> list[tuple[str, str, str]]:
+    """Return ``(package, version, requirement)`` from pip conflict text."""
+    hits: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for ln in (detail or "").splitlines():
+        m = _DEPENDS_ON_RE.match(ln.strip())
+        if not m:
+            continue
+        row = (
+            m.group("pkg").strip(),
+            m.group("ver").strip(),
+            m.group("req").strip(),
+        )
+        key = (row[0].lower(), row[1], row[2].lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        hits.append(row)
+    return hits
+
+
+def parse_user_requested_specs(detail: str) -> list[str]:
+    specs: list[str] = []
+    seen: set[str] = set()
+    for ln in (detail or "").splitlines():
+        m = _USER_REQUESTED_RE.match(ln.strip())
+        if not m:
+            continue
+        spec = re.sub(r"\s+", "", m.group("spec").strip())
+        key = spec.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        specs.append(spec)
+    return specs
+
+
+def explain_dep_conflict(detail: str, *, specs: list[str] | None = None) -> str:
+    """Plain-English summary for ResolutionImpossible / pin conflicts."""
+    migrated = list(specs or [])
+    if not migrated:
+        migrated = parse_user_requested_specs(detail)
+    blockers = parse_dep_blockers(detail)
+
+    # Prefer blockers that mention a migrated package name.
+    migrated_names = {
+        s.split("==", 1)[0].split(">=", 1)[0].split("<=", 1)[0].strip().lower()
+        for s in migrated
+        if s.strip()
+    }
+    relevant = [
+        b
+        for b in blockers
+        if any(name and name in b[2].lower() for name in migrated_names)
+    ] or blockers
+
+    lines = ["Dependency conflict while installing verify-venv."]
+    if migrated:
+        lines.append("Migrated pin: " + ", ".join(migrated))
+    if relevant:
+        for pkg, ver, req in relevant:
+            lines.append(f"Blocked by: {pkg} {ver} (requires {req})")
+        lines.append(
+            "These cannot be installed together. Bump or relax the blocker "
+            "so it allows the migrated package version, then re-run."
+        )
+        return "\n".join(lines)
+
+    # Pip often only prints "Cannot install -r PATH (line N) and openai==…"
+    # without the "depends on" breakdown — resolve line N from the file.
+    line_hit = parse_line_conflict(detail)
+    if line_hit is not None:
+        req_path, lineno, other_spec = line_hit
+        pin = resolve_requirements_line(req_path, lineno)
+        try:
+            rel = Path(req_path).name
+        except Exception:
+            rel = str(req_path)
+        if pin:
+            lines.append(f"Blocked by {rel} line {lineno}: {pin}")
+        else:
+            lines.append(
+                f"Blocked by {rel} line {lineno} "
+                f"(conflicts with {other_spec}; could not read pin text)"
+            )
+        if other_spec and other_spec not in migrated:
+            lines.append(f"Conflicts with: {other_spec}")
+        lines.append(
+            "These cannot be installed together. Bump or relax the blocker "
+            "so it allows the migrated package version, then re-run."
+        )
+        return "\n".join(lines)
+
+    trimmed = format_pip_failure(detail)
+    lines.append("Dependency conflict (could not parse blocker):")
+    lines.append(trimmed)
+    return "\n".join(lines)
+
+
+def format_verify_env_failure(detail: str, *, specs: list[str] | None = None) -> str:
+    """User-facing verify-env abort body (conflict summary or trimmed pip errors)."""
+    pins = ", ".join(specs) if specs else "(no DEPENDENCY_BUMP pins)"
+    body = (detail or "").strip() or "(no pip output)"
+    if is_dep_conflict(body):
+        return explain_dep_conflict(body, specs=list(specs or []))
+    trimmed = format_pip_failure(body)
+    if (
+        "do not match the hashes" in body.lower()
+        or "don't match the hashes" in body.lower()
+        or "hashes are required" in body.lower()
+        or "must have their versions pinned" in body.lower()
+    ):
+        return (
+            "Cannot install consumer requirements into verify-venv "
+            f"(migrated pins: {pins}).\n"
+            "Requirement pin has stale or missing --hash= values (or missing "
+            "transitive == pins) for pip --require-hashes. Re-run apply so "
+            "Conduit refreshes the Poetry lock/export or hashed transitive "
+            "pins, or re-export the lockfile.\n"
+            f"{trimmed}"
+        )
+    return (
+        "Cannot install consumer requirements into verify-venv "
+        f"(migrated pins: {pins}).\n{trimmed}"
+    )
+
+
 def _run_pip(
     exe: str,
     args: list[str],
@@ -73,7 +350,7 @@ def _run_pip(
     log=None,
     label: str = "pip install",
     timeout: float = 600,
-) -> bool:
+) -> tuple[bool, str]:
     from conduit.pulse import beat
 
     cmd = [exe, "-m", "pip", *args]
@@ -90,16 +367,17 @@ def _run_pip(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
+        detail = str(exc)
         if log:
-            log(f"[yellow]{label} failed:[/yellow] {exc}")
-        return False
+            log(f"[red]{label} failed:[/red] {detail}")
+        return False, detail
     if proc.returncode != 0:
+        blob = (proc.stderr or "") + "\n" + (proc.stdout or "")
+        detail = format_pip_failure(blob)
         if log:
-            err = (proc.stderr or proc.stdout or "").strip().splitlines()
-            tail = err[-3:] if err else ["(no output)"]
-            log(f"[yellow]{label} exit {proc.returncode}:[/yellow] {' '.join(tail)}")
-        return False
-    return True
+            log(f"[red]{label} exit {proc.returncode}:[/red]\n{detail}")
+        return False, detail
+    return True, ""
 
 
 def _upgrade_pip(exe: str, *, log=None) -> None:
@@ -118,9 +396,10 @@ def _pip_install_consumer_reqs(
     *,
     force: bool = False,
     log=None,
-) -> bool:
+) -> tuple[bool, str]:
     """Install consumer requirements.txt (and optional pyproject) into verify env."""
     reqs = consumer_req_files(root)
+    details: list[str] = []
     ok = True
     for req in reqs:
         try:
@@ -131,29 +410,35 @@ def _pip_install_consumer_reqs(
         if force:
             args.extend(["--force-reinstall", "--no-cache-dir"])
         args.extend(["-r", str(req)])
-        if not _run_pip(
+        good, detail = _run_pip(
             exe,
             args,
             log=log,
             label=f"Installing consumer requirements ({rel})",
             timeout=900,
-        ):
+        )
+        if not good:
             ok = False
+            if detail:
+                details.append(detail)
     pyproject = root / "pyproject.toml"
     if not reqs and pyproject.is_file():
         args = ["install", "--upgrade"]
         if force:
             args.extend(["--force-reinstall", "--no-cache-dir"])
         args.append(str(root))
-        if not _run_pip(
+        good, detail = _run_pip(
             exe,
             args,
             log=log,
             label="Installing consumer package (pyproject)",
             timeout=900,
-        ):
+        )
+        if not good:
             ok = False
-    return ok
+            if detail:
+                details.append(detail)
+    return ok, "\n".join(details)
 
 
 def _pip_install_bumps(
@@ -162,7 +447,7 @@ def _pip_install_bumps(
     *,
     force: bool = False,
     log=None,
-) -> bool:
+) -> tuple[bool, str]:
     extras = ["pytest"]
     args = ["install", "--upgrade"]
     if force:
@@ -215,6 +500,14 @@ def verify_env_healthy(exe: str, specs: list[str]) -> tuple[bool, str]:
     return True, ""
 
 
+@dataclass
+class _SyncAttempt:
+    req_ok: bool = True
+    bump_ok: bool = True
+    req_detail: str = ""
+    bump_detail: str = ""
+
+
 def _sync_once(
     exe: str,
     specs: list[str],
@@ -223,17 +516,26 @@ def _sync_once(
     force: bool = False,
     upgrade_pip: bool = False,
     log=None,
-) -> bool:
+) -> _SyncAttempt:
     if upgrade_pip:
         _upgrade_pip(exe, log=log)
-    req_ok = True
+    attempt = _SyncAttempt()
     if root is not None:
-        req_ok = _pip_install_consumer_reqs(exe, root, force=force, log=log)
-    bump_ok = True
+        attempt.req_ok, attempt.req_detail = _pip_install_consumer_reqs(
+            exe, root, force=force, log=log
+        )
+        if not attempt.req_ok and is_dep_conflict(attempt.req_detail):
+            # Conflicted requirements cannot be fixed by installing bumps alone.
+            return attempt
     if specs:
-        bump_ok = _pip_install_bumps(exe, specs, force=force, log=log)
-    # Requirements failure is non-fatal if bumps + pytest still healthy.
-    return bump_ok if specs else req_ok
+        attempt.bump_ok, attempt.bump_detail = _pip_install_bumps(
+            exe, specs, force=force, log=log
+        )
+    return attempt
+
+
+def _abort_req_failure(detail: str, *, specs: list[str]) -> None:
+    raise VerifyEnvError(format_verify_env_failure(detail, specs=specs))
 
 
 def sync_bumped_packages(
@@ -248,8 +550,8 @@ def sync_bumped_packages(
     consumer verify interpreter.
 
     Order: requirements.txt (or pyproject) first, then bump pins so the
-    migrated version wins. Fail-safe: recreate verify-venv and force-reinstall
-    on corruption; never aborts the migration for env repair.
+    migrated version wins. Recreates verify-venv on corruption. Raises
+    ``VerifyEnvError`` when requirements cannot resolve (e.g. pin conflict).
     """
     specs = bumped_package_specs(packet)
     has_reqs = bool(root and consumer_req_files(root)) or bool(
@@ -273,13 +575,25 @@ def sync_bumped_packages(
                 )
             return specs
 
-    ok = _sync_once(exe, specs, root=root, force=False, log=log)
-    healthy, reason = (
-        verify_env_healthy(exe, specs) if (ok and specs) else (ok, "pip install failed")
-    )
-    if not specs and ok:
-        return specs
+    attempt = _sync_once(exe, specs, root=root, force=False, log=log)
+    if has_reqs and not attempt.req_ok and is_dep_conflict(attempt.req_detail):
+        _abort_req_failure(attempt.req_detail, specs=specs)
+
+    healthy = False
+    reason = ""
+    if attempt.req_ok and (attempt.bump_ok if specs else True):
+        if specs:
+            healthy, reason = verify_env_healthy(exe, specs)
+        else:
+            healthy, reason = True, ""
+    elif not attempt.req_ok:
+        reason = attempt.req_detail or "consumer requirements install failed"
+    else:
+        reason = attempt.bump_detail or "bumped package install failed"
+
     if healthy:
+        return specs
+    if not specs and attempt.req_ok:
         return specs
 
     if log:
@@ -290,13 +604,22 @@ def sync_bumped_packages(
 
         exe = recreate_verify_venv(root, log=log) or exe
 
-    ok = _sync_once(
+    attempt = _sync_once(
         exe, specs, root=root, force=True, upgrade_pip=True, log=log
     )
-    healthy, reason = (
-        verify_env_healthy(exe, specs) if (ok and specs) else (ok, "pip reinstall failed")
-    )
-    if healthy or (not specs and ok):
+    if has_reqs and not attempt.req_ok:
+        _abort_req_failure(attempt.req_detail, specs=specs)
+
+    if attempt.req_ok and (attempt.bump_ok if specs else True):
+        if specs:
+            healthy, reason = verify_env_healthy(exe, specs)
+        else:
+            healthy, reason = True, ""
+    else:
+        healthy = False
+        reason = attempt.bump_detail or attempt.req_detail or "pip reinstall failed"
+
+    if healthy or (not specs and attempt.req_ok):
         if log:
             log("[green]Verify env repaired.[/green]")
         return specs

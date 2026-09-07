@@ -68,9 +68,27 @@ def test_openai_review_flags_added_models():
         state=state,
     )
     joined = "\n".join(items)
+    assert "Auto-updating deprecated models:" in joined
     assert "gpt-4-0613 → gpt-4o" in joined
     assert "Models added (not in client baseline): gpt-4o" in joined
     assert "confirm these are the models you want" in joined
+
+
+def test_openai_review_includes_shutdown_from_rule_reason():
+    packet = _packet()
+    for rule in packet["rules"]:
+        if rule["match"] == "gpt-4-0613":
+            rule["reason"] = (
+                "Auto-updating deprecated model gpt-4-0613 → gpt-4o "
+                "(shutdown 2026-10-23)."
+            )
+    items = OpenAIModule().review_checklist(
+        packet=packet,
+        report=PatchReport(),
+        state=PackageClientState(package="openai", model_ids=["gpt-4-0613"]),
+    )
+    joined = "\n".join(items)
+    assert "shutdown 2026-10-23" in joined
 
 
 def test_openai_review_no_added_when_replacement_already_used():
@@ -86,6 +104,91 @@ def test_openai_review_no_added_when_replacement_already_used():
     joined = "\n".join(items)
     assert "gpt-4-0613 → gpt-4o" in joined
     assert "Models added" not in joined
+
+
+def test_reject_self_correct_blocks_main_guard_and_renames():
+    packet = {
+        "packet_id": "t",
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28",
+        "to_version": "3.3.1",
+        "rules": [],
+    }
+    previous = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def run():\n"
+        "    return client.chat.completions.create(model='m', messages=[])\n"
+        "bot_run = run\n"
+        "bot_run()\n"
+    )
+    with_main = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def run():\n"
+        "    return client.chat.completions.create(model='m', messages=[])\n"
+        "if __name__ == '__main__':\n"
+        "    bot_run = run\n"
+        "    bot_run()\n"
+    )
+    renamed = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def run_bot():\n"
+        "    return client.chat.completions.create(model='m', messages=[])\n"
+        "bot_run = run_bot\n"
+        "bot_run()\n"
+    )
+    ok = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def run():\n"
+        "    return client.chat.completions.create(model='gpt-4o', messages=[])\n"
+        "bot_run = run\n"
+        "bot_run()\n"
+    )
+    with_token_if = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def run():\n"
+        "    return client.chat.completions.create(model='m', messages=[])\n"
+        "token = 'x'\n"
+        "if token:\n"
+        "    run()\n"
+    )
+    assert reject_self_correct_write(
+        "app.py", with_main, packet=packet, previous=previous
+    )
+    assert "__main__" in (
+        reject_self_correct_write("app.py", with_main, packet=packet, previous=previous)
+        or ""
+    )
+    with_and_run = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def run():\n"
+        "    return client.chat.completions.create(model='m', messages=[])\n"
+        "token = 'x'\n"
+        "token and bot.run(token)\n"
+    )
+    previous_run = previous + "bot.run(getenv('DISCORD_BOT_TOKEN'))\n"
+    assert "module-level if" in (
+        reject_self_correct_write(
+            "app.py", with_token_if, packet=packet, previous=previous
+        )
+        or ""
+    )
+    assert reject_self_correct_write(
+        "app.py", with_and_run, packet=packet, previous=previous_run
+    )
+    assert reject_self_correct_write(
+        "app.py", renamed, packet=packet, previous=previous
+    )
+    assert (
+        reject_self_correct_write("app.py", ok, packet=packet, previous=previous)
+        is None
+    )
 
 
 def test_run_summary_core_and_package_sections():
