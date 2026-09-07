@@ -40,49 +40,45 @@ def bumped_package_specs(packet: dict[str, Any]) -> list[str]:
     return specs
 
 
+def consumer_req_files(root: Path) -> list[Path]:
+    """Prefer root ``requirements.txt``, then shallow pip manifests."""
+    root = root.resolve()
+    primary = root / "requirements.txt"
+    if primary.is_file():
+        return [primary]
+    try:
+        from conduit.detect.pip_manifests import iter_pip_manifests
+
+        found = [
+            p
+            for p in iter_pip_manifests(root, scope="main")
+            if p.name.lower() == "requirements.txt"
+        ]
+        if found:
+            return [found[0]]
+    except Exception:
+        pass
+    return []
+
+
 def _import_name(spec: str) -> str:
     name = spec.split("==", 1)[0].strip()
     return name.replace("-", "_")
 
 
-def _pip_install(
+def _run_pip(
     exe: str,
-    specs: list[str],
+    args: list[str],
     *,
-    force: bool = False,
-    upgrade_pip: bool = False,
     log=None,
+    label: str = "pip install",
+    timeout: float = 600,
 ) -> bool:
     from conduit.pulse import beat
 
-    if upgrade_pip:
-        beat("wait")
-        try:
-            proc = subprocess.run(
-                [exe, "-m", "pip", "install", "--upgrade", "pip"],
-                capture_output=True,
-                text=True,
-                timeout=180,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            if log:
-                log(f"[yellow]pip upgrade skipped:[/yellow] {exc}")
-        else:
-            if proc.returncode != 0 and log:
-                err = (proc.stderr or proc.stdout or "").strip().splitlines()
-                tail = err[-2:] if err else ["(no output)"]
-                log(f"[yellow]pip upgrade exit {proc.returncode}:[/yellow] {' '.join(tail)}")
-
-    extras = ["pytest"]
-    cmd = [exe, "-m", "pip", "install", "--upgrade"]
-    if force:
-        cmd.extend(["--force-reinstall", "--no-cache-dir"])
-    cmd.extend([*specs, *extras])
+    cmd = [exe, "-m", "pip", *args]
     if log:
-        joined = " ".join(specs)
-        kind = "force-reinstall" if force else "install"
-        log(f"Installing bumped packages ({kind}): {joined}")
+        log(f"{label}: {' '.join(args)}")
         log(f"[dim]Into interpreter: {exe}[/dim]")
     beat("wait")
     try:
@@ -90,20 +86,96 @@ def _pip_install(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         if log:
-            log(f"[yellow]pip install failed:[/yellow] {exc}")
+            log(f"[yellow]{label} failed:[/yellow] {exc}")
         return False
     if proc.returncode != 0:
         if log:
             err = (proc.stderr or proc.stdout or "").strip().splitlines()
             tail = err[-3:] if err else ["(no output)"]
-            log(f"[yellow]pip install exit {proc.returncode}:[/yellow] {' '.join(tail)}")
+            log(f"[yellow]{label} exit {proc.returncode}:[/yellow] {' '.join(tail)}")
         return False
     return True
+
+
+def _upgrade_pip(exe: str, *, log=None) -> None:
+    _run_pip(
+        exe,
+        ["install", "--upgrade", "pip"],
+        log=log,
+        label="pip upgrade",
+        timeout=180,
+    )
+
+
+def _pip_install_consumer_reqs(
+    exe: str,
+    root: Path,
+    *,
+    force: bool = False,
+    log=None,
+) -> bool:
+    """Install consumer requirements.txt (and optional pyproject) into verify env."""
+    reqs = consumer_req_files(root)
+    ok = True
+    for req in reqs:
+        try:
+            rel = req.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            rel = req.name
+        args = ["install", "--upgrade"]
+        if force:
+            args.extend(["--force-reinstall", "--no-cache-dir"])
+        args.extend(["-r", str(req)])
+        if not _run_pip(
+            exe,
+            args,
+            log=log,
+            label=f"Installing consumer requirements ({rel})",
+            timeout=900,
+        ):
+            ok = False
+    pyproject = root / "pyproject.toml"
+    if not reqs and pyproject.is_file():
+        args = ["install", "--upgrade"]
+        if force:
+            args.extend(["--force-reinstall", "--no-cache-dir"])
+        args.append(str(root))
+        if not _run_pip(
+            exe,
+            args,
+            log=log,
+            label="Installing consumer package (pyproject)",
+            timeout=900,
+        ):
+            ok = False
+    return ok
+
+
+def _pip_install_bumps(
+    exe: str,
+    specs: list[str],
+    *,
+    force: bool = False,
+    log=None,
+) -> bool:
+    extras = ["pytest"]
+    args = ["install", "--upgrade"]
+    if force:
+        args.extend(["--force-reinstall", "--no-cache-dir"])
+    args.extend([*specs, *extras])
+    kind = "force-reinstall" if force else "install"
+    return _run_pip(
+        exe,
+        args,
+        log=log,
+        label=f"Installing bumped packages ({kind}): {' '.join(specs)}",
+        timeout=300,
+    )
 
 
 def verify_env_healthy(exe: str, specs: list[str]) -> tuple[bool, str]:
@@ -143,6 +215,27 @@ def verify_env_healthy(exe: str, specs: list[str]) -> tuple[bool, str]:
     return True, ""
 
 
+def _sync_once(
+    exe: str,
+    specs: list[str],
+    *,
+    root: Path | None,
+    force: bool = False,
+    upgrade_pip: bool = False,
+    log=None,
+) -> bool:
+    if upgrade_pip:
+        _upgrade_pip(exe, log=log)
+    req_ok = True
+    if root is not None:
+        req_ok = _pip_install_consumer_reqs(exe, root, force=force, log=log)
+    bump_ok = True
+    if specs:
+        bump_ok = _pip_install_bumps(exe, specs, force=force, log=log)
+    # Requirements failure is non-fatal if bumps + pytest still healthy.
+    return bump_ok if specs else req_ok
+
+
 def sync_bumped_packages(
     packet: dict[str, Any],
     *,
@@ -151,13 +244,18 @@ def sync_bumped_packages(
     log=None,
 ) -> list[str]:
     """
-    Install DEPENDENCY_BUMP pins + pytest into the consumer verify interpreter.
+    Install consumer requirements + DEPENDENCY_BUMP pins + pytest into the
+    consumer verify interpreter.
 
-    Fail-safe: on pip/corruption, recreate ``.conduit/verify-venv``, force
-    reinstall, and smoke-check. Never aborts the migration for env repair.
+    Order: requirements.txt (or pyproject) first, then bump pins so the
+    migrated version wins. Fail-safe: recreate verify-venv and force-reinstall
+    on corruption; never aborts the migration for env repair.
     """
     specs = bumped_package_specs(packet)
-    if not specs:
+    has_reqs = bool(root and consumer_req_files(root)) or bool(
+        root and (root / "pyproject.toml").is_file()
+    )
+    if not specs and not has_reqs:
         return []
     if python is None and root is not None:
         from conduit.test_runner import ensure_consumer_python
@@ -175,8 +273,12 @@ def sync_bumped_packages(
                 )
             return specs
 
-    ok = _pip_install(exe, specs, force=False, log=log)
-    healthy, reason = verify_env_healthy(exe, specs) if ok else (False, "pip install failed")
+    ok = _sync_once(exe, specs, root=root, force=False, log=log)
+    healthy, reason = (
+        verify_env_healthy(exe, specs) if (ok and specs) else (ok, "pip install failed")
+    )
+    if not specs and ok:
+        return specs
     if healthy:
         return specs
 
@@ -188,9 +290,13 @@ def sync_bumped_packages(
 
         exe = recreate_verify_venv(root, log=log) or exe
 
-    ok = _pip_install(exe, specs, force=True, upgrade_pip=True, log=log)
-    healthy, reason = verify_env_healthy(exe, specs) if ok else (False, "pip reinstall failed")
-    if healthy:
+    ok = _sync_once(
+        exe, specs, root=root, force=True, upgrade_pip=True, log=log
+    )
+    healthy, reason = (
+        verify_env_healthy(exe, specs) if (ok and specs) else (ok, "pip reinstall failed")
+    )
+    if healthy or (not specs and ok):
         if log:
             log("[green]Verify env repaired.[/green]")
         return specs
