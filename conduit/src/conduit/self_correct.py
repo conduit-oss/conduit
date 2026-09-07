@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from conduit.anticheat.audit_log import MigrationAuditLog
+from conduit.anticheat.baseline import load_anticheat_baseline
 from conduit.anticheat.rules import reject_write
 from conduit.anticheat.scan import anticheat_failure_result, run_anticheat
 from conduit.llm import attach_llm_log, get_llm_client
@@ -24,6 +25,12 @@ from conduit.test_runner import (
 )
 
 LogFn = Callable[[str], None]
+
+
+def _anticheat_previous(root: Path) -> dict[str, str] | None:
+    """Pre-apply baseline for soft-fail skip; None when absent (fail-closed)."""
+    baseline = load_anticheat_baseline(root)
+    return baseline or None
 
 _PATH_RE = re.compile(r"/v1/[a-z0-9/_-]+", re.I)
 _QUOTED_ID_RE = re.compile(r"""[`'"]([A-Za-z0-9._/-]{3,})[`'"]""")
@@ -1633,6 +1640,7 @@ def _run_verified_tests(
         log=emit,
         verbose=verbose,
         audit_log=audit_log,
+        previous=_anticheat_previous(root),
     )
     if report.block_findings:
         try:
@@ -1689,6 +1697,7 @@ def _run_anticheat_then_tests(
         log=emit,
         verbose=verbose,
         audit_log=audit_log,
+        previous=_anticheat_previous(root),
     )
     if mech.block_findings:
         return anticheat_failure_result(

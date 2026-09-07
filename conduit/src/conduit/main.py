@@ -579,6 +579,10 @@ def apply_cmd(
         raise typer.Exit(2)
 
     data = merge_runtime_packet(data, impact.packet_patches)
+    if not dry_run:
+        from conduit.anticheat.baseline import save_anticheat_baseline
+
+        save_anticheat_baseline(root, files, log=console.print)
     report = apply_packet(
         root,
         data,
@@ -1006,6 +1010,9 @@ def _run_pipeline(
         raise typer.Exit(2)
 
     pkt = merge_runtime_packet(pkt, impact.packet_patches)
+    from conduit.anticheat.baseline import save_anticheat_baseline
+
+    save_anticheat_baseline(root, files, log=console.print)
     report = apply_packet(
         root,
         pkt,

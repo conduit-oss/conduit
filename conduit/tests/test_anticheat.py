@@ -471,6 +471,112 @@ def test_synthetic_except_skips_files_without_package():
     assert synthetic_except_findings(content, "ports.py", "openai") == []
 
 
+def test_synthetic_except_skips_preexisting_whisper_soft_fail():
+    from conduit.anticheat.rules import synthetic_except_findings
+    from conduit.integrity import dummy_except_findings
+
+    previous = (
+        "import openai\n"
+        "def _transcribe_with_whisper(f):\n"
+        "    try:\n"
+        "        resp = openai.Audio.transcribe(model='whisper-1', file=f)\n"
+        "        return (resp.get('text') or '').strip() or None\n"
+        "    except Exception as e:\n"
+        "        print(f'Whisper failed: {e}')\n"
+        "        return None\n"
+    )
+    content = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def _transcribe_with_whisper(f):\n"
+        "    try:\n"
+        "        resp = client.audio.transcriptions.create(model='whisper-1', file=f)\n"
+        "        return (resp.text or '').strip() or None\n"
+        "    except Exception as e:\n"
+        "        print(f'Whisper failed: {e}')\n"
+        "        return None\n"
+    )
+    assert (
+        synthetic_except_findings(
+            content, "podcast_ingest.py", "openai", previous=previous
+        )
+        == []
+    )
+    assert (
+        dummy_except_findings(
+            content, "podcast_ingest.py", "openai", previous=previous
+        )
+        == []
+    )
+
+
+def test_synthetic_except_soft_fail_fail_closed_without_previous():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    content = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def whisper(f):\n"
+        "    try:\n"
+        "        resp = client.audio.transcriptions.create(model='whisper-1', file=f)\n"
+        "        return resp.text\n"
+        "    except Exception as e:\n"
+        "        print(e)\n"
+        "        return None\n"
+    )
+    hits = synthetic_except_findings(content, "podcast_ingest.py", "openai")
+    assert hits and "synthetic" in hits[0].lower()
+
+
+def test_synthetic_except_flags_new_soft_fail_not_in_previous():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    previous = "from openai import OpenAI\nclient = OpenAI()\n"
+    content = (
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def whisper(f):\n"
+        "    try:\n"
+        "        resp = client.audio.transcriptions.create(model='whisper-1', file=f)\n"
+        "        return resp.text\n"
+        "    except Exception:\n"
+        "        return None\n"
+    )
+    hits = synthetic_except_findings(
+        content, "podcast_ingest.py", "openai", previous=previous
+    )
+    assert hits and "synthetic" in hits[0].lower()
+
+
+def test_synthetic_except_flags_success_stub_even_if_in_previous():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    body = (
+        "import openai\n"
+        "def call():\n"
+        "    try:\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
+        "    except Exception:\n"
+        "        return {'choices': []}\n"
+    )
+    hits = synthetic_except_findings(
+        body, "client.py", "openai", previous=body
+    )
+    assert hits and "synthetic" in hits[0].lower()
+
+
+def test_anticheat_baseline_roundtrip(tmp_path: Path):
+    from conduit.anticheat.baseline import (
+        load_anticheat_baseline,
+        save_anticheat_baseline,
+    )
+
+    (tmp_path / "app.py").write_text("import openai\nx = 1\n", encoding="utf-8")
+    save_anticheat_baseline(tmp_path, ["app.py"])
+    loaded = load_anticheat_baseline(tmp_path)
+    assert loaded["app.py"] == "import openai\nx = 1\n"
+
+
 def test_mechanical_scan_respects_edited_files_only(tmp_path: Path):
     (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
     (tmp_path / "untouched.py").write_text(

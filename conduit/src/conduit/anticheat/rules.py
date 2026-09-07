@@ -427,14 +427,13 @@ def _handler_type_names(node: ast.ExceptHandler) -> set[str]:
 
 
 _SDK_STUB_KEYS = frozenset({"choices", "usage", "results"})
+_SOFT_FAIL_CONST = frozenset({None, "", 0, False})
 
 
-def _is_literal_response(node: ast.AST | None) -> bool:
-    """True for in-process SDK *success* stubs, not app error envelopes."""
+def _is_success_stub(node: ast.AST | None) -> bool:
+    """True for in-process SDK *success* stubs (fake payloads), not soft-fails."""
     if node is None:
-        return True
-    if isinstance(node, ast.Constant):
-        return node.value is None
+        return False
     if isinstance(node, ast.Dict):
         keys = {
             str(k.value)
@@ -457,6 +456,75 @@ def _is_literal_response(node: ast.AST | None) -> bool:
         if isinstance(node.func, ast.Name) and node.func.id in {"dict", "list"}:
             return True
     return False
+
+
+def _is_soft_fail_literal(node: ast.AST | None) -> bool:
+    """True for trivial failure sinks (None / empty / False), not success stubs."""
+    if node is None:
+        return True
+    if isinstance(node, ast.Constant):
+        return node.value in _SOFT_FAIL_CONST
+    return False
+
+
+def _is_literal_response(node: ast.AST | None) -> bool:
+    """True for synthetic success stubs or soft-fail literals."""
+    return _is_success_stub(node) or _is_soft_fail_literal(node)
+
+
+def _clear_lineno(node: ast.AST) -> None:
+    for child in ast.walk(node):
+        for attr in ("lineno", "end_lineno", "col_offset", "end_col_offset"):
+            if hasattr(child, attr):
+                setattr(child, attr, None)
+
+
+def _except_handler_fingerprint(handler: ast.ExceptHandler) -> str:
+    """Stable fingerprint of except types + body (lineno-agnostic)."""
+    clone = ast.ExceptHandler(
+        type=handler.type,
+        name=handler.name,
+        body=handler.body,
+    )
+    _clear_lineno(clone)
+    return ast.dump(clone, include_attributes=False)
+
+
+def _collect_soft_fail_fingerprints(text: str) -> set[str]:
+    """Fingerprints of blanket/HTTP except handlers that soft-fail (not success stubs)."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    care = _HTTP_SWALLOW_TYPES | {"Exception", "BaseException"}
+    out: set[str] = set()
+
+    class _V(ast.NodeVisitor):
+        def visit_Try(self, node: ast.Try) -> None:
+            for handler in node.handlers:
+                types = _handler_type_names(handler)
+                if not (types & care):
+                    continue
+                raises = any(isinstance(s, ast.Raise) for s in ast.walk(handler))
+                if raises:
+                    continue
+                soft = False
+                for stmt in handler.body:
+                    if isinstance(stmt, ast.Pass):
+                        soft = True
+                    elif isinstance(stmt, ast.Return) and _is_success_stub(stmt.value):
+                        soft = False
+                        break
+                    elif isinstance(stmt, ast.Return) and _is_soft_fail_literal(
+                        stmt.value
+                    ):
+                        soft = True
+                if soft:
+                    out.add(_except_handler_fingerprint(handler))
+            self.generic_visit(node)
+
+    _V().visit(tree)
+    return out
 
 
 def _sdk_name_roots(tree: ast.AST, package: str) -> set[str]:
@@ -546,12 +614,20 @@ def _handler_calls_package(
 
 
 def synthetic_except_findings(
-    text: str, rel: str, package: str
+    text: str,
+    rel: str,
+    package: str,
+    *,
+    previous: str | None = None,
 ) -> list[str]:
     """Flag except handlers that swallow a real SDK call with a synthetic stub.
 
     Only when the try body invokes the migrated package (incl. OpenAI/client
     aliases). Unrelated fallbacks in the same file are ignored.
+
+    Soft-fail returns (``None``, etc.) are skipped when an equivalent except
+    handler fingerprint already existed in ``previous``. Success-shaped stubs
+    are always flagged.
     """
     pkg = (package or "").strip()
     if not pkg:
@@ -565,6 +641,9 @@ def synthetic_except_findings(
     roots = _sdk_name_roots(tree, pkg)
     findings: list[str] = []
     care = _HTTP_SWALLOW_TYPES | {"Exception", "BaseException"}
+    prior_soft = (
+        _collect_soft_fail_fingerprints(previous) if previous is not None else None
+    )
 
     class _V(ast.NodeVisitor):
         def visit_Try(self, node: ast.Try) -> None:
@@ -580,9 +659,18 @@ def synthetic_except_findings(
                 if _handler_calls_package(handler, package, roots):
                     continue
                 for stmt in handler.body:
-                    if isinstance(stmt, ast.Return) and _is_literal_response(
-                        stmt.value
-                    ):
+                    if not isinstance(stmt, ast.Return):
+                        continue
+                    if _is_success_stub(stmt.value):
+                        findings.append(
+                            f"{rel}:{handler.lineno} except path returns a "
+                            "synthetic response without calling the official SDK"
+                        )
+                        break
+                    if _is_soft_fail_literal(stmt.value):
+                        fp = _except_handler_fingerprint(handler)
+                        if prior_soft is not None and fp in prior_soft:
+                            break
                         findings.append(
                             f"{rel}:{handler.lineno} except path returns a "
                             "synthetic response without calling the official SDK"
@@ -914,7 +1002,7 @@ def file_findings(
         findings.append(dropped)
 
     findings.extend(fake_client_findings(text, posix, packet))
-    findings.extend(synthetic_except_findings(text, posix, pkg))
+    findings.extend(synthetic_except_findings(text, posix, pkg, previous=previous))
     findings.extend(oracle_io_shim_findings(text, posix))
     findings.extend(sdk_monkeypatch_findings(text, posix, pkg, packet))
     findings.extend(old_kwargs_on_new_callee_findings(text, posix, packet))
@@ -960,7 +1048,7 @@ def file_findings(
                 f"{posix} obfuscates leftover tokens via concat/join/byte-decode: "
                 + ", ".join(hidden)
             )
-        findings.extend(dummy_except_findings(text, posix, pkg))
+        findings.extend(dummy_except_findings(text, posix, pkg, previous=previous))
         markers = unused_marker_literals(text, interesting)
         if markers:
             findings.append(
