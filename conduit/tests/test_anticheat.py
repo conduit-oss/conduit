@@ -247,7 +247,7 @@ def test_mechanical_finding_not_cleared_by_empty_auditor(tmp_path: Path, monkeyp
         "import openai\n"
         "def call():\n"
         "    try:\n"
-        "        raise ConnectionError('down')\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
         "    except ConnectionError:\n"
         "        return {'id': 'stub', 'choices': []}\n",
         encoding="utf-8",
@@ -410,7 +410,7 @@ def test_synthetic_except_without_fake_name():
         "import openai\n"
         "def call():\n"
         "    try:\n"
-        "        raise ConnectionError('x')\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
         "    except ConnectionError:\n"
         "        return {'id': 'x', 'data': []}\n"
     )
@@ -419,6 +419,28 @@ def test_synthetic_except_without_fake_name():
     )
     assert reason is not None
     assert "synthetic" in reason.lower()
+
+
+def test_synthetic_except_skips_non_sdk_fallback_in_same_file():
+    from conduit.anticheat.rules import synthetic_except_findings
+
+    content = (
+        "import openai\n"
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "def listennotes(url):\n"
+        "    try:\n"
+        "        return fetch(url)\n"
+        "    except Exception:\n"
+        "        return None\n"
+        "def whisper(f):\n"
+        "    try:\n"
+        "        resp = client.audio.transcriptions.create(model='whisper-1', file=f)\n"
+        "        return resp.text\n"
+        "    except Exception as e:\n"
+        "        return {'status': False, 'error': str(e)}\n"
+    )
+    assert synthetic_except_findings(content, "podcast_ingest.py", "openai") == []
 
 
 def test_synthetic_except_skips_error_envelope_after_sdk_call():
@@ -452,9 +474,10 @@ def test_synthetic_except_skips_files_without_package():
 def test_mechanical_scan_respects_edited_files_only(tmp_path: Path):
     (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
     (tmp_path / "untouched.py").write_text(
+        "import openai\n"
         "def bad():\n"
         "    try:\n"
-        "        return 1\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
         "    except Exception:\n"
         "        return {}\n",
         encoding="utf-8",

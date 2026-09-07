@@ -35,6 +35,7 @@ class RunSummary:
     impact_lines: list[str] = field(default_factory=list)
     anticheat_lines: list[str] = field(default_factory=list)
     gap_lines: list[str] = field(default_factory=list)
+    leftover_lines: list[str] = field(default_factory=list)
     changed_extra: list[str] = field(default_factory=list)
     next_lines: list[str] = field(default_factory=list)
     # Back-compat for older callers / PR body
@@ -278,11 +279,10 @@ def _next_lines(
     if generated:
         items.append("Review generated tests: " + ", ".join(generated))
     notes = list(getattr(test_result, "extra_notes", None) or [])
-    if any("verify_mode=oracle" in n for n in notes) and test_result.passed:
-        items.append(
-            "Verify ran oracle/smoke only (no consumer venv under the repo); "
-            "full pytest was not run"
-        )
+    if any("verify_kind=incomplete_migration" in n for n in notes) or (
+        test_result.fail_reason or ""
+    ).startswith("incomplete_migration"):
+        items.append("High-severity call sites were not rewritten; do not merge")
     if any("verify_kind=missing_dep" in n for n in notes) or (
         test_result.fail_reason or ""
     ).startswith("missing_dep"):
@@ -340,6 +340,7 @@ def build_run_summary(
     advisory: list[Any] | None = None,
     docs_synced: list[str] | None = None,
     attempts: int | None = None,
+    leftover_lines: list[str] | None = None,
 ) -> RunSummary:
     package = str(packet.get("package") or "package")
     changes = [_change_line(c) for c in report.changes]
@@ -426,6 +427,7 @@ def build_run_summary(
         pr_message=pr_message,
         impact_lines=impact_section,
         anticheat_lines=anticheat_section,
+        leftover_lines=list(leftover_lines or []),
         gap_lines=gaps,
         changed_extra=changed_extra,
         next_lines=next_section,
@@ -465,6 +467,11 @@ def format_run_summary(summary: RunSummary) -> str:
     lines.extend(["", "Anti-cheat"])
     for item in summary.anticheat_lines:
         lines.append(f"- {item}")
+
+    if summary.leftover_lines:
+        lines.extend(["", "Found, not rewritten"])
+        for item in summary.leftover_lines:
+            lines.append(f"- {item}")
 
     lines.extend(["", "Gaps (coverage)"])
     for item in summary.gap_lines:

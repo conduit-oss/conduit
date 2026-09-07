@@ -133,6 +133,10 @@ def filter_rules_to_source(
         if not tokens:
             out.append(rule)
             continue
+        reason = str(rule.get("reason") or "")
+        if reason.startswith("Export-delta path bridge"):
+            out.append(rule)
+            continue
         if any(_token_in_index(t, index) for t in tokens):
             out.append(rule)
     return RuleScopeResult(

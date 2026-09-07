@@ -114,3 +114,69 @@ def test_analyze_impacts_use_llm_false(tmp_path: Path):
     assert rel in impact.defer_paths
     assert impact.post_rules
     assert not impact.blocked
+
+
+def test_llm_defer_paths_ignored(tmp_path: Path, monkeypatch):
+    rel = "podcast_ingest.py"
+    path = tmp_path / rel
+    path.write_text(
+        "import openai\n"
+        "openai.api_key = 'x'\n"
+        "openai.Audio.transcribe(model='whisper-1', file=open('a'))\n",
+        encoding="utf-8",
+    )
+    packet = _openai_packet()
+
+    def _fake_llm(**_kwargs):
+        return (
+            [
+                {
+                    "path": rel,
+                    "kind": "legacy_openai_module_config",
+                    "action": "required",
+                    "severity": "warning",
+                    "required": True,
+                    "detail": "api_key",
+                    "source": "llm",
+                }
+            ],
+            [],
+            [rel],
+        )
+
+    monkeypatch.setattr(
+        "conduit.patcher.impact.engine.llm_impact_review", _fake_llm
+    )
+    impact = analyze_impacts(
+        tmp_path,
+        packet,
+        file_allowlist=[path],
+        log=lambda _m: None,
+        use_llm=True,
+    )
+    assert rel not in impact.defer_paths
+    assert any(f.get("path") == rel for f in impact.findings)
+
+
+def test_llm_impact_review_returns_empty_defer(monkeypatch):
+    from conduit.patcher.impact import llm as llm_mod
+
+    class _Client:
+        def complete_json(self, **_k):
+            return {
+                "impacts": [],
+                "post_rules": [],
+                "defer_paths": ["podcast_ingest.py"],
+            }
+
+    monkeypatch.setattr(llm_mod, "get_llm_client", lambda: _Client())
+    findings, rules, defer = llm_mod.llm_impact_review(
+        packet=_openai_packet(),
+        mechanical_findings=[],
+        planned_paths=["podcast_ingest.py"],
+        file_windows=[{"path": "podcast_ingest.py", "text": "import openai\n"}],
+        log=lambda _m: None,
+    )
+    assert defer == []
+    assert findings == []
+    assert rules == []

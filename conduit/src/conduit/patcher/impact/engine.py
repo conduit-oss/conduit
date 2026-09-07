@@ -107,7 +107,7 @@ def analyze_impacts(
     )
     if use_llm:
         emit("[impact] LLM additive review…")
-        llm_findings, llm_rules, llm_defer = llm_impact_review(
+        llm_findings, llm_rules, _llm_defer = llm_impact_review(
             packet=packet,
             mechanical_findings=mech_findings,
             planned_paths=sorted(planned),
@@ -121,9 +121,8 @@ def analyze_impacts(
             if not errs:
                 validated.append(rule)
         report.post_rules = merge_post_rules(report.post_rules, validated)
-        for p in llm_defer:
-            report.defer_paths.add(p.replace("\\", "/"))
-
+        # LLM defer_paths are ignored: always attempt packet apply first.
+        # Mechanical defer_during_apply (with a concrete post_rule) still applies.
     for finding in report.findings:
         if finding.get("action") == "block" and finding.get("required"):
             report.blocked = True

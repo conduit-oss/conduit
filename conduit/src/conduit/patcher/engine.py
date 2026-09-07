@@ -210,7 +210,7 @@ def _apply_rules_to_files(
             if not _glob_ok(path, target_files, root):
                 continue
             try:
-                original = path.read_text(encoding="utf-8")
+                original = path.read_text(encoding="utf-8-sig")
             except (UnicodeDecodeError, OSError):
                 continue
             if require_context and not file_has_vendor_context(path, original, vendor):

@@ -17,7 +17,11 @@ def llm_impact_review(
     file_windows: list[dict[str, Any]],
     log: Any = print,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    """Return (extra_findings, post_rules, defer_paths). Additive only."""
+    """Return (extra_findings, post_rules, defer_paths).
+
+    ``defer_paths`` is always empty: LLM must not skip generic apply. Mechanical
+    impact may still defer paths that have a concrete post_rule replacement.
+    """
     client = get_llm_client()
     if client is None:
         return [], [], []
@@ -30,11 +34,13 @@ def llm_impact_review(
     prompt = (
         "Review migration impact before apply. Mechanical findings are authoritative; "
         "do NOT contradict or remove them. Only ADD new required impacts or post_rules.\n"
+        "Do NOT emit defer_paths — generic packet apply must run first; incomplete "
+        "sites are handled after apply via leftovers/repair.\n"
         f"Mechanical findings: {json.dumps(mechanical_findings[:20])}\n"
         f"Planned touch paths: {planned_paths[:40]}\n"
         f"File windows:\n{windows_blob[:10000]}\n"
         "Respond ONLY with JSON: "
-        '{"impacts":[],"post_rules":[],"defer_paths":[]}\n'
+        '{"impacts":[],"post_rules":[]}\n'
         "post_rules must include target_files and type (FUNCTION_BODY_REPLACE, "
         "WRAPPER_ENSURE_LIST, etc.)."
     )
@@ -63,5 +69,4 @@ def llm_impact_review(
         log(f"[impact] LLM post_rules rejected: {errors[:5]}")
         rules = []
 
-    defer = [str(p).replace("\\", "/") for p in (data.get("defer_paths") or []) if p]
-    return extra, rules, defer
+    return extra, rules, []

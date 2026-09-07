@@ -25,6 +25,17 @@ def test_resolve_consumer_python_prefers_venv(tmp_path: Path):
     assert resolved == str(venv_py)
 
 
+def test_resolve_consumer_python_prefers_verify_venv_over_venv(tmp_path: Path):
+    venv_py = tmp_path / ".venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("", encoding="utf-8")
+    verify_py = tmp_path / ".conduit" / "verify-venv" / "Scripts" / "python.exe"
+    verify_py.parent.mkdir(parents=True)
+    verify_py.write_text("", encoding="utf-8")
+    resolved = resolve_consumer_python(tmp_path)
+    assert resolved == str(verify_py)
+
+
 def test_vendor_pack_loads_openai_rules():
     packet = {"ecosystem": "pypi", "package": "openai"}
     rules = load_vendor_post_rules(packet)

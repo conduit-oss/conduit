@@ -199,6 +199,7 @@ def _make_run_summary(
     impact=None,
     docs_synced: list[str] | None = None,
     attempts: int | None = None,
+    leftover_lines: list[str] | None = None,
 ):
     package = str(packet.get("package") or "")
     state = None
@@ -222,6 +223,7 @@ def _make_run_summary(
         impact=impact,
         docs_synced=docs_synced,
         attempts=attempts,
+        leftover_lines=leftover_lines,
     )
 
 
@@ -241,6 +243,7 @@ def _print_run_summary(
     impact=None,
     docs_synced: list[str] | None = None,
     attempts: int | None = None,
+    leftover_lines: list[str] | None = None,
 ) -> str:
     """Print the decision-ready run summary. Returns markdown for the PR body."""
     summary = _make_run_summary(
@@ -258,6 +261,7 @@ def _print_run_summary(
         impact=impact,
         docs_synced=docs_synced,
         attempts=attempts,
+        leftover_lines=leftover_lines,
     )
     console.print(format_run_summary(summary))
     return format_run_summary_markdown(summary)
@@ -546,6 +550,9 @@ def apply_cmd(
 ) -> None:
     """Apply a Migration Packet without opening a PR."""
     root = _resolve_root(path)
+    from conduit.gitignore import ensure_conduit_gitignore
+
+    gitignore_rel = ensure_conduit_gitignore(root, log=console.print)
     packet_file, _ = _resolve_packet_arg(
         str(packet), root=root, allow_package_name=False
     )
@@ -579,13 +586,15 @@ def apply_cmd(
         file_allowlist=files or None,
         path_defer=impact.defer_paths,
     )
+    if gitignore_rel and gitignore_rel not in report.files_modified:
+        report.files_modified.append(gitignore_rel)
     for change in report.changes:
         prefix = "DRY-RUN " if dry_run else ""
         console.print(f"{prefix}[{change.rule_type}] {change.path}: {change.detail}")
     if not dry_run:
         from conduit.patcher.sync_env import sync_bumped_packages
 
-        sync_bumped_packages(data, log=console.print)
+        sync_bumped_packages(data, root=root, log=console.print)
 
         from conduit.patcher.post_rules.engine import apply_post_rules
 
@@ -622,6 +631,9 @@ def verify_cmd(
     if verbose:
         _VERBOSE = True
     root = _resolve_root(path)
+    from conduit.gitignore import ensure_conduit_gitignore
+
+    ensure_conduit_gitignore(root, log=console.print)
     if packet:
         packet_file, _ = _resolve_packet_arg(
             packet, root=root, allow_package_name=False
@@ -679,6 +691,11 @@ def run_cmd(
         "--refresh-packet",
         help="Ignore cached .conduit/packets entry and re-synthesize from detect signals",
     ),
+    allow_partial: bool = typer.Option(
+        False,
+        "--allow-partial",
+        help="Allow PASSED when high-severity call sites were found but not rewritten",
+    ),
 ) -> None:
     """Full pipeline: detect → prune → packet → apply → verify → PR."""
     global _VERBOSE
@@ -722,6 +739,7 @@ def run_cmd(
             max_retries=max_retries,
             demo=demo,
             refresh_packet=refresh_packet,
+            allow_partial=allow_partial,
         )
     finally:
         stop_pulse()
@@ -744,7 +762,11 @@ def _run_pipeline(
     max_retries: int,
     demo: bool,
     refresh_packet: bool,
+    allow_partial: bool = False,
 ) -> None:
+    from conduit.gitignore import ensure_conduit_gitignore
+
+    gitignore_rel = ensure_conduit_gitignore(root, log=console.print)
     pkg_hint = package or packet_package
     if package and packet_package and package.lower() != packet_package.lower():
         console.print(
@@ -856,23 +878,9 @@ def _run_pipeline(
     if state is not None:
         state.installed_version = pin or None
 
-    # Always print source packet + migration packet + coverage diff
-    coverage = _print_packet_coverage(
-        root=root,
-        package=pkg,
-        detected=detected,
-        packet=pkt,
-        persist_source=True,
-    )
+    from conduit.packet.bind import bind_packet_to_client
 
-    src_dict = coverage.source_packet if coverage is not None else None
-    pkt, src_dict = _prepare_client_packet(
-        root,
-        pkt,
-        source=src_dict,
-        installed_version=pin,
-        coverage_no_rule=coverage.no_rule if coverage is not None else None,
-    )
+    pkt = bind_packet_to_client(pkt, installed_version=pin)
 
     beat("prune")
     pkgs = dependency_packages(pkt)
@@ -881,6 +889,16 @@ def _run_pipeline(
         f"Pruned to {len(files)} file(s) importing {', '.join(pkgs)}"
     )
 
+    from conduit.export_delta.path_bridge import rules_from_path_bridge
+    from conduit.export_delta.usage import (
+        collect_package_calls,
+        leftover_calls,
+        legacy_resource_calls,
+        merge_calls_into_api_patterns,
+    )
+    from conduit.packet.synthesize import merge_packet_rules
+
+    delta = None
     if not skip_export_delta:
         from_v = str(pkt.get("from_version") or "")
         to_v = str(pkt.get("to_version") or "")
@@ -909,6 +927,51 @@ def _run_pipeline(
                 f"symbols from={len(delta.from_symbols)} to={len(delta.to_symbols)} "
                 f"changed={len(delta.changed_symbols)}"
             )
+            if delta.resource_paths:
+                _vprint(f"resource paths={len(delta.resource_paths)}")
+
+    calls = collect_package_calls(root, files, pkg)
+    if delta is not None and not delta.skipped_reason:
+        gone = delta.gone_symbols
+        removed_hits = leftover_calls(calls, gone)
+        path_hits = legacy_resource_calls(calls, delta.resource_paths)
+        if state is not None:
+            state.api_patterns = merge_calls_into_api_patterns(
+                list(state.api_patterns), [*removed_hits, *path_hits]
+            )
+        bridge_rules = rules_from_path_bridge(
+            resource_paths=delta.resource_paths,
+            calls=calls,
+        )
+        if bridge_rules:
+            pkt["rules"] = merge_packet_rules(list(pkt.get("rules") or []), bridge_rules)
+            console.print(
+                f"Path-bridge: {len(bridge_rules)} AST_CALL_REWRITE rule(s) "
+                f"from export delta ∩ {len(path_hits)} resource-path call(s)"
+            )
+
+    from conduit.detect.coverage import build_coverage_report
+
+    pre_coverage = build_coverage_report(
+        package=pkg,
+        state=state,
+        signals=detected.signals,
+        packet=pkt,
+    )
+    pkt, src_dict = _prepare_client_packet(
+        root,
+        pkt,
+        source=pre_coverage.source_packet,
+        installed_version=pin,
+        coverage_no_rule=pre_coverage.no_rule,
+    )
+    coverage = _print_packet_coverage(
+        root=root,
+        package=pkg,
+        detected=detected,
+        packet=pkt,
+        persist_source=True,
+    )
 
     beat("apply")
     from conduit.prune.grep_imports import (
@@ -950,6 +1013,8 @@ def _run_pipeline(
         file_allowlist=files or None,
         path_defer=impact.defer_paths,
     )
+    if gitignore_rel and gitignore_rel not in report.files_modified:
+        report.files_modified.append(gitignore_rel)
     for change in report.changes:
         console.print(f"[{change.rule_type}] {change.path}: {change.detail}")
 
@@ -969,6 +1034,65 @@ def _run_pipeline(
         console.print(f"[post-rule] {change.path}: {change.detail}")
         if change.path not in report.files_modified:
             report.files_modified.append(change.path)
+
+    from conduit.patcher.openai_client_chain import apply_openai_client_chain
+
+    chain_report = apply_openai_client_chain(
+        root, files, to_version=str(pkt.get("to_version") or "")
+    )
+    for change in chain_report.changes:
+        console.print(f"[CLIENT_CHAIN] {change.path}: {change.detail}")
+        if change.path not in report.files_modified:
+            report.files_modified.append(change.path)
+    report.merge(chain_report)
+
+    leftover_lines: list[str] = []
+    from conduit.patcher.leftovers import (
+        format_leftover_lines,
+        leftover_handoff_paths,
+        leftovers_failure,
+        scan_leftovers,
+    )
+
+    post_calls = collect_package_calls(root, files, pkg)
+    leftover_items = scan_leftovers(
+        root=root,
+        calls=post_calls,
+        delta=delta,
+        packet=pkt,
+        files=files,
+    )
+    leftover_lines = [item.display() for item in leftover_items]
+    if leftover_items:
+        handoff = leftover_handoff_paths(leftover_items)
+        if handoff:
+            console.print(
+                "[yellow]Apply incomplete; handing off to repair: "
+                + ", ".join(handoff)
+                + "[/yellow]"
+            )
+        for line in format_leftover_lines(leftover_items):
+            console.print(f"[red]{line}[/red]" if not allow_partial else f"[yellow]{line}[/yellow]")
+        if not allow_partial:
+            from conduit.test_runner import TestResult as _TR
+
+            test_result = leftovers_failure(leftover_items)
+            console.print(test_result.summary)
+            _print_run_summary(
+                packet=pkt,
+                report=report,
+                test_result=test_result,
+                coverage=coverage,
+                detected=detected,
+                generated=[],
+                corrected=[],
+                skip_tests=skip_tests,
+                audit_log=audit_log,
+                impact=impact,
+                leftover_lines=leftover_lines,
+            )
+            raise typer.Exit(2)
+        console.print("[yellow]Continuing with --allow-partial despite leftovers.[/yellow]")
 
     audit_log.record_apply(report)
     try:
@@ -1044,6 +1168,7 @@ def _run_pipeline(
             skip_tests=skip_tests,
             audit_log=audit_log,
             impact=impact,
+            leftover_lines=leftover_lines,
         )
         raise typer.Exit(2)
 
@@ -1078,6 +1203,7 @@ def _run_pipeline(
             audit_log=audit_log,
             impact=impact,
             docs_synced=docs_synced,
+            leftover_lines=leftover_lines,
         )
         raise typer.Exit(0)
 
@@ -1099,6 +1225,7 @@ def _run_pipeline(
             audit_log=audit_log,
             impact=impact,
             docs_synced=docs_synced,
+            leftover_lines=leftover_lines,
         )
     )
     beat("pr")
@@ -1127,6 +1254,7 @@ def _run_pipeline(
         audit_log=audit_log,
         impact=impact,
         docs_synced=docs_synced,
+        leftover_lines=leftover_lines,
     )
     raise typer.Exit(0 if pr.created or skip_pr else 3)
 

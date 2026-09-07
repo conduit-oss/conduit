@@ -119,6 +119,24 @@ def infer_from_test_result(
                     }
                 )
 
+        if "transcriptions.create" in text or "Audio.transcribe" in text:
+            for match, replace in (
+                ('.get("text")', ".text"),
+                (".get('text')", ".text"),
+                ('["text"]', ".text"),
+                ("['text']", ".text"),
+            ):
+                if match in text:
+                    _add(
+                        {
+                            "type": "STRING_REWRITE",
+                            "target_files": _glob_target(rel),
+                            "match": match,
+                            "replace": replace,
+                            "reason": "Whisper 1.x returns an object with .text.",
+                        }
+                    )
+
         if "chat.completions.create" in text:
             for match, replace in (
                 ("['choices'][0]['message']['content']", ".choices[0].message.content"),

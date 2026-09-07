@@ -459,32 +459,86 @@ def _is_literal_response(node: ast.AST | None) -> bool:
     return False
 
 
-def _try_body_calls_package(try_node: ast.Try, package: str) -> bool:
+def _sdk_name_roots(tree: ast.AST, package: str) -> set[str]:
+    """Names that mean a call into the migrated SDK (module, imports, client binds)."""
     pkg = (package or "").strip()
     if not pkg:
+        return set()
+    roots: set[str] = {pkg}
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == pkg or alias.name.startswith(pkg + "."):
+                    roots.add(alias.asname or alias.name.split(".", 1)[0])
+        elif isinstance(node, ast.ImportFrom):
+            mod = (node.module or "").strip()
+            if mod != pkg and not mod.startswith(pkg + "."):
+                continue
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                imported.add(alias.asname or alias.name)
+    roots |= imported
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value, targets = node.value, node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            value, targets = node.value, [node.target]
+        else:
+            continue
+        if not isinstance(value, ast.Call):
+            continue
+        func = value.func
+        callee = ""
+        if isinstance(func, ast.Name):
+            callee = func.id
+        elif isinstance(func, ast.Attribute):
+            callee = _attr_chain(func)
+        head = callee.split(".", 1)[0] if callee else ""
+        if head not in imported and not (
+            callee == pkg or callee.startswith(pkg + ".")
+        ):
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                roots.add(target.id)
+    return roots
+
+
+def _subtree_calls_roots(node: ast.AST, roots: set[str]) -> bool:
+    if not roots:
         return False
-    for stmt in try_node.body:
-        for node in ast.walk(stmt):
-            if isinstance(node, ast.Name) and node.id == pkg:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id in roots:
+            return True
+        if isinstance(child, ast.Attribute):
+            chain = _attr_chain(child)
+            if any(chain == r or chain.startswith(r + ".") for r in roots):
                 return True
-            if isinstance(node, ast.Attribute):
-                chain = _attr_chain(node)
-                if chain == pkg or chain.startswith(pkg + "."):
-                    return True
     return False
 
 
-def _handler_calls_package(handler: ast.ExceptHandler, package: str) -> bool:
+def _try_body_calls_package(
+    try_node: ast.Try, package: str, roots: set[str] | None = None
+) -> bool:
+    active = roots if roots is not None else ({package} if package else set())
+    for stmt in try_node.body:
+        if _subtree_calls_roots(stmt, active):
+            return True
+    return False
+
+
+def _handler_calls_package(
+    handler: ast.ExceptHandler, package: str, roots: set[str] | None = None
+) -> bool:
+    active = roots if roots is not None else ({package} if package else set())
+    if _subtree_calls_roots(handler, active):
+        return True
     pkg = (package or "").strip()
     if not pkg:
         return False
     for node in ast.walk(handler):
-        if isinstance(node, ast.Name) and node.id == pkg:
-            return True
-        if isinstance(node, ast.Attribute):
-            chain = _attr_chain(node)
-            if chain == pkg or chain.startswith(pkg + "."):
-                return True
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             if node.value == pkg or node.value.startswith(pkg + "."):
                 return True
@@ -494,10 +548,10 @@ def _handler_calls_package(handler: ast.ExceptHandler, package: str) -> bool:
 def synthetic_except_findings(
     text: str, rel: str, package: str
 ) -> list[str]:
-    """Flag except handlers that return in-process literal responses (no SDK call).
+    """Flag except handlers that swallow a real SDK call with a synthetic stub.
 
-    Only runs on files that import or reference the migrated package so ordinary
-    app ``except`` paths (port lookups, redirects, etc.) are not blocked.
+    Only when the try body invokes the migrated package (incl. OpenAI/client
+    aliases). Unrelated fallbacks in the same file are ignored.
     """
     pkg = (package or "").strip()
     if not pkg:
@@ -508,6 +562,7 @@ def synthetic_except_findings(
         tree = ast.parse(text)
     except SyntaxError:
         return []
+    roots = _sdk_name_roots(tree, pkg)
     findings: list[str] = []
     care = _HTTP_SWALLOW_TYPES | {"Exception", "BaseException"}
 
@@ -520,10 +575,9 @@ def synthetic_except_findings(
                 raises = any(isinstance(s, ast.Raise) for s in ast.walk(handler))
                 if raises:
                     continue
-                if _handler_calls_package(handler, package):
+                if not _try_body_calls_package(node, package, roots):
                     continue
-                try_calls = _try_body_calls_package(node, package)
-                if try_calls:
+                if _handler_calls_package(handler, package, roots):
                     continue
                 for stmt in handler.body:
                     if isinstance(stmt, ast.Return) and _is_literal_response(
@@ -906,7 +960,7 @@ def file_findings(
                 f"{posix} obfuscates leftover tokens via concat/join/byte-decode: "
                 + ", ".join(hidden)
             )
-        findings.extend(dummy_except_findings(text, posix))
+        findings.extend(dummy_except_findings(text, posix, pkg))
         markers = unused_marker_literals(text, interesting)
         if markers:
             findings.append(

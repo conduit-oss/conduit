@@ -181,11 +181,25 @@ def _handler_is_blanket(node: ast.ExceptHandler) -> bool:
     return False
 
 
-def dummy_except_findings(text: str, rel: str) -> list[str]:
+def dummy_except_findings(
+    text: str, rel: str, package: str = ""
+) -> list[str]:
+    """Flag blanket excepts that swallow an SDK call with a dummy return.
+
+    When ``package`` is set, only try bodies that invoke that SDK (incl. client
+    aliases) are considered. Without a package, keeps the legacy whole-file scan
+    used by post-rule body validation.
+    """
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return []
+    roots: set[str] | None = None
+    pkg = (package or "").strip()
+    if pkg:
+        from conduit.anticheat.rules import _sdk_name_roots
+
+        roots = _sdk_name_roots(tree, pkg)
     findings: list[str] = []
 
     class _V(ast.NodeVisitor):
@@ -196,6 +210,11 @@ def dummy_except_findings(text: str, rel: str) -> list[str]:
                 raises = any(isinstance(s, ast.Raise) for s in ast.walk(handler))
                 if raises:
                     continue
+                if roots is not None:
+                    from conduit.anticheat.rules import _try_body_calls_package
+
+                    if not _try_body_calls_package(node, pkg, roots):
+                        continue
                 dummy = False
                 for stmt in handler.body:
                     if isinstance(stmt, ast.Pass):

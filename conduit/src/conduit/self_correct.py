@@ -635,9 +635,25 @@ def reject_self_correct_write(
             previous = _read_text(path)
         else:
             previous = ""
+    wipe = _wipe_or_shrink_reason(previous, content)
+    if wipe:
+        return wipe
     return reject_write(
         rel_posix, content, packet=packet, previous=previous
     )
+
+
+def _wipe_or_shrink_reason(previous: str | None, content: str) -> str | None:
+    """Block LLM repair from emptying or gutting an existing file."""
+    if previous is None:
+        return None
+    if previous.strip() and not str(content or "").strip():
+        return "refuses to wipe non-empty file"
+    prev_len = len(previous)
+    new_len = len(content or "")
+    if prev_len >= 500 and new_len < max(100, prev_len // 20):
+        return "catastrophic shrink vs previous"
+    return None
 
 
 def _apply_file_updates(
@@ -1563,7 +1579,21 @@ def _run_verified_tests(
                 return full
             result = full
         else:
-            emit("[verify] oracle passed; skipping full pytest (no consumer venv)")
+            emit("[verify] oracle ran outside the consumer repo; not a mergeable verify")
+            return annotate_verify(
+                TestResult(
+                    runner="none",
+                    passed=False,
+                    returncode=1,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                    command=result.command,
+                    fail_reason="no_consumer_python: oracle used a Python outside the consumer repo",
+                    extra_notes=["verify_mode=oracle", "verify_kind=no_consumer_python"],
+                ),
+                mode="oracle",
+                kind="no_consumer_python",
+            )
     elif in_venv:
         emit("[verify] running full consumer pytest (no generated oracle)…")
         result = run_tests(root)

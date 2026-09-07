@@ -225,9 +225,10 @@ def test_needs_key_from_conftest(tmp_path: Path):
 
 def test_integrity_dummy_except(tmp_path: Path):
     (tmp_path / "chat.py").write_text(
+        "import openai\n"
         "def generate_reply(message):\n"
         "    try:\n"
-        "        return call()\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
         "    except Exception:\n"
         "        return message.strip() or 'ok'\n",
         encoding="utf-8",
@@ -240,6 +241,7 @@ def test_integrity_dummy_except_allows_legitimate_returns(tmp_path: Path):
     from conduit.integrity import dummy_except_findings
 
     clean = (
+        "import openai\n"
         "def view(request):\n"
         "    try:\n"
         "        return work()\n"
@@ -258,30 +260,57 @@ def test_integrity_dummy_except_allows_legitimate_returns(tmp_path: Path):
         "        data['x'] = section\n"
         "    except Exception:\n"
         "        return data\n"
+        "\n"
+        "def listennotes_fallback(url):\n"
+        "    try:\n"
+        "        return fetch(url)\n"
+        "    except Exception:\n"
+        "        return None\n"
     )
-    assert dummy_except_findings(clean, "views.py") == []
+    assert dummy_except_findings(clean, "views.py", "openai") == []
 
     dirty = (
+        "import openai\n"
         "def bad():\n"
         "    try:\n"
-        "        return call()\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
         "    except Exception:\n"
         "        return {}\n"
         "\n"
         "def also_bad():\n"
         "    try:\n"
-        "        return call()\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
         "    except Exception:\n"
         "        pass\n"
         "\n"
         "def stub_ok():\n"
         "    try:\n"
-        "        return call()\n"
+        "        return openai.chat.completions.create(model='m', messages=[])\n"
         "    except Exception:\n"
         "        return 'ok'\n"
     )
-    hits = dummy_except_findings(dirty, "cheat.py")
+    hits = dummy_except_findings(dirty, "cheat.py", "openai")
     assert len(hits) >= 3
+
+
+def test_reject_self_correct_refuses_wipe():
+    packet = _packet()
+    previous = "# consumer module\n" + ("x = 1\n" * 120)
+    wipe = reject_self_correct_write(
+        "podcast_ingest.py", "", packet=packet, previous=previous
+    )
+    assert wipe and "wipe" in wipe.lower()
+    shrink = reject_self_correct_write(
+        "podcast_ingest.py", "pass\n", packet=packet, previous=previous
+    )
+    assert shrink and "shrink" in shrink.lower()
+    ok = reject_self_correct_write(
+        "podcast_ingest.py",
+        previous + "# still full file\n",
+        packet=packet,
+        previous=previous,
+    )
+    assert ok is None
 
 
 def test_integrity_migration_markers(tmp_path: Path):
@@ -482,9 +511,9 @@ def test_verified_tests_oracle_only_without_venv(tmp_path: Path, monkeypatch):
         lambda *_a, **_k: AnticheatReport(),
     )
     result = _run_verified_tests(tmp_path, {"package": "openai", "rules": []})
-    assert result.passed
-    assert calls == [["tests/test_conduit_oracle.py"]]
-    assert any("verify_mode=oracle" in n for n in result.extra_notes)
+    assert not result.passed
+    assert result.fail_reason.startswith("no_consumer_python")
+    assert any("verify_kind=no_consumer_python" in n for n in result.extra_notes)
 
 
 def test_verified_tests_full_suite_with_venv(tmp_path: Path, monkeypatch):
