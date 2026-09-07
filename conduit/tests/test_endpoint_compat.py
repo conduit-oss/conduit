@@ -343,6 +343,10 @@ def test_self_correct_researches_and_passes_evidence(tmp_path: Path, monkeypatch
     (tmp_path / "tests" / "test_conduit_oracle.py").write_text(
         "def test_oracle():\n    assert True\n", encoding="utf-8"
     )
+    # Consumer verify-venv so oracle+full suite is allowed (not no_consumer_python).
+    venv_py = tmp_path / ".conduit" / "verify-venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("", encoding="utf-8")
     packet = {
         "packet_id": "p",
         "package": "openai",
@@ -427,6 +431,10 @@ def test_self_correct_search_then_packet_patch(tmp_path: Path, monkeypatch):
     (tmp_path / "tests" / "test_conduit_oracle.py").write_text(
         "def test_oracle():\n    assert True\n", encoding="utf-8"
     )
+    # Consumer verify-venv so oracle+full suite is allowed (not no_consumer_python).
+    venv_py = tmp_path / ".conduit" / "verify-venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("", encoding="utf-8")
     packet = {
         "packet_id": "p",
         "package": "openai",

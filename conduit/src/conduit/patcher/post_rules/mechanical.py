@@ -166,7 +166,7 @@ def infer_from_repo_scan(
     root = root.resolve()
     windows: list[dict[str, Any]] = []
     for rel in paths:
-        path = root / rel.replace("/", "\\")
+        path = root / Path(rel)
         if not path.is_file():
             continue
         try:

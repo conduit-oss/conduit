@@ -113,7 +113,7 @@ def test_auditor_uses_log_and_score_non_gating(tmp_path: Path, monkeypatch):
     )
 
     def _fake(*_a, **_k):
-        return [], {
+        return [], [], {
             "honesty": 88,
             "migration_completeness": 91,
             "notes": ["looks clean"],
@@ -129,6 +129,8 @@ def test_auditor_uses_log_and_score_non_gating(tmp_path: Path, monkeypatch):
 
 
 def test_auditor_cheat_from_log_entry(tmp_path: Path, monkeypatch):
+    from conduit.anticheat.findings import AnticheatFinding
+
     (tmp_path / "client.py").write_text("import openai\n", encoding="utf-8")
     audit = MigrationAuditLog.from_packet(_packet(), root=tmp_path)
     audit.record_write(
@@ -137,9 +139,19 @@ def test_auditor_cheat_from_log_entry(tmp_path: Path, monkeypatch):
     )
 
     def _fake(*_a, **_k):
-        return [
-            "client.py: monkeypatch — Compat wrapper [e1]"
-        ], {"honesty": 20, "migration_completeness": 50, "notes": []}
+        cheat = AnticheatFinding(
+            path="client.py",
+            kind="monkeypatch",
+            detail="Compat wrapper",
+            severity="block",
+            source="llm",
+            log_ref="e1",
+        )
+        return [cheat], [], {
+            "honesty": 20,
+            "migration_completeness": 50,
+            "notes": [],
+        }
 
     monkeypatch.setattr("conduit.anticheat.llm_audit.llm_audit_findings", _fake)
     report = run_anticheat(
