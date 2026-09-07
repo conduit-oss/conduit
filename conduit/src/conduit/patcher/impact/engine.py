@@ -7,7 +7,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from conduit.patcher.impact.llm import llm_impact_review
-from conduit.patcher.impact.mechanical import mechanical_impact_pass
+from conduit.patcher.impact.mechanical import (
+    mechanical_impact_pass,
+    packet_covers_kwarg_finding,
+)
 from conduit.patcher.impact.store import load_learned_impact_rules, save_impact_report
 from conduit.patcher.impact.validator import validate_impact_post_rules
 from conduit.patcher.impact.vendor import default_banned_kwargs_on
@@ -45,7 +48,7 @@ class ImpactReport:
 def _file_windows(root: Path, paths: set[str], *, limit: int = 8) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for rel in sorted(paths)[:limit]:
-        path = root / rel.replace("/", "\\")
+        path = root / Path(rel)
         if not path.is_file():
             continue
         try:
@@ -132,7 +135,10 @@ def analyze_impacts(
     required_errors = [
         f
         for f in report.findings
-        if f.get("required") and f.get("severity") == "error" and f.get("action") == "fix"
+        if f.get("required")
+        and f.get("severity") == "error"
+        and f.get("action") == "fix"
+        and not packet_covers_kwarg_finding(packet, str(f.get("detail") or ""))
     ]
     if required_errors and not report.post_rules and not report.defer_paths:
         report.blocked = True

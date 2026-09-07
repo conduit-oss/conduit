@@ -116,6 +116,123 @@ def test_analyze_impacts_use_llm_false(tmp_path: Path):
     assert not impact.blocked
 
 
+def test_mechanical_skips_kwargs_covered_by_packet_rename(tmp_path: Path):
+    rel = "src/ai_client.py"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "from openai import OpenAI\n\n"
+        "def complete(prompt):\n"
+        "    client = OpenAI()\n"
+        "    return client.chat.completions.create(\n"
+        "        model='gpt-4o', messages=[], max_tokens=64\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    packet = {
+        "packet_id": "t",
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "1.0.0",
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "match": "gpt-4-0613",
+                "replace": "gpt-4o",
+            },
+            {
+                "type": "AST_PARAM_RENAME",
+                "function_target": "chat.completions.create",
+                "old_param": "max_tokens",
+                "new_param": "max_completion_tokens",
+            },
+        ],
+    }
+    findings, rules, defer = mechanical_impact_pass(
+        tmp_path,
+        packet,
+        planned_paths={rel},
+        oracle_paths=set(),
+        allowlist_paths=set(),
+    )
+    assert not any("max_tokens" in str(f.get("detail", "")) for f in findings)
+    assert not rules
+    assert not defer
+
+
+def test_analyze_impacts_does_not_block_on_packet_covered_rename(
+    tmp_path: Path, monkeypatch
+):
+    rel = "src/ai_client.py"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        'DEFAULT_MODEL = "gpt-4-0613"\n'
+        "from openai import OpenAI\n\n"
+        "def complete(prompt):\n"
+        "    client = OpenAI()\n"
+        "    return client.chat.completions.create(\n"
+        "        model=DEFAULT_MODEL, messages=[], max_tokens=64\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    packet = {
+        "packet_id": "t",
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "1.0.0",
+        "rules": [
+            {
+                "type": "EXACT_STRING_REPLACE",
+                "target_files": ["*.py"],
+                "match": "gpt-4-0613",
+                "replace": "gpt-4o",
+            },
+            {
+                "type": "AST_PARAM_RENAME",
+                "target_files": ["*.py"],
+                "function_target": "chat.completions.create",
+                "old_param": "max_tokens",
+                "new_param": "max_completion_tokens",
+            },
+        ],
+    }
+
+    def _fake_llm(**_kwargs):
+        return (
+            [
+                {
+                    "path": rel,
+                    "kind": "legacy_kwargs_on_rewritten_callee",
+                    "severity": "error",
+                    "action": "fix",
+                    "required": True,
+                    "detail": (
+                        f"{rel}:18 client.chat.completions.create still uses "
+                        "max_tokens= (migrate to max_completion_tokens=)"
+                    ),
+                    "source": "llm",
+                }
+            ],
+            [],
+            [],
+        )
+
+    monkeypatch.setattr(
+        "conduit.patcher.impact.engine.llm_impact_review", _fake_llm
+    )
+    impact = analyze_impacts(
+        tmp_path,
+        packet,
+        file_allowlist=[path],
+        log=lambda _m: None,
+        use_llm=True,
+    )
+    assert not impact.blocked
+
+
 def test_llm_defer_paths_ignored(tmp_path: Path, monkeypatch):
     rel = "podcast_ingest.py"
     path = tmp_path / rel

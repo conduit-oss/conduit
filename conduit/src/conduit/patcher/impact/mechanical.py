@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,11 @@ from conduit.anticheat.rules import old_kwargs_on_new_callee_findings
 from conduit.patcher.impact.templates import azure_bridge_module_body
 from conduit.patcher.impact.vendor import default_banned_kwargs_on, impact_classes
 from conduit.test_gen import oracle_forbidden_tokens, token_in_text
+
+_STILL_USES_RENAME_RE = re.compile(
+    r"still uses (?P<old>\w+)=\s*\(migrate to (?P<new>\w+)=\)",
+    re.I,
+)
 
 
 def _posix(rel: str) -> str:
@@ -30,6 +36,26 @@ def _has_marker(text: str, markers: list[str]) -> bool:
     return any(m and m in text for m in markers)
 
 
+def packet_covers_kwarg_finding(packet: dict[str, Any], detail: str) -> bool:
+    """True when finding is already fixed by an AST_PARAM_RENAME in the packet."""
+    m = _STILL_USES_RENAME_RE.search(detail or "")
+    if not m:
+        return False
+    old = m.group("old")
+    new = m.group("new")
+    for rule in packet.get("rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        if str(rule.get("type") or "") != "AST_PARAM_RENAME":
+            continue
+        if str(rule.get("old_param") or "") != old:
+            continue
+        if str(rule.get("new_param") or "") != new:
+            continue
+        return True
+    return False
+
+
 def _packet_with_banned_kwargs(
     packet: dict[str, Any], vendor_kwargs: dict[str, list[str]]
 ) -> dict[str, Any]:
@@ -44,6 +70,23 @@ def _packet_with_banned_kwargs(
     anticheat["banned_kwargs_on"] = existing
     merged["anticheat"] = anticheat
     return merged
+
+
+def _packet_for_impact_kwarg_scan(
+    packet: dict[str, Any], vendor_kwargs: dict[str, list[str]]
+) -> dict[str, Any]:
+    """Scan with vendor/anticheat bans only — not AST_PARAM_RENAME (apply covers those)."""
+    rules = [
+        r
+        for r in (packet.get("rules") or [])
+        if not (
+            isinstance(r, dict)
+            and str(r.get("type") or "") == "AST_PARAM_RENAME"
+        )
+    ]
+    base = dict(packet)
+    base["rules"] = rules
+    return _packet_with_banned_kwargs(base, vendor_kwargs)
 
 
 def mechanical_impact_pass(
@@ -62,7 +105,7 @@ def mechanical_impact_pass(
     post_rules: list[dict[str, Any]] = []
     defer_paths: set[str] = set()
     vendor_kwargs = default_banned_kwargs_on(packet)
-    scan_packet = _packet_with_banned_kwargs(packet, vendor_kwargs)
+    scan_packet = _packet_for_impact_kwarg_scan(packet, vendor_kwargs)
 
     scan_paths = set(planned_paths) | allowlist_paths | set(oracle_paths)
     for rel in sorted(scan_paths):
