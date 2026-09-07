@@ -575,6 +575,73 @@ def test_anticheat_baseline_roundtrip(tmp_path: Path):
     save_anticheat_baseline(tmp_path, ["app.py"])
     loaded = load_anticheat_baseline(tmp_path)
     assert loaded["app.py"] == "import openai\nx = 1\n"
+    assert list(loaded) == ["app.py"]
+
+
+def test_anticheat_baseline_normalizes_absolute_paths(tmp_path: Path):
+    from conduit.anticheat.baseline import (
+        load_anticheat_baseline,
+        save_anticheat_baseline,
+    )
+
+    app = tmp_path / "podcast_ingest.py"
+    app.write_text("import openai\nreturn None\n", encoding="utf-8")
+    # Allowlist often contains absolute paths after expand_apply_allowlist.
+    save_anticheat_baseline(tmp_path, [str(app.resolve())])
+    loaded = load_anticheat_baseline(tmp_path)
+    assert "podcast_ingest.py" in loaded
+    assert not any(k.startswith("D:") or k.startswith("/") for k in loaded)
+
+    # Legacy absolute keys on disk still load as relative.
+    import json
+
+    legacy = {
+        str(app.resolve()).replace("\\", "/"): "import openai\nold\n",
+    }
+    path = tmp_path / ".conduit" / "anticheat_baseline.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    loaded2 = load_anticheat_baseline(tmp_path)
+    assert loaded2["podcast_ingest.py"] == "import openai\nold\n"
+
+
+def test_format_failure_reasons_anticheat_and_pytest():
+    from conduit.self_correct import format_failure_reasons
+    from conduit.test_runner import TestResult
+
+    anti = TestResult(
+        runner="anticheat",
+        passed=False,
+        returncode=1,
+        stdout=(
+            "anticheat failed:\n"
+            "podcast_ingest.py: synthetic_except — 514 except path returns a "
+            "synthetic response without calling the official SDK\n"
+            "podcast_ingest.py: mechanical — 514 swallows Exception and returns a dummy\n"
+        ),
+        stderr="",
+        command=[],
+    )
+    reasons = format_failure_reasons(anti)
+    assert len(reasons) == 2
+    assert "synthetic_except" in reasons[0]
+    assert "mechanical" in reasons[1]
+
+    py = TestResult(
+        runner="pytest",
+        passed=False,
+        returncode=1,
+        stdout=(
+            "FAILED tests/test_conduit_oracle.py::test_chat - assert 0\n"
+            "FAILED tests/test_x.py::test_y - TypeError: boom\n"
+            "E   AssertionError: expected client\n"
+            "E   TypeError: boom\n"
+        ),
+        stderr="",
+        command=[],
+    )
+    py_reasons = format_failure_reasons(py)
+    assert any("test_conduit_oracle" in r for r in py_reasons)
+    assert any("—" in r for r in py_reasons)
 
 
 def test_mechanical_scan_respects_edited_files_only(tmp_path: Path):

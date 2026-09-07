@@ -269,6 +269,74 @@ def _failure_excerpt(test_result: TestResult, *, limit: int = 1500) -> str:
     return text
 
 
+def format_failure_reasons(result: TestResult, *, limit: int = 12) -> list[str]:
+    """One human-readable reason line per failing test / anticheat finding."""
+    blob = _failure_blob(result)
+    lines: list[str] = []
+
+    if _is_anticheat_failure(result):
+        for path, kind, detail in _anticheat_finding_hits(blob):
+            detail = re.sub(r"\s+", " ", (detail or "").strip())
+            if len(detail) > 200:
+                detail = detail[:197] + "..."
+            if kind and detail:
+                lines.append(f"{path}: {kind} — {detail}")
+            elif detail:
+                lines.append(f"{path}: {detail}")
+            else:
+                lines.append(f"{path}: {kind or 'anticheat'}")
+            if len(lines) >= limit:
+                return lines
+        if lines:
+            return lines
+
+    # Pair FAILED/ERROR nodeids with the next pytest ``E `` assertion/exception line.
+    nodes = list(_FAILED_NODE_RE.finditer(blob))
+    e_lines = list(_PYTEST_E_LINE_RE.finditer(blob))
+    e_idx = 0
+    for match in nodes:
+        node = match.group(1)
+        reason = ""
+        while e_idx < len(e_lines) and e_lines[e_idx].start() < match.start():
+            e_idx += 1
+        if e_idx < len(e_lines):
+            reason = re.sub(r"\s+", " ", e_lines[e_idx].group(1)).strip()
+            e_idx += 1
+        if not reason:
+            # Fallback: nearest exception-style line after this FAILED marker.
+            for m in _EXCEPTION_LINE_RE.finditer(blob[match.end() : match.end() + 800]):
+                reason = re.sub(r"\s+", " ", m.group(1)).strip()
+                break
+        if len(reason) > 200:
+            reason = reason[:197] + "..."
+        lines.append(f"{node} — {reason}" if reason else node)
+        if len(lines) >= limit:
+            break
+
+    if not lines:
+        for snippet in _exception_snippets(blob, limit=limit):
+            lines.append(snippet)
+    if not lines and (result.fail_reason or "").strip():
+        lines.append((result.fail_reason or "").strip()[:240])
+    return lines
+
+
+def emit_failure_reasons(
+    result: TestResult,
+    emit: LogFn,
+    *,
+    limit: int = 12,
+) -> None:
+    """Log structured per-failure reasons (always visible, not verbose-only)."""
+    reasons = format_failure_reasons(result, limit=limit)
+    if not reasons:
+        emit("[self-correct] failure reasons: (none parsed)")
+        return
+    emit(f"[self-correct] failure reasons ({len(reasons)}):")
+    for line in reasons:
+        emit(f"  - {line}")
+
+
 # pytest short traceback: "openai_text\engines.py:25: in complete_with_engine"
 _PYTEST_PATH_RE = re.compile(
     r"(?m)^(?P<path>(?:[A-Za-z]:)?[^:\n]+\.(?:py|pyw|ts|js|tsx|jsx|go|java))"
@@ -1868,6 +1936,7 @@ def verify_with_self_correct(
             emit(f"[self-correct] failure: {reason[:120]}")
         if digest["text"]:
             vlog(f"[self-correct] failure digest:\n{digest['text']}")
+        emit_failure_reasons(result, emit)
         vlog(f"[self-correct] failure summary:\n{_failure_excerpt(result)}")
 
         repair_ctx = collect_repair_context(
@@ -1886,15 +1955,9 @@ def verify_with_self_correct(
                 _failure_blob(result)
             )}
             if cited:
-                narrowed: set[str] = set()
-                for rel in cited:
-                    narrowed.add(rel)
-                    for sib in _neighbor_sources(root / rel, limit=3):
-                        try:
-                            narrowed.add(sib.relative_to(root).as_posix())
-                        except ValueError:
-                            narrowed.add(sib.name)
-                allowlist = {p for p in narrowed if not ignore.path_ignored(p)}
+                # Cited files only — do not expand to flat-repo siblings
+                # (that pulled unrelated modules like ai_insights into repair).
+                allowlist = {p for p in cited if not ignore.path_ignored(p)}
                 context_files = {
                     k: v for k, v in context_files.items() if k in allowlist
                 }

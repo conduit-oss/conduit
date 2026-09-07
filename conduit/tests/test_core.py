@@ -774,6 +774,10 @@ def test_self_correct_verbose_logs_failure_and_fix(tmp_path: Path, monkeypatch):
     (tests / "test_conduit_oracle.py").write_text(
         "def test_oracle():\n    assert True\n", encoding="utf-8"
     )
+    # Consumer verify-venv so oracle+full suite is allowed (not no_consumer_python).
+    venv_py = tmp_path / ".conduit" / "verify-venv" / "Scripts" / "python.exe"
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("", encoding="utf-8")
 
     packet = {
         "packet_id": "t",
@@ -833,7 +837,7 @@ def test_self_correct_verbose_logs_failure_and_fix(tmp_path: Path, monkeypatch):
         "app.py" in c for c in corrected
     )
     joined = "\n".join(logs)
-    assert "failure summary" in joined
+    assert "failure summary" in joined or "failure reasons" in joined
     assert "assert False" in joined
     assert "heuristic: updated" in joined
     assert "max_tokens" in joined

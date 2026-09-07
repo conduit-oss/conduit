@@ -68,7 +68,14 @@ class AnticheatReport:
 def _iter_rels(root: Path, files: Iterable[str] | None) -> list[str]:
     root = root.resolve()
     if files is not None:
-        return [str(r).replace("\\", "/") for r in files]
+        from conduit.anticheat.baseline import _repo_rel
+
+        out: list[str] = []
+        for r in files:
+            rel = _repo_rel(root, r) or str(r).replace("\\", "/")
+            if rel:
+                out.append(rel)
+        return out
     rels: list[str] = []
     for path in root.rglob("*"):
         if not path.is_file():
