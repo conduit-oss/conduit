@@ -595,10 +595,22 @@ def apply_cmd(
     for change in report.changes:
         prefix = "DRY-RUN " if dry_run else ""
         console.print(f"{prefix}[{change.rule_type}] {change.path}: {change.detail}")
-    if not dry_run:
-        from conduit.patcher.sync_env import sync_bumped_packages
+    try:
+        from conduit.detect.modules.openai import format_model_auto_update_line
 
-        sync_bumped_packages(data, root=root, log=console.print)
+        model_line = format_model_auto_update_line(data, report.changes)
+        if model_line:
+            console.print(model_line)
+    except Exception:
+        pass
+    if not dry_run:
+        from conduit.patcher.sync_env import VerifyEnvError, sync_bumped_packages
+
+        try:
+            sync_bumped_packages(data, root=root, log=console.print)
+        except VerifyEnvError as exc:
+            console.print(f"[red]Verify env blocked migration:[/red]\n{exc}")
+            raise typer.Exit(2) from exc
 
         from conduit.patcher.post_rules.engine import apply_post_rules
 
@@ -1024,10 +1036,26 @@ def _run_pipeline(
         report.files_modified.append(gitignore_rel)
     for change in report.changes:
         console.print(f"[{change.rule_type}] {change.path}: {change.detail}")
+    try:
+        from conduit.detect.modules.openai import format_model_auto_update_line
 
-    from conduit.patcher.sync_env import sync_bumped_packages
+        model_line = format_model_auto_update_line(pkt, report.changes)
+        if model_line:
+            console.print(model_line)
+    except Exception:
+        pass
 
-    sync_bumped_packages(pkt, root=root, log=console.print)
+    from conduit.patcher.sync_env import VerifyEnvError, sync_bumped_packages
+
+    try:
+        sync_bumped_packages(pkt, root=root, log=console.print)
+    except VerifyEnvError as exc:
+        console.print(f"[red]Verify env blocked migration:[/red]\n{exc}")
+        try:
+            audit_log.persist(root)
+        except OSError:
+            pass
+        raise typer.Exit(2) from exc
 
     from conduit.patcher.post_rules.engine import apply_post_rules
 
@@ -1215,8 +1243,15 @@ def _run_pipeline(
         raise typer.Exit(0)
 
     detect_summary = "\n".join(
-        f"- [{s.source}] {s.package} {s.change_type}: "
-        f"{s.description or s.affected_pattern or ''}"
+        (
+            f"- [{s.source}] {s.package} {s.change_type}: "
+            f"{s.description or s.affected_pattern or ''}"
+            + (
+                f" (shutdown {s.deadline.split('T', 1)[0]})"
+                if s.deadline
+                else ""
+            )
+        )
         for s in detected.signals[:20]
     )
     review_markdown = format_run_summary_markdown(

@@ -127,6 +127,23 @@ def build_source_packet(
     return data
 
 
+def _short_deadline(raw: str | None) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if "T" in text:
+        text = text.split("T", 1)[0]
+    return text or None
+
+
+def _deadline_from_hits(hits: list[ChangeSignal]) -> str | None:
+    for signal in hits:
+        short = _short_deadline(getattr(signal, "deadline", None))
+        if short:
+            return short
+    return None
+
+
 def _signal_touches_model(signal: ChangeSignal, model_id: str) -> bool:
     mid = model_id.lower()
     if (signal.affected_pattern or "").lower() == mid:
@@ -365,6 +382,9 @@ def build_coverage_report(
                     f"{hits[0].change_type}:{hits[0].affected_pattern}"
                     if hits else ""
                 )
+            deadline = _deadline_from_hits(hits)
+            if deadline:
+                detail = f"{detail} (deprecated; shutdown {deadline})"
             items.append(
                 CoverageItem(
                     kind="model",

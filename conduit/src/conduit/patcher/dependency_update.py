@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -21,6 +25,8 @@ DEP_RULE_TYPES = frozenset(
     {"DEPENDENCY_BUMP", "DEPENDENCY_ADD", "DEPENDENCY_REMOVE"}
 )
 _POETRY_SKIP = {"python", "python-versions"}
+_PYPI_JSON_TIMEOUT_S = 20.0
+_POETRY_LOCK_TIMEOUT_S = 600.0
 
 
 @dataclass
@@ -91,9 +97,242 @@ def format_go_version(version: str) -> str:
 
 
 def _req_pattern(package: str) -> re.Pattern[str]:
+    """Match package pin on one line (legacy helper for simple lookups)."""
     return re.compile(
         rf"(?m)^(?P<lead>\s*){re.escape(package)}\s*(?:==|>=|~=|<=|>|<)?\s*[^\s#]*"
     )
+
+
+def _req_entry_pattern(package: str) -> re.Pattern[str]:
+    """Match a requirements entry including markers and ``--hash=`` continuations."""
+    return re.compile(
+        rf"(?ms)^(?P<lead>\s*){re.escape(package)}"
+        rf"(?P<body>\s*(?:==|>=|~=|<=|>|<)\s*[^\s#\\]+)?"
+        rf"(?P<rest>[^\n]*)"
+        rf"(?P<hashes>(?:\n[ \t]+--hash=[^\n]*)*)"
+    )
+
+
+def _clean_req_rest(rest: str) -> str:
+    """Drop inline hashes and a trailing ``\\`` used only for hash continuations."""
+    text = re.sub(r"(?i)\s*--hash=\S+", "", rest or "")
+    text = text.rstrip()
+    if text.endswith("\\"):
+        text = text[:-1].rstrip()
+    return text
+
+
+def _requirements_file_uses_hashes(text: str) -> bool:
+    return bool(re.search(r"(?i)--hash=", text or ""))
+
+
+def _normalize_pip_version(version: str) -> str:
+    v = (version or "").strip()
+    if v.startswith(("==", ">=", "<=", "~=", ">", "<")):
+        v = re.split(r"[=<>!~]+", v, maxsplit=1)[-1].strip()
+    if v.startswith("v") and len(v) > 1 and v[1].isdigit():
+        v = v[1:]
+    return v
+
+
+def _pypi_get_json(url: str) -> dict[str, Any] | None:
+    try:
+        with urllib.request.urlopen(url, timeout=_PYPI_JSON_TIMEOUT_S) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        OSError,
+        json.JSONDecodeError,
+        ValueError,
+    ):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def fetch_pypi_version_json(package: str, version: str) -> dict[str, Any] | None:
+    pkg = (package or "").strip()
+    ver = _normalize_pip_version(version)
+    if not pkg or not ver:
+        return None
+    return _pypi_get_json(f"https://pypi.org/pypi/{pkg}/{ver}/json")
+
+
+def fetch_pypi_project_json(package: str) -> dict[str, Any] | None:
+    pkg = (package or "").strip()
+    if not pkg:
+        return None
+    return _pypi_get_json(f"https://pypi.org/pypi/{pkg}/json")
+
+
+def fetch_pypi_sha256s(package: str, version: str) -> list[str]:
+    """Return distinct sha256 digests for ``package==version`` artifacts on PyPI."""
+    payload = fetch_pypi_version_json(package, version)
+    if not payload:
+        return []
+    urls = payload.get("urls")
+    if not isinstance(urls, list):
+        return []
+    digests: list[str] = []
+    seen: set[str] = set()
+    for item in urls:
+        if not isinstance(item, dict):
+            continue
+        digest = (item.get("digests") or {}).get("sha256")
+        if not isinstance(digest, str):
+            continue
+        digest = digest.strip().lower()
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            continue
+        if digest in seen:
+            continue
+        seen.add(digest)
+        digests.append(digest)
+    return digests
+
+
+def fetch_pypi_requires_dist(package: str, version: str) -> list[str]:
+    """Return ``requires_dist`` entries for a package version on PyPI."""
+    payload = fetch_pypi_version_json(package, version)
+    if not payload:
+        return []
+    info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+    raw = info.get("requires_dist") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(x) for x in raw if str(x).strip()]
+
+
+def pick_pypi_version(package: str, specifier: str = "") -> str | None:
+    """Pick the newest non-prerelease PyPI version matching ``specifier``."""
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    from packaging.version import InvalidVersion, Version
+
+    payload = fetch_pypi_project_json(package)
+    if not payload:
+        return None
+    releases = payload.get("releases")
+    if not isinstance(releases, dict):
+        return None
+    try:
+        spec = SpecifierSet(specifier or "")
+    except InvalidSpecifier:
+        return None
+    matched: list[Version] = []
+    matched_pre: list[Version] = []
+    for raw in releases:
+        try:
+            ver = Version(str(raw))
+        except InvalidVersion:
+            continue
+        if ver not in spec:
+            continue
+        if ver.is_prerelease or ver.is_devrelease:
+            matched_pre.append(ver)
+        else:
+            matched.append(ver)
+    chosen = matched or matched_pre
+    if not chosen:
+        return None
+    return str(sorted(chosen)[-1])
+
+
+def _pinned_requirement_names(text: str) -> set[str]:
+    """Canonical names already present as top-level pins in a requirements file."""
+    from packaging.utils import canonicalize_name
+
+    names: set[str] = set()
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if not s or s.startswith("#") or s.startswith("--"):
+            continue
+        s = s.split("\\", 1)[0].strip()
+        m = re.match(r"^([A-Za-z0-9_.-]+)\s*(?:==|>=|~=|<=|>|<)", s)
+        if not m:
+            continue
+        names.add(canonicalize_name(m.group(1)))
+    return names
+
+
+def ensure_hashed_transitive_pins(
+    text: str,
+    package: str,
+    version: str,
+    *,
+    max_new: int = 64,
+) -> str:
+    """
+    Append missing transitive ``pkg==ver`` + ``--hash=`` lines for require-hashes.
+
+    Walks PyPI ``requires_dist`` from ``package==version`` (BFS). Skips deps already
+    pinned in ``text`` and markers that fail in the current environment.
+    """
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.utils import canonicalize_name
+
+    root_pkg = (package or "").strip()
+    root_ver = _normalize_pip_version(version)
+    if not root_pkg or not root_ver or not _requirements_file_uses_hashes(text):
+        return text
+
+    pinned = _pinned_requirement_names(text)
+    pinned.add(canonicalize_name(root_pkg))
+    queue: list[tuple[str, str]] = [(root_pkg, root_ver)]
+    seen_nodes: set[tuple[str, str]] = {(canonicalize_name(root_pkg), root_ver)}
+    blocks: list[str] = []
+
+    while queue and len(blocks) < max_new:
+        pkg, ver = queue.pop(0)
+        for raw in fetch_pypi_requires_dist(pkg, ver):
+            try:
+                req = Requirement(raw)
+            except InvalidRequirement:
+                continue
+            if req.marker is not None:
+                try:
+                    if not req.marker.evaluate():
+                        continue
+                except Exception:
+                    continue
+            name = canonicalize_name(req.name)
+            if name in pinned:
+                continue
+            chosen = pick_pypi_version(req.name, str(req.specifier))
+            if not chosen:
+                continue
+            digests = fetch_pypi_sha256s(req.name, chosen)
+            if not digests:
+                continue
+            spec = format_pip_requirement(req.name, chosen)
+            blocks.append(_format_req_with_hashes("", spec, "", digests))
+            pinned.add(name)
+            node = (name, chosen)
+            if node not in seen_nodes:
+                seen_nodes.add(node)
+                queue.append((req.name, chosen))
+            if len(blocks) >= max_new:
+                break
+
+    if not blocks:
+        return text
+    body = text if text.endswith("\n") or not text else text + "\n"
+    # Keep a blank line before Conduit-added transitive pins for readability.
+    if body and not body.endswith("\n\n"):
+        body = body.rstrip("\n") + "\n\n"
+    return body + "\n\n".join(blocks) + "\n"
+
+
+def _format_req_with_hashes(lead: str, spec: str, rest: str, hashes: list[str]) -> str:
+    """Render ``spec`` + markers + ``--hash=`` continuations (poetry/pip-tools style)."""
+    markers = _clean_req_rest(rest)
+    if not hashes:
+        return f"{lead}{spec}{markers}"
+    lines = [f"{lead}{spec}{markers} \\"]
+    for i, digest in enumerate(hashes):
+        suffix = " \\" if i < len(hashes) - 1 else ""
+        lines.append(f"    --hash=sha256:{digest}{suffix}")
+    return "\n".join(lines)
 
 
 def _edit_requirements_txt(
@@ -107,26 +346,45 @@ def _edit_requirements_txt(
     if not path.is_file():
         return False
     original = path.read_text(encoding="utf-8")
-    pattern = _req_pattern(package)
+    entry = _req_entry_pattern(package)
+    file_hashed = _requirements_file_uses_hashes(original)
     if op == "remove":
-        updated, n = re.compile(
-            rf"(?m)^\s*{re.escape(package)}\s*(?:==|>=|~=|<=|>|<)?[^\n]*\n?"
-        ).subn("", original)
+        updated, n = entry.subn("", original)
         if n == 0:
             return False
-    elif pattern.search(original):
+        updated = re.sub(r"\n{3,}", "\n\n", updated)
+    elif entry.search(original):
         spec = format_pip_requirement(package, version)
+        # In --require-hashes mode (any --hash= in the file), the bumped pin must
+        # carry digests that match the wheels pip will download.
+        need_hashes = file_hashed
+        digests = fetch_pypi_sha256s(package, version) if need_hashes else []
 
         def _repl(match: re.Match[str]) -> str:
-            return f"{match.group('lead')}{spec}"
+            rest = match.group("rest") or ""
+            if digests:
+                return _format_req_with_hashes(
+                    match.group("lead"), spec, rest, digests
+                )
+            # No digests available: strip stale hashes so we don't keep wrong ones.
+            return f"{match.group('lead')}{spec}{_clean_req_rest(rest)}"
 
-        updated, n = pattern.subn(_repl, original)
+        updated, n = entry.subn(_repl, original)
         if n == 0:
             return False
+        if need_hashes:
+            updated = ensure_hashed_transitive_pins(updated, package, version)
     elif op == "add":
         spec = format_pip_requirement(package, version)
+        if file_hashed:
+            digests = fetch_pypi_sha256s(package, version)
+            block = _format_req_with_hashes("", spec, "", digests) if digests else spec
+        else:
+            block = spec
         sep = "" if original.endswith("\n") or not original else "\n"
-        updated = f"{original}{sep}{spec}\n"
+        updated = f"{original}{sep}{block}\n"
+        if file_hashed:
+            updated = ensure_hashed_transitive_pins(updated, package, version)
     else:
         return False
     if updated == original:
@@ -471,6 +729,100 @@ def _iter_npm_manifests(root: Path) -> list[Path]:
     return found
 
 
+def is_poetry_project(root: Path) -> bool:
+    """True when ``pyproject.toml`` declares ``[tool.poetry]``."""
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return False
+    try:
+        text = pyproject.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return bool(re.search(r"(?m)^\[tool\.poetry\]", text))
+
+
+def hashed_requirements_files(root: Path, *, scope: str = "main") -> list[Path]:
+    """Requirements manifests under ``root`` that use ``--hash=`` pins."""
+    out: list[Path] = []
+    for path in _iter_pip_manifests(root, scope=scope):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _requirements_file_uses_hashes(text):
+            out.append(path)
+    return out
+
+
+def _run_poetry(
+    root: Path,
+    args: list[str],
+    *,
+    timeout: float = _POETRY_LOCK_TIMEOUT_S,
+) -> tuple[bool, str]:
+    exe = shutil.which("poetry")
+    if not exe:
+        return False, "poetry CLI not found on PATH"
+    try:
+        proc = subprocess.run(
+            [exe, *args],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)
+    if proc.returncode != 0:
+        blob = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+        return False, blob or f"poetry {' '.join(args)} exit {proc.returncode}"
+    return True, ""
+
+
+def refresh_poetry_hashed_requirements(
+    root: Path,
+    *,
+    output: Path | None = None,
+    dry_run: bool = False,
+) -> tuple[bool, str]:
+    """
+    Re-resolve ``poetry.lock`` and export a hashed ``requirements.txt``.
+
+    Needed after bumping a direct dep in a Poetry project: ``--require-hashes``
+    installs fail if new transitive pins (e.g. httpx2) are missing from the
+    export. Returns ``(ok, detail)``.
+    """
+    root = root.resolve()
+    out = (output or (root / "requirements.txt")).resolve()
+    if dry_run:
+        return True, f"would run poetry lock + export -> {out.name}"
+    if not is_poetry_project(root):
+        return False, "not a Poetry project"
+    ok, detail = _run_poetry(root, ["lock", "--no-interaction"])
+    if not ok:
+        return False, detail
+    # Prefer writing hashes (default). ``--without-hashes`` would break
+    # consumers that already use --require-hashes mode.
+    ok, detail = _run_poetry(
+        root,
+        [
+            "export",
+            "-f",
+            "requirements.txt",
+            "--output",
+            str(out),
+            "--no-interaction",
+        ],
+    )
+    if not ok:
+        # poetry-plugin-export may be missing on Poetry 2.x
+        return False, detail
+    if not out.is_file():
+        return False, f"poetry export did not create {out}"
+    return True, ""
+
+
 def apply_dependency_rule(
     root: Path,
     rule: dict[str, Any],
@@ -501,7 +853,70 @@ def apply_dependency_rule(
     def _rel(path: Path) -> str:
         return str(path.relative_to(root))
 
-    if "pip" in ecosystems:
+    # Prefer pyproject (Poetry source of truth) before requirements.txt.
+    pyproject_changed = False
+    if "pyproject" in ecosystems:
+        pyproject = root / "pyproject.toml"
+        ok, skip = _edit_pyproject(
+            pyproject, package, version, op=op, scope=scope, dry_run=dry_run
+        )
+        if ok:
+            result.changed.append(_rel(pyproject))
+            pyproject_changed = True
+        elif skip:
+            result.skips.append(skip)
+
+    poetry_exported = False
+    hashed_reqs = (
+        hashed_requirements_files(root, scope=scope)
+        if ("pip" in ecosystems or "pyproject" in ecosystems)
+        else []
+    )
+    if (
+        is_poetry_project(root)
+        and hashed_reqs
+        and ("pip" in ecosystems or "pyproject" in ecosystems)
+    ):
+        # Ensure Poetry table is bumped even when the rule only listed pip.
+        if not pyproject_changed and not dry_run:
+            ok, _skip = _edit_pyproject(
+                root / "pyproject.toml",
+                package,
+                version,
+                op=op,
+                scope=scope,
+                dry_run=False,
+            )
+            if ok:
+                result.changed.append("pyproject.toml")
+                pyproject_changed = True
+
+        primary = root / "requirements.txt"
+        hashed_resolved = {p.resolve() for p in hashed_reqs}
+        if primary.resolve() in hashed_resolved:
+            export_target = primary
+        else:
+            export_target = hashed_reqs[0]
+        ok, detail = refresh_poetry_hashed_requirements(
+            root, output=export_target, dry_run=dry_run
+        )
+        if ok:
+            poetry_exported = True
+            rel_out = _rel(export_target)
+            if rel_out not in result.changed:
+                result.changed.append(rel_out)
+            lock = root / "poetry.lock"
+            if lock.is_file() or dry_run:
+                rel_lock = "poetry.lock"
+                if rel_lock not in result.changed:
+                    result.changed.append(rel_lock)
+        else:
+            result.skips.append(
+                f"poetry lock/export failed ({detail}); "
+                "falling back to direct requirements.txt edit"
+            )
+
+    if "pip" in ecosystems and not poetry_exported:
         pip_paths = _iter_pip_manifests(root, scope=scope)
         if scope == "dev" and not pip_paths:
             result.skips.append(
@@ -510,16 +925,6 @@ def apply_dependency_rule(
         for req in pip_paths:
             if _edit_requirements_txt(req, package, version, op=op, dry_run=dry_run):
                 result.changed.append(_rel(req))
-
-    if "pyproject" in ecosystems:
-        pyproject = root / "pyproject.toml"
-        ok, skip = _edit_pyproject(
-            pyproject, package, version, op=op, scope=scope, dry_run=dry_run
-        )
-        if ok:
-            result.changed.append(_rel(pyproject))
-        elif skip:
-            result.skips.append(skip)
 
     if "npm" in ecosystems:
         for pkg in _iter_npm_manifests(root):

@@ -229,7 +229,9 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
                     "write_file",
                     "Write full UTF-8 contents to a relative path in the consumer repo. "
                     "Ignored oracle/contract paths are rejected. Prefer this over "
-                    "remote/hosted sandboxes — only local writes affect the project.",
+                    "remote/hosted sandboxes — only local writes affect the project. "
+                    "SDK migration only: do not add if __name__ == '__main__' guards, "
+                    "rename top-level defs/classes, or do comment/format-only cleanup.",
                     {
                         "path": {"type": "string"},
                         "contents": {"type": "string"},
