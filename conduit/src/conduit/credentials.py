@@ -200,8 +200,14 @@ def ensure_verify_credentials(
     prompt: PromptFn | None = None,
     log: LogFn | None = None,
     console: Any | None = None,
+    demo: bool = False,
 ) -> None:
-    """Ensure consumer (and optionally LLM) keys exist, prompting on a TTY."""
+    """Ensure consumer (and optionally LLM) keys exist, prompting on a TTY.
+
+    When ``demo=True``, skip the consumer ``OPENAI_API_KEY`` gate (offline
+    fixtures / sample consumer). LLM credentials are still required if
+    ``want_llm`` is set.
+    """
     prompt = prompt or prompt_secret
     if interactive is None:
         interactive = bool(getattr(sys.stdin, "isatty", lambda: False)())
@@ -211,7 +217,8 @@ def ensure_verify_credentials(
         names = ", ".join(sorted(set(loaded)))
         log(f"[dim]Loaded credentials from .env: {names}[/dim]")
 
-    if needs_openai_consumer_key(root, packet) and not openai_consumer_key():
+    need_consumer_openai = needs_openai_consumer_key(root, packet) and not demo
+    if need_consumer_openai and not openai_consumer_key():
         value = _prompt_or_fail(
             "OPENAI_API_KEY",
             interactive=interactive,

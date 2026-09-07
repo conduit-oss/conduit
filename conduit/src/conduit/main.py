@@ -287,6 +287,7 @@ def _verify_with_oracle(
     source: dict | None = None,
     coverage_missed: list[dict] | None = None,
     audit_log=None,
+    demo: bool = False,
 ):
     """Write packet oracle tests, then run the suite with self-correct.
 
@@ -319,6 +320,7 @@ def _verify_with_oracle(
             want_llm=bool(want_llm or get_llm_client()),
             log=console.print,
             console=console,
+            demo=demo,
         )
     except CredentialsError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -1168,6 +1170,7 @@ def _run_pipeline(
                 else None
             ),
             audit_log=audit_log,
+            demo=demo,
         )
         for rel in generated:
             if rel not in report.files_modified:
@@ -1395,6 +1398,179 @@ def packet_init_cmd(
         out_dir=out_dir,
     )
     console.print(f"[green]Created[/green] {path}")
+
+
+@packet_app.command("new")
+def packet_new_cmd(
+    package: Optional[str] = typer.Option(None, "--package", help="Package name"),
+    ecosystem: Optional[str] = typer.Option(
+        None, "--ecosystem", help="pypi / npm / go / maven (default: pypi)"
+    ),
+    from_version: Optional[str] = typer.Option(
+        None, "--from", help="From version (or use --from-consumer)"
+    ),
+    to_version: Optional[str] = typer.Option(None, "--to", help="Target version"),
+    path: Optional[Path] = typer.Option(
+        None, "--path", help="Consumer repo for --from-consumer pin"
+    ),
+    from_consumer: bool = typer.Option(
+        False, "--from-consumer", help="Read from-version from consumer pin"
+    ),
+    enrich: bool = typer.Option(False, "--enrich", help="Optional LLM enrich"),
+    demo: bool = typer.Option(False, "--demo", help="Offline detect fixtures"),
+    scaffold_only: bool = typer.Option(
+        False, "--scaffold-only", help="Skip from-detect; write empty scaffold"
+    ),
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Output JSON path (default packets/{pkg}-{eco}-{to}.json)"
+    ),
+) -> None:
+    """Guided hop packet: from-detect or scaffold, validate, write, print try-it."""
+    from conduit.packet.author import (
+        consumer_pin,
+        create_packet_new,
+        default_packet_out_path,
+    )
+
+    pkg = (package or "").strip() or typer.prompt("Package")
+    eco = (ecosystem or "").strip() or typer.prompt("Ecosystem", default="pypi")
+    eco = eco.lower()
+    to_v = (to_version or "").strip() or typer.prompt("To version")
+    from_v = (from_version or "").strip()
+    if from_consumer:
+        root = _resolve_root(path or Path("."))
+        pin = consumer_pin(root, pkg, eco)
+        if not pin:
+            console.print(
+                f"[red]No {pkg} pin for ecosystem {eco!r} under {root}[/red]"
+            )
+            raise typer.Exit(2)
+        from_v = pin
+        console.print(f"[dim]from-consumer pin: {from_v}[/dim]")
+    if not from_v:
+        from_v = typer.prompt("From version", default="0")
+
+    dest = out or default_packet_out_path(
+        package=pkg, ecosystem=eco, to_version=to_v
+    )
+    path_written, packet, warnings = create_packet_new(
+        package=pkg,
+        ecosystem=eco,
+        from_version=from_v,
+        to_version=to_v,
+        out=dest,
+        enrich=enrich,
+        demo=demo,
+        prefer_detect=not scaffold_only,
+        log=console.print,
+    )
+    for warning in warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+    n_rules = len(packet.get("rules") or [])
+    console.print(
+        f"[green]Wrote[/green] {path_written}  "
+        f"({pkg} {packet.get('from_version')} → {packet.get('to_version')}, "
+        f"{n_rules} rule(s))"
+    )
+    consumer = path or Path("./examples/demo-consumer")
+    console.print(
+        "[dim]Try it:[/dim] "
+        f"conduit packet test --packet {path_written} --path {consumer}"
+    )
+    console.print(
+        "[dim]Or:[/dim] "
+        f"conduit run --path {consumer} --packet {path_written} --skip-pr"
+    )
+
+
+@packet_app.command("diff-rules")
+def packet_diff_rules_cmd(
+    packet: Path = typer.Argument(..., help="Current hop packet JSON"),
+    previous: Optional[Path] = typer.Option(
+        None, "--previous", help="Previous hop packet (else search sibling dir)"
+    ),
+) -> None:
+    """Show rules added/removed vs the previous hop snapshot."""
+    from conduit.packet.author import (
+        diff_packet_rules,
+        load_previous_for_diff,
+        summarize_rule,
+    )
+
+    current = json.loads(packet.read_text(encoding="utf-8"))
+    prev = load_previous_for_diff(
+        current,
+        previous_path=previous,
+        search_dir=packet.parent,
+    )
+    if prev is None:
+        console.print(
+            "[yellow]No previous snapshot found "
+            "(pass --previous or place an older hop JSON beside this file).[/yellow]"
+        )
+        raise typer.Exit(1)
+    diff = diff_packet_rules(current, prev)
+    console.print(
+        f"[bold]{current.get('package')}[/bold] "
+        f"{prev.get('to_version')} → {current.get('to_version')} "
+        f"({current.get('ecosystem')})"
+    )
+    added = diff["added"]
+    removed = diff["removed"]
+    console.print(f"[green]Added[/green] ({len(added)})")
+    for rule in added:
+        console.print(f"  + {summarize_rule(rule)}")
+    console.print(f"[red]Removed[/red] ({len(removed)})")
+    for rule in removed:
+        console.print(f"  - {summarize_rule(rule)}")
+    if not added and not removed:
+        console.print("[dim]No rule key differences.[/dim]")
+
+
+@packet_app.command("test")
+def packet_test_cmd(
+    packet: Path = typer.Option(..., "--packet", help="Migration packet JSON"),
+    path: Path = typer.Option(
+        Path("examples/demo-consumer"),
+        "--path",
+        help="Consumer repo (default: examples/demo-consumer)",
+    ),
+) -> None:
+    """Validate + dry-run apply + coverage (no verify / no credentials)."""
+    from conduit.detect.client_state import scan_package_state
+
+    root = _resolve_root(path)
+    data = json.loads(packet.read_text(encoding="utf-8"))
+    errors = validate_packet(data)
+    if errors:
+        for err in errors:
+            console.print(f"[red]{err}[/red]")
+        raise typer.Exit(1)
+    console.print("[green]Packet is valid.[/green]")
+
+    report = apply_packet(root, data, dry_run=True, require_context=False)
+    console.print(
+        f"[dim]Dry-run apply:[/dim] would touch {len(report.files_modified)} file(s), "
+        f"{len(report.changes)} change(s)"
+    )
+    for change in report.changes[:20]:
+        console.print(f"  [would] {change.path}: {change.detail}")
+    if len(report.changes) > 20:
+        console.print(f"  … +{len(report.changes) - 20} more")
+
+    pkg = str(data.get("package") or "")
+    data, _src = _prepare_client_packet(root, data)
+    state = (
+        scan_package_state(root, pkg, demo=False, use_llm=False) if pkg else None
+    )
+    cov = build_coverage_report(
+        package=pkg,
+        state=state,
+        signals=[],
+        packet=data,
+    )
+    console.print(format_coverage_report(cov, verbose=_VERBOSE))
+    console.print("[green]packet test OK[/green] (validate + dry-run + coverage)")
 
 
 @packet_app.command("export-post-rules")
