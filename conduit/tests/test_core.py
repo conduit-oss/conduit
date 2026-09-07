@@ -548,6 +548,99 @@ def test_ensure_tests_importable_smoke_only_with_consumer_venv(
     smoke = (tmp_path / "tests" / "test_conduit_smoke.py").read_text(encoding="utf-8")
     assert "test_conduit_smoke_changed_modules_importable" in smoke
     assert "pytest.skip" not in smoke
+    assert "sys.modules[spec.name] = module" in smoke
+    assert "sys.path.insert(0, root_s)" in smoke
+
+
+def test_oracle_required_shapes_accept_client_bound_callees(
+    tmp_path: Path, monkeypatch
+):
+    """CLIENT_CHAIN uses client.chat…; REQUIRED may still list openai.chat…."""
+    _disable_llm(monkeypatch)
+    app = tmp_path / "app.py"
+    app.write_text(
+        "from openai import OpenAI\n"
+        "client = OpenAI()\n"
+        "client.chat.completions.create(model='gpt-4o', messages=[])\n"
+        "client.audio.transcriptions.create(model='whisper-1', file=open('a'))\n",
+        encoding="utf-8",
+    )
+    packet = {
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "3.3.1",
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "openai.ChatCompletion.create",
+                "new_callee": "openai.chat.completions.create",
+            },
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "openai.Audio.transcribe",
+                "new_callee": "openai.audio.transcriptions.create",
+            },
+        ],
+    }
+    source = {
+        "package": "openai",
+        "api_patterns": [
+            "openai.ChatCompletion.create",
+            "openai.Audio.transcribe",
+        ],
+        "usages": [],
+    }
+    for parts in ((".venv", "Scripts", "python.exe"), (".venv", "bin", "python")):
+        venv_py = tmp_path.joinpath(*parts)
+        venv_py.parent.mkdir(parents=True, exist_ok=True)
+        venv_py.write_text("", encoding="utf-8")
+
+    created = ensure_tests(
+        tmp_path,
+        packet,
+        file_allowlist=[app],
+        changed_files=["app.py"],
+        source=source,
+    )
+    assert "tests/test_conduit_oracle.py" in created
+    oracle = (tmp_path / "tests" / "test_conduit_oracle.py").read_text(encoding="utf-8")
+    assert "CLIENT_CHAIN binds OpenAI" in oracle
+    assert "openai.chat.completions.create" in oracle
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(tmp_path / "tests" / "test_conduit_oracle.py")
+            + "::test_conduit_required_shapes_present",
+            "-q",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    smoke = (tmp_path / "tests" / "test_conduit_smoke.py").read_text(encoding="utf-8")
+    assert "CLIENT_CHAIN binds OpenAI" in smoke
+    proc2 = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(tmp_path / "tests" / "test_conduit_smoke.py")
+            + "::test_conduit_smoke_required_shapes",
+            "-q",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc2.returncode == 0, proc2.stdout + proc2.stderr
 
 
 def test_ensure_tests_oracle_fails_on_join_obfuscation(tmp_path: Path, monkeypatch):

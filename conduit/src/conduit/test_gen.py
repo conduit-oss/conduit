@@ -548,7 +548,12 @@ def _callee_used(text, callee):
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return callee + "(" in text
+        if (callee + "(") in text:
+            return True
+        if "." in callee:
+            rest = callee.split(".", 1)[1]
+            return bool(rest) and (rest + "(") in text
+        return False
     found = set()
 
     class _C(ast.NodeVisitor):
@@ -567,7 +572,16 @@ def _callee_used(text, callee):
     _C().visit(tree)
     if callee in found:
         return True
-    return any(item.endswith("." + callee) or item.endswith(callee) for item in found)
+    if any(item.endswith("." + callee) or item.endswith(callee) for item in found):
+        return True
+    # CLIENT_CHAIN binds OpenAI() to client: openai.chat… ↔ client.chat…
+    if "." in callee:
+        rest = callee.split(".", 1)[1]
+        if rest and any(
+            item == rest or item.endswith("." + rest) for item in found
+        ):
+            return True
+    return False
 
 
 def _active_token(text, token):
@@ -1030,6 +1044,11 @@ test('conduit smoke required shapes', () => {
 
 def test_conduit_smoke_changed_modules_importable():
     import importlib.util
+    import sys
+
+    root_s = str(ROOT)
+    if root_s not in sys.path:
+        sys.path.insert(0, root_s)
 
     for rel in CHANGED_PY:
         path = ROOT / rel
@@ -1039,6 +1058,7 @@ def test_conduit_smoke_changed_modules_importable():
         if spec is None or spec.loader is None:
             continue
         module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         assert module is not None
 '''
@@ -1084,7 +1104,12 @@ def _callee_used(text, callee):
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return (callee + "(") in text
+        if (callee + "(") in text:
+            return True
+        if "." in callee:
+            rest = callee.split(".", 1)[1]
+            return bool(rest) and (rest + "(") in text
+        return False
     found = set()
 
     class _C(ast.NodeVisitor):
@@ -1103,7 +1128,16 @@ def _callee_used(text, callee):
     _C().visit(tree)
     if callee in found:
         return True
-    return any(item.endswith("." + callee) or item.endswith(callee) for item in found)
+    if any(item.endswith("." + callee) or item.endswith(callee) for item in found):
+        return True
+    # CLIENT_CHAIN binds OpenAI() to client: openai.chat… ↔ client.chat…
+    if "." in callee:
+        rest = callee.split(".", 1)[1]
+        if rest and any(
+            item == rest or item.endswith("." + rest) for item in found
+        ):
+            return True
+    return False
 
 
 def test_conduit_smoke_required_shapes():
