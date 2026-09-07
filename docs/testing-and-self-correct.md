@@ -8,12 +8,12 @@ After apply, Conduit verifies the consumer repo still works. **Skipped tests, du
 
 - Loads **`/.env`** and **`/.env.local`** from `--path` (fill missing only; exported env wins).
 - Preflight prints loaded variable **names** (never values) and **yellow warnings** for predictable skips: published `--packet` (no vendor detect / packet LLM synth), `--demo`, `--skip-*`, and when no LLM is configured (client enrichment, packet evidence enrichment, self-correct LLM, and LLM anti-cheat reduced or skipped).
-- If the packet package is `openai`, or consumer tests/conftest mention `OPENAI_API_KEY`, Conduit requires `OPENAI_API_KEY` (or `OPENAI_KEY`, mapped to `OPENAI_API_KEY`).
+- If the packet package is `openai`, or consumer tests/conftest mention `OPENAI_API_KEY`, Conduit requires `OPENAI_API_KEY` (or `OPENAI_KEY`, mapped to `OPENAI_API_KEY`), **except** under `conduit run --demo` (demo skips the consumer OpenAI key gate).
 - On a TTY it **prompts** (hidden input) after **pausing the pulse spinner** with a visible banner; exports the value for this process and pytest subprocesses.
 - Non-interactive (CI) **exits 2** if the key is missing. It does not continue verify.
 - When an LLM will run (self-correct / functional test gen), it also requires `CONDUIT_LLM_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` unless the provider is `none`, `ollama`, or `custom`.
 
-Set `CONDUIT_LLM_PROVIDER=none` to disable LLM while still supplying a consumer `OPENAI_API_KEY`.
+Set `CONDUIT_LLM_PROVIDER=none` to disable LLM while still supplying a consumer `OPENAI_API_KEY` (not needed for `--demo`). Use `--skip-tests` to skip verify entirely.
 
 ## Test runner detection
 

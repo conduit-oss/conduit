@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: xlor1009/conduit/conduit@main
+      - uses: conduit-oss/conduit/conduit@main
         with:
           path: .
           base-ref: origin/main

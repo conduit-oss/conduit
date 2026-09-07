@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/xlor1009/conduit/main/schema/conduit-packet.schema.json",
+  "$id": "https://raw.githubusercontent.com/conduit-oss/conduit/main/schema/conduit-packet.schema.json",
   "title": "ConduitMigrationPacket",
   "description": "Migration Packet: AST/string codemod rules for a package version jump.",
   "type": "object",

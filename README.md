@@ -27,7 +27,7 @@ Detect upgrade  →  Prune files  →  Apply migration rules  →  Test / fix  �
 ## Quick start
 
 ```bash
-git clone https://github.com/xlor1009/conduit.git
+git clone https://github.com/conduit-oss/conduit.git
 cd conduit
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv/Scripts/activate
@@ -39,6 +39,10 @@ conduit run \
   --demo \
   --skip-pr
 ```
+
+The GitHub repo is **private** under `conduit-oss`; you need access to clone it.
+
+`--demo` uses offline detect fixtures and does **not** require a consumer `OPENAI_API_KEY` for verify. Optional LLM self-correct still uses `CONDUIT_LLM_*` if configured. For apply-only (no tests), add `--skip-tests`.
 
 This **really applies** the sample Migration Packet, runs the demo tests, and skips only PR creation so you can inspect the diff:
 

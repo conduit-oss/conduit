@@ -98,7 +98,21 @@ With `-v`, Conduit prints version sources (`manifest`, `signal`, `rule`, `fixtur
 ## Authoring CLI
 
 ```bash
-# Empty scaffold
+# Guided hop (from-detect when possible, else scaffold) + try-it line
+conduit packet new \
+  --package openai --ecosystem pypi --from 0.28.1 --to 1.0.0 \
+  --out ./packets/openai-pypi-1.0.0.json
+# --scaffold-only to skip detect; --from-consumer --path ./repo to read the pin
+# --enrich optional LLM; --demo offline fixtures
+
+# Dry-run apply + coverage (no verify / no API keys)
+conduit packet test --packet ./packets/openai-pypi-1.0.0.json --path ./examples/demo-consumer
+
+# Show hop-chain rule delta vs previous snapshot
+conduit packet diff-rules ./packets/openai-pypi-1.40.0.json \
+  --previous ./packets/openai-pypi-1.0.0.json
+
+# Empty scaffold directory
 conduit packet init \
   --package openai --from 0.28.0 --to 1.0.0 \
   --ecosystem pypi --out ./my-packet
@@ -116,6 +130,10 @@ conduit packet from-detect --module openai --out-dir ./packets
 
 conduit packet validate ./my-packet/conduit-packet.json
 conduit packet show ./my-packet/conduit-packet.json
+
+# Merge leftover-token / post-apply rules into a packet after a consumer run
+conduit packet export-post-rules --path ./examples/demo-consumer \
+  --packet ./packets/openai-pypi-1.0.0.json
 ```
 
 `from-detect` freezes **what the scan sees now**. The next new latest is a new file whose `from_version` is the last file’s `to_version` for that package+ecosystem. It is not a git-history replay. `--enrich` optionally adds LLM rules; default is scrape-only. OpenAI snapshots derive rules from detect signals (OpenAPI param rename/removal, endpoint path pairs → usage-scoped `AST_CALL_REWRITE`, deprecations) — not from a static Python seed list.
@@ -159,8 +177,8 @@ See [`examples/sample-packet/conduit-packet.json`](../examples/sample-packet/con
 
 | Role | Typical action |
 |------|----------------|
-| Vendor / maintainer | `conduit packet from-detect --module openai --out-dir ./packets` (or init/synthesize); share JSON |
-| Consumer | `conduit run --packet ./file.json` or `--packet https://…` (one hop); source packet from client inventory |
+| Vendor / maintainer | `conduit packet new` / `from-detect` / init/synthesize; `diff-rules` for hop chains; share JSON |
+| Consumer | `conduit packet test` then `conduit run --packet ./file.json` or `--packet https://…` (one hop); source packet from client inventory |
 
 There is not yet a `conduit packet publish` registry command — share packets via git/HTTP for now.
 
