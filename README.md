@@ -119,4 +119,4 @@ Details: [LLM configuration](docs/llm.md)
 
 ## License
 
-MIT
+Apache-2.0
