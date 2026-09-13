@@ -409,6 +409,7 @@ def synthesize_from_docs(
     changelog_text: str = "",
     docs_text: str = "",
     base: dict[str, Any] | None = None,
+    append_local_sources: bool = True,
 ) -> dict[str, Any]:
     """
     Build a packet from vendor docs. Uses configured LLM when available;
@@ -423,14 +424,15 @@ def synthesize_from_docs(
         to_version=to_version,
         notes="Synthesized from vendor docs",
     )
-    if changelog_text:
-        packet.setdefault("sources", []).append(
-            {"url": "local://changelog", "kind": "changelog"}
-        )
-    if docs_text:
-        packet.setdefault("sources", []).append(
-            {"url": "local://docs", "kind": "docs"}
-        )
+    if append_local_sources:
+        if changelog_text:
+            packet.setdefault("sources", []).append(
+                {"url": "local://changelog", "kind": "changelog"}
+            )
+        if docs_text:
+            packet.setdefault("sources", []).append(
+                {"url": "local://docs", "kind": "docs"}
+            )
 
     client = get_llm_client()
     if client is None or not (changelog_text or docs_text):
@@ -439,13 +441,16 @@ def synthesize_from_docs(
     prompt = {
         "instructions": (
             "Generate a Conduit migration packet JSON with keys: "
-            "packet_id, package, ecosystem, from_version, to_version, sources, notes, rules. "
+            "packet_id, package, ecosystem, from_version, to_version, sources, notes, "
+            "side_effects, rules. "
             "Rules may use EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
             "AST_PARAM_DROP, "
             "DEPENDENCY_BUMP, DEPENDENCY_ADD, DEPENDENCY_REMOVE, AST_IMPORT_REWRITE, "
             "AST_ATTR_RENAME, AST_CALL_REWRITE, KEY_RENAME. "
             "Only propose replacements grounded in the provided changelog/docs. "
             "If a successor is unknown, put it in notes — do not invent paths or callees. "
+            "Multi-statement API gaps and non-code ripples (webhooks, DBs, config) go in "
+            "side_effects as {kind, detail} — never invent fake string rewrites for them. "
             "Reply with JSON only."
         ),
         "package": package,
@@ -458,7 +463,10 @@ def synthesize_from_docs(
     }
     try:
         data = client.complete_json(
-            system="You author Conduit migration packets. JSON only. Never invent API successors.",
+            system=(
+                "You author Conduit migration packets. JSON only. "
+                "Never invent API successors. Put uncodemodable gaps in side_effects."
+            ),
             user=json.dumps(prompt),
         )
         if data and not validate_packet(data):
@@ -466,6 +474,9 @@ def synthesize_from_docs(
         if data:
             packet["rules"] = data.get("rules") or packet.get("rules") or []
             packet["notes"] = data.get("notes") or packet.get("notes")
+            side = data.get("side_effects")
+            if isinstance(side, list) and side:
+                packet["side_effects"] = side
     except Exception:
         pass
     return packet
@@ -473,7 +484,8 @@ def synthesize_from_docs(
 
 _EVIDENCE_SYSTEM = (
     "You are a Staff Software Engineer authoring Conduit Migration Packets. "
-    "Emit JSON only with keys: notes (string), sources (list of {url, kind}), rules (list). "
+    "Emit JSON only with keys: notes (string), sources (list of {url, kind}), "
+    "side_effects (list of {kind, detail}), rules (list). "
     "Allowed rule types: EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
     "AST_PARAM_DROP, "
     "DEPENDENCY_BUMP, DEPENDENCY_ADD, DEPENDENCY_REMOVE, AST_IMPORT_REWRITE, "
@@ -486,6 +498,8 @@ _EVIDENCE_SYSTEM = (
     "(literal kwargs to omit). "
     "If a removed endpoint/param has no stated successor, mention it in notes and do NOT "
     "invent replace/new_callee/new_param. "
+    "Multi-statement API gaps and non-code ripples go in side_effects — never invent "
+    "fake string rewrites for them. "
     "Do not invent model ids. "
     "When proposing a model EXACT_STRING_REPLACE, the replacement must support the client "
     "endpoints implied by detect_signals / evidence (see model Supported endpoints tables). "
@@ -656,15 +670,21 @@ def synthesize_from_evidence(
     missed_items: list[dict[str, Any]] | None = None,
     publisher: bool = False,
     log: Any | None = None,
+    seed_urls: list[str] | None = None,
+    suggested_queries: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     LLM-author rules via Responses agent tools (web_search / fetch_url / read_file).
     Returns (packet, warnings).
+
+    When ``seed_urls`` / ``suggested_queries`` are provided, they override detect-module
+    evidence metadata (so authoring from links works without a vendor module).
     """
     from conduit.llm import attach_llm_log, get_llm_client
     from conduit.llm.executors import RepoToolExecutor
     from conduit.llm.tools import agent_tools
     from conduit.repair_ignore import IgnoreList, build_ignore_list
+    from urllib.parse import urlparse
 
     warnings: list[str] = []
     emit = log if callable(log) else None
@@ -673,7 +693,19 @@ def synthesize_from_evidence(
         warnings.append("LLM packet enrichment skipped (no LLM configured)")
         return base, warnings
 
-    seeds, hosts, queries = _module_evidence_meta(package, from_version, to_version)
+    mod_seeds, mod_hosts, mod_queries = _module_evidence_meta(
+        package, from_version, to_version
+    )
+    seeds = list(seed_urls) if seed_urls is not None else list(mod_seeds)
+    queries = (
+        list(suggested_queries) if suggested_queries is not None else list(mod_queries)
+    )
+    hosts = list(mod_hosts)
+    if seed_urls is not None:
+        for url in seeds:
+            host = (urlparse(url).hostname or "").lower()
+            if host and host not in hosts:
+                hosts.append(host)
     if not seeds and not queries:
         warnings.append(
             f"LLM packet enrichment skipped (no evidence seeds for package {package!r})"
@@ -867,10 +899,17 @@ def synthesize_from_evidence(
             to_version=to_version,
         ),
     }
+    if base.get("side_effects"):
+        probe["side_effects"] = list(base["side_effects"])
     if data.get("notes"):
         note = str(data["notes"])
         prev = str(probe.get("notes") or "")
         probe["notes"] = f"{prev}\n{note}".strip() if prev else note
+    side = data.get("side_effects")
+    if isinstance(side, list) and side:
+        existing = list(probe.get("side_effects") or [])
+        existing.extend(s for s in side if isinstance(s, dict))
+        probe["side_effects"] = existing
     for src in data.get("sources") or []:
         if isinstance(src, dict) and src.get("url"):
             probe.setdefault("sources", []).append(
