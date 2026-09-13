@@ -59,7 +59,7 @@ Full pipeline: detect → prune → export delta → packet → apply → verify
 
 A **file, URL, or catalog slug** skips vendor detect workers (no GitHub/OpenAPI scrape). Conduit still scans the consumer repo for a **source packet** (imports / models) so prune and coverage work. Catalog floor `from_version` `0` is stamped from the client pin before export-delta/apply; unused catalog string rules are dropped. `--packet openai` (a short package name with no catalog hit) still runs vendor detect and synthesizes.
 
-Public catalog layout: `conduit-oss/packets` (`by-package/<pkg>/<ecosystem>/<packet_id>.json`).
+Public catalog layout: `conduit-oss/conduit-packets` (`by-package/<pkg>/<ecosystem>/<packet_id>.json`).
 
 ### Version defaults and warnings
 

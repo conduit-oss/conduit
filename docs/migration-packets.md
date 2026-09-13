@@ -79,10 +79,10 @@ Resolution order for `--packet` / `conduit run`:
 conduit run --path . --packet ./packets/my-sdk-pypi-2.0.0.json
 
 # Direct URL (raw GitHub, CDN, etc.)
-conduit run --path . --packet https://raw.githubusercontent.com/conduit-oss/packets/main/by-package/example-sdk/pypi/example-sdk-pypi-1.0.0.json
+conduit run --path . --packet https://raw.githubusercontent.com/conduit-oss/conduit-packets/main/by-package/example-sdk/pypi/example-sdk-pypi-1.0.0.json
 
 # Catalog name (requires base URL)
-export CONDUIT_PACKET_CATALOG_BASE=https://raw.githubusercontent.com/conduit-oss/packets/main
+export CONDUIT_PACKET_CATALOG_BASE=https://raw.githubusercontent.com/conduit-oss/conduit-packets/main
 conduit run --path . --packet example-sdk-pypi-1.0.0
 ```
 

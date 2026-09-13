@@ -15,7 +15,7 @@ from conduit.packet.cache import packets_dir, save_packet
 MAX_PACKET_BYTES = 2 * 1024 * 1024
 
 # Env: base URL for public catalog (no trailing slash), e.g.
-# https://raw.githubusercontent.com/conduit-oss/packets/main
+# https://raw.githubusercontent.com/conduit-oss/conduit-packets/main
 CATALOG_BASE_ENV = "CONDUIT_PACKET_CATALOG_BASE"
 
 

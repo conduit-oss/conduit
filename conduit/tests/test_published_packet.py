@@ -123,15 +123,15 @@ def test_catalog_url_for_name(monkeypatch):
 
     monkeypatch.setenv(
         "CONDUIT_PACKET_CATALOG_BASE",
-        "https://raw.githubusercontent.com/conduit-oss/packets/main/",
+        "https://raw.githubusercontent.com/conduit-oss/conduit-packets/main/",
     )
     assert (
         catalog_url_for_name("example-sdk-pypi-1.0.0")
-        == "https://raw.githubusercontent.com/conduit-oss/packets/main/by-package/example-sdk/pypi/example-sdk-pypi-1.0.0.json"
+        == "https://raw.githubusercontent.com/conduit-oss/conduit-packets/main/by-package/example-sdk/pypi/example-sdk-pypi-1.0.0.json"
     )
     assert catalog_url_for_name("https://example.com/x.json") is None
     assert catalog_url_for_name("openai") == (
-        "https://raw.githubusercontent.com/conduit-oss/packets/main/openai.json"
+        "https://raw.githubusercontent.com/conduit-oss/conduit-packets/main/openai.json"
     )
 
 
