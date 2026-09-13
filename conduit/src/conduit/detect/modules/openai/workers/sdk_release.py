@@ -109,6 +109,20 @@ def _load_repo_registry(profile=None) -> dict[str, dict[str, Any]]:
     return dict(DEFAULT_REPOS)
 
 
+def packet_ecosystem_for(ecosystems: list[str] | tuple[str, ...] | None) -> str | None:
+    """Map dependency-rule ecosystems to a packet ``ecosystem`` field."""
+    ecos = {str(e).lower() for e in (ecosystems or [])}
+    if "npm" in ecos:
+        return "npm"
+    if "go" in ecos:
+        return "go"
+    if "maven" in ecos or "gradle" in ecos:
+        return "maven"
+    if "pip" in ecos or "pyproject" in ecos:
+        return "pypi"
+    return None
+
+
 def _ecosystems_match(meta: dict[str, Any], client_ecosystems: list[str]) -> bool:
     wanted = {str(e).lower() for e in (meta.get("ecosystems") or [])}
     if not wanted:
@@ -123,6 +137,75 @@ def _ecosystems_match(meta: dict[str, Any], client_ecosystems: list[str]) -> boo
         # Unknown ecosystem: allow a single comparison path (prefer pip registry entries)
         return "pip" in wanted or "pyproject" in wanted
     return bool(wanted & have)
+
+
+def _latest_stable(versions: list[Version]) -> Version | None:
+    if not versions:
+        return None
+    stable = [v for v in versions if not v.is_prerelease]
+    return max(stable or versions)
+
+
+def _bump_signal(
+    *,
+    vendor: str,
+    repo: str,
+    package: str,
+    ecosystems: list[str],
+    from_v: Version | str,
+    chosen: Version,
+    latest_v: Version,
+    tags: list[str],
+    latest_tag: str,
+    majors_only: bool,
+    catalog: bool,
+) -> RawSignal:
+    from_s = (
+        str(from_v.base_version) if isinstance(from_v, Version) else str(from_v)
+    )
+    deferred = latest_v > chosen
+    pre = chosen.is_prerelease
+    if catalog:
+        reason = f"Bump {package} to latest stable {chosen.base_version}."
+        severity = Severity.CRITICAL
+    else:
+        inst = from_v if isinstance(from_v, Version) else Version(str(from_v).lstrip("v"))
+        severity = (
+            Severity.CRITICAL if chosen.major > inst.major else Severity.WARNING
+        )
+        reason = version_step_reason(
+            inst,
+            chosen,
+            latest_v,
+            package=package,
+            majors_only=majors_only,
+        )
+    chosen_tag = next(
+        (t for t in tags if parse_release_version(t) == chosen),
+        f"v{chosen}",
+    )
+    return RawSignal(
+        vendor=vendor,
+        change_type=ChangeType.SDK_MAJOR_BUMP,
+        severity=severity,
+        affected_pattern=package,
+        replacement_pattern=str(chosen.base_version),
+        source_url=f"https://github.com/{repo}/releases/tag/{chosen_tag}",
+        description=f"SDK {repo}: {reason}" + (" (prerelease)" if pre else ""),
+        extra={
+            "package": package,
+            "from_version": from_s,
+            "to_version": str(chosen.base_version),
+            "ecosystems": ecosystems,
+            "repo": repo,
+            "latest_tag": latest_tag,
+            "chosen_tag": chosen_tag,
+            "deferred_latest": str(latest_v.base_version) if deferred else None,
+            "majors_only": majors_only,
+            "catalog_latest": catalog,
+            "reason": reason,
+        },
+    )
 
 
 def _tags_for_repo(meta: dict[str, Any], *, demo: bool, repo: str) -> list[str]:
@@ -156,10 +239,51 @@ class SDKReleaseWorker(Worker):
         client_state: PackageClientState | None = None,
         majors_only: bool = True,
         profile=None,
+        catalog_latest: bool = False,
     ) -> list[RawSignal]:
         self.last_skip_reason = None
         prof = resolve_profile(profile)
         vendor = prof.name
+        repos = _load_repo_registry(prof)
+        signals: list[RawSignal] = []
+        seen: set[tuple[str, str]] = set()
+
+        if catalog_latest:
+            for repo, meta in repos.items():
+                tags = _tags_for_repo(meta, demo=demo, repo=repo)
+                if not tags:
+                    continue
+                versions = list_release_versions(tags)
+                chosen = _latest_stable(versions)
+                if chosen is None:
+                    continue
+                package = str(meta.get("package") or repo.split("/")[-1])
+                ecosystems = list(meta.get("ecosystems") or ["pip"])
+                packet_eco = packet_ecosystem_for(ecosystems) or "other"
+                key = (package.lower(), packet_eco)
+                if key in seen:
+                    continue
+                seen.add(key)
+                latest_tag = str(meta.get("latest_tag") or f"v{chosen}")
+                signals.append(
+                    _bump_signal(
+                        vendor=vendor,
+                        repo=repo,
+                        package=package,
+                        ecosystems=ecosystems,
+                        from_v="0",
+                        chosen=chosen,
+                        latest_v=chosen,
+                        tags=tags,
+                        latest_tag=latest_tag,
+                        majors_only=majors_only,
+                        catalog=True,
+                    )
+                )
+            if not signals:
+                self.last_skip_reason = "no_catalog_releases"
+            return signals
+
         installed_raw = (
             (client_state.installed_version if client_state else None) or ""
         ).strip()
@@ -176,9 +300,6 @@ class SDKReleaseWorker(Worker):
                 return []
 
         client_ecosystems = list(client_state.ecosystems) if client_state else []
-        repos = _load_repo_registry(prof)
-        signals: list[RawSignal] = []
-        seen_packages: set[str] = set()
 
         for repo, meta in repos.items():
             if not _ecosystems_match(meta, client_ecosystems):
@@ -201,57 +322,27 @@ class SDKReleaseWorker(Worker):
                 continue
 
             package = str(meta.get("package") or repo.split("/")[-1])
-            pkg_key = package.lower()
-            if pkg_key in seen_packages:
+            ecosystems = list(meta.get("ecosystems") or ["pip"])
+            packet_eco = packet_ecosystem_for(ecosystems) or "other"
+            key = (package.lower(), packet_eco)
+            if key in seen:
                 continue
+            seen.add(key)
 
-            ecosystems = meta.get("ecosystems", ["pip"])
-            deferred = latest_v > chosen
-            pre = chosen.is_prerelease
-            severity = (
-                Severity.CRITICAL
-                if chosen.major > installed_v.major
-                else Severity.WARNING
-            )
-            reason = version_step_reason(
-                installed_v,
-                chosen,
-                latest_v,
-                package=package,
-                majors_only=majors_only,
-            )
             latest_tag = str(meta.get("latest_tag") or f"v{latest_v}")
-            # Prefer a real tag string matching chosen when present
-            chosen_tag = next(
-                (t for t in tags if parse_release_version(t) == chosen),
-                f"v{chosen}",
-            )
-
-            seen_packages.add(pkg_key)
             signals.append(
-                RawSignal(
+                _bump_signal(
                     vendor=vendor,
-                    change_type=ChangeType.SDK_MAJOR_BUMP,
-                    severity=severity,
-                    affected_pattern=package,
-                    replacement_pattern=str(chosen.base_version),
-                    source_url=f"https://github.com/{repo}/releases/tag/{chosen_tag}",
-                    description=(
-                        f"SDK {repo}: {reason}"
-                        + (" (prerelease)" if pre else "")
-                    ),
-                    extra={
-                        "package": package,
-                        "from_version": str(installed_v.base_version),
-                        "to_version": str(chosen.base_version),
-                        "ecosystems": ecosystems,
-                        "repo": repo,
-                        "latest_tag": latest_tag,
-                        "chosen_tag": chosen_tag,
-                        "deferred_latest": str(latest_v.base_version) if deferred else None,
-                        "majors_only": majors_only,
-                        "reason": reason,
-                    },
+                    repo=repo,
+                    package=package,
+                    ecosystems=ecosystems,
+                    from_v=installed_v,
+                    chosen=chosen,
+                    latest_v=latest_v,
+                    tags=tags,
+                    latest_tag=latest_tag,
+                    majors_only=majors_only,
+                    catalog=False,
                 )
             )
 

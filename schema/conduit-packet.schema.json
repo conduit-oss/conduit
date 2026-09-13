@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/xlor1009/conduit/main/schema/conduit-packet.schema.json",
+  "$id": "https://raw.githubusercontent.com/conduit-oss/conduit/main/schema/conduit-packet.schema.json",
   "title": "ConduitMigrationPacket",
   "description": "Migration Packet: AST/string codemod rules for a package version jump.",
   "type": "object",
@@ -32,9 +32,14 @@
       }
     },
     "notes": { "type": ["string", "null"] },
+    "anticheat": {
+      "type": "object",
+      "description": "Optional packet-local anti-cheat extras (deny_substrings, banned_kwargs_on).",
+      "additionalProperties": true
+    },
     "side_effects": {
       "type": "array",
-      "description": "Human checklist for multi-statement / non-code ripples (not applied by codemods).",
+      "description": "Human checklist for webhooks, databases, and other non-code ripples.",
       "items": {
         "type": "object",
         "required": ["kind", "detail"],
@@ -67,6 +72,30 @@
         }
       }
     },
+    "runtime_model_aliases": {
+      "type": "object",
+      "description": "Map packet fake or legacy model ids to live API models at runtime.",
+      "additionalProperties": { "type": "string" }
+    },
+    "live_test": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "alias_prefixes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "default_completion_model": {
+          "type": "string",
+          "description": "Fallback instruct/completion model for aliased ids."
+        }
+      }
+    },
+    "post_rules": {
+      "type": "array",
+      "description": "Body/wrapper fixes applied after SDK and REST rule stages.",
+      "items": { "$ref": "#/$defs/post_rule" }
+    },
     "rules": {
       "type": "array",
       "items": { "$ref": "#/$defs/rule" }
@@ -78,10 +107,14 @@
         { "$ref": "#/$defs/exact_string_replace" },
         { "$ref": "#/$defs/regex_replace" },
         { "$ref": "#/$defs/ast_param_rename" },
+        { "$ref": "#/$defs/ast_param_drop" },
         { "$ref": "#/$defs/dependency_bump" },
+        { "$ref": "#/$defs/dependency_add" },
+        { "$ref": "#/$defs/dependency_remove" },
         { "$ref": "#/$defs/ast_import_rewrite" },
         { "$ref": "#/$defs/ast_attr_rename" },
-        { "$ref": "#/$defs/ast_call_rewrite" }
+        { "$ref": "#/$defs/ast_call_rewrite" },
+        { "$ref": "#/$defs/key_rename" }
       ]
     },
     "rule_reason": {
@@ -143,6 +176,38 @@
         "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },
+    "ast_param_drop": {
+      "type": "object",
+      "required": ["type", "target_files", "function_target", "param"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "AST_PARAM_DROP" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_target": { "type": "string" },
+        "param": { "type": "string" },
+        "values": {
+          "type": "array",
+          "items": {}
+        },
+        "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "dep_scope": {
+      "type": "string",
+      "enum": ["main", "dev", "peer"],
+      "description": "main (default), dev extras/devDependencies, or npm peerDependencies."
+    },
+    "dep_ecosystems": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["pip", "npm", "pyproject", "go", "maven", "gradle"]
+      }
+    },
     "dependency_bump": {
       "type": "object",
       "required": ["type", "package", "from_version", "to_version"],
@@ -152,13 +217,34 @@
         "package": { "type": "string" },
         "from_version": { "type": "string" },
         "to_version": { "type": "string" },
-        "ecosystems": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": ["pip", "npm", "pyproject", "go", "maven", "gradle"]
-          }
-        },
+        "ecosystems": { "$ref": "#/$defs/dep_ecosystems" },
+        "scope": { "$ref": "#/$defs/dep_scope" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "dependency_add": {
+      "type": "object",
+      "required": ["type", "package", "to_version"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "DEPENDENCY_ADD" },
+        "package": { "type": "string", "minLength": 1 },
+        "to_version": { "type": "string", "minLength": 1 },
+        "ecosystems": { "$ref": "#/$defs/dep_ecosystems" },
+        "scope": { "$ref": "#/$defs/dep_scope" },
+        "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "dependency_remove": {
+      "type": "object",
+      "required": ["type", "package"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "DEPENDENCY_REMOVE" },
+        "package": { "type": "string", "minLength": 1 },
+        "from_version": { "type": "string" },
+        "ecosystems": { "$ref": "#/$defs/dep_ecosystems" },
+        "scope": { "$ref": "#/$defs/dep_scope" },
         "reason": { "$ref": "#/$defs/rule_reason" }
       }
     },
@@ -208,6 +294,125 @@
         "old_callee": { "type": "string" },
         "new_callee": { "type": "string" },
         "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "key_rename": {
+      "type": "object",
+      "required": ["type", "target_files", "old_key", "new_key"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "KEY_RENAME" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "old_key": { "type": "string", "minLength": 1 },
+        "new_key": { "type": "string", "minLength": 1 },
+        "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "post_rule": {
+      "oneOf": [
+        { "$ref": "#/$defs/wrapper_ensure_list" },
+        { "$ref": "#/$defs/wrapper_ensure_dict_key" },
+        { "$ref": "#/$defs/wrapper_delegate" },
+        { "$ref": "#/$defs/function_body_replace" },
+        { "$ref": "#/$defs/runtime_model_alias_rule" }
+      ]
+    },
+    "wrapper_ensure_list": {
+      "type": "object",
+      "required": ["type", "target_files", "function_name"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "WRAPPER_ENSURE_LIST" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_name": { "type": "string", "minLength": 1 },
+        "list_callee_hint": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" },
+        "source": { "type": "string" }
+      }
+    },
+    "wrapper_ensure_dict_key": {
+      "type": "object",
+      "required": ["type", "target_files", "function_name", "required_key"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "WRAPPER_ENSURE_DICT_KEY" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_name": { "type": "string", "minLength": 1 },
+        "required_key": { "type": "string", "minLength": 1 },
+        "create_callee_hint": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" },
+        "source": { "type": "string" }
+      }
+    },
+    "wrapper_delegate": {
+      "type": "object",
+      "required": ["type", "target_files", "function_name", "delegate_module", "delegate_symbol"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "WRAPPER_DELEGATE" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_name": { "type": "string", "minLength": 1 },
+        "delegate_module": { "type": "string", "minLength": 1 },
+        "delegate_symbol": { "type": "string", "minLength": 1 },
+        "model_param": { "type": "string" },
+        "reason": { "$ref": "#/$defs/rule_reason" },
+        "source": { "type": "string" }
+      }
+    },
+    "function_body_replace": {
+      "type": "object",
+      "required": ["type", "target_files", "function_name", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "FUNCTION_BODY_REPLACE" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_name": { "type": "string", "minLength": 1 },
+        "body": { "type": "string", "minLength": 1 },
+        "replace_module": { "type": "boolean" },
+        "reason": { "$ref": "#/$defs/rule_reason" },
+        "source": { "type": "string" }
+      }
+    },
+    "runtime_model_alias_rule": {
+      "type": "object",
+      "required": ["type", "target_files", "function_name"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "RUNTIME_MODEL_ALIAS" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "function_name": { "type": "string", "minLength": 1 },
+        "default_model": { "type": "string" },
+        "alias_prefixes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "replace_module": { "type": "boolean" },
+        "reason": { "$ref": "#/$defs/rule_reason" },
+        "source": { "type": "string" }
       }
     }
   }

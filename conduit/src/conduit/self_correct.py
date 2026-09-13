@@ -6,13 +6,31 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
-from conduit.llm import get_llm_client
+from conduit.anticheat.audit_log import MigrationAuditLog
+from conduit.anticheat.baseline import load_anticheat_baseline
+from conduit.anticheat.rules import reject_write
+from conduit.anticheat.scan import anticheat_failure_result, run_anticheat
+from conduit.llm import attach_llm_log, get_llm_client
 from conduit.repair_ignore import IgnoreList, build_ignore_list
-from conduit.test_runner import TestResult, run_tests
+from conduit.test_runner import (
+    TestResult,
+    UNREPAIRABLE_VERIFY_KINDS,
+    annotate_verify,
+    classify_verify_failure,
+    interpreter_belongs_to_root,
+    resolve_consumer_python,
+    run_tests,
+)
 
 LogFn = Callable[[str], None]
+
+
+def _anticheat_previous(root: Path) -> dict[str, str] | None:
+    """Pre-apply baseline for soft-fail skip; None when absent (fail-closed)."""
+    baseline = load_anticheat_baseline(root)
+    return baseline or None
 
 _PATH_RE = re.compile(r"/v1/[a-z0-9/_-]+", re.I)
 _QUOTED_ID_RE = re.compile(r"""[`'"]([A-Za-z0-9._/-]{3,})[`'"]""")
@@ -20,10 +38,208 @@ _PYTEST_COUNT_RE = re.compile(
     r"(?P<failed>\d+)\s+failed|(?P<passed>\d+)\s+passed|(?P<error>\d+)\s+error",
     re.I,
 )
+_FAILED_NODE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.M)
+_STILL_CONTAINS_RE = re.compile(r"still contains\s+'([^']+)'", re.I)
+# Oracle-style: "configs/foo.json still contains 'davinci'"
+_LEFTOVER_PATH_RE = re.compile(
+    r"(?m)^(?P<path>[^\s:]+?)\s+(?:still contains|obfuscates leftover)\s+'(?P<token>[^']+)'",
+    re.I,
+)
+# Pytest short-tb / bare exception lines (generic — not API-specific).
+_PYTEST_E_LINE_RE = re.compile(r"(?m)^E\s+(\S.+)$")
+_EXCEPTION_LINE_RE = re.compile(
+    r"(?m)^([A-Za-z_][\w.]*(?:Error|Exception|Warning):\s*.+)$"
+)
+_CONTEXT_IMPL_CAP = 8
+_LEFTOVER_PATH_CAP = 16
+_WINDOW_RADIUS = 60
+_PROMPT_STREAM_HEAD = 1000
+_PROMPT_STREAM_TAIL = 2000
+_PROMPT_STREAM_CHARS = _PROMPT_STREAM_TAIL  # back-compat alias
+_EXCEPTION_SNIPPET_CAP = 8
 
 
 def _noop_log(_: str) -> None:
     return None
+
+
+def _read_text(path: Path) -> str | None:
+    """Read UTF-8 text, or None if missing / undecodable (skip, do not rewrite)."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _failure_blob(result: TestResult) -> str:
+    return f"{result.stdout or ''}\n{result.stderr or ''}"
+
+
+def _is_anticheat_failure(result: TestResult) -> bool:
+    return str(result.runner or "").lower() == "anticheat"
+
+
+def _failure_fingerprint(result: TestResult) -> str:
+    """Stable signature of what is still failing (for stagnant early-stop)."""
+    if _is_anticheat_failure(result):
+        body = (result.stdout or "").strip()
+        return f"anticheat:{body}"
+    blob = _failure_blob(result)
+    nodes = sorted(set(_FAILED_NODE_RE.findall(blob)))
+    leftovers = sorted(set(_STILL_CONTAINS_RE.findall(blob)))
+    counts = (
+        result.failed_count,
+        result.error_count,
+        result.passed_count,
+    )
+    if nodes or leftovers:
+        return f"nodes={nodes}|left={leftovers}|counts={counts}"
+    snippets = _exception_snippets(blob, limit=4)
+    if snippets:
+        return f"snippets={snippets}|counts={counts}"
+    reason = (result.fail_reason or "").strip()
+    excerpt = re.sub(r"\s+", " ", blob).strip()[:400]
+    return f"reason={reason}|excerpt={excerpt}|counts={counts}"
+
+
+def _failed_nodes(result: TestResult) -> list[str]:
+    return sorted(set(_FAILED_NODE_RE.findall(_failure_blob(result))))
+
+
+def _leftover_tokens(result: TestResult) -> list[str]:
+    return sorted(set(_STILL_CONTAINS_RE.findall(_failure_blob(result))))
+
+
+def _anticheat_finding_hits(text: str) -> list[tuple[str, str, str]]:
+    """(path, kind, detail) from anticheat failure stdout."""
+    from conduit.anticheat.findings import parse_anticheat_failure_blob
+
+    return [
+        (f.path, f.kind, f.detail)
+        for f in parse_anticheat_failure_blob(text)
+        if f.path
+    ]
+
+
+def _leftover_path_hits(text: str) -> list[tuple[str, str]]:
+    """(rel_path, token) pairs from leftover-oracle assertion lines."""
+    out: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for m in _LEFTOVER_PATH_RE.finditer(text or ""):
+        rel = m.group("path").replace("\\", "/").strip().lstrip("./")
+        token = m.group("token")
+        if not rel or not token:
+            continue
+        key = (rel, token)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _pack_stream(
+    text: str,
+    *,
+    head: int = _PROMPT_STREAM_HEAD,
+    tail: int = _PROMPT_STREAM_TAIL,
+) -> str:
+    """Keep start and end of a long stream so early FAILED lines are not dropped."""
+    text = text or ""
+    if len(text) <= head + tail:
+        return text
+    return f"{text[:head]}\n...\n{text[-tail:]}"
+
+
+def _exception_snippets(text: str, *, limit: int = _EXCEPTION_SNIPPET_CAP) -> list[str]:
+    """Unique exception / pytest-E lines from a failure blob (generic)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for pattern in (_PYTEST_E_LINE_RE, _EXCEPTION_LINE_RE):
+        for m in pattern.finditer(text or ""):
+            line = re.sub(r"\s+", " ", m.group(1)).strip()
+            if len(line) > 240:
+                line = line[:237] + "..."
+            if not line or line in seen:
+                continue
+            # Skip leftover-oracle noise already covered by leftover_* fields.
+            if "still contains" in line.lower() or "obfuscates leftover" in line.lower():
+                continue
+            seen.add(line)
+            out.append(line)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def build_failure_digest(result: TestResult) -> dict[str, Any]:
+    """Structured failure digest from full stdout/stderr (for prompt + tools)."""
+    blob = _failure_blob(result)
+    nodes = _failed_nodes(result)
+    leftovers = _leftover_tokens(result)
+    leftover_paths = [
+        {"path": path, "token": token} for path, token in _leftover_path_hits(blob)
+    ]
+    snippets = _exception_snippets(blob)
+    lines: list[str] = []
+    if nodes:
+        lines.append("failed_nodes: " + ", ".join(nodes[:12]))
+        if len(nodes) > 12:
+            lines[-1] += f" (+{len(nodes) - 12} more)"
+    if leftover_paths:
+        preview = "; ".join(
+            f"{p['path']} still contains '{p['token']}'" for p in leftover_paths[:8]
+        )
+        lines.append("leftovers: " + preview)
+        if len(leftover_paths) > 8:
+            lines[-1] += f" (+{len(leftover_paths) - 8} more)"
+    elif leftovers:
+        lines.append("leftover_tokens: " + ", ".join(leftovers[:12]))
+    for snip in snippets[:6]:
+        lines.append(snip)
+    return {
+        "failed_nodes": nodes,
+        "leftover_tokens": leftovers[:80],
+        "leftover_files": leftover_paths[:_LEFTOVER_PATH_CAP],
+        "exception_snippets": snippets,
+        "lines": lines,
+        "text": "\n".join(lines),
+    }
+
+
+def _structured_failure(result: TestResult) -> dict[str, Any]:
+    """Compact failure signal for the repair prompt (Cursor-shaped)."""
+    digest = build_failure_digest(result)
+    return {
+        "failed_nodes": digest["failed_nodes"],
+        "leftover_tokens": digest["leftover_tokens"],
+        "leftover_files": digest["leftover_files"],
+        "exception_snippets": digest["exception_snippets"],
+        "failure_digest": digest["text"],
+        "failure_fingerprint": _failure_fingerprint(result),
+        "fail_reason": (result.fail_reason or "").strip(),
+        "runner": result.runner,
+        "failed_count": result.failed_count,
+        "error_count": result.error_count,
+        "passed_count": result.passed_count,
+    }
+
+
+def _mark_unpassable(result: TestResult, reason: str) -> TestResult:
+    """Attach an early-stop reason visible in TestResult.summary."""
+    reason = reason.strip()
+    if not reason:
+        return result
+    if result.fail_reason:
+        if reason not in result.fail_reason:
+            result.fail_reason = f"{reason}; {result.fail_reason}"
+    else:
+        result.fail_reason = reason
+    return result
+
+
+def _emit_unpassable_stop(emit: LogFn, reason: str) -> None:
+    emit(f"[self-correct] stopping early: {reason}")
 
 
 @dataclass
@@ -53,10 +269,81 @@ def _failure_excerpt(test_result: TestResult, *, limit: int = 1500) -> str:
     return text
 
 
+def format_failure_reasons(result: TestResult, *, limit: int = 12) -> list[str]:
+    """One human-readable reason line per failing test / anticheat finding."""
+    blob = _failure_blob(result)
+    lines: list[str] = []
+
+    if _is_anticheat_failure(result):
+        for path, kind, detail in _anticheat_finding_hits(blob):
+            detail = re.sub(r"\s+", " ", (detail or "").strip())
+            if len(detail) > 200:
+                detail = detail[:197] + "..."
+            if kind and detail:
+                lines.append(f"{path}: {kind} — {detail}")
+            elif detail:
+                lines.append(f"{path}: {detail}")
+            else:
+                lines.append(f"{path}: {kind or 'anticheat'}")
+            if len(lines) >= limit:
+                return lines
+        if lines:
+            return lines
+
+    # Pair FAILED/ERROR nodeids with the next pytest ``E `` assertion/exception line.
+    nodes = list(_FAILED_NODE_RE.finditer(blob))
+    e_lines = list(_PYTEST_E_LINE_RE.finditer(blob))
+    e_idx = 0
+    for match in nodes:
+        node = match.group(1)
+        reason = ""
+        while e_idx < len(e_lines) and e_lines[e_idx].start() < match.start():
+            e_idx += 1
+        if e_idx < len(e_lines):
+            reason = re.sub(r"\s+", " ", e_lines[e_idx].group(1)).strip()
+            e_idx += 1
+        if not reason:
+            # Fallback: nearest exception-style line after this FAILED marker.
+            for m in _EXCEPTION_LINE_RE.finditer(blob[match.end() : match.end() + 800]):
+                reason = re.sub(r"\s+", " ", m.group(1)).strip()
+                break
+        if len(reason) > 200:
+            reason = reason[:197] + "..."
+        lines.append(f"{node} — {reason}" if reason else node)
+        if len(lines) >= limit:
+            break
+
+    if not lines:
+        for snippet in _exception_snippets(blob, limit=limit):
+            lines.append(snippet)
+    if not lines and (result.fail_reason or "").strip():
+        lines.append((result.fail_reason or "").strip()[:240])
+    return lines
+
+
+def emit_failure_reasons(
+    result: TestResult,
+    emit: LogFn,
+    *,
+    limit: int = 12,
+) -> None:
+    """Log structured per-failure reasons (always visible, not verbose-only)."""
+    reasons = format_failure_reasons(result, limit=limit)
+    if not reasons:
+        emit("[self-correct] failure reasons: (none parsed)")
+        return
+    emit(f"[self-correct] failure reasons ({len(reasons)}):")
+    for line in reasons:
+        emit(f"  - {line}")
+
+
 # pytest short traceback: "openai_text\engines.py:25: in complete_with_engine"
 _PYTEST_PATH_RE = re.compile(
     r"(?m)^(?P<path>(?:[A-Za-z]:)?[^:\n]+\.(?:py|pyw|ts|js|tsx|jsx|go|java))"
     r":(?P<line>\d+)(?::|\s)"
+)
+_FILE_LINE_RE = re.compile(
+    r'File "(?P<path>[^"]+)", line (?P<line>\d+)'
 )
 
 
@@ -64,6 +351,7 @@ def _candidate_path(root: Path, raw: str) -> Path | None:
     raw = raw.strip().strip('"').strip("'")
     if not raw:
         return None
+    raw = raw.replace("\\", "/")
     path = Path(raw)
     if not path.is_absolute():
         path = root / path
@@ -79,21 +367,82 @@ def _candidate_path(root: Path, raw: str) -> Path | None:
     return None
 
 
-def _paths_from_traceback(root: Path, text: str, limit: int = 12) -> list[Path]:
-    found: list[Path] = []
-    for m in re.finditer(r'File "([^"]+)"', text):
-        path = _candidate_path(root, m.group(1))
-        if path is not None and path not in found:
-            found.append(path)
+def _traceback_hits(
+    root: Path, text: str, *, limit: int = 12
+) -> list[tuple[Path, int | None]]:
+    """(path, 1-based line or None) from pytest / Python tracebacks."""
+    found: list[tuple[Path, int | None]] = []
+    seen: set[str] = set()
+
+    def _add(path: Path, line: int | None) -> None:
+        key = str(path.resolve())
+        if key in seen:
+            return
+        seen.add(key)
+        found.append((path, line))
+
+    for m in _FILE_LINE_RE.finditer(text or ""):
+        path = _candidate_path(root, m.group("path"))
+        if path is not None:
+            try:
+                line = int(m.group("line"))
+            except ValueError:
+                line = None
+            _add(path, line)
         if len(found) >= limit:
             return found
     for m in _PYTEST_PATH_RE.finditer(text or ""):
         path = _candidate_path(root, m.group("path"))
-        if path is not None and path not in found:
-            found.append(path)
+        if path is not None:
+            try:
+                line = int(m.group("line"))
+            except ValueError:
+                line = None
+            _add(path, line)
         if len(found) >= limit:
             break
     return found
+
+
+def _paths_from_traceback(root: Path, text: str, limit: int = 12) -> list[Path]:
+    return [p for p, _ in _traceback_hits(root, text, limit=limit)]
+
+
+def _file_window(
+    path: Path, line: int | None, *, radius: int = _WINDOW_RADIUS
+) -> dict[str, Any]:
+    """Read ±radius lines around line (1-based); whole file if short / no line."""
+    text = _read_text(path)
+    if text is None:
+        raise OSError(f"cannot read {path}")
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return {"start": 1, "end": 1, "text": "", "line": line}
+    if line is None or line < 1:
+        if len(lines) <= radius * 2 + 1:
+            return {
+                "start": 1,
+                "end": len(lines),
+                "text": text,
+                "line": line,
+            }
+        # Head of file when no line number
+        end = min(len(lines), radius * 2 + 1)
+        return {
+            "start": 1,
+            "end": end,
+            "text": "".join(lines[:end]),
+            "line": line,
+        }
+    idx = min(max(line, 1), len(lines)) - 1
+    start = max(0, idx - radius)
+    end = min(len(lines), idx + radius + 1)
+    return {
+        "start": start + 1,
+        "end": end,
+        "text": "".join(lines[start:end]),
+        "line": line,
+    }
 
 
 def _package_dirs(root: Path) -> list[Path]:
@@ -138,48 +487,96 @@ def _is_test_rel(rel: str) -> bool:
     )
 
 
-def _collect_context_files(
+def _neighbor_sources(path: Path, *, limit: int = 6) -> list[Path]:
+    parent = path.parent
+    if not parent.is_dir():
+        return []
+    out: list[Path] = []
+    try:
+        siblings = sorted(parent.iterdir())
+    except OSError:
+        return []
+    for sib in siblings:
+        if not sib.is_file():
+            continue
+        if sib.suffix.lower() not in {".py", ".ts", ".js", ".tsx", ".jsx"}:
+            continue
+        if sib == path:
+            continue
+        out.append(sib)
+        if len(out) >= limit:
+            break
+    return out
+
+
+@dataclass
+class RepairContext:
+    """Cursor-shaped repair seed: windows + allowlist, not full-module dumps."""
+
+    file_windows: list[dict[str, Any]] = field(default_factory=list)
+    seeded_paths: list[str] = field(default_factory=list)
+    allowlist: set[str] = field(default_factory=set)
+    # Path → window text for prompt "files" (compat with older callers)
+    files: dict[str, str] = field(default_factory=dict)
+    # Leftover-oracle offenders: [{path, tokens}]
+    leftover_files: list[dict[str, Any]] = field(default_factory=list)
+
+
+def collect_repair_context(
     root: Path,
     test_result: TestResult,
-    limit: int = 24,
+    *,
     packet: dict[str, Any] | None = None,
     source: dict[str, Any] | None = None,
-) -> dict[str, str]:
-    files: dict[str, str] = {}
+    impl_cap: int = _CONTEXT_IMPL_CAP,
+) -> RepairContext:
+    """Build span windows + path allowlist for self-correct."""
+    root = root.resolve()
+    blob = _failure_blob(test_result)
+    hits = _traceback_hits(root, blob)
+    ctx = RepairContext()
 
-    def _add(path: Path) -> bool:
-        if len(files) >= limit:
-            return False
-        try:
-            rel = str(path.relative_to(root)).replace("\\", "/")
-        except ValueError:
-            return False
-        if rel in files:
-            return True
-        try:
-            files[rel] = path.read_text(encoding="utf-8")
-        except OSError:
-            return False
-        return True
-
-    traceback_paths = _paths_from_traceback(
-        root, (test_result.stdout or "") + "\n" + (test_result.stderr or "")
-    )
-
-    def _rel_of(path: Path) -> str:
+    def _rel(path: Path) -> str:
         try:
             return str(path.relative_to(root)).replace("\\", "/")
         except ValueError:
-            return path.name
+            return path.name.replace("\\", "/")
 
-    impl_trace = [p for p in traceback_paths if not _is_test_rel(_rel_of(p))]
-    test_trace = [p for p in traceback_paths if _is_test_rel(_rel_of(p))]
-    for path in impl_trace:
-        _add(path)
+    def _register(path: Path, line: int | None, *, as_window: bool) -> None:
+        rel = _rel(path)
+        ctx.allowlist.add(rel)
+        if rel not in ctx.seeded_paths:
+            ctx.seeded_paths.append(rel)
+        if not as_window or rel in ctx.files:
+            return
+        try:
+            win = _file_window(path, line)
+        except OSError:
+            return
+        ctx.files[rel] = win["text"]
+        ctx.file_windows.append(
+            {
+                "path": rel,
+                "start": win["start"],
+                "end": win["end"],
+                "line": win["line"],
+                "text": win["text"],
+            }
+        )
+
+    impl_hits = [(p, ln) for p, ln in hits if not _is_test_rel(_rel(p))]
+    test_hits = [(p, ln) for p, ln in hits if _is_test_rel(_rel(p))]
+
+    for path, line in impl_hits[:impl_cap]:
+        _register(path, line, as_window=True)
         init = path.parent / "__init__.py"
         if init.is_file():
-            _add(init)
+            _register(init, None, as_window=False)
+        for sib in _neighbor_sources(path):
+            ctx.allowlist.add(_rel(sib))
 
+    # Only import_files that appear in the traceback (avoid flood).
+    trace_rels = {_rel(p) for p, _ in hits}
     import_files: list[str] = []
     for rel in (source or {}).get("import_files") or []:
         if isinstance(rel, str):
@@ -187,58 +584,219 @@ def _collect_context_files(
     for rel in (packet or {}).get("import_files") or []:
         if isinstance(rel, str) and rel.replace("\\", "/") not in import_files:
             import_files.append(rel.replace("\\", "/"))
-    src_pkt = root / ".conduit" / "source-packets"
-    if src_pkt.is_dir():
-        for pkt_file in src_pkt.glob("*.json"):
-            try:
-                data = json.loads(pkt_file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            for rel in data.get("import_files") or []:
-                if isinstance(rel, str) and rel.replace("\\", "/") not in import_files:
-                    import_files.append(rel.replace("\\", "/"))
-
     for rel in import_files:
         if _is_test_rel(rel):
             continue
-        _add(root / rel)
+        if rel not in trace_rels:
+            continue
+        path = root / rel
+        if path.is_file():
+            _register(path, None, as_window=len(ctx.file_windows) < impl_cap)
 
     conftest = root / "tests" / "conftest.py"
     if conftest.is_file():
-        _add(conftest)
+        _register(conftest, None, as_window=True)
     root_conftest = root / "conftest.py"
     if root_conftest.is_file():
-        _add(root_conftest)
+        _register(root_conftest, None, as_window=True)
 
-    for path in test_trace:
-        _add(path)
-    return files
+    # Primary failing test file only (first traceback test hit).
+    for path, line in test_hits[:1]:
+        _register(path, line, as_window=True)
+
+    if _is_anticheat_failure(test_result):
+        blob = _failure_blob(test_result)
+        anticheat_added = 0
+        for rel, _kind, _detail in _anticheat_finding_hits(blob):
+            path = root / rel
+            if not path.is_file():
+                continue
+            line: int | None = None
+            text = _read_text(path)
+            if text is not None:
+                needle = _detail[:40] if _detail else ""
+                if needle:
+                    idx = text.find(needle)
+                    if idx >= 0:
+                        line = text.count("\n", 0, idx) + 1
+            _register(path, line, as_window=len(ctx.file_windows) < impl_cap + 4)
+            anticheat_added += 1
+            if anticheat_added >= 4:
+                break
+        if anticheat_added:
+            return ctx
+
+    # Seed files named by leftover-oracle "path still contains 'token'" lines.
+    from conduit.test_gen import is_conduit_generated_rel
+
+    by_path: dict[str, list[str]] = {}
+    for rel, token in _leftover_path_hits(blob):
+        if is_conduit_generated_rel(rel):
+            continue
+        path = root / rel
+        if not path.is_file():
+            continue
+        by_path.setdefault(rel, [])
+        if token not in by_path[rel]:
+            by_path[rel].append(token)
+
+    leftover_added = 0
+    for rel, tokens in by_path.items():
+        if leftover_added >= _LEFTOVER_PATH_CAP:
+            break
+        path = root / rel
+        ctx.leftover_files.append({"path": rel, "tokens": tokens})
+        # Prefer a window around the first leftover token if present.
+        line: int | None = None
+        text = _read_text(path)
+        if text is not None:
+            for tok in tokens:
+                idx = text.find(tok)
+                if idx >= 0:
+                    line = text.count("\n", 0, idx) + 1
+                    break
+        as_window = len(ctx.file_windows) < impl_cap + _LEFTOVER_PATH_CAP
+        _register(path, line, as_window=as_window)
+        leftover_added += 1
+
+    return ctx
+
+
+def _collect_context_files(
+    root: Path,
+    test_result: TestResult,
+    limit: int = 24,
+    packet: dict[str, Any] | None = None,
+    source: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Backward-compatible: window texts keyed by path (capped)."""
+    ctx = collect_repair_context(
+        root,
+        test_result,
+        packet=packet,
+        source=source,
+        impl_cap=min(_CONTEXT_IMPL_CAP, limit),
+    )
+    out: dict[str, str] = {}
+    for rel, text in ctx.files.items():
+        if len(out) >= limit:
+            break
+        out[rel] = text
+    return out
+
+
+def reject_self_correct_write(
+    rel: str,
+    content: str,
+    *,
+    packet: dict[str, Any],
+    ignore: IgnoreList | None = None,
+    previous: str | None = None,
+    root: Path | None = None,
+) -> str | None:
+    """Return a reason to drop this write, or None if it is allowed."""
+    rel_posix = rel.replace("\\", "/")
+    ignore = ignore or IgnoreList()
+    if ignore.path_ignored(rel_posix):
+        return f"ignored path {rel_posix}"
+    from conduit.surface_paths import prose_ops_reject_reason
+
+    prose_reason = prose_ops_reject_reason(rel_posix)
+    if prose_reason:
+        return prose_reason
+    if previous is None and root is not None:
+        path = root / rel_posix
+        if path.is_file():
+            previous = _read_text(path)
+        else:
+            previous = ""
+    wipe = _wipe_or_shrink_reason(previous, content)
+    if wipe:
+        return wipe
+    structure = _non_sdk_structure_reason(previous, content)
+    if structure:
+        return structure
+    return reject_write(
+        rel_posix, content, packet=packet, previous=previous
+    )
+
+
+def _wipe_or_shrink_reason(previous: str | None, content: str) -> str | None:
+    """Block LLM repair from emptying or gutting an existing file."""
+    if previous is None:
+        return None
+    if previous.strip() and not str(content or "").strip():
+        return "refuses to wipe non-empty file"
+    prev_len = len(previous)
+    new_len = len(content or "")
+    if prev_len >= 500 and new_len < max(100, prev_len // 20):
+        return "catastrophic shrink vs previous"
+    return None
 
 
 def _apply_file_updates(
     root: Path,
     updates: dict[str, str],
     snapshots: dict[str, str | None] | None = None,
+    *,
+    packet: dict[str, Any] | None = None,
+    ignore: IgnoreList | None = None,
+    log: LogFn | None = None,
+    audit_log: MigrationAuditLog | None = None,
+    attempt: int | None = None,
+    path_allowlist: set[str] | None = None,
 ) -> list[str]:
     changed: list[str] = []
     root_resolved = root.resolve()
     store = snapshots if snapshots is not None else {}
+    emit = log or _noop_log
     for rel, content in updates.items():
         path = (root / rel).resolve()
         if not str(path).startswith(str(root_resolved)):
             continue
         rel_posix = rel.replace("\\", "/")
+        if path_allowlist is not None and rel_posix not in path_allowlist:
+            emit(f"[self-correct] skipped {rel_posix}: not on repair allowlist")
+            if audit_log is not None:
+                audit_log.record_reject(
+                    rel_posix,
+                    "not on repair allowlist",
+                    source="repair",
+                    attempt=attempt,
+                )
+            continue
+        reason = reject_self_correct_write(
+            rel_posix,
+            content,
+            packet=packet or {},
+            ignore=ignore,
+            root=root,
+        )
+        if reason:
+            emit(f"[self-correct] rejected obfuscating edit {rel_posix}: {reason}")
+            if audit_log is not None:
+                audit_log.record_reject(
+                    rel_posix, reason, source="repair", attempt=attempt
+                )
+            continue
+        previous_text: str | None
         if rel_posix not in store:
             if path.is_file():
-                try:
-                    store[rel_posix] = path.read_text(encoding="utf-8")
-                except OSError:
-                    store[rel_posix] = None
+                store[rel_posix] = _read_text(path)
             else:
                 store[rel_posix] = None
+        previous_text = store.get(rel_posix)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         changed.append(rel_posix)
+        if audit_log is not None:
+            audit_log.record_write(
+                rel_posix,
+                source="repair",
+                attempt=attempt,
+                before=previous_text,
+                after=content,
+            )
     return changed
 
 
@@ -380,6 +938,59 @@ def _top_level_names(source: str) -> set[str]:
     return names
 
 
+_MAIN_GUARD_RE = re.compile(
+    r"""if\s+__name__\s*==\s*['"]__main__['"]\s*:""",
+)
+_MODULE_RUN_RE = re.compile(r"(?m)^(?P<indent>\s*)(?P<call>\w+\.run\s*\()")
+_SHORT_CIRCUIT_RUN_RE = re.compile(
+    r"(?m)^\s*\S.+\band\b.+\.run\s*\(",
+)
+
+
+def _module_level_if_count(source: str) -> int:
+    return len(re.findall(r"(?m)^if\s+", source or ""))
+
+
+def _module_level_run_calls(source: str) -> set[str]:
+    return {
+        m.group("call").rstrip("(").strip()
+        for m in _MODULE_RUN_RE.finditer(source or "")
+        if len(m.group("indent") or "") == 0
+    }
+
+
+def _non_sdk_structure_reason(previous: str | None, content: str) -> str | None:
+    """Reject style/structure edits outside SDK migration (main guards, renames)."""
+    if previous is None:
+        return None
+    prev = previous or ""
+    new = content or ""
+    if not _MAIN_GUARD_RE.search(prev) and _MAIN_GUARD_RE.search(new):
+        return "added if __name__ == '__main__' guard (non-SDK structure)"
+    if _module_level_if_count(new) > _module_level_if_count(prev):
+        return "added module-level if guard (non-SDK structure)"
+    prev_runs = _module_level_run_calls(prev)
+    new_runs = _module_level_run_calls(new)
+    if prev_runs and prev_runs != new_runs:
+        return "changed module-level .run() entrypoint (non-SDK structure)"
+    if prev_runs and _SHORT_CIRCUIT_RUN_RE.search(new) and not _SHORT_CIRCUIT_RUN_RE.search(
+        prev
+    ):
+        return "rewrote module-level .run() into short-circuit guard"
+    before = _top_level_names(prev)
+    after = _top_level_names(new)
+    if before != after:
+        lost = sorted(before - after)
+        gained = sorted(after - before)
+        bits: list[str] = []
+        if lost:
+            bits.append("dropped " + ", ".join(lost))
+        if gained:
+            bits.append("added " + ", ".join(gained))
+        return "changed top-level def/class names (" + "; ".join(bits) + ")"
+    return None
+
+
 def _error_search_snippets(test_result: TestResult, *, limit: int = 4) -> list[str]:
     """Turn failure lines into general web-search queries."""
     text = "\n".join(
@@ -409,8 +1020,12 @@ def _error_search_snippets(test_result: TestResult, *, limit: int = 4) -> list[s
             )
         ):
             continue
-        # Drop noisy pytest chrome
+        # Drop noisy pytest chrome and anticheat finding lines (not web-searchable)
         if lower.startswith(("=", "-", "___", "platform ", "rootdir")):
+            continue
+        if "anticheat failed" in lower or "synthetic_except" in lower:
+            continue
+        if "swallows exception" in lower or "mechanical —" in lower or "mechanical -" in lower:
             continue
         q = re.sub(r"\s+", " ", line)[:180]
         if q not in queries:
@@ -597,14 +1212,18 @@ def _heuristic_fix(
 ) -> FixAttempt:
     from conduit.patcher.string_replace import exact_replace
     from conduit.repair_ignore import exact_replace_respecting_ignore
+    from conduit.test_gen import is_conduit_generated_rel
 
     ignore = ignore or IgnoreList()
     replacements: list[tuple[str, str]] = []
+    drop_rules: list[dict[str, Any]] = []
     for rule in packet.get("rules") or []:
         if rule.get("type") == "EXACT_STRING_REPLACE":
             replacements.append((str(rule["match"]), str(rule["replace"])))
         if rule.get("type") == "AST_PARAM_RENAME":
             replacements.append((str(rule["old_param"]), str(rule["new_param"])))
+        if rule.get("type") == "AST_PARAM_DROP":
+            drop_rules.append(rule)
 
     # De-dupe while preserving order; longer matches first (gpt-4-0613 before gpt-4)
     seen: set[tuple[str, str]] = set()
@@ -617,28 +1236,88 @@ def _heuristic_fix(
     replacements = sorted(uniq, key=lambda p: len(p[0]), reverse=True)
 
     targets: list[Path] = []
-    if (root / "tests").is_dir():
-        targets += list((root / "tests").rglob("*.py"))
-    targets += list(root.glob("test_*.py"))
-    if (root / "src").is_dir():
-        targets += list((root / "src").rglob("*.py"))
+    # Prefer migration surfaces leftover-oracle already scans — not consumer tests.
+    for dirname in ("configs", "scripts", ".github", "src"):
+        d = root / dirname
+        if d.is_dir():
+            targets += [p for p in d.rglob("*") if p.is_file()]
+    for pat in (
+        "*.yml",
+        "*.yaml",
+        "*.json",
+        "*.sh",
+        "*.toml",
+        "Dockerfile",
+        "docker-compose*.yml",
+        "docker-compose*.yaml",
+    ):
+        targets += [p for p in root.glob(pat) if p.is_file()]
+    # Package / service trees (Python + TS) excluding tests/.
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        name = child.name.lower()
+        if name in {
+            "tests",
+            "test",
+            "docs",
+            "vendor",
+            ".conduit",
+            ".git",
+            "node_modules",
+            "venv",
+            ".venv",
+            "__pycache__",
+            "packets",
+        }:
+            continue
+        if name in {"configs", "scripts", ".github", "src"}:
+            continue  # already walked
+        targets += [
+            p
+            for p in child.rglob("*")
+            if p.is_file()
+            and p.suffix.lower()
+            in {".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".yml", ".yaml", ".sh"}
+        ]
+
+    # De-dupe paths while preserving order
+    seen_paths: set[Path] = set()
+    uniq_targets: list[Path] = []
+    for path in targets:
+        try:
+            key = path.resolve()
+        except OSError:
+            continue
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        uniq_targets.append(path)
+    targets = uniq_targets
 
     changed: list[str] = []
     details: list[str] = []
     match_counts = {old: 0 for old, _ in replacements}
     skipped_files = 0
 
+    from conduit.patcher.ast_param_drop import apply_param_drop
+
     for path in targets:
         try:
             rel = str(path.relative_to(root)).replace("\\", "/")
         except ValueError:
             continue
-        if ignore.path_ignored(rel):
+        # Never rewrite leftover/smoke/functional oracles (same as apply / LLM reject).
+        # Heuristic also skips tests/ so it does not advance assertions ahead of configs.
+        if (
+            is_conduit_generated_rel(rel)
+            or ignore.path_ignored(rel)
+            or _is_test_rel(rel)
+        ):
             skipped_files += 1
             continue
-        try:
-            original = path.read_text(encoding="utf-8")
-        except OSError:
+        original = _read_text(path)
+        if original is None:
             continue
         updated = original
         file_hits: list[str] = []
@@ -652,6 +1331,21 @@ def _heuristic_fix(
             if count:
                 match_counts[old] = match_counts.get(old, 0) + count
                 file_hits.append(f"{old!r} -> {new!r} ({count}x)")
+        for rule in drop_rules:
+            raw_values = rule.get("values")
+            values = list(raw_values) if isinstance(raw_values, list) else None
+            param = str(rule.get("param") or rule.get("old_param") or "")
+            if not param:
+                continue
+            updated, count = apply_param_drop(
+                path,
+                updated,
+                function_target=str(rule.get("function_target") or ""),
+                param=param,
+                values=values,
+            )
+            if count:
+                file_hits.append(f"drop {param!r} ({count}x)")
         if updated != original:
             path.write_text(updated, encoding="utf-8")
             changed.append(rel)
@@ -662,9 +1356,10 @@ def _heuristic_fix(
         details.append(f"ignored {skipped_files} file(s) via ignore list")
 
     if not changed:
-        if not replacements:
+        if not replacements and not drop_rules:
             details.append(
-                "no EXACT_STRING_REPLACE / AST_PARAM_RENAME rules available for heuristics"
+                "no EXACT_STRING_REPLACE / AST_PARAM_RENAME / AST_PARAM_DROP "
+                "rules available for heuristics"
             )
         else:
             for old, new in replacements:
@@ -686,13 +1381,23 @@ def _llm_suggest_fixes(
     ignore: IgnoreList | None = None,
     seed_urls: list[str] | None = None,
     suggested_queries: list[str] | None = None,
+    migration_evidence: dict[str, str] | None = None,
+    preloaded_evidence_chars: int = 0,
     log: LogFn | None = None,
     nudge: str | None = None,
     source: dict[str, Any] | None = None,
     coverage_missed: list[dict[str, Any]] | None = None,
+    audit_log: MigrationAuditLog | None = None,
+    attempt: int | None = None,
+    file_windows: list[dict[str, Any]] | None = None,
+    path_allowlist: set[str] | None = None,
+    seeded_paths: list[str] | None = None,
+    leftover_files: list[dict[str, Any]] | None = None,
 ) -> LlmRepairSuggestion:
     emit = log or _noop_log
-    client = get_llm_client(log=emit if emit is not _noop_log else None)
+    client = attach_llm_log(
+        get_llm_client(), emit if emit is not _noop_log else None
+    )
     if client is None:
         return LlmRepairSuggestion()
 
@@ -705,6 +1410,46 @@ def _llm_suggest_fixes(
 
     ignore = ignore or IgnoreList()
     files = {k: v for k, v in files.items() if not ignore.path_ignored(k)}
+    windows = [
+        w
+        for w in (file_windows or [])
+        if isinstance(w, dict) and not ignore.path_ignored(str(w.get("path") or ""))
+    ]
+    allow = set(path_allowlist or files.keys())
+    allow = {p for p in allow if not ignore.path_ignored(p)}
+    # Always allow reading anything already seeded as a window/path.
+    allow.update(files.keys())
+    allow.update(str(w.get("path") or "") for w in windows)
+    leftovers = [
+        item
+        for item in (leftover_files or [])
+        if isinstance(item, dict)
+        and not ignore.path_ignored(str(item.get("path") or ""))
+    ]
+    for item in leftovers:
+        rel = str(item.get("path") or "").replace("\\", "/")
+        if rel:
+            allow.add(rel)
+    allow.discard("")
+
+    def _reject(rel: str, contents: str) -> str | None:
+        reason = reject_self_correct_write(
+            rel, contents, packet=packet, ignore=ignore, root=root
+        )
+        if reason and audit_log is not None:
+            audit_log.record_reject(
+                rel, reason, source="repair_tool", attempt=attempt
+            )
+        return reason
+
+    failing_hint = list(seeded_paths or sorted(files.keys()))
+    failing_hint = [p for p in failing_hint if not ignore.path_ignored(p)]
+    for item in leftovers:
+        rel = str(item.get("path") or "").replace("\\", "/")
+        if rel and rel not in failing_hint:
+            failing_hint.append(rel)
+    structured = _structured_failure(test_result)
+
     executor = RepoToolExecutor(
         root=root,
         ignore=ignore,
@@ -712,24 +1457,74 @@ def _llm_suggest_fixes(
         allow_run_tests=True,
         allow_shell=True,
         log=emit if emit is not _noop_log else _noop_log,
+        reject_write=_reject,
+        path_allowlist=allow or None,
+        require_research_before_write=True,
+        preloaded_evidence_chars=preloaded_evidence_chars,
+        research_tokens={
+            t.lower()
+            for t in (
+                list(structured.get("leftover_tokens") or [])
+                + re.findall(
+                    r"/v1/[\w./_-]+",
+                    str(structured.get("failure_digest") or ""),
+                )
+                + [
+                    str(x.get("value") or "")
+                    for x in (coverage_missed or [])
+                    if isinstance(x, dict)
+                ]
+            )
+            if t and len(str(t)) >= 3
+        },
     )
 
-    failing_hint = sorted(files.keys())
+    journal = (
+        audit_log.repair_journal(attempt=attempt)
+        if audit_log is not None
+        else {"entries": []}
+    )
+    leftover_block = ""
+    if leftovers:
+        leftover_block = (
+            "0) leftover_files is AUTHORITATIVE from the leftover oracle. "
+            "Your FIRST tool actions must read_file then write_file those paths "
+            "(replace legacy tokens with packet successors). Do NOT inventory "
+            "with grep; do NOT use run_shell to read/write files; do NOT rewrite "
+            "consumer tests to expect new tokens while leaving configs/scripts "
+            "unmigrated.\n"
+        )
     prompt = {
         "instructions": (
             "Tests failed after an automatic API migration. Fix IMPLEMENTATION "
-            "code so tests pass. The packet may be incomplete — you may also "
+            "code so tests pass by rewriting call sites and manifests to the "
+            "packet's new API. The packet may be incomplete — you may also "
             "update packet_patch.\n"
-            "Workflow:\n"
-            "1) read_file every path you will edit (seeded_paths first).\n"
-            "2) Use web_search / fetch_url for grounded vendor docs.\n"
-            "3) Make the smallest write_file that fixes the traceback. "
-            "Do not rewrite modules that are not in the traceback or seeded "
-            "impl set unless an import forces it.\n"
-            "4) Preserve existing public names (module-level def/class and "
-            "__all__) unless tests require a rename.\n"
-            "5) run_tests and iterate until green or changes are exhausted.\n"
-            "Do not guess undocumented API successors.\n"
+            "Do NOT edit docs/, README*, CHANGELOG*, SCENARIOS*, scripts/ops/, "
+            "or Dockerfile — those are synced after verify is green.\n"
+            "Edit-first workflow (do this in order):\n"
+            + leftover_block
+            + "1) Act on seeded_paths / file_windows / leftover_files first — "
+            "those are the failing spans. Use read_file only when you need more "
+            "than the window.\n"
+            "2) Do NOT inventory the repo. list_files is unavailable. Prefer "
+            "grep/read on allowlisted paths only (and only after editing "
+            "leftovers if leftover_files is set).\n"
+            "3) Make the smallest write_file that fixes the failure, then "
+            "call run_tests with optional nodeids from failed_nodes for a "
+            "focused retest. Full suite still runs after your turn.\n"
+            "4) Consult repair_journal so you do not repeat rejected writes "
+            "or restored diffs.\n"
+            "5) Research phase (required): Read migration_docs, code_examples, "
+            "and openapi_structs pre-loaded below. Use fetch_url on seed_urls for "
+            "any API successor not covered. Do NOT call write_file until you have "
+            "doc-backed migration facts for each failing callee/path/param.\n"
+            "6) Preserve existing public names (module-level def/class and "
+            "__all__). Do NOT rename them. Do NOT add if __name__ == '__main__' "
+            "guards, comment-only cleanup, or formatting-only refactors — "
+            "SDK migration only (imports, callees, kwargs, deps, leftover tokens).\n"
+            "7) run_shell is only for pytest / pip show|list / tiny read-only "
+            "SDK probes (import + version). Never Path/open/write/exec via shell.\n"
             "When finished, return JSON with any of:\n"
             '  "files": {"relative/path.py": "full new file contents"},\n'
             '  "packet_patch": {\n'
@@ -743,16 +1538,41 @@ def _llm_suggest_fixes(
             "- Every new/changed rule should include a short 'reason'.\n"
             "- Only include files that need changes (or rely on write_file tool).\n"
             "- Empty files in the final JSON is OK if write_file already saved edits.\n"
-            "- Do NOT modify ignored paths.\n"
+            "- Do NOT modify ignored paths, vendor decoys, or tests/test_conduit_oracle.py.\n"
+            "- Do NOT split/join/concat strings to hide leftover tokens "
+            "(e.g. ''.join(['a','da'])). Migrate the API instead.\n"
+            "- Do NOT swallow exceptions with `except Exception: return dummy`.\n"
+            "- Do NOT add unused MIGRATION_MARKERS / token tuples to satisfy smoke tests.\n"
+            "- Do NOT weaken consumer tests with skip/xfail or split assertion needles.\n"
             "- Do NOT rewrite ignored patterns when they appear as LEGACY_/FORBIDDEN_/"
             "EXPECTED_/ALLOWED_ contract constants — those define the migration oracle.\n"
-            "- Prefer running tests via the run_tests tool before finalizing."
+            "- Keep the official "
+            + str(packet.get("package") or "the packet package")
+            + " SDK at to_version. Migrate call sites only. "
+            "Do not replace the SDK with requests/fetch or a fake/stub client.\n"
+            "- Do NOT catch HTTP errors and return canned chat/embeddings.\n"
+            "- Do NOT edit packets/, .conduit/, vendor/, or *.jsonl knowledge seeds.\n"
+            "- Do NOT patch Path.read_text / open / sitecustomize to rewrite leftover-oracle "
+            "file contents (no __LEGACY__ sanitizers or _test_shim installers).\n"
+            "- Do NOT monkeypatch the SDK module (e.g. openai.chat = Compat…) to preserve "
+            "0.x prompt=/dict shapes. Migrate to messages= and real SDK objects/attrs.\n"
+            "- Prefer focused run_tests(nodeids=failed_nodes) before finalizing."
         ),
         "seeded_paths": failing_hint,
+        "file_windows": windows,
+        "leftover_files": leftovers,
+        "structured_failure": structured,
+        "failed_nodes": structured["failed_nodes"],
+        "leftover_tokens": structured["leftover_tokens"],
+        "exception_snippets": structured["exception_snippets"],
+        "failure_digest": structured["failure_digest"],
+        "failure_fingerprint": structured["failure_fingerprint"],
+        "repair_journal": journal,
+        "path_allowlist": sorted(allow),
         "nudge": nudge or "",
         "ignore": ignore.to_prompt_dict(),
-        "error_stdout": (test_result.stdout or "")[-6000:],
-        "error_stderr": (test_result.stderr or "")[-6000:],
+        "error_stdout": _pack_stream(test_result.stdout or ""),
+        "error_stderr": _pack_stream(test_result.stderr or ""),
         "packet": _packet_for_prompt(packet),
         "source": _source_for_prompt(source),
         "coverage_missed": list(coverage_missed or []),
@@ -760,11 +1580,16 @@ def _llm_suggest_fixes(
         "seed_urls": list(seed_urls or [])[:20],
         "suggested_queries": list(suggested_queries or [])[:12],
     }
+    if migration_evidence:
+        prompt.update(migration_evidence)
     system = (
-        "You are a migration repair agent with local repo tools "
-        "(list/read/grep/write, run_tests, allowlisted run_shell) plus web_search/"
-        "fetch_url. Prefer surgical edits. Preserve public names. "
-        "Reply with a final JSON object only. Honor ignore list. "
+        "You are a migration repair agent with scoped local tools "
+        "(read/grep/write, focused run_tests, tightly allowlisted run_shell) plus "
+        "web_search/fetch_url. Research first: read migration_docs / examples / "
+        "openapi_structs, fetch_url any gaps, then edit leftover_files and failing "
+        "spans. No repo inventory. No shell file IO. Preserve public names; "
+        "do not add __main__ guards or renames; SDK call-site edits only. "
+        "Reply with a final JSON object only. Honor ignore list and path_allowlist. "
         "Update packet_patch when the migration packet must change."
     )
     try:
@@ -804,10 +1629,8 @@ def _llm_suggest_fixes(
     # Files already written via tools also count as repairs
     for rel in executor.written_files:
         if rel not in updates and not ignore.path_ignored(rel):
-            try:
-                updates[rel] = (root / rel).read_text(encoding="utf-8")
-            except OSError:
-                updates.setdefault(rel, "")
+            text = _read_text(root / rel)
+            updates[rel] = text if text is not None else ""
     queries: list[str] = []
     for q in data.get("search_queries") or []:
         if isinstance(q, str) and q.strip():
@@ -824,9 +1647,10 @@ def _llm_suggest_fixes(
 
 
 def _evidence_url_note(evidence: str, *, limit: int = 5) -> str:
-    if not evidence:
+    text = str(evidence or "")
+    if not text:
         return ""
-    urls = re.findall(r"https?://\S+", evidence)
+    urls = re.findall(r"https?://\S+", text)
     uniq: list[str] = []
     seen: set[str] = set()
     for u in urls:
@@ -840,24 +1664,287 @@ def _evidence_url_note(evidence: str, *, limit: int = 5) -> str:
     return (" Evidence: " + ", ".join(uniq)) if uniq else ""
 
 
+def _run_verified_tests(
+    root: Path,
+    packet: dict[str, Any],
+    *,
+    scan_files: list[str] | None = None,
+    llm_audit: bool = False,
+    log: LogFn | None = None,
+    verbose: bool = False,
+    audit_log: MigrationAuditLog | None = None,
+) -> TestResult:
+    emit: LogFn = log or _noop_log
+    try:
+        from conduit.pulse import beat
+
+        beat("test")
+    except Exception:
+        pass
+    emit("[verify] running tests…")
+    from conduit.test_gen import generated_test_nodeids
+
+    oracle_ids = generated_test_nodeids(root)
+    python = resolve_consumer_python(root)
+    in_venv = interpreter_belongs_to_root(python, root)
+
+    if oracle_ids:
+        result = run_tests(root, nodeids=oracle_ids)
+        annotate_verify(result, mode="oracle")
+        if not result.passed:
+            try:
+                from conduit.pulse import beat
+
+                beat("repair")
+            except Exception:
+                pass
+            return result
+        if in_venv:
+            emit("[verify] oracle passed; running full consumer pytest…")
+            full = run_tests(root)
+            annotate_verify(full, mode="full")
+            if not full.passed:
+                try:
+                    from conduit.pulse import beat
+
+                    beat("repair")
+                except Exception:
+                    pass
+                return full
+            result = full
+        else:
+            emit("[verify] oracle ran outside the consumer repo; not a mergeable verify")
+            return annotate_verify(
+                TestResult(
+                    runner="none",
+                    passed=False,
+                    returncode=1,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                    command=result.command,
+                    fail_reason="no_consumer_python: oracle used a Python outside the consumer repo",
+                    extra_notes=["verify_mode=oracle", "verify_kind=no_consumer_python"],
+                ),
+                mode="oracle",
+                kind="no_consumer_python",
+            )
+    elif in_venv:
+        emit("[verify] running full consumer pytest (no generated oracle)…")
+        result = run_tests(root)
+        annotate_verify(result, mode="full")
+        if not result.passed:
+            try:
+                from conduit.pulse import beat
+
+                beat("repair")
+            except Exception:
+                pass
+            return result
+    else:
+        emit("[verify] no consumer venv and no oracle tests; skipping full pytest")
+        result = TestResult(
+            runner="none",
+            passed=False,
+            returncode=1,
+            stdout="",
+            stderr="",
+            command=[],
+            fail_reason="no_consumer_python: no venv under repo and no oracle tests",
+            extra_notes=["verify_mode=none", "verify_kind=no_consumer_python"],
+        )
+        try:
+            from conduit.pulse import beat
+
+            beat("repair")
+        except Exception:
+            pass
+        return result
+    report = run_anticheat(
+        root,
+        packet,
+        scan_files,
+        llm=llm_audit,
+        log=emit,
+        verbose=verbose,
+        audit_log=audit_log,
+        previous=_anticheat_previous(root),
+    )
+    if report.block_findings:
+        try:
+            from conduit.pulse import beat
+
+            beat("repair")
+        except Exception:
+            pass
+        return anticheat_failure_result(
+            report.block_findings,
+            source=report.source,
+            advisory=report.advisory,
+        )
+    return result
+
+
+def _run_anticheat_then_tests(
+    root: Path,
+    packet: dict[str, Any],
+    *,
+    scan_files: list[str] | None = None,
+    llm_audit: bool = False,
+    log: LogFn | None = None,
+    vlog: LogFn | None = None,
+    verbose: bool = False,
+    audit_log: MigrationAuditLog | None = None,
+) -> TestResult:
+    """Mechanical anticheat first, then tests (+ optional LLM anticheat)."""
+    from conduit.anticheat.scan import scannable_rels
+    from conduit.patcher.post_rules.engine import apply_post_rules
+    from conduit.patcher.post_rules.mechanical import infer_from_repo_scan
+    from conduit.patcher.post_rules.store import (
+        load_learned_post_rules,
+        merge_post_rules,
+        save_learned_post_rules,
+    )
+
+    emit: LogFn = log or _noop_log
+    # Completeness: leftover response-shape rewrite on edited/import files only.
+    if scan_files:
+        inferred = infer_from_repo_scan(root, list(scan_files), packet=packet)
+        if inferred:
+            existing = load_learned_post_rules(root)
+            save_learned_post_rules(
+                root, merge_post_rules(existing, inferred)
+            )
+    apply_post_rules(root, packet)
+    scoped = scannable_rels(scan_files) if scan_files is not None else None
+    mech = run_anticheat(
+        root,
+        packet,
+        scoped,
+        llm=False,
+        log=emit,
+        verbose=verbose,
+        audit_log=audit_log,
+        previous=_anticheat_previous(root),
+    )
+    if mech.block_findings:
+        return anticheat_failure_result(
+            mech.block_findings,
+            source=mech.source,
+            advisory=mech.advisory,
+        )
+    return _run_verified_tests(
+        root,
+        packet,
+        scan_files=scoped,
+        llm_audit=llm_audit,
+        log=emit,
+        verbose=verbose,
+        audit_log=audit_log,
+    )
+
+
 def verify_with_self_correct(
     root: Path,
     packet: dict[str, Any],
     *,
-    max_retries: int = 5,
+    max_retries: int = 10,
     verbose: bool = False,
     log: LogFn | None = None,
     source: dict[str, Any] | None = None,
     coverage_missed: list[dict[str, Any]] | None = None,
+    audit_log: MigrationAuditLog | None = None,
+    edited_files: list[str] | None = None,
 ) -> tuple[TestResult, list[str]]:
-    """Run tests; on failure, research + LLM/heuristic-fix and retry (default 5)."""
+    """Run tests; on failure, research + LLM/heuristic-fix and retry (default 10)."""
     emit: LogFn = log or print
     vlog: LogFn = emit if verbose else _noop_log
 
+    if audit_log is None:
+        audit_log = MigrationAuditLog.from_packet(packet, root=root)
+
+    edited: list[str] = []
+    seen_edit: set[str] = set()
+    scope_to_edited = edited_files is not None
+
+    def _note_edited(paths: Iterable[str] | None) -> None:
+        for raw in paths or []:
+            rel = str(raw or "").replace("\\", "/").strip()
+            if rel and rel not in seen_edit:
+                seen_edit.add(rel)
+                edited.append(rel)
+
+    _note_edited(edited_files)
+
+    def _scan_arg() -> list[str] | None:
+        return edited if scope_to_edited else None
+
     corrected_files: list[str] = []
-    result = run_tests(root)
+    result = _run_anticheat_then_tests(
+        root,
+        packet,
+        scan_files=_scan_arg(),
+        llm_audit=True,
+        log=emit,
+        vlog=vlog,
+        verbose=verbose,
+        audit_log=audit_log,
+    )
+    try:
+        audit_log.persist(root)
+    except OSError:
+        pass
     if result.passed:
         return result, corrected_files
+
+    kind = classify_verify_failure(result, packet=packet, root=root)
+    if kind in UNREPAIRABLE_VERIFY_KINDS:
+        emit(
+            f"[verify] {kind}: skipping LLM repair and post-rule synthesis"
+        )
+        _emit_unpassable_stop(emit, kind)
+        return _mark_unpassable(result, kind), corrected_files
+
+    from conduit.patcher.post_rules.engine import apply_post_rules
+    from conduit.patcher.post_rules.synthesize import synthesize_post_rules
+
+    synthesize_post_rules(
+        root,
+        packet,
+        result,
+        source=source or _load_source_packet(root, packet),
+        log=emit,
+    )
+    post_report = apply_post_rules(root, packet)
+    for change in post_report.changes:
+        emit(f"[post-rule] updated {change.path}")
+    if post_report.files_modified:
+        _note_edited(post_report.files_modified)
+        result = _run_anticheat_then_tests(
+            root,
+            packet,
+            scan_files=_scan_arg(),
+            llm_audit=True,
+            log=emit,
+            vlog=vlog,
+            verbose=verbose,
+            audit_log=audit_log,
+        )
+        try:
+            audit_log.persist(root)
+        except OSError:
+            pass
+        if result.passed:
+            return result, corrected_files + post_report.files_modified
+        kind = classify_verify_failure(result, packet=packet, root=root)
+        if kind in UNREPAIRABLE_VERIFY_KINDS:
+            emit(
+                f"[verify] {kind}: skipping LLM repair and post-rule synthesis"
+            )
+            _emit_unpassable_stop(emit, kind)
+            return (
+                _mark_unpassable(result, kind),
+                corrected_files + post_report.files_modified,
+            )
 
     source = source or _load_source_packet(root, packet)
     ignore = build_ignore_list(root, packet)
@@ -873,30 +1960,133 @@ def verify_with_self_correct(
     pending_queries: list[str] = []
     empty_nudge_used = False
     pending_nudge: str | None = None
+    prev_fingerprint = _failure_fingerprint(result)
+    consecutive_restores = 0
 
     for attempt in range(1, max_retries + 1):
+        kind = classify_verify_failure(result, packet=packet, root=root)
+        if kind in UNREPAIRABLE_VERIFY_KINDS:
+            emit(
+                f"[verify] {kind}: skipping LLM repair and post-rule synthesis"
+            )
+            _emit_unpassable_stop(emit, kind)
+            result = _mark_unpassable(result, kind)
+            break
         emit(f"[self-correct] attempt {attempt}/{max_retries} after test failure")
+        nodes = _failed_nodes(result)
+        leftovers = _leftover_tokens(result)
+        digest = build_failure_digest(result)
+        if nodes:
+            shown = ", ".join(nodes[:3])
+            if len(nodes) > 3:
+                shown += f" (+{len(nodes) - 3} more)"
+            emit(f"[self-correct] failing: {shown}")
+        elif leftovers:
+            shown = ", ".join(leftovers[:4])
+            if len(leftovers) > 4:
+                shown += f" (+{len(leftovers) - 4} more)"
+            emit(f"[self-correct] leftovers: {shown}")
+        elif digest["exception_snippets"]:
+            emit(f"[self-correct] failure: {digest['exception_snippets'][0][:160]}")
+        elif digest["text"]:
+            emit(f"[self-correct] failure: {digest['text'][:160]}")
+        else:
+            reason = (result.fail_reason or result.summary or "unknown failure").strip()
+            emit(f"[self-correct] failure: {reason[:120]}")
+        if digest["text"]:
+            vlog(f"[self-correct] failure digest:\n{digest['text']}")
+        emit_failure_reasons(result, emit)
         vlog(f"[self-correct] failure summary:\n{_failure_excerpt(result)}")
 
-        context_files = _collect_context_files(
+        repair_ctx = collect_repair_context(
             root, result, packet=packet, source=source
         )
         context_files = {
-            k: v for k, v in context_files.items() if not ignore.path_ignored(k)
+            k: v
+            for k, v in repair_ctx.files.items()
+            if not ignore.path_ignored(k)
         }
-        vlog(
-            f"[self-correct] context files for repair: "
-            f"{', '.join(sorted(context_files)) or '(none)'}"
+        allowlist = {
+            p for p in repair_ctx.allowlist if not ignore.path_ignored(p)
+        }
+        if _is_anticheat_failure(result):
+            cited = {p.replace("\\", "/") for p, _, _ in _anticheat_finding_hits(
+                _failure_blob(result)
+            )}
+            if cited:
+                # Cited files only — do not expand to flat-repo siblings
+                # (that pulled unrelated modules like ai_insights into repair).
+                allowlist = {p for p in cited if not ignore.path_ignored(p)}
+                context_files = {
+                    k: v for k, v in context_files.items() if k in allowlist
+                }
+                emit(
+                    f"[self-correct] anticheat surgical allowlist={len(allowlist)}"
+                )
+        emit(
+            f"[self-correct] seeded {len(context_files)} span(s), "
+            f"allowlist={len(allowlist)}"
+            + (
+                f", leftovers={len(repair_ctx.leftover_files)}"
+                if repair_ctx.leftover_files
+                else ""
+            )
         )
+        vlog(
+            f"[self-correct] context windows for repair: "
+            f"{', '.join(sorted(context_files)) or '(none)'} "
+            f"(allowlist={len(allowlist)})"
+        )
+
+        from conduit.packet.failure_rules import suggest_rules_from_failure
+
+        failure_rules = suggest_rules_from_failure(
+            result,
+            file_windows=repair_ctx.file_windows,
+            packet=packet,
+        )
+        if failure_rules:
+            patch_details = _apply_packet_patch(packet, {"rules": failure_rules})
+            emit(
+                f"[self-correct] verify-learned {len(failure_rules)} rule(s): "
+                + ", ".join(
+                    f"drop {r.get('param')!r}"
+                    + (
+                        f"={r.get('values')}"
+                        if r.get("values") is not None
+                        else ""
+                    )
+                    for r in failure_rules[:3]
+                )
+                + ("…" if len(failure_rules) > 3 else "")
+            )
+            vlog(
+                "[self-correct] failure-learned rules: "
+                + "; ".join(patch_details or ["merged"])
+            )
+            if audit_log is not None:
+                audit_log.record_packet_patch(patch_details, attempt=attempt)
+            learned = _heuristic_fix(root, packet, ignore)
+            if learned.files:
+                corrected_files.extend(learned.files)
+                emit(
+                    f"[self-correct] applied verify-learned rules to "
+                    f"{len(learned.files)} file(s)"
+                )
 
         nudge: str | None = pending_nudge
         pending_nudge = None
         if empty_nudge_used and not nudge:
+            leftover_hint = (
+                f" leftover_files={[x.get('path') for x in repair_ctx.leftover_files[:8]]};"
+                if repair_ctx.leftover_files
+                else ""
+            )
             nudge = (
-                "Previous attempt made no file edits. You MUST use tools to "
-                "read failing implementation modules from the traceback "
-                f"(seeded_paths={sorted(context_files.keys())}), "
-                "rewrite them with write_file, then run_tests before finishing."
+                "Previous attempt made no file edits. You MUST edit "
+                "seeded_paths / file_windows / leftover_files with write_file first "
+                f"(seeded_paths={sorted(context_files.keys())};{leftover_hint}), "
+                "then run_tests(nodeids=failed_nodes) before finishing."
             )
 
         suggestion = LlmRepairSuggestion()
@@ -905,10 +2095,57 @@ def verify_with_self_correct(
                 result, packet, extra_queries=pending_queries, source=source
             )
             pending_queries = []
+
+            migration_payload: dict[str, str] = {}
+            preloaded_chars = 0
+            profile = None
+            try:
+                from conduit.detect.vendor_profile import profile_for_package
+
+                pkg = str(packet.get("package") or "")
+                profile = profile_for_package(pkg) if pkg else None
+            except Exception:
+                profile = None
+
+            if profile is not None:
+                from conduit.packet.migration_evidence import build_migration_evidence
+
+                ctx_chunks = [
+                    result.stdout or "",
+                    result.stderr or "",
+                    json.dumps(coverage_missed or [])[:4000],
+                ]
+                if source:
+                    ctx_chunks.extend(str(x) for x in source.get("api_patterns") or [])
+                    ctx_chunks.extend(str(x) for x in source.get("model_ids") or [])
+                try:
+                    prefetched = build_migration_evidence(
+                        context_chunks=ctx_chunks,
+                        profile=profile,
+                        search_queries=queries,
+                        model_ids=(source or {}).get("model_ids") if source else None,
+                        max_pages=6,
+                        open_search=True,
+                        demo_openapi=True,
+                    )
+                    migration_payload = prefetched.as_prompt_dict()
+                    preloaded_chars = len(prefetched.preloaded_text)
+                    seeds = list(dict.fromkeys(prefetched.router_urls + seeds))
+                    vlog(
+                        "[self-correct] prefetched migration evidence: "
+                        f"{len(prefetched.docs)} doc(s), "
+                        f"{len(prefetched.code_examples)} example(s), "
+                        f"{len(prefetched.openapi_structs)} openapi path(s)"
+                    )
+                    for w in prefetched.warnings[:4]:
+                        vlog(f"[self-correct] research: {w}")
+                except Exception as exc:
+                    vlog(f"[self-correct] migration evidence prefetch failed: {exc}")
+
             vlog(
                 "[self-correct] agent seeds/queries: "
                 f"{len(seeds)} URL(s), {len(queries)} quer(ies) "
-                "(model may web_search / fetch_url)"
+                "(fetch_url required before write_file)"
             )
 
             suggestion = _llm_suggest_fixes(
@@ -919,10 +2156,18 @@ def verify_with_self_correct(
                 ignore=ignore,
                 seed_urls=seeds,
                 suggested_queries=queries,
-                log=vlog,
+                migration_evidence=migration_payload,
+                preloaded_evidence_chars=preloaded_chars,
+                log=emit,
                 nudge=nudge,
                 source=source,
                 coverage_missed=coverage_missed,
+                audit_log=audit_log,
+                attempt=attempt,
+                file_windows=repair_ctx.file_windows,
+                path_allowlist=allowlist,
+                seeded_paths=repair_ctx.seeded_paths,
+                leftover_files=repair_ctx.leftover_files,
             )
 
             # Fallback providers without tools may still return search_queries.
@@ -952,10 +2197,18 @@ def verify_with_self_correct(
                         ignore=ignore,
                         seed_urls=seeds,
                         suggested_queries=suggestion.search_queries,
-                        log=vlog,
+                        migration_evidence=migration_payload,
+                        preloaded_evidence_chars=max(preloaded_chars, len(evidence)),
+                        log=emit,
                         nudge=nudge,
                         source=source,
                         coverage_missed=coverage_missed,
+                        audit_log=audit_log,
+                        attempt=attempt,
+                        file_windows=repair_ctx.file_windows,
+                        path_allowlist=allowlist,
+                        seeded_paths=repair_ctx.seeded_paths,
+                        leftover_files=repair_ctx.leftover_files,
                     )
                 if suggestion.search_queries and not suggestion.files:
                     pending_queries = list(suggestion.search_queries)
@@ -967,10 +2220,25 @@ def verify_with_self_correct(
                 vlog(
                     "[self-correct] packet updated: " + "; ".join(patch_details)
                 )
+                audit_log.record_packet_patch(patch_details, attempt=attempt)
 
         snapshots = dict(suggestion.snapshots)
         if suggestion.files:
-            changed = _apply_file_updates(root, suggestion.files, snapshots)
+            changed = _apply_file_updates(
+                root,
+                suggestion.files,
+                snapshots,
+                packet=packet,
+                ignore=ignore,
+                log=emit,
+                audit_log=audit_log,
+                attempt=attempt,
+                path_allowlist=allowlist or None,
+            )
+            if not changed and not patch_details:
+                _emit_unpassable_stop(emit, "all repair writes rejected")
+                result = _mark_unpassable(result, "all repair writes rejected")
+                break
             fix = FixAttempt(
                 strategy="llm",
                 files=changed,
@@ -1017,16 +2285,17 @@ def verify_with_self_correct(
                 fix.files = ["(packet)"]
 
         corrected_files.extend(f for f in fix.files if f != "(packet)")
+        _note_edited(f for f in fix.files if f != "(packet)")
         if fix.files:
-            vlog(
-                f"[self-correct] strategy={fix.strategy}; "
-                f"updated {len([f for f in fix.files if f != '(packet)'])} file(s)"
-                + (
-                    f": {', '.join(f for f in fix.files if f != '(packet)')}"
-                    if any(f != "(packet)" for f in fix.files)
-                    else " (packet patch only)"
+            updated = [f for f in fix.files if f != "(packet)"]
+            if updated:
+                emit(
+                    f"[self-correct] {fix.strategy}: updated "
+                    f"{len(updated)} file(s): {', '.join(updated[:5])}"
+                    + ("…" if len(updated) > 5 else "")
                 )
-            )
+            else:
+                emit(f"[self-correct] {fix.strategy}: packet patch only")
             for detail in fix.details:
                 vlog(f"[self-correct]   {detail}")
         else:
@@ -1063,13 +2332,38 @@ def verify_with_self_correct(
             )
             break
 
+        from conduit.patcher.post_rules.engine import apply_post_rules
+
+        post_report = apply_post_rules(root, packet)
+        for change in post_report.changes:
+            emit(f"[post-rule] updated {change.path}")
+            corrected_files.append(change.path)
+        _note_edited(post_report.files_modified)
+
         previous = result
-        result = run_tests(root)
+        emit("[self-correct] re-running full test suite…")
+        result = _run_anticheat_then_tests(
+            root,
+            packet,
+            scan_files=_scan_arg(),
+            llm_audit=True,
+            log=emit,
+            vlog=vlog,
+            verbose=verbose,
+            audit_log=audit_log,
+        )
+        try:
+            audit_log.persist(root)
+        except OSError:
+            pass
         if result.passed:
-            vlog(f"[self-correct] tests passed after attempt {attempt}")
+            emit(f"[self-correct] tests passed after attempt {attempt}")
             return result, sorted(set(corrected_files))
+
         if snapshots and _repair_regressed(previous, result):
             restored = _restore_snapshots(root, snapshots)
+            if restored:
+                audit_log.record_restore(restored, attempt=attempt)
             lost_bits: list[str] = []
             for rel, original in snapshots.items():
                 if not original:
@@ -1084,16 +2378,66 @@ def verify_with_self_correct(
                 f"{len(restored)} file(s)"
                 + (f" ({'; '.join(lost_bits[:4])})" if lost_bits else "")
             )
-            result = run_tests(root)
+            consecutive_restores += 1
+            result = _run_anticheat_then_tests(
+                root,
+                packet,
+                scan_files=_scan_arg(),
+                llm_audit=True,
+                log=emit,
+                vlog=vlog,
+                verbose=verbose,
+                audit_log=audit_log,
+            )
+            try:
+                audit_log.persist(root)
+            except OSError:
+                pass
             empty_nudge_used = False
             pending_nudge = (
                 "Previous write regressed tests (collection/import failure). "
-                "Original files were restored. Preserve public names. "
+                "Original files were restored. Preserve public names; "
+                "do not add __main__ guards or renames. "
                 + (" ".join(lost_bits[:6]) if lost_bits else "")
             )
             if result.passed:
-                vlog("[self-correct] tests passed after restoring snapshot")
+                emit("[self-correct] tests passed after restoring snapshot")
                 return result, sorted(set(corrected_files))
+            if consecutive_restores >= 2:
+                _emit_unpassable_stop(emit, "repair regressed twice")
+                result = _mark_unpassable(result, "repair regressed twice")
+                break
+            # Post-restore baseline for stagnant detection.
+            prev_fingerprint = _failure_fingerprint(result)
+            emit(
+                f"[self-correct] still failing after attempt {attempt}: "
+                f"{(result.fail_reason or result.summary or '')[:100]}"
+            )
+            vlog(
+                f"[self-correct] still failing after attempt {attempt}: "
+                f"{result.summary}"
+            )
+            if suggestion.search_queries:
+                pending_queries = list(
+                    dict.fromkeys([*pending_queries, *suggestion.search_queries])
+                )
+            continue
+
+        consecutive_restores = 0
+        fp = _failure_fingerprint(result)
+        if fp == prev_fingerprint:
+            _emit_unpassable_stop(
+                emit, "no progress (same failures for 2 attempts)"
+            )
+            result = _mark_unpassable(
+                result, "no progress (same failures for 2 attempts)"
+            )
+            break
+        prev_fingerprint = fp
+        emit(
+            f"[self-correct] still failing after attempt {attempt}: "
+            f"{(result.fail_reason or result.summary or '')[:100]}"
+        )
         vlog(f"[self-correct] still failing after attempt {attempt}: {result.summary}")
         # Next attempt should research again with the new failure signature
         if suggestion.search_queries:
@@ -1101,4 +2445,8 @@ def verify_with_self_correct(
                 dict.fromkeys([*pending_queries, *suggestion.search_queries])
             )
 
+    try:
+        audit_log.persist(root)
+    except OSError:
+        pass
     return result, sorted(set(corrected_files))

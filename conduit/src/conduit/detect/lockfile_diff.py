@@ -56,16 +56,25 @@ def _parse_requirements_lines(text: str) -> dict[str, str]:
 
 
 def _parse_package_json_deps(text: str) -> dict[str, str]:
+    return {name: ver for name, (ver, _scope) in _parse_package_json_scoped(text).items()}
+
+
+def _parse_package_json_scoped(text: str) -> dict[str, tuple[str, str]]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
         return {}
-    out: dict[str, str] = {}
-    for key in ("dependencies", "devDependencies", "peerDependencies"):
+    out: dict[str, tuple[str, str]] = {}
+    sections = (
+        ("dependencies", "main"),
+        ("devDependencies", "dev"),
+        ("peerDependencies", "peer"),
+    )
+    for key, scope in sections:
         block = data.get(key) or {}
         if isinstance(block, dict):
             for name, ver in block.items():
-                out[str(name).lower()] = str(ver).lstrip("^~>=< ")
+                out[str(name).lower()] = (str(ver).lstrip("^~>=< "), scope)
     return out
 
 
@@ -113,19 +122,44 @@ def _parse_file(name: str, text: str) -> tuple[str, dict[str, str]]:
     return "unknown", {}
 
 
+def _parse_file_scoped(
+    name: str, text: str
+) -> tuple[str, dict[str, tuple[str, str]]]:
+    """ecosystem + package -> (version, scope)."""
+    lower = name.lower()
+    default_scope = "dev" if "dev" in lower and lower.endswith(".txt") else "main"
+    eco, deps = _parse_file(name, text)
+    if lower == "package.json" or lower == "package-lock.json":
+        return eco, _parse_package_json_scoped(text)
+    return eco, {k: (v, default_scope) for k, v in deps.items()}
+
+
 def diff_versions(
     old_text: str,
     new_text: str,
     *,
     filename: str,
 ) -> list[VersionJump]:
-    eco_old, old_deps = _parse_file(filename, old_text)
-    eco_new, new_deps = _parse_file(filename, new_text)
+    eco_old, old_deps = _parse_file_scoped(filename, old_text)
+    eco_new, new_deps = _parse_file_scoped(filename, new_text)
     ecosystem = eco_new if eco_new != "unknown" else eco_old
     jumps: list[VersionJump] = []
-    for name, new_ver in new_deps.items():
-        old_ver = old_deps.get(name)
-        if old_ver and old_ver != new_ver:
+    for name, (new_ver, new_scope) in new_deps.items():
+        if name not in old_deps:
+            jumps.append(
+                VersionJump(
+                    name=name,
+                    from_version="",
+                    to_version=new_ver,
+                    ecosystem=ecosystem,
+                    manifest=filename,
+                    kind="add",
+                    scope=new_scope,
+                )
+            )
+            continue
+        old_ver, old_scope = old_deps[name]
+        if old_ver != new_ver:
             jumps.append(
                 VersionJump(
                     name=name,
@@ -133,6 +167,21 @@ def diff_versions(
                     to_version=new_ver,
                     ecosystem=ecosystem,
                     manifest=filename,
+                    kind="bump",
+                    scope=new_scope or old_scope,
+                )
+            )
+    for name, (old_ver, old_scope) in old_deps.items():
+        if name not in new_deps:
+            jumps.append(
+                VersionJump(
+                    name=name,
+                    from_version=old_ver,
+                    to_version="",
+                    ecosystem=ecosystem,
+                    manifest=filename,
+                    kind="remove",
+                    scope=old_scope,
                 )
             )
     return jumps
@@ -189,7 +238,7 @@ def detect_lockfile_jumps(
             key = (jump.name, jump.from_version, jump.to_version)
             if key in seen:
                 continue
-            if majors_only and not jump.is_major:
+            if jump.kind == "bump" and majors_only and not jump.is_major:
                 continue
             seen.add(key)
             jumps.append(jump)

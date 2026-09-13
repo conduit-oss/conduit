@@ -59,6 +59,20 @@ Renames a keyword / named parameter near a matching call:
 
 `function_target` may be a dotted path; matching is suffix-aware (calls ending in `.create` can match).
 
+### `AST_PARAM_DROP`
+
+Omits a keyword / named parameter near a matching call (Python libcst; JS/TS heuristic). Optional `values` limits drops to those literals (e.g. only `temperature=0`).
+
+```json
+{
+  "type": "AST_PARAM_DROP",
+  "target_files": ["*.py", "*.ts", "*.js"],
+  "function_target": "chat.completions.create",
+  "param": "temperature",
+  "values": [0, 0.0]
+}
+```
+
 ### `AST_IMPORT_REWRITE`
 
 Rewrites import / module paths via the language engine for the file suffix (libcst for Python; tree-sitter import literals for JS/TS, Java, and Go).
@@ -98,9 +112,24 @@ Rewrites call / callee paths the same way as attribute rename, targeting call ex
 }
 ```
 
+### `KEY_RENAME`
+
+Rewrites **quoted** request/response/config keys (`data["max_tokens"]`, JSON fixtures, quoted YAML) and `.env*` line prefixes. Unlike `AST_PARAM_RENAME`, this is not limited to call kwargs.
+
+Config candidates (`.env*`, `*.yaml` / `*.yml` / `*.json` / `*.toml` / `*.ini`) are always unioned into the apply set, even when import-prune dropped them. Source files still come from the existing allowlist. Other string rules are **not** broadened to every config file.
+
+```json
+{
+  "type": "KEY_RENAME",
+  "old_key": "max_tokens",
+  "new_key": "max_completion_tokens",
+  "target_files": ["*.py", "*.ts", "*.js", "*.json", "*.yaml", "*.yml", "*.toml", ".env*"]
+}
+```
+
 ### `DEPENDENCY_BUMP`
 
-Updates manifests (`requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, `pom.xml`, `build.gradle` / `.kts`). Always considered even if the file was not import-pruned.
+Updates manifests (`requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, `pom.xml`, `build.gradle` / `.kts`). Always considered even if the file was not import-pruned. `pyproject.toml` is edited with **tomlkit** (PEP 621 arrays and Poetry maps), not regex.
 
 ```json
 {
@@ -109,6 +138,22 @@ Updates manifests (`requirements.txt`, `pyproject.toml`, `package.json`, `go.mod
   "from_version": "0.28.1",
   "to_version": "1.0.0",
   "ecosystems": ["pip", "pyproject", "npm", "go", "maven", "gradle"]
+}
+```
+
+### `DEPENDENCY_ADD` / `DEPENDENCY_REMOVE`
+
+Companion packages for splits (e.g. `langchain` → `langchain-core`). Packet `to_version` is a **bare** version (`1.2.3`); apply formats the pin per manifest (`pkg==1.2.3`, npm/Poetry `^1.2.3`, Go `v1.2.3`). Optional `scope`: `main` (default), `dev`, or npm `peer`.
+
+ADD/REMOVE default to `pip` + `pyproject` unless `ecosystems` is set. They do not create missing Poetry groups, PEP 621 extras, or `requirements-dev.txt`. Maven/Gradle ADD/REMOVE are skipped. Lockfiles are not regenerated — Double-check asks you to run `poetry lock` / `npm install` / `go mod tidy`.
+
+```json
+{
+  "type": "DEPENDENCY_ADD",
+  "package": "langchain-core",
+  "to_version": "0.2.0",
+  "scope": "main",
+  "ecosystems": ["pip", "pyproject"]
 }
 ```
 
@@ -124,7 +169,7 @@ Optional formatters (`gofmt`, `prettier`, `google-java-format`) run after edits 
 | JS/TS | tree-sitter when `langs` / `llm-js` extra installed; regex/string fallbacks |
 | Java | tree-sitter (`tree-sitter-java`) + fallbacks |
 | Go | tree-sitter (`tree-sitter-go`) + `gofmt` when available |
-| YAML/JSON/env | String / regex rules only |
+| YAML/JSON/env | String / regex / `KEY_RENAME` |
 
 Install grammars:
 

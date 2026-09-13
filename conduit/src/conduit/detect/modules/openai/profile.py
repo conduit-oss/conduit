@@ -24,8 +24,10 @@ _OPENAI_MODEL_ID_PATTERN = (
 )
 
 _OPENAI_API_PATTERN = (
-    r"(?:ChatCompletion|/v1/[a-z0-9/_-]+|chat\.completions|"
-    r"Completion\.create|embeddings\.create)"
+    r"(?:ChatCompletion(?:\.create)?|"
+    r"(?:openai\.)?(?:Completion|Edit|Engine|FineTune|Image|Moderation|Embedding|File)"
+    r"\.(?:create|list|retrieve|create_edit)|"
+    r"/v1/[a-z0-9/_-]+|chat\.completions|embeddings\.create)"
 )
 
 _PATH_TO_CALLEES: dict[str, list[str]] = {
@@ -43,20 +45,40 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
         "openai.Edit.create",
     ],
     "/v1/engines": [
+        "models.list",
+        "openai.models.list",
         "Engine.list",
         "openai.Engine.list",
     ],
     "/v1/fine-tunes": [
         "FineTune.list",
         "openai.FineTune.list",
+        "FineTune.create",
+        "openai.FineTune.create",
+    ],
+    "/v1/fine_tuning/jobs": [
+        "fine_tuning.jobs.create",
+        "openai.fine_tuning.jobs.create",
+        "fine_tuning.jobs.list",
+        "openai.fine_tuning.jobs.list",
+    ],
+    "/v1/models": [
+        "models.list",
+        "openai.models.list",
+        "Engine.list",
+        "openai.Engine.list",
     ],
     "/v1/embeddings": [
         "embeddings.create",
         "openai.embeddings.create",
+        "Embedding.create",
+        "openai.Embedding.create",
     ],
     "/v1/images/generations": [
         "images.generate",
         "openai.images.generate",
+        "Image.create",
+        "openai.Image.create",
     ],
     "/v1/images/edits": [
         "images.edit",
@@ -77,6 +99,18 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
     "/v1/moderations": [
         "moderations.create",
         "openai.moderations.create",
+        "Moderation.create",
+        "openai.Moderation.create",
+    ],
+    "/v1/files": [
+        "files.create",
+        "openai.files.create",
+        "files.list",
+        "openai.files.list",
+        "File.create",
+        "openai.File.create",
+        "File.list",
+        "openai.File.list",
     ],
     "/v1/responses": [
         "responses.create",
@@ -86,14 +120,16 @@ _PATH_TO_CALLEES: dict[str, list[str]] = {
 
 _API_PATTERN_TO_PATH: list[tuple[str, str]] = [
     (r"^chat\.completions(?:\.create)?$", "/v1/chat/completions"),
-    (r"^ChatCompletion(?:\.create)?$", "/v1/chat/completions"),
+    (r"^(?:openai\.)?ChatCompletion(?:\.create)?$", "/v1/chat/completions"),
     (r"^(?:openai\.)?embeddings\.create$", "/v1/embeddings"),
+    (r"^(?:openai\.)?Embedding\.create$", "/v1/embeddings"),
     (r"^(?:openai\.)?Completion\.create$", "/v1/completions"),
     (r"^(?:openai\.)?Edit\.create$", "/v1/edits"),
     (r"^(?:openai\.)?Engine(?:\.list|\.retrieve)?$", "/v1/engines"),
     (r"^(?:openai\.)?FineTune(?:\.list|\.create)?$", "/v1/fine-tunes"),
     (r"^(?:openai\.)?Image\.(?:create|create_edit)$", "/v1/images/generations"),
     (r"^(?:openai\.)?Moderation\.create$", "/v1/moderations"),
+    (r"^(?:openai\.)?File\.(?:create|list)$", "/v1/files"),
 ]
 
 
@@ -131,6 +167,9 @@ OPENAI_PROFILE = VendorProfile(
     path_to_callees=dict(_PATH_TO_CALLEES),
     api_pattern_to_path=list(_API_PATTERN_TO_PATH),
     evidence_seeds=[
+        "https://developers.openai.com/api/llms.txt",
+        "https://developers.openai.com/api/docs/llms.txt",
+        "https://developers.openai.com/api/reference/llms.txt",
         "https://platform.openai.com/docs/deprecations",
         "https://developers.openai.com/api/docs/deprecations",
         "https://developers.openai.com/api/docs/models",

@@ -16,7 +16,7 @@ Schema: [`schema/conduit-packet.schema.json`](../schema/conduit-packet.schema.js
   "sources": [ { "url": "…", "kind": "docs" } ],
   "notes": "optional",
   "side_effects": [
-    { "kind": "config", "detail": "Update stored API option names if persisted outside code." }
+    {"kind": "webhook", "detail": "Receivers must accept max_completion_tokens in the payload."}
   ],
   "ignore": {
     "globs": ["**/policy.py"],
@@ -28,6 +28,8 @@ Schema: [`schema/conduit-packet.schema.json`](../schema/conduit-packet.schema.js
 ```
 
 Optional `ignore` protects migration-contract files/patterns from self-correct heuristics and LLMs (also auto-merged with `.conduit/ignore.json` and discovered `LEGACY_`/`FORBIDDEN_` fixtures). See [Testing & self-correction](testing-and-self-correct.md).
+
+Optional `side_effects` is a human checklist (`webhook`, `database`, `config`, `other`) for ripples Conduit cannot apply (payload receivers, stored field names). It is not executed; items appear under **Double-check** in the run summary and PR body.
 
 `ecosystem` is one of: `pypi`, `npm`, `go`, `maven`, `other`.
 
@@ -41,6 +43,23 @@ Optional `ignore` protects migration-contract files/patterns from self-correct h
 
 These top-level versions also drive **export delta** (downloading both package versions to compare public APIs). Rule-level `DEPENDENCY_BUMP.from_version` / `to_version` can still describe the pin rewrite independently.
 
+    Catalog snapshots use `from_version` `0` as a **floor**, not a PyPI/npm release. On `conduit run` / `apply` / `verify`, Conduit copies the consumer pin for the **packet ecosystem** onto that floor in memory (the published JSON is not rewritten) so export-delta and leftover pin tokens use the real pin. A pypi packet binds `requirements.txt` / `pyproject.toml`; an npm packet binds `package.json`. The same package name in both ecosystems does not share a pin — npm `openai@3.3.0` is never stamped onto a pypi hop.
+
+`DEPENDENCY_BUMP` rewrites nested `requirements.txt` / `constraints.txt` / `*requirements*.txt` and nested `package.json` (skipping `vendor/`, venvs, `node_modules`, `.conduit`). Root `pyproject.toml` / `go.mod` / Maven / Gradle stay root-only.
+
+Before apply, catalog rules are **scoped to source-packet usage**: replace chains collapse (`A→B` + `B→C` becomes `A→C`) and unused model/callee string rules are dropped. `DEPENDENCY_*` always stays.
+
+### Coverage (source vs packet)
+
+Coverage scores each client `model_id` / API token against **migrate-from** rules only:
+
+| Tag | Meaning |
+|-----|---------|
+| `WILL MIGRATE` | Packet has a rule that changes this (e.g. `gpt-4-0613` → `gpt-4o`) |
+| `KEEP` | This id is already a replacement target; leave it |
+| `NO RULE` | Used in this repo; packet has no replace-from rule (may still be current, e.g. `gpt-4o-mini`) |
+| `UNMAPPED` | Helper name or short path, not a known `/v1` route — not a gap |
+
 ## Where packets come from (`ensure_packet`)
 
 Resolution order in `conduit run`:
@@ -53,7 +72,7 @@ Resolution order in `conduit run`:
 
 Cached after synthesis so the next run is instant. Explicit packet **files** are never overwritten by version rewriting. Use `--refresh-packet` when live detect has new signals and you want to rebuild the cached packet for the same version pair — **required after detect/normalize or LLM-evidence changes**, otherwise `conduit run` may keep applying a stale cached packet.
 
-When an LLM is configured (not `--demo`), synthesis also runs **evidence-grounded enrichment**: fetch module seed docs + web search, ask the model for additional `rules`, merge onto scrape rules. See [LLM configuration](llm.md).
+When an LLM is configured (not `--demo`), synthesis also runs **evidence-grounded enrichment**: the [`llms.txt` doc router](../conduit/src/conduit/packet/doc_router.py) selects official pages, Conduit pre-fetches migration doc excerpts, code examples, and OpenAPI path schemas into the enrich prompt, then the model may `fetch_url` for gaps before emitting rules. At `conduit run`, published packets may be **doc-augmented** for client-specific coverage gaps (see [`doc_augment`](../conduit/src/conduit/packet/doc_augment.py)). See [LLM configuration](llm.md).
 
 ### How `from_version` / `to_version` are chosen (synthesis)
 
@@ -116,7 +135,21 @@ Example: migrating consumers from `google-generativeai` to `google-genai` — au
 ### Empty scaffold / local synthesize
 
 ```bash
-# Empty scaffold
+# Guided hop (from-detect when possible, else scaffold) + try-it line
+conduit packet new \
+  --package openai --ecosystem pypi --from 0.28.1 --to 1.0.0 \
+  --out ./packets/openai-pypi-1.0.0.json
+# --scaffold-only to skip detect; --from-consumer --path ./repo to read the pin
+# --enrich optional LLM; --demo offline fixtures
+
+# Dry-run apply + coverage (no verify / no API keys)
+conduit packet test --packet ./packets/openai-pypi-1.0.0.json --path ./examples/demo-consumer
+
+# Show hop-chain rule delta vs previous snapshot
+conduit packet diff-rules ./packets/openai-pypi-1.40.0.json \
+  --previous ./packets/openai-pypi-1.0.0.json
+
+# Empty scaffold directory
 conduit packet init \
   --package openai --from 0.28.0 --to 1.0.0 \
   --ecosystem pypi --out ./my-packet
@@ -127,11 +160,32 @@ conduit packet synthesize \
   --changelog ./CHANGELOG.md --docs ./MIGRATION.md \
   --out ./my-packet/conduit-packet.json
 
+# Catalog snapshots from detect (no consumer repo). Scan picks latest per ecosystem.
+conduit packet from-detect --module openai --out-dir ./packets
+# packets/openai-pypi-<latest>.json
+# packets/openai-npm-<latest>.json
+
 conduit packet validate ./my-packet/conduit-packet.json
 conduit packet show ./my-packet/conduit-packet.json
+
+# Merge leftover-token / post-apply rules into a packet after a consumer run
+conduit packet export-post-rules --path ./examples/demo-consumer \
+  --packet ./packets/openai-pypi-1.0.0.json
 ```
 
-Optional `side_effects` on a packet is a human checklist (`kind`: `webhook` | `database` | `config` | `other`, plus `detail`). Apply/run do not execute them; `packet test` / PR summaries can list them.
+`from-detect` freezes **what the scan sees now**. The next new latest is a new file whose `from_version` is the last file’s `to_version` for that package+ecosystem. It is not a git-history replay. `--enrich` optionally adds LLM rules; default is scrape-only. OpenAI snapshots derive rules from detect signals (OpenAPI param rename/removal, endpoint path pairs → usage-scoped `AST_CALL_REWRITE`, deprecations) — not from a static Python seed list.
+
+Clients apply **one hop** (file or URL). They do not scrape OpenAI to author rules:
+
+```bash
+conduit run --path . --packet ./packets/openai-pypi-1.109.1.json
+conduit run --path . --packet https://example.com/packets/openai-pypi-1.109.1.json
+```
+
+Give a Python client the **pypi** hops with `to_version` greater than their pin, in order. Node clients get the **npm** chain. There is no `--packet-dir` chain runner yet; the wrong hop still rewrites the pin and can skip earlier delta rules.
+
+**Apply order:** `conduit run` / `conduit apply` runs two stages on the scoped packet — **SDK** first (dependency bumps + AST call/import/param rules on code files), then **REST** (EXACT/REGEX path and model literals, KEY_RENAME in configs). REST path strings such as `/v1/fine-tunes` are never applied as Python callees; invalid `AST_CALL_REWRITE` rules are skipped at apply time.
+
 ## Rule types (summary)
 
 | Type | Purpose |
@@ -139,10 +193,14 @@ Optional `side_effects` on a packet is a human checklist (`kind`: `webhook` | `d
 | `EXACT_STRING_REPLACE` | Literal find/replace |
 | `REGEX_REPLACE` | Regex replace |
 | `AST_PARAM_RENAME` | Rename kwarg / object key / builder method / struct key near a call |
+| `AST_PARAM_DROP` | Omit a kwarg near a matching call (optional literal `values`) |
 | `AST_IMPORT_REWRITE` | Rewrite import module path (Python, JS/TS, Java, Go) |
 | `AST_ATTR_RENAME` | Rename attribute / member chain |
 | `AST_CALL_REWRITE` | Rewrite call callee path |
+| `KEY_RENAME` | Rename quoted dict/JSON/YAML keys and `.env` prefixes (config files included even if import-pruned) |
 | `DEPENDENCY_BUMP` | Bump version in pip/npm/go.mod/Maven/Gradle manifests |
+| `DEPENDENCY_ADD` | Add a companion pin (formatted per ecosystem; optional `scope`) |
+| `DEPENDENCY_REMOVE` | Remove a pin (optional `scope`) |
 
 Optional `reason` on any rule explains why it was chosen (endpoint-compat checks, deprecation docs, etc.). PR bodies render these under **Rationale**, with packet `notes` and full `sources`.
 
@@ -156,8 +214,8 @@ See [`examples/sample-packet/conduit-packet.json`](../examples/sample-packet/con
 
 | Role | Typical action |
 |------|----------------|
-| Vendor / maintainer | Publish a packet next to a breaking release (or open a PR to consumer orgs) |
-| Consumer | Drop packet in `.conduit/packets/`, pass `--packet ./file.json`, or `--packet <package-name>`; run `conduit run` |
+| Vendor / maintainer | `conduit packet new` / `from-detect` / init/synthesize; `diff-rules` for hop chains; share JSON |
+| Consumer | `conduit packet test` then `conduit run --packet ./file.json` or `--packet https://…` (one hop); source packet from client inventory |
 
 There is not yet a `conduit packet publish` registry command — share packets via git/HTTP for now.
 

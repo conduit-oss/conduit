@@ -12,13 +12,15 @@
 From a clone of this repo (always use a virtualenv so the `conduit` CLI lands on your PATH):
 
 ```bash
-git clone https://github.com/xlor1009/conduit.git
+git clone https://github.com/conduit-oss/conduit.git
 cd conduit
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e "./conduit[llm,langs,dev]"
 conduit --help
 ```
+
+The `conduit-oss/conduit` repo is **private**; cloning requires GitHub access to that org.
 
 Extras:
 
@@ -62,7 +64,7 @@ What you should see:
 4. Demo tests run under pytest
 5. PR creation is skipped so you can inspect the working tree
 
-`--demo` forces offline detect fixtures (and the openai demo packet fallback). Without it, detect workers hit live vendor sources.
+`--demo` forces offline detect fixtures (and the openai demo packet fallback) and skips the consumer `OPENAI_API_KEY` gate used for live OpenAI verify. Without `--demo`, detect workers hit live vendor sources and openai-package verify may prompt for `OPENAI_API_KEY`. Use `--skip-tests` for apply-only.
 ```bash
 git -C examples/demo-consumer diff
 # or restore:

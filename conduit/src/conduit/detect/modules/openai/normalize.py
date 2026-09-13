@@ -91,13 +91,20 @@ def default_rules_for(signal: RawSignal) -> list[dict[str, Any]]:
         ChangeType.MODEL_REMOVED,
     }:
         if signal.replacement_pattern and signal.affected_pattern:
-            reason = _rule_reason(
-                signal,
-                fallback=(
-                    f"Replace deprecated/removed model {signal.affected_pattern} "
-                    f"with {signal.replacement_pattern}."
-                ),
-            )
+            deadline = str(signal.deadline or "").strip()
+            if "T" in deadline:
+                deadline = deadline.split("T", 1)[0]
+            if deadline:
+                fallback = (
+                    f"Auto-updating deprecated model {signal.affected_pattern} → "
+                    f"{signal.replacement_pattern} (shutdown {deadline})."
+                )
+            else:
+                fallback = (
+                    f"Auto-updating deprecated/removed model "
+                    f"{signal.affected_pattern} → {signal.replacement_pattern}."
+                )
+            reason = _rule_reason(signal, fallback=fallback)
             rules.append(
                 _with_reason(
                     {

@@ -19,6 +19,7 @@ dependencies = [
   "feedparser>=6.0",
   "packaging>=24.0",
   "pyyaml>=6.0",
+  "tomlkit>=0.13",
 ]
 
 [project.optional-dependencies]
@@ -58,7 +59,7 @@ openai = "conduit.detect.modules.openai:OpenAIModule"
 where = ["src"]
 
 [tool.setuptools.package-data]
-conduit = ["py.typed"]
+conduit = ["py.typed", "schema/*.json", "packs/**/*.yaml"]
 
 [tool.setuptools]
 include-package-data = true

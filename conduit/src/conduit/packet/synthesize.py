@@ -255,6 +255,10 @@ def _signal_in_scope(signal: ChangeSignal, index: dict[str, Any]) -> bool:
         "SDK_MAJOR_BUMP",
         "SDK_BUMP",
         "PARAM_RENAME",
+        "PARAM_REMOVED",
+        "SDK_CALLEE_MIGRATION",
+        "PACKAGE_ADDED",
+        "PACKAGE_REMOVED",
     }:
         return True
     from conduit.detect.modules.openai.path_callees import normalize_api_path
@@ -295,6 +299,60 @@ def filter_signals_to_source(
             continue
         if _signal_in_scope(signal, index):
             out.append(signal)
+    return out
+
+
+_DEP_RULE_TYPES = frozenset(
+    {"DEPENDENCY_BUMP", "DEPENDENCY_ADD", "DEPENDENCY_REMOVE"}
+)
+
+
+def _named_dep_packages(rules: list[dict[str, Any]], package: str) -> set[str]:
+    named = {package.lower()}
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        if str(rule.get("type") or "") not in _DEP_RULE_TYPES:
+            continue
+        pkg = str(rule.get("package") or "").strip().lower()
+        if pkg:
+            named.add(pkg)
+    return named
+
+
+def fold_companion_rules(
+    rules: list[dict[str, Any]],
+    signals: list[ChangeSignal],
+    *,
+    package: str,
+) -> list[dict[str, Any]]:
+    """Append suggested_rules from signals whose package is already named."""
+    out = list(rules)
+    seen = {json.dumps(r, sort_keys=True) for r in out if isinstance(r, dict)}
+    named = _named_dep_packages(out, package)
+    changed = True
+    while changed:
+        changed = False
+        for signal in signals:
+            if signal.package.lower() not in named:
+                continue
+            for rule in signal.suggested_rules:
+                if not isinstance(rule, dict):
+                    continue
+                item = dict(rule)
+                key = json.dumps(item, sort_keys=True)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(item)
+                pkg = str(item.get("package") or "").strip().lower()
+                if (
+                    str(item.get("type") or "") in _DEP_RULE_TYPES
+                    and pkg
+                    and pkg not in named
+                ):
+                    named.add(pkg)
+                    changed = True
     return out
 
 
@@ -372,6 +430,7 @@ def packet_from_signals(
     ecosystem: str = "pypi",
     from_version: str = "0.0.0",
     to_version: str = "1.0.0",
+    companion_signals: list[ChangeSignal] | None = None,
 ) -> dict[str, Any]:
     """Assemble a packet from ChangeSignal suggested_rules (deterministic)."""
     pkg_signals = [s for s in signals if s.package.lower() == package.lower()]
@@ -450,7 +509,11 @@ def packet_from_signals(
                 seen_rules.add(key)
                 rules.append(rule)
     packet["rules"] = collapse_dependency_bumps(
-        rules,
+        fold_companion_rules(
+            rules,
+            list(companion_signals or []) + list(signals),
+            package=package,
+        ),
         package=package,
         from_version=str(from_version),
         to_version=str(to_version),
@@ -588,6 +651,8 @@ _EVIDENCE_SYSTEM = (
     "excerpts (cite URLs in notes). "
     "For AST_PARAM_RENAME include explicit function_target(s) taken from evidence — "
     "do not assume ChatCompletion vs chat.completions. "
+    "For AST_PARAM_DROP include function_target, param, and optional values "
+    "(literal kwargs to omit). "
     "If a removed endpoint/param has no stated successor, mention it in notes and do NOT "
     "invent replace/new_callee/new_param. "
     "Multi-statement API gaps and non-code ripples go in side_effects — never invent "
@@ -602,7 +667,12 @@ _EVIDENCE_SYSTEM = (
     "Scope rules to the provided source packet: only models/callees/paths the client "
     "uses. Prefer AST_CALL_REWRITE / AST_ATTR_RENAME for SDK call surfaces observed "
     "in source.usages (path-string replaces are not enough when the client calls "
-    "Resource.create). One DEPENDENCY_BUMP only, from_version → to_version. "
+    "Resource.create). Use KEY_RENAME when request/response dict keys, JSON/YAML "
+    "fixtures, or .env names change (AST_PARAM_RENAME only rewrites call kwargs). "
+    "One primary DEPENDENCY_BUMP pinned to packet from_version → to_version. "
+    "When evidence names companion packages (splits, extra wheels), emit "
+    "DEPENDENCY_ADD / DEPENDENCY_REMOVE / extra DEPENDENCY_BUMP with ecosystems "
+    "and scope (main|dev|peer) — do not invent companion names. "
     "Cover every in-scope deprecated usage; if a successor is documented, emit a rule."
 )
 
@@ -624,6 +694,16 @@ def _rule_dedupe_key(rule: dict[str, Any]) -> str:
             },
             sort_keys=True,
         )
+    if rtype == "AST_PARAM_DROP":
+        return json.dumps(
+            {
+                "type": rtype,
+                "function_target": rule.get("function_target"),
+                "param": rule.get("param") or rule.get("old_param"),
+                "values": rule.get("values"),
+            },
+            sort_keys=True,
+        )
     if rtype == "AST_CALL_REWRITE":
         return json.dumps(
             {
@@ -639,6 +719,26 @@ def _rule_dedupe_key(rule: dict[str, Any]) -> str:
                 "type": rtype,
                 "old_attr": rule.get("old_attr"),
                 "new_attr": rule.get("new_attr"),
+            },
+            sort_keys=True,
+        )
+    if rtype == "KEY_RENAME":
+        return json.dumps(
+            {
+                "type": rtype,
+                "old_key": rule.get("old_key"),
+                "new_key": rule.get("new_key"),
+            },
+            sort_keys=True,
+        )
+    if rtype in {"DEPENDENCY_ADD", "DEPENDENCY_REMOVE", "DEPENDENCY_BUMP"}:
+        return json.dumps(
+            {
+                "type": rtype,
+                "package": rule.get("package"),
+                "from_version": rule.get("from_version"),
+                "to_version": rule.get("to_version"),
+                "scope": rule.get("scope") or "main",
             },
             sort_keys=True,
         )
@@ -725,6 +825,7 @@ def synthesize_from_evidence(
     root: Path | None = None,
     source_packet: dict[str, Any] | None = None,
     missed_items: list[dict[str, Any]] | None = None,
+    publisher: bool = False,
     log: Any | None = None,
     seed_urls: list[str] | None = None,
     suggested_queries: list[str] | None = None,
@@ -736,7 +837,7 @@ def synthesize_from_evidence(
     When ``seed_urls`` / ``suggested_queries`` are provided, they override detect-module
     evidence metadata (so authoring from links works without a vendor module).
     """
-    from conduit.llm import get_llm_client
+    from conduit.llm import attach_llm_log, get_llm_client
     from conduit.llm.executors import RepoToolExecutor
     from conduit.llm.tools import agent_tools
     from conduit.repair_ignore import IgnoreList, build_ignore_list
@@ -744,7 +845,7 @@ def synthesize_from_evidence(
 
     warnings: list[str] = []
     emit = log if callable(log) else None
-    client = get_llm_client(log=emit)
+    client = attach_llm_log(get_llm_client(), emit)
     if client is None:
         warnings.append("LLM packet enrichment skipped (no LLM configured)")
         return base, warnings
@@ -768,13 +869,93 @@ def synthesize_from_evidence(
         )
         return base, warnings
 
+    profile = None
+    try:
+        from conduit.detect.vendor_profile import profile_for_package
+
+        profile = profile_for_package(package)
+    except Exception:
+        profile = None
+
     ignore = IgnoreList()
     ignore_payload: dict[str, Any] = {}
     if root is not None:
         ignore = build_ignore_list(root, base)
         ignore_payload = ignore.to_prompt_dict()
 
-    scoped_signals = filter_signals_to_source(signals, source_packet, package=package)
+    scoped_signals = (
+        list(signals)
+        if publisher
+        else filter_signals_to_source(signals, source_packet, package=package)
+    )
+    has_source_usage = bool(_source_usage_index(source_packet)["has_usage"])
+
+    context_chunks: list[str] = [
+        f"{s.change_type} {s.affected_pattern} {s.replacement_pattern} {s.description}"
+        for s in scoped_signals
+        if s.package.lower() == package.lower()
+    ]
+    if missed_items:
+        context_chunks.extend(
+            f"{i.get('kind')} {i.get('value')} {i.get('detail')}"
+            for i in missed_items
+            if isinstance(i, dict)
+        )
+    if isinstance(source_packet, dict):
+        context_chunks.extend(str(x) for x in source_packet.get("model_ids") or [])
+        context_chunks.extend(str(x) for x in source_packet.get("api_patterns") or [])
+
+    migration_payload: dict[str, str] = {}
+    router_urls = list(seeds)
+    if profile is not None:
+        from conduit.packet.migration_evidence import build_migration_evidence
+
+        evidence = build_migration_evidence(
+            context_chunks=context_chunks,
+            profile=profile,
+            search_queries=queries,
+            model_ids=(source_packet or {}).get("model_ids")
+            if isinstance(source_packet, dict)
+            else None,
+            max_pages=8,
+            demo_openapi=True,
+        )
+        migration_payload = evidence.as_prompt_dict()
+        router_urls = list(dict.fromkeys(evidence.router_urls + seeds))
+        warnings.extend(evidence.warnings)
+        if emit is not None:
+            emit(
+                f"[packet-enrich] prefetched {len(evidence.docs)} doc(s), "
+                f"{len(evidence.code_examples)} example(s), "
+                f"{len(evidence.openapi_structs)} openapi path(s)"
+            )
+
+    research_prefix = (
+        "Research phase (required): Read migration_docs, code_examples, and "
+        "openapi_structs pre-loaded below. Use fetch_url on seed_urls for any "
+        "gap before emitting rules. Do not guess API successors.\n"
+    )
+    if publisher or not has_source_usage:
+        instructions = (
+            research_prefix
+            + "Use tools (web_search, fetch_url, read_file, grep) to gather "
+            "more grounded migration facts from seed_urls / suggested_queries. "
+            "This is a publisher catalog packet (no consumer source_packet). "
+            "Emit rules covering detect_signals up to to_version. "
+            "Do not invent path successors or call shapes. "
+            "Emit final JSON with notes, sources, and rules."
+        )
+    else:
+        instructions = (
+            research_prefix
+            + "Use tools (web_search, fetch_url, read_file, grep) to gather "
+            "more grounded migration facts from seed_urls / suggested_queries "
+            "and the consumer source_packet. "
+            "Only emit rules for source_packet model_ids / usages / api_patterns. "
+            "Do not invent path successors or call shapes. "
+            "If missed_coverage is non-empty, those rows are the only required adds. "
+            "Emit final JSON with notes, sources, and rules."
+        )
     user_payload = {
         "package": package,
         "from_version": from_version,
@@ -785,24 +966,16 @@ def synthesize_from_evidence(
         "existing_rule_count": len(base.get("rules") or []),
         "missed_coverage": missed_items or [],
         "ignore": ignore_payload,
-        "seed_urls": seeds,
+        "seed_urls": router_urls,
         "allow_hosts": hosts or ["github.com"],
         "suggested_queries": queries,
-        "instructions": (
-            "Use tools (web_search, fetch_url, read_file, grep) to gather "
-            "grounded migration facts from seed_urls / suggested_queries "
-            "and the consumer source_packet. "
-            "Only emit rules for source_packet model_ids / usages / api_patterns "
-            "when source_packet is non-empty; otherwise ground rules in seed docs. "
-            "Do not invent path successors or call shapes. "
-            "Multi-statement / non-code gaps go in side_effects, not fake rewrites. "
-            "If missed_coverage is non-empty, those rows are the only required adds. "
-            "Emit final JSON with notes, sources, side_effects, and rules."
-        ),
+        "instructions": instructions,
     }
+    user_payload.update(migration_payload)
     system = (
         _EVIDENCE_SYSTEM
-        + " Use tools as needed before answering. Final reply must be JSON only."
+        + " Research first: read pre-loaded migration_docs / examples / openapi_structs, "
+        "then fetch_url any missing facts before emitting rules. Final reply must be JSON only."
     )
     executor: RepoToolExecutor | None = None
     if root is not None:
@@ -1006,6 +1179,9 @@ def ensure_packet(
             packet=packet,
             from_source="file",
             to_source="file",
+            warnings=[
+                "Using published packet file; LLM packet synthesis/enrichment skipped"
+            ],
         )
 
     source = source_packet
@@ -1081,6 +1257,7 @@ def ensure_packet(
         ecosystem=eco,
         from_version=from_v,
         to_version=to_v,
+        companion_signals=signals,
     )
     used_fixture = False
     profile = None
@@ -1155,7 +1332,11 @@ def ensure_packet(
             to_version=str(packet.get("to_version") or to_v),
         )
         packet["rules"] = collapse_dependency_bumps(
-            list(packet.get("rules") or []),
+            fold_companion_rules(
+                list(packet.get("rules") or []),
+                signals,
+                package=package,
+            ),
             package=package,
             from_version=str(packet.get("from_version") or from_v),
             to_version=str(packet.get("to_version") or to_v),
@@ -1197,7 +1378,11 @@ def ensure_packet(
                     to_version=str(packet.get("to_version") or to_v),
                 )
                 packet["rules"] = collapse_dependency_bumps(
-                    list(packet.get("rules") or []),
+                    fold_companion_rules(
+                        list(packet.get("rules") or []),
+                        signals,
+                        package=package,
+                    ),
                     package=package,
                     from_version=str(packet.get("from_version") or from_v),
                     to_version=str(packet.get("to_version") or to_v),

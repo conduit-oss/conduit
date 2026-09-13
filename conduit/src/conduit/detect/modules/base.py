@@ -24,6 +24,7 @@ class DetectContext:
     demo: bool = False  # use offline fixtures; live sources otherwise
     verbose: bool = False
     majors_only: bool = True  # one major version step at a time
+    catalog_latest: bool = False  # no client pin: emit latest stable per SDK repo
     extra: dict[str, Any] = field(default_factory=dict)
 
 

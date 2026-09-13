@@ -43,16 +43,39 @@ def _extract_python(root: Path, package: str) -> set[str]:
 
     init = pkg_dir / "__init__.py"
     if init.is_file():
-        symbols |= _python_file_exports(init.read_text(encoding="utf-8", errors="ignore"))
-
-    # Shallow: also scan immediate submodules' public names
-    for py in pkg_dir.glob("*.py"):
-        if py.name.startswith("_") and py.name != "__init__.py":
-            continue
         try:
-            symbols |= _python_file_exports(py.read_text(encoding="utf-8", errors="ignore"))
+            text = init.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            text = ""
+        if text:
+            symbols |= _python_file_exports(text)
+            symbols |= _python_class_method_exports(text)
+
+    # Shallow: immediate submodules + one extra package level (api_resources/*.py).
+    skip_subs = {"tests", "test", "types", "vendor", "_vendor"}
+    py_files = [
+        py
+        for py in pkg_dir.glob("*.py")
+        if not (py.name.startswith("_") and py.name != "__init__.py")
+    ]
+    for sub in pkg_dir.iterdir():
+        if not sub.is_dir() or sub.name.startswith(("_", ".")):
+            continue
+        if sub.name.lower() in skip_subs:
+            continue
+        py_files.extend(
+            py
+            for py in sub.glob("*.py")
+            if not (py.name.startswith("_") and py.name != "__init__.py")
+        )
+
+    for py in py_files:
+        try:
+            text = py.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        symbols |= _python_file_exports(text)
+        symbols |= _python_class_method_exports(text)
         symbols.add(py.stem)
 
     return {s for s in symbols if s and not s.startswith("_")}
@@ -89,6 +112,25 @@ def _python_file_exports(source: str) -> set[str]:
                 name = alias.asname or alias.name
                 if name != "*" and not name.startswith("_"):
                     symbols.add(name)
+    return symbols
+
+
+def _python_class_method_exports(source: str) -> set[str]:
+    """Public ClassName.method symbols (Audio.transcribe, ChatCompletion.create)."""
+    symbols: set[str] = set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return symbols
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name.startswith("_"):
+            continue
+        for item in node.body:
+            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if item.name.startswith("_"):
+                continue
+            symbols.add(f"{node.name}.{item.name}")
     return symbols
 
 

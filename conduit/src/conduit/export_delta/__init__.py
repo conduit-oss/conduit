@@ -22,6 +22,8 @@ class ExportDelta:
     renamed: dict[str, str] = field(default_factory=dict)
     from_symbols: set[str] = field(default_factory=set)
     to_symbols: set[str] = field(default_factory=set)
+    from_tree: Path | None = None
+    resource_paths: dict[str, str] = field(default_factory=dict)
     skipped_reason: str | None = None
     diagnostics: list[str] = field(default_factory=list)
 
@@ -33,6 +35,11 @@ class ExportDelta:
             | set(self.renamed.keys())
             | set(self.renamed.values())
         )
+
+    @property
+    def gone_symbols(self) -> set[str]:
+        """Old names that died on the to-pin, including false-rename keys (Audio→audio)."""
+        return set(self.removed) | set(self.renamed.keys())
 
     def to_dict(self) -> dict:
         return {
@@ -103,10 +110,17 @@ def compute_export_delta(
 
     result.from_symbols = old_syms
     result.to_symbols = new_syms
+    result.from_tree = old_tree
     added, removed, renamed = diff_exports(old_syms, new_syms)
     result.added = added
     result.removed = removed
     result.renamed = renamed
+    try:
+        from conduit.export_delta.resources import extract_resource_paths
+
+        result.resource_paths = extract_resource_paths(old_tree, package=package)
+    except Exception as exc:
+        result.diagnostics.append(f"resource path extract failed: {exc}")
     return result
 
 
