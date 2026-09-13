@@ -1,0 +1,32 @@
+{
+  "packet_id": "google-genai-pypi-1.0.0",
+  "package": "google-genai",
+  "ecosystem": "pypi",
+  "from_version": "*",
+  "to_version": "1.0.0",
+  "sources": [
+    {
+      "url": "https://googleapis.github.io/python-genai/",
+      "kind": "other"
+    },
+    {
+      "url": "https://github.com/googleapis/python-genai/blob/main/CHANGELOG.md",
+      "kind": "changelog"
+    }
+  ],
+  "notes": "Targeted to google-genai@1.0.0. The provided documentation excerpt exposes the SDK landing page and module index only; no grounded symbol-level API replacements or successors were identified from the supplied source snippet. This packet therefore limits itself to the version transition.",
+  "side_effects": [],
+  "rules": [
+    {
+      "type": "DEPENDENCY_BUMP",
+      "package": "google-genai",
+      "from_version": "*",
+      "to_version": "1.0.0",
+      "ecosystems": [
+        "pip",
+        "pyproject"
+      ],
+      "reason": "Pin google-genai to target version 1.0.0"
+    }
+  ]
+}

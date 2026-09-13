@@ -14,6 +14,144 @@ from conduit.packet.validate import validate_packet
 _PLACEHOLDER_FROM = "0.0.0"
 _PLACEHOLDER_TO = "1.0.0"
 
+SOURCE_KINDS = frozenset({"github_release", "changelog", "docs", "openapi", "other"})
+SIDE_EFFECT_KINDS = frozenset({"webhook", "database", "config", "other"})
+
+_SOURCE_KIND_ALIASES = {
+    "documentation": "docs",
+    "document": "docs",
+    "doc": "docs",
+    "guide": "docs",
+    "migration": "docs",
+    "readme": "docs",
+    "manual": "docs",
+    "reference": "docs",
+    "repository": "other",
+    "repo": "other",
+    "source": "other",
+    "code": "other",
+    "git": "other",
+    "webpage": "other",
+    "website": "other",
+    "url": "other",
+    "link": "other",
+    "page": "other",
+    "release": "github_release",
+    "releases": "github_release",
+    "tag": "github_release",
+    "tags": "github_release",
+    "github": "github_release",
+    "github_release_notes": "github_release",
+    "release_notes": "github_release",
+    "changelog": "changelog",
+    "changes": "changelog",
+    "history": "changelog",
+    "change_log": "changelog",
+    "openapi": "openapi",
+    "swagger": "openapi",
+    "spec": "openapi",
+    "api_spec": "openapi",
+}
+
+_SIDE_EFFECT_KIND_ALIASES = {
+    "db": "database",
+    "database": "database",
+    "datastore": "database",
+    "env": "config",
+    "environment": "config",
+    "configuration": "config",
+    "settings": "config",
+    "config": "config",
+    "webhook": "webhook",
+    "hooks": "webhook",
+    "callback": "webhook",
+    "other": "other",
+    "manual": "other",
+    "ops": "other",
+}
+
+
+def normalize_source_kind(kind: str | None) -> str:
+    """Map LLM synonyms onto the schema ``sources[].kind`` enum."""
+    raw = (kind or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if not raw:
+        return "other"
+    if raw in SOURCE_KINDS:
+        return raw
+    if raw in _SOURCE_KIND_ALIASES:
+        return _SOURCE_KIND_ALIASES[raw]
+    if "changelog" in raw or raw.endswith("_changes") or "change_log" in raw:
+        return "changelog"
+    if "openapi" in raw or "swagger" in raw:
+        return "openapi"
+    if "github" in raw and ("release" in raw or "tag" in raw):
+        return "github_release"
+    if "release" in raw or raw.endswith("_tag"):
+        return "github_release"
+    if any(
+        tok in raw
+        for tok in ("doc", "guide", "migrate", "migration", "readme", "manual")
+    ):
+        return "docs"
+    if any(tok in raw for tok in ("repo", "repository", "source", "git")):
+        return "other"
+    return "other"
+
+
+def normalize_side_effect_kind(kind: str | None) -> str:
+    """Map LLM synonyms onto the schema ``side_effects[].kind`` enum."""
+    raw = (kind or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if not raw:
+        return "other"
+    if raw in SIDE_EFFECT_KINDS:
+        return raw
+    if raw in _SIDE_EFFECT_KIND_ALIASES:
+        return _SIDE_EFFECT_KIND_ALIASES[raw]
+    if "webhook" in raw or "hook" in raw or "callback" in raw:
+        return "webhook"
+    if "database" in raw or raw == "db" or "datastore" in raw:
+        return "database"
+    if any(tok in raw for tok in ("config", "env", "setting")):
+        return "config"
+    return "other"
+
+
+def normalize_packet_sources(sources: Any) -> list[dict[str, Any]]:
+    """Rewrite ``sources[].kind`` to schema-valid values; drop malformed rows."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(sources, list):
+        return out
+    for src in sources:
+        if not isinstance(src, dict) or not src.get("url"):
+            continue
+        out.append(
+            {
+                "url": str(src["url"]),
+                "kind": normalize_source_kind(src.get("kind")),
+            }
+        )
+    return out
+
+
+def normalize_packet_side_effects(side_effects: Any) -> list[dict[str, Any]]:
+    """Rewrite ``side_effects[].kind`` to schema-valid values; drop malformed rows."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(side_effects, list):
+        return out
+    for effect in side_effects:
+        if not isinstance(effect, dict):
+            continue
+        detail = str(effect.get("detail") or "").strip()
+        if not detail:
+            continue
+        out.append(
+            {
+                "kind": normalize_side_effect_kind(effect.get("kind")),
+                "detail": detail,
+            }
+        )
+    return out
+
 
 def _parse_ver(value: str | None):
     if not value:
@@ -444,9 +582,12 @@ def synthesize_from_docs(
             "packet_id, package, ecosystem, from_version, to_version, sources, notes, "
             "side_effects, rules. "
             "Rules may use EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
-            "AST_PARAM_DROP, "
-            "DEPENDENCY_BUMP, DEPENDENCY_ADD, DEPENDENCY_REMOVE, AST_IMPORT_REWRITE, "
-            "AST_ATTR_RENAME, AST_CALL_REWRITE, KEY_RENAME. "
+            "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE. "
+            "sources[].kind MUST be exactly one of: github_release, changelog, docs, "
+            "openapi, other. Never use synonyms (documentation, repository, repo, "
+            "guide, release, webpage). "
+            "side_effects[].kind MUST be exactly one of: webhook, database, config, other. "
+            "Never use synonyms (db, env, configuration). "
             "Only propose replacements grounded in the provided changelog/docs. "
             "If a successor is unknown, put it in notes — do not invent paths or callees. "
             "Multi-statement API gaps and non-code ripples (webhooks, DBs, config) go in "
@@ -465,10 +606,19 @@ def synthesize_from_docs(
         data = client.complete_json(
             system=(
                 "You author Conduit migration packets. JSON only. "
-                "Never invent API successors. Put uncodemodable gaps in side_effects."
+                "Never invent API successors. Put uncodemodable gaps in side_effects. "
+                "sources[].kind must be exactly github_release|changelog|docs|openapi|other. "
+                "side_effects[].kind must be exactly webhook|database|config|other."
             ),
             user=json.dumps(prompt),
         )
+        if data and isinstance(data, dict):
+            if "sources" in data:
+                data["sources"] = normalize_packet_sources(data.get("sources"))
+            if "side_effects" in data:
+                data["side_effects"] = normalize_packet_side_effects(
+                    data.get("side_effects")
+                )
         if data and not validate_packet(data):
             return data
         if data:
@@ -476,7 +626,11 @@ def synthesize_from_docs(
             packet["notes"] = data.get("notes") or packet.get("notes")
             side = data.get("side_effects")
             if isinstance(side, list) and side:
-                packet["side_effects"] = side
+                packet["side_effects"] = normalize_packet_side_effects(side)
+            if isinstance(data.get("sources"), list) and data["sources"]:
+                packet["sources"] = normalize_packet_sources(
+                    list(packet.get("sources") or []) + list(data["sources"])
+                )
     except Exception:
         pass
     return packet
@@ -487,9 +641,12 @@ _EVIDENCE_SYSTEM = (
     "Emit JSON only with keys: notes (string), sources (list of {url, kind}), "
     "side_effects (list of {kind, detail}), rules (list). "
     "Allowed rule types: EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
-    "AST_PARAM_DROP, "
-    "DEPENDENCY_BUMP, DEPENDENCY_ADD, DEPENDENCY_REMOVE, AST_IMPORT_REWRITE, "
-    "AST_ATTR_RENAME, AST_CALL_REWRITE, KEY_RENAME. "
+    "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE. "
+    "sources[].kind MUST be exactly one of: github_release, changelog, docs, "
+    "openapi, other. Never use synonyms (documentation, repository, repo, guide, "
+    "release, webpage). "
+    "side_effects[].kind MUST be exactly one of: webhook, database, config, other. "
+    "Never use synonyms (db, env, configuration). "
     "Every path replace, param rename, and call rewrite MUST be supported by the evidence "
     "excerpts (cite URLs in notes). "
     "For AST_PARAM_RENAME include explicit function_target(s) taken from evidence — "
@@ -913,10 +1070,17 @@ def synthesize_from_evidence(
     for src in data.get("sources") or []:
         if isinstance(src, dict) and src.get("url"):
             probe.setdefault("sources", []).append(
-                {"url": str(src["url"]), "kind": str(src.get("kind") or "docs")}
+                {
+                    "url": str(src["url"]),
+                    "kind": normalize_source_kind(src.get("kind") or "docs"),
+                }
             )
     for url in seeds:
         probe.setdefault("sources", []).append({"url": url, "kind": "docs"})
+
+    probe["sources"] = normalize_packet_sources(probe.get("sources"))
+    if "side_effects" in probe:
+        probe["side_effects"] = normalize_packet_side_effects(probe.get("side_effects"))
 
     errs = validate_packet(probe)
     if errs:
