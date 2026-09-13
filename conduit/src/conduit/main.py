@@ -435,6 +435,16 @@ def _resolve_packet_arg(
     if any(sep in raw for sep in ("/", "\\")) or raw.endswith(".json"):
         console.print(f"[red]Packet file not found:[/red] {raw}")
         raise typer.Exit(2)
+    # Catalog slug (packet_id) when CONDUIT_PACKET_CATALOG_BASE is set
+    from conduit.packet.fetch import catalog_url_for_name
+
+    catalog_url = catalog_url_for_name(raw)
+    if catalog_url:
+        try:
+            return fetch_packet_url(catalog_url, root=root, refresh=refresh), None
+        except PacketFetchError:
+            # Fall through to package-name synthesis when catalog miss
+            pass
     if not allow_package_name:
         console.print(f"[red]Packet file not found:[/red] {raw}")
         raise typer.Exit(2)

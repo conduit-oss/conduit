@@ -62,13 +62,29 @@ Coverage scores each client `model_id` / API token against **migrate-from** rule
 
 ## Where packets come from (`ensure_packet`)
 
-Resolution order in `conduit run`:
+Resolution order for `--packet` / `conduit run`:
 
-1. **`--packet` file path** — if the value names an existing file, load that JSON
-2. **`--packet` package name** — e.g. `--packet openai` (same idea as `--package openai`): synthesize/cache for that package
-3. **Cache** — `.conduit/packets/{package}-{from}-{to}.json` (skip with `--refresh-packet`)
-4. **Synthesize from detect signals** — fold `suggested_rules` into a packet
-5. **OpenAI fixture fallback** — only when `--demo` is set and package is `openai` with empty rules (warns)
+1. **http(s) URL** — download JSON and cache under `.conduit/packets/`
+2. **File path** — if the value names an existing file, load that JSON
+3. **Catalog slug** — when `CONDUIT_PACKET_CATALOG_BASE` is set (no trailing slash), a bare id such as `example-sdk-pypi-1.0.0` is fetched from  
+   `{BASE}/by-package/{package}/{ecosystem}/{id}.json`  
+   (see public catalog layout). On miss, fall through.
+4. **Package name** — e.g. `--packet openai`: synthesize/cache for that package via detect
+5. **Cache** — `.conduit/packets/{package}-{from}-{to}.json` (skip with `--refresh-packet`)
+6. **Synthesize from detect signals** — fold `suggested_rules` into a packet
+7. **OpenAI fixture fallback** — only when `--demo` is set and package is `openai` with empty rules (warns)
+
+```bash
+# File
+conduit run --path . --packet ./packets/my-sdk-pypi-2.0.0.json
+
+# Direct URL (raw GitHub, CDN, etc.)
+conduit run --path . --packet https://raw.githubusercontent.com/conduit-oss/packets/main/by-package/example-sdk/pypi/example-sdk-pypi-1.0.0.json
+
+# Catalog name (requires base URL)
+export CONDUIT_PACKET_CATALOG_BASE=https://raw.githubusercontent.com/conduit-oss/packets/main
+conduit run --path . --packet example-sdk-pypi-1.0.0
+```
 
 Cached after synthesis so the next run is instant. Explicit packet **files** are never overwritten by version rewriting. Use `--refresh-packet` when live detect has new signals and you want to rebuild the cached packet for the same version pair — **required after detect/normalize or LLM-evidence changes**, otherwise `conduit run` may keep applying a stale cached packet.
 
