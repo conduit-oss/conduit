@@ -16,6 +16,12 @@ from conduit.packet.author import (
     guess_source_kind,
     packet_id_for_target,
 )
+from conduit.packet.synthesize import (
+    empty_packet,
+    normalize_side_effect_kind,
+    normalize_source_kind,
+    synthesize_from_evidence,
+)
 from conduit.packet.validate import validate_packet
 
 
@@ -308,3 +314,98 @@ def test_format_packet_summary_includes_side_effects():
     text = format_packet_summary(packet)
     assert "side_effect[webhook]" in text
     assert "source[docs]" in text
+
+
+def test_normalize_source_kind_aliases():
+    assert normalize_source_kind("docs") == "docs"
+    assert normalize_source_kind("documentation") == "docs"
+    assert normalize_source_kind("Documentation") == "docs"
+    assert normalize_source_kind("repository") == "other"
+    assert normalize_source_kind("repo") == "other"
+    assert normalize_source_kind("release") == "github_release"
+    assert normalize_source_kind("github_release_notes") == "github_release"
+    assert normalize_source_kind("swagger") == "openapi"
+    assert normalize_source_kind("changes") == "changelog"
+    assert normalize_source_kind("") == "other"
+    assert normalize_source_kind("totally-unknown") == "other"
+
+
+def test_normalize_side_effect_kind_aliases():
+    assert normalize_side_effect_kind("db") == "database"
+    assert normalize_side_effect_kind("env") == "config"
+    assert normalize_side_effect_kind("configuration") == "config"
+    assert normalize_side_effect_kind("webhook") == "webhook"
+
+
+def test_evidence_enrich_normalizes_synonym_source_kinds(monkeypatch):
+    class FakeClient:
+        def run_agent(self, *args, **kwargs):
+            return {
+                "notes": "ok",
+                "sources": [
+                    {
+                        "url": "https://example.com/guide",
+                        "kind": "documentation",
+                    },
+                    {
+                        "url": "https://github.com/acme/sdk",
+                        "kind": "repository",
+                    },
+                ],
+                "side_effects": [
+                    {"kind": "db", "detail": "Migrate stored option names."}
+                ],
+                "rules": [
+                    {
+                        "type": "AST_IMPORT_REWRITE",
+                        "target_files": ["*.py"],
+                        "old_import": "old_sdk",
+                        "new_import": "widgets",
+                        "reason": "docs",
+                    }
+                ],
+            }
+
+        def complete_json(self, *args, **kwargs):
+            return self.run_agent()
+
+    monkeypatch.setattr(
+        "conduit.llm.get_llm_client", lambda **kwargs: FakeClient()
+    )
+    base = empty_packet(
+        package="widgets",
+        ecosystem="pypi",
+        from_version="*",
+        to_version="2.0.0",
+        notes="seed",
+    )
+    base["rules"] = [
+        {
+            "type": "DEPENDENCY_BUMP",
+            "package": "widgets",
+            "from_version": "*",
+            "to_version": "2.0.0",
+            "ecosystems": ["pip", "pyproject"],
+            "reason": "pin",
+        }
+    ]
+    packet, warnings = synthesize_from_evidence(
+        package="widgets",
+        from_version="*",
+        to_version="2.0.0",
+        ecosystem="pypi",
+        signals=[],
+        base=base,
+        seed_urls=["https://docs.example.com/migrate"],
+        suggested_queries=["widgets migration"],
+    )
+    assert not any("failed validation" in w for w in warnings), warnings
+    assert validate_packet(packet) == []
+    kinds = {s["kind"] for s in packet["sources"] if isinstance(s, dict)}
+    assert "docs" in kinds
+    assert "other" in kinds
+    assert "documentation" not in kinds
+    assert "repository" not in kinds
+    effects = packet.get("side_effects") or []
+    assert effects
+    assert effects[0]["kind"] == "database"
