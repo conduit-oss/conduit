@@ -32,6 +32,22 @@
       }
     },
     "notes": { "type": ["string", "null"] },
+    "side_effects": {
+      "type": "array",
+      "description": "Human checklist for multi-statement / non-code ripples (not applied by codemods).",
+      "items": {
+        "type": "object",
+        "required": ["kind", "detail"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["webhook", "database", "config", "other"]
+          },
+          "detail": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "ignore": {
       "type": "object",
       "additionalProperties": false,

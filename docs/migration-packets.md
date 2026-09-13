@@ -15,6 +15,9 @@ Schema: [`schema/conduit-packet.schema.json`](../schema/conduit-packet.schema.js
   "to_version": "1.40.0",
   "sources": [ { "url": "…", "kind": "docs" } ],
   "notes": "optional",
+  "side_effects": [
+    { "kind": "config", "detail": "Update stored API option names if persisted outside code." }
+  ],
   "ignore": {
     "globs": ["**/policy.py"],
     "paths": [],
@@ -75,6 +78,43 @@ With `-v`, Conduit prints version sources (`manifest`, `signal`, `rule`, `fixtur
 
 ## Authoring CLI
 
+### Author a packet from links
+
+Humans answer prompts or flags only — no hand-edited rules required. Point Conduit at migrate guides / changelogs / docs; when an LLM is configured it fills `rules` (and `side_effects` for multi-statement gaps). Without an LLM you still get a schema-valid packet with a dependency hop + recorded `sources`.
+
+```bash
+# Interactive (TTY): package → ecosystem → version → source URLs (blank to finish)
+conduit packet new
+
+# Flags (non-interactive / CI)
+conduit packet new \
+  --package google-genai \
+  --ecosystem pypi \
+  --version 1.0.0 \
+  --source-url https://googleapis.github.io/python-genai/ \
+  --source-url https://github.com/googleapis/python-genai/blob/main/CHANGELOG.md
+
+# Skip LLM even when configured
+conduit packet new --package google-genai --version 1.0.0 \
+  --source-url https://example.com/migrate --scaffold-only
+```
+
+Default output: `packets/{package}-{ecosystem}-{version}.json` (e.g. `packets/google-genai-pypi-1.0.0.json`).  
+`packet_id` matches that slug. Top-level `from_version` is `*` (any consumer pin; resolved at apply/run); `to_version` is the target you picked.
+
+Try it without a demo consumer:
+
+```bash
+conduit packet test --packet ./packets/google-genai-pypi-1.0.0.json
+conduit packet test --packet ./packets/google-genai-pypi-1.0.0.json --path /tmp/my-app
+conduit apply --packet ./packets/google-genai-pypi-1.0.0.json --path /tmp/my-app --dry-run
+conduit run --path /tmp/my-app --packet ./packets/google-genai-pypi-1.0.0.json --skip-pr
+```
+
+Example: migrating consumers from `google-generativeai` to `google-genai` — author a packet for the **successor** package (`google-genai`) with the migrate-guide URL(s); enrichment emits import/call rewrites when grounded, and uncodemodable multi-statement gaps land in `side_effects` (checklist only — not applied by codemods).
+
+### Empty scaffold / local synthesize
+
 ```bash
 # Empty scaffold
 conduit packet init \
@@ -91,6 +131,7 @@ conduit packet validate ./my-packet/conduit-packet.json
 conduit packet show ./my-packet/conduit-packet.json
 ```
 
+Optional `side_effects` on a packet is a human checklist (`kind`: `webhook` | `database` | `config` | `other`, plus `detail`). Apply/run do not execute them; `packet test` / PR summaries can list them.
 ## Rule types (summary)
 
 | Type | Purpose |

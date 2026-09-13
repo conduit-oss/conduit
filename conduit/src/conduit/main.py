@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
@@ -820,6 +820,165 @@ def packet_init_cmd(
         out_dir=out_dir,
     )
     console.print(f"[green]Created[/green] {path}")
+
+
+@packet_app.command("new")
+def packet_new_cmd(
+    package: Optional[str] = typer.Option(None, "--package", help="Package name"),
+    ecosystem: Optional[str] = typer.Option(
+        None, "--ecosystem", help="pypi / npm / go / maven (default: pypi)"
+    ),
+    version: Optional[str] = typer.Option(
+        None, "--version", "--to", help="Target version to migrate to"
+    ),
+    source_url: Optional[List[str]] = typer.Option(
+        None,
+        "--source-url",
+        help="Migration guide / changelog / docs URL (repeatable)",
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Output JSON path (default packets/{pkg}-{eco}-{version}.json)",
+    ),
+    no_enrich: bool = typer.Option(
+        False, "--no-enrich", help="Skip LLM enrichment even when configured"
+    ),
+    scaffold_only: bool = typer.Option(
+        False,
+        "--scaffold-only",
+        help="Write dependency hop + sources only; skip LLM enrichment",
+    ),
+) -> None:
+    """Author a packet from source URLs (TTY prompts or flags)."""
+    import sys
+
+    from conduit.packet.author import create_packet_new, default_packet_out_path
+
+    def _ask(label: str, default: str = "") -> str:
+        if not sys.stdin.isatty():
+            return default
+        try:
+            return str(typer.prompt(label, default=default or ""))
+        except Exception:
+            return default
+
+    pkg = (package or "").strip() or _ask("Package")
+    if not pkg:
+        console.print("[red]--package is required[/red]")
+        raise typer.Exit(2)
+    eco = (ecosystem or "").strip() or _ask("Ecosystem", "pypi") or "pypi"
+    eco = eco.lower()
+    ver = (version or "").strip() or _ask("Target version")
+    if not ver:
+        console.print("[red]--version / --to is required[/red]")
+        raise typer.Exit(2)
+
+    urls = [u.strip() for u in (source_url or []) if u and str(u).strip()]
+    if sys.stdin.isatty():
+        console.print(
+            "[dim]Source URLs (migrate guide, changelog, docs). Blank line ends.[/dim]"
+        )
+        while True:
+            raw = _ask("Source URL", "")
+            text = (raw or "").strip()
+            if not text:
+                break
+            if text not in urls:
+                urls.append(text)
+
+    dest = out or default_packet_out_path(package=pkg, ecosystem=eco, version=ver)
+    path_written, packet, warnings = create_packet_new(
+        package=pkg,
+        ecosystem=eco,
+        version=ver,
+        source_urls=urls,
+        out=dest,
+        enrich=not (no_enrich or scaffold_only),
+        scaffold_only=scaffold_only,
+        log=console.print,
+    )
+    for warning in warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+    n_rules = len(packet.get("rules") or [])
+    n_effects = len(packet.get("side_effects") or [])
+    console.print(
+        f"[green]Wrote[/green] {path_written}  "
+        f"({pkg} → {packet.get('to_version')}, {n_rules} rule(s), "
+        f"{n_effects} side_effect(s))"
+    )
+    console.print(
+        "[dim]Try it:[/dim] "
+        f"conduit packet test --packet {path_written}"
+    )
+    console.print(
+        "[dim]Or:[/dim] "
+        f"conduit apply --packet {path_written} --path <consumer> --dry-run"
+    )
+
+
+@packet_app.command("test")
+def packet_test_cmd(
+    packet: Path = typer.Option(..., "--packet", help="Migration packet JSON"),
+    path: Optional[Path] = typer.Option(
+        None,
+        "--path",
+        help="Optional consumer repo for dry-run apply + coverage",
+    ),
+) -> None:
+    """Validate + summarize a packet; optional dry-run apply (no verify)."""
+    from conduit.packet.author import format_packet_summary
+
+    data = json.loads(packet.read_text(encoding="utf-8"))
+    errors = validate_packet(data)
+    if errors:
+        for err in errors:
+            console.print(f"[red]{err}[/red]")
+        raise typer.Exit(1)
+
+    console.print("[green]Packet is valid.[/green]")
+    console.print(format_packet_summary(data))
+
+    if path is None:
+        console.print("[dim]packet test OK (validate + summary)[/dim]")
+        raise typer.Exit(0)
+
+    root = _resolve_root(path)
+    report = apply_packet(root, data, dry_run=True, require_context=False)
+    console.print(
+        f"[dim]Dry-run apply:[/dim] would modify {len(report.files_modified)} file(s)"
+    )
+    for change in report.changes[:50]:
+        console.print(f"  [DRY-RUN] [{change.rule_type}] {change.path}: {change.detail}")
+    if len(report.changes) > 50:
+        console.print(f"  … {len(report.changes) - 50} more")
+
+    pkg = str(data.get("package") or "")
+    if pkg:
+        try:
+            from conduit.detect.client_state import scan_package_state
+
+            state = scan_package_state(root, pkg, use_llm=False)
+            cov = build_coverage_report(
+                package=pkg,
+                state=state,
+                signals=[],
+                packet=data,
+            )
+            console.print(format_coverage_report(cov, verbose=_VERBOSE))
+        except Exception as exc:
+            console.print(f"[dim]Coverage skipped: {exc}[/dim]")
+
+    effects = data.get("side_effects") or []
+    if effects:
+        console.print("[bold]Side effects checklist[/bold]")
+        for effect in effects:
+            if isinstance(effect, dict):
+                console.print(
+                    f"  • [{effect.get('kind') or 'other'}] {effect.get('detail')}"
+                )
+
+    console.print("[green]packet test OK[/green]")
 
 
 @packet_app.command("validate")

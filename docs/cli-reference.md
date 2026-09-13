@@ -134,6 +134,33 @@ Scaffold a **profile-backed** detect module. On a TTY, prompts for source URLs (
 
 ## `conduit packet`
 
+### `packet new`
+
+Author a Migration Packet from source URLs (TTY prompts or flags). Writes `packets/{pkg}-{eco}-{version}.json` by default.
+
+| Option | Description |
+|--------|-------------|
+| `--package` | Package name (prompted on TTY if omitted) |
+| `--ecosystem` | `pypi` / `npm` / `go` / `maven` (default `pypi`) |
+| `--version` / `--to` | Target version (single version; no from→to hop) |
+| `--source-url` | Repeatable migrate guide / changelog / docs URL |
+| `--out` | Output JSON path |
+| `--no-enrich` | Skip LLM enrichment |
+| `--scaffold-only` | Dependency hop + sources only (skip LLM) |
+
+On a TTY, after package/ecosystem/version, prompts for source URLs until a blank line. Fetches URLs into `sources`; when an LLM is configured and sources are present, enriches rules by default. Without an LLM, still writes a valid packet with `DEPENDENCY_BUMP` + sources (never invents AST rules). Multi-statement gaps go in `side_effects`.
+
+### `packet test`
+
+Validate + summarize a packet. Optional dry-run apply (no verify / no credentials).
+
+| Option | Description |
+|--------|-------------|
+| `--packet` | Packet JSON path (required) |
+| `--path` | Optional consumer repo for dry-run apply + coverage |
+
+Without `--path`, prints validity + summary (rules, sources, side_effects). Does not require `examples/*-consumer`.
+
 ### `packet init`
 
 Scaffold an empty packet directory / file.
