@@ -35,7 +35,7 @@ When both versions are resolvable, Conduit:
 
 Export delta reads the **packet top-level** versions (not only lockfile jumps):
 
-- `from_version` — ideally the version the project is on now (from manifests / detect)
+- `from_version` — the version the project is on now. Catalog packets with floor `0` are stamped from the **packet-ecosystem** client pin before export-delta runs.
 - `to_version` — migration target (from detect signals or `DEPENDENCY_BUMP` rules)
 
 If either side cannot be fetched (missing placeholder like `0.0.0`, network/pip failure, etc.), Conduit **soft-fails** and continues with the import-pruned set:

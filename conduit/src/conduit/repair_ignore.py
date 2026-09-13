@@ -79,6 +79,10 @@ def _packet_match_strings(packet: dict[str, Any]) -> set[str]:
             old = rule.get("old_attr")
             if old:
                 out.add(str(old))
+        elif rtype == "KEY_RENAME":
+            old = rule.get("old_key")
+            if old:
+                out.add(str(old))
     return out
 
 
@@ -121,12 +125,39 @@ def _iter_source_files(root: Path) -> Iterable[Path]:
             yield path
 
 
+def _is_contract_candidate(rel: str) -> bool:
+    """Auto-ignore only test/oracle/policy contract files, never impl helpers."""
+    posix = rel.replace("\\", "/")
+    name = Path(posix).name.lower()
+    if posix.startswith("tests/") or "/tests/" in posix:
+        return True
+    stem_bits = ("oracle", "contract", "policy", "forbidden", "expected", "baseline")
+    return any(bit in name for bit in stem_bits)
+
+
+def _literal_contract_assignment(text: str, match_strings: set[str]) -> bool:
+    """True if a LEGACY_/FORBIDDEN_ name is bound to a quoted packet match string."""
+    for line in text.splitlines():
+        if not _CONTRACT_NAME_RE.search(line):
+            continue
+        for match in match_strings:
+            if not match:
+                continue
+            if re.search(
+                rf"""=\s*(['"]){re.escape(match)}\1""",
+                line,
+            ):
+                return True
+    return False
+
+
 def discover_contract_files(root: Path, match_strings: set[str]) -> dict[str, str]:
     """
     Find files that look like migration-contract fixtures.
 
-    A file is ignored when it names LEGACY_/FORBIDDEN_/… constants and embeds
-    at least one packet match string (so heuristics do not rewrite the oracle).
+    A file is ignored when it lives under tests/ (or is named like an oracle/
+    policy contract) AND literally assigns LEGACY_/FORBIDDEN_/… to a packet
+    match string. Join-obfuscated impl helpers are never ignored.
     """
     if not match_strings:
         return {}
@@ -134,20 +165,27 @@ def discover_contract_files(root: Path, match_strings: set[str]) -> dict[str, st
     root = root.resolve()
     for path in _iter_source_files(root):
         try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if not _is_contract_candidate(rel):
+            continue
+        try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
         if not _CONTRACT_NAME_RE.search(text):
             continue
-        if not any(m in text for m in match_strings):
+        if not _literal_contract_assignment(text, match_strings):
             continue
-        rel = path.relative_to(root).as_posix()
         found[rel] = "auto: contract constants (LEGACY_/FORBIDDEN_/EXPECTED_/…)"
     return found
 
 
 def build_ignore_list(root: Path, packet: dict[str, Any]) -> IgnoreList:
     """Merge packet ignore, .conduit/ignore.json, and auto-discovered contract files."""
+    from conduit.test_gen import CONDUIT_GENERATED_RELS
+
     ignore = IgnoreList()
     packet_ignore = packet.get("ignore")
     if isinstance(packet_ignore, dict):
@@ -155,6 +193,12 @@ def build_ignore_list(root: Path, packet: dict[str, Any]) -> IgnoreList:
     file_ignore = _load_conduit_ignore_file(root)
     if file_ignore:
         _merge_ignore_dict(ignore, file_ignore, source=".conduit/ignore.json")
+
+    for rel in sorted(CONDUIT_GENERATED_RELS):
+        ignore.paths.add(rel)
+        ignore.reasons.setdefault(
+            rel, "conduit-generated leftover/smoke/functional oracle"
+        )
 
     matches = _packet_match_strings(packet) | set(ignore.patterns)
     for rel, reason in discover_contract_files(root, matches).items():

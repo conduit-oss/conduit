@@ -1,25 +1,20 @@
-"""Guided packet authoring from source URLs (``conduit packet new``)."""
+"""Guided packet authoring helpers (conduit packet new / diff / test)."""
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from conduit.context.fetch import fetch_url
-from conduit.llm import get_llm_client
-from conduit.packet.cache import save_packet
-from conduit.packet.synthesize import (
-    collapse_dependency_bumps,
-    empty_packet,
-    synthesize_from_docs,
-    synthesize_from_evidence,
+from conduit.detect.manifests import (
+    pin_for_packet_ecosystem,
+    read_installed_by_ecosystem,
 )
+from conduit.detect.modules.discovery import load_modules
+from conduit.packet.from_detect import find_previous_snapshot, run_packet_from_detect
 from conduit.packet.validate import validate_packet
-
-LogFn = Callable[[str], None]
-
-_ANY_FROM = "*"
+from conduit.scaffold.packet_init import scaffold_packet
 
 
 def _safe_slug(value: str) -> str:
@@ -27,253 +22,193 @@ def _safe_slug(value: str) -> str:
     return text or "packet"
 
 
-def packet_id_for_target(package: str, ecosystem: str, version: str) -> str:
-    return (
-        f"{_safe_slug(package)}-{_safe_slug(ecosystem)}-{_safe_slug(version)}"
-    )
+def _rule_key(rule: dict[str, Any]) -> str:
+    from conduit.packet.from_detect import _rule_key as _key
+
+    return _key(rule)
 
 
 def default_packet_out_path(
     *,
     package: str,
     ecosystem: str,
-    version: str,
+    to_version: str,
     out_dir: Path | None = None,
 ) -> Path:
     base = out_dir or Path("packets")
-    return base / f"{packet_id_for_target(package, ecosystem, version)}.json"
+    name = f"{_safe_slug(package)}-{_safe_slug(ecosystem)}-{_safe_slug(to_version)}.json"
+    return base / name
 
 
-def guess_source_kind(url: str) -> str:
-    text = (url or "").lower()
-    if "changelog" in text or "release" in text or "releases" in text:
-        if "github.com" in text and ("/releases" in text or "/tags" in text):
-            return "github_release"
-        return "changelog"
-    if "github.com" in text and "/releases" in text:
-        return "github_release"
-    if any(tok in text for tok in ("migrate", "migration", "docs", "guide", "readme")):
-        return "docs"
-    if "openapi" in text or "swagger" in text:
-        return "openapi"
-    return "other"
+def resolve_module_name(package: str) -> str | None:
+    want = (package or "").strip().lower()
+    if not want:
+        return None
+    for mod in load_modules():
+        if mod.name.lower() == want:
+            return mod.name
+        pkg = str(getattr(mod, "package", "") or "").lower()
+        if pkg and pkg == want:
+            return mod.name
+    return None
 
 
-def ecosystems_for_packet(ecosystem: str) -> list[str]:
-    eco = (ecosystem or "pypi").strip().lower()
-    if eco == "pypi":
-        return ["pip", "pyproject"]
-    if eco == "npm":
-        return ["npm"]
-    if eco == "go":
-        return ["go"]
-    if eco == "maven":
-        return ["maven", "gradle"]
-    return ["pip", "pyproject"]
+def consumer_pin(root: Path, package: str, ecosystem: str) -> str | None:
+    by_eco = read_installed_by_ecosystem(root)
+    return pin_for_packet_ecosystem(by_eco, package, ecosystem) or None
 
 
-def _dedupe_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[str] = set()
-    out: list[dict[str, Any]] = []
-    for src in sources:
-        if not isinstance(src, dict):
-            continue
-        url = str(src.get("url") or "").strip()
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        kind = str(src.get("kind") or "other")
-        out.append({"url": url, "kind": kind})
-    return out
+def summarize_rule(rule: dict[str, Any]) -> str:
+    rtype = str(rule.get("type") or "?")
+    if rtype == "DEPENDENCY_BUMP":
+        return (
+            f"{rtype} {rule.get('package')} "
+            f"{rule.get('from_version')} -> {rule.get('to_version')}"
+        )
+    if rtype == "EXACT_STRING_REPLACE":
+        return f"{rtype} {rule.get('old')!r} -> {rule.get('new')!r}"
+    if rtype in {"AST_CALL_REWRITE", "AST_ATTR_REWRITE"}:
+        return (
+            f"{rtype} {rule.get('old_callee') or rule.get('old_attr')} -> "
+            f"{rule.get('new_callee') or rule.get('new_attr')}"
+        )
+    if rtype == "AST_PARAM_RENAME":
+        return (
+            f"{rtype} {rule.get('function_target')} "
+            f"{rule.get('old_param')} -> {rule.get('new_param')}"
+        )
+    bits = [rtype]
+    for key in ("old", "new", "old_callee", "new_callee", "package", "path"):
+        if rule.get(key):
+            bits.append(f"{key}={rule.get(key)}")
+    return " ".join(bits)
+
+
+def diff_packet_rules(
+    current: dict[str, Any],
+    previous: dict[str, Any] | None,
+) -> dict[str, list[dict[str, Any]]]:
+    cur_map: dict[str, dict[str, Any]] = {}
+    for rule in current.get("rules") or []:
+        if isinstance(rule, dict):
+            cur_map[_rule_key(rule)] = rule
+    prev_map: dict[str, dict[str, Any]] = {}
+    for rule in (previous or {}).get("rules") or []:
+        if isinstance(rule, dict):
+            prev_map[_rule_key(rule)] = rule
+    added = [cur_map[k] for k in cur_map if k not in prev_map]
+    removed = [prev_map[k] for k in prev_map if k not in cur_map]
+    return {"added": added, "removed": removed}
 
 
 def create_packet_new(
     *,
     package: str,
     ecosystem: str,
-    version: str,
-    source_urls: list[str] | None = None,
-    out: Path | None = None,
-    enrich: bool = True,
-    scaffold_only: bool = False,
-    log: LogFn | None = None,
+    from_version: str,
+    to_version: str,
+    out: Path,
+    enrich: bool = False,
+    demo: bool = False,
+    prefer_detect: bool = True,
+    log=None,
 ) -> tuple[Path, dict[str, Any], list[str]]:
-    """
-    Author a target-version packet from source URLs.
-
-    Always writes a schema-valid packet with a DEPENDENCY_BUMP hop and recorded
-    sources. When ``enrich`` and an LLM is configured, fills rules from fetched
-    docs / evidence seeds. Never invents AST rules without an LLM.
-    """
+    """Build a hop packet via from-detect when possible, else scaffold."""
     warnings: list[str] = []
-    emit = log if callable(log) else None
+    package = package.strip()
+    ecosystem = (ecosystem or "pypi").strip().lower()
+    from_version = str(from_version).strip()
+    to_version = str(to_version).strip()
+    out = out.resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
 
-    package = (package or "").strip()
-    ecosystem = (ecosystem or "pypi").strip().lower() or "pypi"
-    version = str(version or "").strip()
-    if not package:
-        raise ValueError("package is required")
-    if not version:
-        raise ValueError("version is required")
-
-    urls = [u.strip() for u in (source_urls or []) if u and str(u).strip()]
-    seen_u: set[str] = set()
-    unique_urls: list[str] = []
-    for u in urls:
-        if u not in seen_u:
-            seen_u.add(u)
-            unique_urls.append(u)
-
-    dest = out or default_packet_out_path(
-        package=package, ecosystem=ecosystem, version=version
-    )
-
-    packet = empty_packet(
-        package=package,
-        ecosystem=ecosystem,
-        from_version=_ANY_FROM,
-        to_version=version,
-        notes=(
-            f"Authored for target {package}@{version} ({ecosystem}). "
-            "from_version=* means any consumer pin; resolved at apply/run."
-        ),
-    )
-    packet["packet_id"] = packet_id_for_target(package, ecosystem, version)
-    packet["side_effects"] = []
-    packet["rules"] = [
-        {
-            "type": "DEPENDENCY_BUMP",
-            "package": package,
-            "from_version": _ANY_FROM,
-            "to_version": version,
-            "ecosystems": ecosystems_for_packet(ecosystem),
-            "reason": f"Pin {package} to target version {version}",
-        }
-    ]
-
-    fetched_parts: list[str] = []
-    sources: list[dict[str, Any]] = []
-    for url in unique_urls:
-        kind = guess_source_kind(url)
-        sources.append({"url": url, "kind": kind})
+    packet: dict[str, Any] | None = None
+    module = resolve_module_name(package) if prefer_detect else None
+    if module:
         try:
-            body = fetch_url(url)
-            if body and body.strip():
-                fetched_parts.append(f"### Source: {url}\n\n{body.strip()}")
-            elif emit:
-                emit(f"Fetched empty body for {url}")
-        except Exception as exc:
-            warnings.append(f"Failed to fetch {url}: {exc}")
-            if emit:
-                emit(f"Warning: Failed to fetch {url}: {exc}")
-
-    packet["sources"] = _dedupe_sources(sources)
-
-    llm_ready = get_llm_client() is not None
-    do_enrich = bool(unique_urls) and enrich and not scaffold_only and llm_ready
-    if unique_urls and enrich and not scaffold_only and not llm_ready:
-        warnings.append(
-            "LLM not configured; wrote dependency hop + sources only (no invented rules)"
-        )
-    if scaffold_only or not enrich:
-        warnings.append("Enrichment skipped (--scaffold-only / --no-enrich)")
-
-    if do_enrich:
-        joined = "\n\n".join(fetched_parts)
-        if emit:
-            emit("Synthesizing rules from fetched sources…")
-        packet = synthesize_from_docs(
-            package=package,
-            from_version=_ANY_FROM,
-            to_version=version,
-            ecosystem=ecosystem,
-            changelog_text=joined,
-            docs_text="",
-            base=packet,
-            append_local_sources=False,
-        )
-        packet["packet_id"] = packet_id_for_target(package, ecosystem, version)
-        packet["from_version"] = _ANY_FROM
-        packet["to_version"] = version
-
-        if emit:
-            emit("Evidence enrichment from source URLs…")
-        packet, ev_warnings = synthesize_from_evidence(
-            package=package,
-            from_version=_ANY_FROM,
-            to_version=version,
-            ecosystem=ecosystem,
-            signals=[],
-            base=packet,
-            seed_urls=unique_urls,
-            suggested_queries=[
-                f"{package} migration guide {version}",
-                f"{package} changelog breaking changes {version}",
-            ],
-            log=emit,
-        )
-        warnings.extend(ev_warnings)
-        packet["packet_id"] = packet_id_for_target(package, ecosystem, version)
-        packet["from_version"] = _ANY_FROM
-        packet["to_version"] = version
-
-    packet["rules"] = collapse_dependency_bumps(
-        list(packet.get("rules") or []),
-        package=package,
-        from_version=_ANY_FROM,
-        to_version=version,
-    )
-    has_bump = any(
-        isinstance(r, dict)
-        and r.get("type") == "DEPENDENCY_BUMP"
-        and str(r.get("package") or "").lower() == package.lower()
-        for r in packet.get("rules") or []
-    )
-    if not has_bump:
-        packet.setdefault("rules", []).insert(
-            0,
-            {
-                "type": "DEPENDENCY_BUMP",
-                "package": package,
-                "from_version": _ANY_FROM,
-                "to_version": version,
-                "ecosystems": ecosystems_for_packet(ecosystem),
-                "reason": f"Pin {package} to target version {version}",
-            },
-        )
-
-    packet["sources"] = _dedupe_sources(list(packet.get("sources") or []) + sources)
-
-    errs = validate_packet(packet)
-    if errs:
-        warnings.append(f"Schema warnings: {errs[:5]}")
-
-    save_packet(dest, packet)
-    return dest, packet, warnings
-
-
-def format_packet_summary(packet: dict[str, Any]) -> str:
-    """Human-readable summary for ``packet test`` / try-it."""
-    lines = [
-        f"packet_id: {packet.get('packet_id')}",
-        f"package: {packet.get('package')} ({packet.get('ecosystem')})",
-        (
-            f"from_version: {packet.get('from_version')} "
-            f"→ to_version: {packet.get('to_version')}"
-        ),
-        f"rules: {len(packet.get('rules') or [])}",
-        f"sources: {len(packet.get('sources') or [])}",
-        f"side_effects: {len(packet.get('side_effects') or [])}",
-    ]
-    notes = packet.get("notes")
-    if notes:
-        lines.append(f"notes: {str(notes).strip()[:240]}")
-    for src in packet.get("sources") or []:
-        if isinstance(src, dict) and src.get("url"):
-            lines.append(f"  source[{src.get('kind') or 'other'}]: {src['url']}")
-    for effect in packet.get("side_effects") or []:
-        if isinstance(effect, dict):
-            lines.append(
-                f"  side_effect[{effect.get('kind') or 'other'}]: {effect.get('detail')}"
+            writes, det_warnings = run_packet_from_detect(
+                module=module,
+                out_dir=out.parent,
+                package=package,
+                ecosystem=ecosystem,
+                previous_path=None,
+                out_path=out,
+                demo=demo,
+                enrich=enrich,
+                log=log,
             )
-    return "\n".join(lines)
+            warnings.extend(det_warnings)
+            for item in writes:
+                if item.packet and not item.skipped:
+                    packet = item.packet
+                    out = Path(item.path)
+                    break
+                if item.packet and item.skipped:
+                    packet = item.packet
+                    out = Path(item.path)
+                    warnings.append(item.skip_reason or "snapshot already up to date")
+                    break
+        except ValueError as exc:
+            warnings.append(str(exc))
+
+    if packet is None:
+        tmp_dir = out.parent / f".conduit-scaffold-{_safe_slug(package)}"
+        scaffold_packet(
+            package=package,
+            ecosystem=ecosystem,
+            from_version=from_version or "0",
+            to_version=to_version,
+            out_dir=tmp_dir,
+        )
+        src = tmp_dir / "conduit-packet.json"
+        packet = json.loads(src.read_text(encoding="utf-8"))
+        packet["from_version"] = from_version or packet.get("from_version") or "0"
+        packet["to_version"] = to_version
+        packet["ecosystem"] = ecosystem
+        try:
+            for child in tmp_dir.rglob("*"):
+                if child.is_file():
+                    child.unlink()
+            for child in sorted(tmp_dir.rglob("*"), reverse=True):
+                if child.is_dir():
+                    child.rmdir()
+            if tmp_dir.exists():
+                tmp_dir.rmdir()
+        except OSError:
+            pass
+        if prefer_detect and module is None:
+            warnings.append(
+                f"no detect module for {package!r}; wrote scaffold packet"
+            )
+
+    if from_version:
+        packet["from_version"] = from_version
+    if to_version:
+        packet["to_version"] = to_version
+    packet.setdefault("package", package)
+    packet.setdefault("ecosystem", ecosystem)
+
+    errors = validate_packet(packet)
+    if errors:
+        warnings.extend(f"schema: {e}" for e in errors)
+
+    out.write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8")
+    return out, packet, warnings
+
+
+def load_previous_for_diff(
+    packet: dict[str, Any],
+    *,
+    previous_path: Path | None,
+    search_dir: Path | None,
+) -> dict[str, Any] | None:
+    if previous_path is not None:
+        return json.loads(previous_path.read_text(encoding="utf-8"))
+    pkg = str(packet.get("package") or "")
+    eco = str(packet.get("ecosystem") or "")
+    to_v = str(packet.get("to_version") or "")
+    if not (pkg and eco and to_v and search_dir is not None):
+        return None
+    return find_previous_snapshot(
+        search_dir, package=pkg, ecosystem=eco, to_version=to_v
+    )

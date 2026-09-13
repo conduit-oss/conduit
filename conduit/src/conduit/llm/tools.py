@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 from typing import Any, Literal
 
-ToolMode = Literal["self_correct", "enrich", "readonly"]
+ToolMode = Literal[
+    "self_correct", "enrich", "readonly", "anticheat_audit", "enrich_scoped", "post_rule_synth"
+]
 
 _REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
 
@@ -79,55 +81,122 @@ def _fn(
 
 def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
     """Local tools Conduit executes. Mode controls write/test access."""
-    tools = [
-        _fn(
-            "list_files",
-            "List files under a relative directory in the consumer repo "
-            "(non-ignored paths only).",
-            {
-                "directory": {
-                    "type": "string",
-                    "description": "Relative directory (default '.').",
+    if mode in {"anticheat_audit", "enrich_scoped", "post_rule_synth"}:
+        scope = (
+            "migration audit log"
+            if mode == "anticheat_audit"
+            else "usage dossier allowlist"
+            if mode == "enrich_scoped"
+            else "repair allowlist"
+        )
+        return [
+            _fn(
+                "read_file",
+                f"Read a UTF-8 text file that appears in the {scope} "
+                "(other paths are rejected).",
+                {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative file path from the allowlist.",
+                    },
                 },
-                "glob": {
-                    "type": "string",
-                    "description": "Optional glob, e.g. '**/*.py'.",
+                required=["path"],
+            ),
+            _fn(
+                "grep",
+                f"Search file contents under {scope} paths only "
+                "(executor rejects other paths).",
+                {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Literal or regex pattern to search for.",
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "Optional file glob, e.g. '**/*.py'.",
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": "Relative directory to search (default '.').",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max matches to return (default 40).",
+                    },
+                    "case_insensitive": {
+                        "type": "boolean",
+                        "description": "If true, ignore case (default false).",
+                    },
                 },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max paths to return (default 80).",
+                required=["pattern"],
+            ),
+        ]
+
+    tools = []
+    if mode != "self_correct":
+        tools.append(
+            _fn(
+                "list_files",
+                "List files under a relative directory in the consumer repo "
+                "(non-ignored paths only).",
+                {
+                    "directory": {
+                        "type": "string",
+                        "description": "Relative directory (default '.').",
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "Optional glob, e.g. '**/*.py'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max paths to return (default 80).",
+                    },
                 },
-            },
-        ),
-        _fn(
-            "read_file",
-            "Read a UTF-8 text file from the consumer repo by relative path.",
-            {
-                "path": {
-                    "type": "string",
-                    "description": "Relative file path.",
+            )
+        )
+    tools.extend(
+        [
+            _fn(
+                "read_file",
+                "Read a UTF-8 text file from the consumer repo by relative path."
+                + (
+                    " Paths must be on the repair path_allowlist."
+                    if mode == "self_correct"
+                    else ""
+                ),
+                {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative file path.",
+                    },
                 },
-            },
-            required=["path"],
-        ),
-        _fn(
-            "fetch_url",
-            "HTTP GET a documentation or API URL and return truncated text.",
-            {
-                "url": {
-                    "type": "string",
-                    "description": "http(s) URL to fetch.",
+                required=["path"],
+            ),
+            _fn(
+                "fetch_url",
+                "HTTP GET a documentation or API URL and return truncated text.",
+                {
+                    "url": {
+                        "type": "string",
+                        "description": "http(s) URL to fetch.",
+                    },
                 },
-            },
-            required=["url"],
-        ),
-    ]
+                required=["url"],
+            ),
+        ]
+    )
     # Readonly search is useful for enrich + repair.
     tools.append(
         _fn(
             "grep",
             "Search file contents under the consumer repo (non-ignored paths). "
-            "Returns matching lines with paths.",
+            "Returns matching lines with paths."
+            + (
+                " Prefer allowlisted / seeded paths."
+                if mode == "self_correct"
+                else ""
+            ),
             {
                 "pattern": {
                     "type": "string",
@@ -160,7 +229,9 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
                     "write_file",
                     "Write full UTF-8 contents to a relative path in the consumer repo. "
                     "Ignored oracle/contract paths are rejected. Prefer this over "
-                    "remote/hosted sandboxes — only local writes affect the project.",
+                    "remote/hosted sandboxes — only local writes affect the project. "
+                    "SDK migration only: do not add if __name__ == '__main__' guards, "
+                    "rename top-level defs/classes, or do comment/format-only cleanup.",
                     {
                         "path": {"type": "string"},
                         "contents": {"type": "string"},
@@ -169,15 +240,24 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
                 ),
                 _fn(
                     "run_tests",
-                    "Run the consumer repo's detected test suite "
-                    "(python -m pytest -q when applicable).",
-                    {},
+                    "Run the consumer repo's test suite. Optionally pass pytest "
+                    "nodeids (from failed_nodes) for a focused mid-repair retest.",
+                    {
+                        "nodeids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional pytest node ids, e.g. "
+                                "tests/test_x.py::test_y. Omit to run the full suite."
+                            ),
+                        },
+                    },
                 ),
                 _fn(
                     "run_shell",
-                    "Run an allowlisted shell command in the consumer repo "
-                    "(pytest, python -m pytest, python -c, pip show/list). "
-                    "Arbitrary commands are rejected.",
+                    "Run a tightly allowlisted shell command (pytest, pip show/list, "
+                    "or a short read-only python -c SDK probe). Not for reading or "
+                    "writing repo files — use read_file / write_file instead.",
                     {
                         "command": {
                             "type": "string",
@@ -193,4 +273,7 @@ def conduit_function_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
 
 def agent_tools(*, mode: ToolMode) -> list[dict[str, Any]]:
     """Built-ins + Conduit functions for a Responses agent turn."""
+    if mode in {"anticheat_audit", "enrich_scoped", "post_rule_synth"}:
+        # Local inventory / audit only — no web_search / code_interpreter.
+        return list(conduit_function_tools(mode=mode))
     return [*openai_builtin_tools(), *conduit_function_tools(mode=mode)]

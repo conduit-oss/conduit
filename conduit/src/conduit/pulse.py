@@ -70,6 +70,7 @@ _BODY_WIDTH = 8
 
 _lock = threading.Lock()
 _current: "_Pulse | None" = None
+_last_family = "awakening"
 
 
 def family_for_tool(name: str) -> str:
@@ -187,14 +188,16 @@ class _Pulse:
 
 
 def start_pulse(console: Console, family: str = "awakening") -> None:
-    global _current
+    global _current, _last_family
+    key = (family or "awakening").strip().lower()
+    _last_family = key
     with _lock:
         if _current is not None:
-            _current.set_family(family)
+            _current.set_family(key)
             return
         if not pulse_enabled(console):
             return
-        pulse = _Pulse(console, family)
+        pulse = _Pulse(console, key)
         try:
             pulse.start()
         except Exception:
@@ -211,12 +214,24 @@ def stop_pulse() -> None:
         pulse.stop()
 
 
+def pause_pulse() -> None:
+    """Stop the Live spinner so TTY prompts are visible."""
+    stop_pulse()
+
+
+def resume_pulse(console: Console) -> None:
+    """Restart the spinner after a prompt (same family as last ``beat``)."""
+    start_pulse(console, _last_family)
+
+
 def beat(family: str) -> None:
     """Switch the rotating status-word family if a pulse is running."""
+    global _last_family
+    _last_family = (family or "think").strip().lower()
     with _lock:
         pulse = _current
     if pulse is not None:
-        pulse.set_family(family)
+        pulse.set_family(_last_family)
 
 
 @contextmanager

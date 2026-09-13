@@ -11,23 +11,39 @@ from rich.console import Console
 from rich.table import Table
 
 from conduit.context.fetch import read_local_text
+from conduit.credentials import (
+    CredentialsError,
+    ensure_verify_credentials,
+    load_consumer_env,
+)
+from conduit.run_preflight import collect_run_preflight_warnings, print_run_preflight
 from conduit.detect.coverage import (
     PacketCoverageReport,
     build_coverage_report,
     format_coverage_report,
+    load_source_packet,
     save_source_packet,
 )
 from conduit.detect.modules.discovery import load_modules
+from conduit.detect.manifests import (
+    pin_for_packet_ecosystem,
+    read_installed_by_ecosystem,
+)
 from conduit.detect.orchestrator import run_detect
 from conduit.export_delta import compute_export_delta, prune_by_export_symbols
 from conduit.packet.cache import save_packet
+from conduit.packet.fetch import PacketFetchError, fetch_packet_url, is_packet_url
 from conduit.packet.synthesize import (
     ensure_packet,
     load_fixture_openai_packet,
     synthesize_from_docs,
 )
+from conduit.packet.bind import bind_packet_to_client, is_snapshot_floor
+from conduit.packet.scope import scope_packet_to_source
 from conduit.packet.validate import validate_packet
 from conduit.patcher import apply_packet
+from conduit.patcher.rule_stages import partition_rules
+from conduit.patcher.dependency_update import dependency_packages
 from conduit.pr_generator import open_pull_request
 from conduit.prune.grep_imports import prune_by_imports
 from conduit.pulse import beat, start_pulse, stop_pulse
@@ -55,6 +71,88 @@ def _vprint(message: str) -> None:
         console.print(f"[dim][verbose][/dim] {message}")
 
 
+def _ecosystem_client_pin(
+    root: Path,
+    packet: dict,
+    *,
+    fallback: str | None = None,
+) -> tuple[str, str | None]:
+    """Pin matching ``packet.ecosystem``. Empty if the only pin is the other eco."""
+    from conduit.detect.manifests import flatten_installed, normalize_packet_ecosystem
+
+    pkg = str(packet.get("package") or "")
+    eco = str(packet.get("ecosystem") or "")
+    by_eco = read_installed_by_ecosystem(root)
+    pin = pin_for_packet_ecosystem(by_eco, pkg, eco or None)
+    if pin:
+        return pin, None
+    other = flatten_installed(by_eco).get(pkg.lower()) if pkg else None
+    if normalize_packet_ecosystem(eco) and other:
+        return "", (
+            f"packet ecosystem {eco!r} has no {pkg} pin; "
+            f"not binding {other!r} from another ecosystem"
+        )
+    return str(fallback or "").strip(), None
+
+
+def _prepare_client_packet(
+    root: Path,
+    packet: dict,
+    *,
+    source: dict | None = None,
+    installed_version: str | None = None,
+    coverage_no_rule: list | None = None,
+) -> tuple[dict, dict | None]:
+    """Stamp floor from_version from the client pin and prune catalog rules."""
+    pkg = str(packet.get("package") or "")
+    src = source
+    if src is None and pkg:
+        src = load_source_packet(root, pkg)
+    installed, pin_warning = _ecosystem_client_pin(
+        root, packet, fallback=installed_version
+    )
+    if pin_warning:
+        console.print(f"[yellow]Warning:[/yellow] {pin_warning}")
+        installed = ""
+    if isinstance(src, dict) and installed:
+        src = dict(src)
+        src["installed_version"] = installed
+    floor = str(packet.get("from_version") or "")
+    bound = bind_packet_to_client(packet, installed_version=installed)
+    if installed and is_snapshot_floor(floor) and not is_snapshot_floor(
+        str(bound.get("from_version") or "")
+    ):
+        console.print(
+            f"Bound packet from_version {floor!r} → {bound.get('from_version')!r} "
+            f"from client install"
+        )
+    if coverage_no_rule:
+        from conduit.packet.doc_augment import augment_packet_from_docs
+
+        no_rule_payload = [
+            {"kind": i.kind, "value": i.value, "detail": i.detail}
+            for i in coverage_no_rule
+        ]
+        bound, aug_warnings = augment_packet_from_docs(
+            bound,
+            src,
+            no_rule_items=no_rule_payload,
+            log=console.print,
+        )
+        for w in aug_warnings:
+            if w.startswith("Doc-augmented"):
+                console.print(f"[green]{w}[/green]")
+            elif w and not w.startswith("evidence"):
+                console.print(f"[yellow]Warning:[/yellow] {w}")
+    scoped, stats = scope_packet_to_source(bound, src)
+    if stats.total:
+        console.print(
+            f"Pruned to {stats.kept}/{stats.total} packet rules from client usage"
+            + (f" (collapsed {stats.collapsed} chain hop(s))" if stats.collapsed else "")
+        )
+    return scoped, src
+
+
 def _print_packet_coverage(
     *,
     root: Path,
@@ -63,7 +161,7 @@ def _print_packet_coverage(
     packet: dict | None = None,
     persist_source: bool = True,
 ) -> PacketCoverageReport:
-    """Print source packet, migration summary, and caught/missed coverage diff."""
+    """Print source packet, migration summary, and coverage (will migrate / keep / no rule)."""
     state = (detected.package_states or {}).get(package) or (
         detected.package_states or {}
     ).get(package.lower())
@@ -74,10 +172,10 @@ def _print_packet_coverage(
         packet=packet,
     )
     console.print(format_coverage_report(report, verbose=_VERBOSE))
-    if report.missed:
+    if report.no_rule:
         console.print(
-            f"[yellow]Coverage:[/yellow] {len(report.missed)} client item(s) not "
-            "covered by migration signals/rules (see MISSED above)."
+            f"[yellow]Coverage:[/yellow] {len(report.no_rule)} client item(s) have "
+            "no migrate-from rule (see NO RULE above). KEEP is not a gap."
         )
     if persist_source:
         path = save_source_packet(root, report.source_packet)
@@ -97,6 +195,11 @@ def _make_run_summary(
     skip_tests: bool = False,
     pr_created: bool | None = None,
     pr_message: str | None = None,
+    audit_log=None,
+    impact=None,
+    docs_synced: list[str] | None = None,
+    attempts: int | None = None,
+    leftover_lines: list[str] | None = None,
 ):
     package = str(packet.get("package") or "")
     state = None
@@ -115,6 +218,12 @@ def _make_run_summary(
         skip_tests=skip_tests,
         pr_created=pr_created,
         pr_message=pr_message,
+        detected_signals=list(getattr(detected, "signals", None) or []),
+        audit_log=audit_log,
+        impact=impact,
+        docs_synced=docs_synced,
+        attempts=attempts,
+        leftover_lines=leftover_lines,
     )
 
 
@@ -130,8 +239,13 @@ def _print_run_summary(
     skip_tests: bool = False,
     pr_created: bool | None = None,
     pr_message: str | None = None,
+    audit_log=None,
+    impact=None,
+    docs_synced: list[str] | None = None,
+    attempts: int | None = None,
+    leftover_lines: list[str] | None = None,
 ) -> str:
-    """Print the changed / double-check summary. Returns markdown for the PR body."""
+    """Print the decision-ready run summary. Returns markdown for the PR body."""
     summary = _make_run_summary(
         packet=packet,
         report=report,
@@ -143,6 +257,11 @@ def _print_run_summary(
         skip_tests=skip_tests,
         pr_created=pr_created,
         pr_message=pr_message,
+        audit_log=audit_log,
+        impact=impact,
+        docs_synced=docs_synced,
+        attempts=attempts,
+        leftover_lines=leftover_lines,
     )
     console.print(format_run_summary(summary))
     return format_run_summary_markdown(summary)
@@ -156,6 +275,94 @@ def _main(
 ) -> None:
     global _VERBOSE
     _VERBOSE = verbose
+
+
+def _verify_with_oracle(
+    root: Path,
+    packet: dict,
+    *,
+    max_retries: int,
+    changed_files: list[str] | None = None,
+    file_allowlist: list[Path] | None = None,
+    source: dict | None = None,
+    coverage_missed: list[dict] | None = None,
+    audit_log=None,
+    demo: bool = False,
+):
+    """Write packet oracle tests, then run the suite with self-correct.
+
+    Shared by ``conduit verify`` and ``conduit run`` so split workflows
+    get the same leftover-token checks.
+    """
+    from conduit.anticheat.audit_log import MigrationAuditLog
+    from conduit.llm.client import get_llm_client, resolve_provider
+
+    pkg = str(packet.get("package") or "")
+    allowlist = file_allowlist
+    if allowlist is None and pkg:
+        allowlist = prune_by_imports(root, dependency_packages(packet))
+
+    if audit_log is None:
+        audit_log = MigrationAuditLog.from_packet(packet, root=root)
+
+    from conduit.patcher.post_rules.engine import apply_post_rules
+
+    post_report = apply_post_rules(root, packet, file_allowlist=allowlist)
+    for change in post_report.changes:
+        console.print(f"[post-rule] {change.path}: {change.detail}")
+
+    want_llm = resolve_provider() not in {None, "none", "off", "disabled"}
+    beat("hatch")
+    try:
+        ensure_verify_credentials(
+            root,
+            packet,
+            want_llm=bool(want_llm or get_llm_client()),
+            log=console.print,
+            console=console,
+            demo=demo,
+        )
+    except CredentialsError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+
+    generated = ensure_tests(
+        root,
+        packet,
+        changed_files=changed_files,
+        file_allowlist=allowlist,
+        source=source,
+    )
+    for rel in generated:
+        console.print(f"[test-gen] created {rel}")
+    if generated:
+        audit_log.record_generated(generated)
+
+    edited: list[str] = []
+    seen: set[str] = set()
+    for rel in list(changed_files or []) + list(generated):
+        key = str(rel).replace("\\", "/")
+        if key and key not in seen:
+            seen.add(key)
+            edited.append(key)
+
+    beat("repair")
+    result, corrected = verify_with_self_correct(
+        root,
+        packet,
+        max_retries=max_retries,
+        verbose=_VERBOSE,
+        log=console.print,
+        source=source,
+        coverage_missed=coverage_missed,
+        audit_log=audit_log,
+        edited_files=edited,
+    )
+    try:
+        audit_log.persist(root)
+    except OSError:
+        pass
+    return result, generated, corrected, audit_log
 
 
 def _resolve_root(path: Path) -> Path:
@@ -201,9 +408,13 @@ def _pick_package(signals, package: Optional[str]) -> str | None:
 
 def _resolve_packet_arg(
     packet: Optional[str],
+    *,
+    root: Path,
+    refresh: bool = False,
+    allow_package_name: bool = True,
 ) -> tuple[Optional[Path], Optional[str]]:
     """
-    Interpret --packet as an existing packet file path, or else a package name.
+    Interpret --packet as a file path, http(s) URL, or else a package name.
     Returns (packet_file, package_name).
     """
     if not packet:
@@ -211,11 +422,20 @@ def _resolve_packet_arg(
     raw = packet.strip()
     if not raw:
         return None, None
+    if is_packet_url(raw):
+        try:
+            return fetch_packet_url(raw, root=root, refresh=refresh), None
+        except PacketFetchError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2) from exc
     as_path = Path(raw).expanduser()
     if as_path.is_file():
         return as_path.resolve(), None
     # Bare package names must not look like accidental relative paths with separators
     if any(sep in raw for sep in ("/", "\\")) or raw.endswith(".json"):
+        console.print(f"[red]Packet file not found:[/red] {raw}")
+        raise typer.Exit(2)
+    if not allow_package_name:
         console.print(f"[red]Packet file not found:[/red] {raw}")
         raise typer.Exit(2)
     return None, raw
@@ -327,22 +547,86 @@ def detect_cmd(
 @app.command("apply")
 def apply_cmd(
     path: Path = typer.Option(Path("."), "--path"),
-    packet: Path = typer.Option(..., "--packet", help="Path to conduit-packet.json"),
+    packet: str = typer.Option(..., "--packet", help="Path or http(s) URL to conduit-packet.json"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
     """Apply a Migration Packet without opening a PR."""
     root = _resolve_root(path)
-    data = json.loads(packet.read_text(encoding="utf-8"))
+    from conduit.gitignore import ensure_conduit_gitignore
+
+    gitignore_rel = ensure_conduit_gitignore(root, log=console.print)
+    packet_file, _ = _resolve_packet_arg(
+        str(packet), root=root, allow_package_name=False
+    )
+    if packet_file is None:
+        console.print("[red]--packet must be a file path or http(s) URL.[/red]")
+        raise typer.Exit(2)
+    data = json.loads(packet_file.read_text(encoding="utf-8"))
     errors = validate_packet(data)
     if errors:
         for err in errors:
             console.print(f"[red]schema:[/red] {err}")
         raise typer.Exit(1)
-    files = prune_by_imports(root, [data.get("package", "")])
-    report = apply_packet(root, data, dry_run=dry_run, file_allowlist=files or None)
+    data, _src = _prepare_client_packet(root, data)
+    files = prune_by_imports(root, dependency_packages(data))
+    sdk_rules, rest_rules, _post, _unknown = partition_rules(list(data.get("rules") or []))
+    console.print(f"Applying SDK rules ({len(sdk_rules)})…")
+    console.print(f"Applying REST rules ({len(rest_rules)})…")
+
+    from conduit.patcher.impact.engine import analyze_impacts, merge_runtime_packet
+
+    impact = analyze_impacts(root, data, file_allowlist=files or None, log=console.print)
+    if impact.blocked:
+        console.print(f"[red]Impact analysis blocked migration:[/red] {impact.block_reason}")
+        raise typer.Exit(2)
+
+    data = merge_runtime_packet(data, impact.packet_patches)
+    if not dry_run:
+        from conduit.anticheat.baseline import save_anticheat_baseline
+
+        save_anticheat_baseline(root, files, log=console.print)
+    report = apply_packet(
+        root,
+        data,
+        dry_run=dry_run,
+        file_allowlist=files or None,
+        path_defer=impact.defer_paths,
+    )
+    if gitignore_rel and gitignore_rel not in report.files_modified:
+        report.files_modified.append(gitignore_rel)
     for change in report.changes:
         prefix = "DRY-RUN " if dry_run else ""
         console.print(f"{prefix}[{change.rule_type}] {change.path}: {change.detail}")
+    try:
+        from conduit.detect.modules.openai import format_model_auto_update_line
+
+        model_line = format_model_auto_update_line(data, report.changes)
+        if model_line:
+            console.print(model_line)
+    except Exception:
+        pass
+    if not dry_run:
+        from conduit.patcher.sync_env import VerifyEnvError, sync_bumped_packages
+
+        try:
+            sync_bumped_packages(data, root=root, log=console.print)
+        except VerifyEnvError as exc:
+            console.print(f"[red]Verify env blocked migration:[/red]\n{exc}")
+            raise typer.Exit(2) from exc
+
+        from conduit.patcher.post_rules.engine import apply_post_rules
+
+        post_report = apply_post_rules(
+            root,
+            data,
+            file_allowlist=files or None,
+            extra_rules=impact.post_rules,
+        )
+        for change in post_report.changes:
+            console.print(f"[post-rule] {change.path}: {change.detail}")
+            if change.path not in report.files_modified:
+                report.files_modified.append(change.path)
+
     console.print(
         f"{'Would modify' if dry_run else 'Modified'} "
         f"{len(report.files_modified)} file(s)."
@@ -352,27 +636,37 @@ def apply_cmd(
 @app.command("verify")
 def verify_cmd(
     path: Path = typer.Option(Path("."), "--path"),
-    packet: Optional[Path] = typer.Option(None, "--packet"),
-    max_retries: int = typer.Option(5, "--max-retries"),
+    packet: Optional[str] = typer.Option(
+        None, "--packet", help="Path or http(s) URL to conduit-packet.json"
+    ),
+    max_retries: int = typer.Option(10, "--max-retries"),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Print self-correct failure/fix details"
     ),
 ) -> None:
-    """Run native tests with optional self-correction."""
+    """Run oracle tests + native suite with optional self-correction."""
     global _VERBOSE
     if verbose:
         _VERBOSE = True
     root = _resolve_root(path)
-    data = (
-        json.loads(packet.read_text(encoding="utf-8"))
-        if packet
-        else load_fixture_openai_packet()
-    )
+    from conduit.gitignore import ensure_conduit_gitignore
+
+    ensure_conduit_gitignore(root, log=console.print)
+    if packet:
+        packet_file, _ = _resolve_packet_arg(
+            packet, root=root, allow_package_name=False
+        )
+        if packet_file is None:
+            console.print("[red]--packet must be a file path or http(s) URL.[/red]")
+            raise typer.Exit(2)
+        data = json.loads(packet_file.read_text(encoding="utf-8"))
+    else:
+        data = load_fixture_openai_packet()
+    data, src = _prepare_client_packet(root, data)
     start_pulse(console, "repair")
     try:
-        beat("test")
-        result, corrected = verify_with_self_correct(
-            root, data, max_retries=max_retries, verbose=_VERBOSE, log=console.print
+        result, _generated, corrected, _audit = _verify_with_oracle(
+            root, data, max_retries=max_retries, source=src
         )
     finally:
         stop_pulse()
@@ -391,7 +685,7 @@ def run_cmd(
     packet: Optional[str] = typer.Option(
         None,
         "--packet",
-        help="Path to conduit-packet.json, or a package name (e.g. openai)",
+        help="Path, http(s) URL, or package name (e.g. openai) for conduit-packet.json",
     ),
     skip_tests: bool = typer.Option(False, "--skip-tests"),
     skip_pr: bool = typer.Option(False, "--skip-pr"),
@@ -401,7 +695,7 @@ def run_cmd(
     skip_export_delta: bool = typer.Option(
         False, "--skip-export-delta", help="Skip package export delta pruning"
     ),
-    max_retries: int = typer.Option(5, "--max-retries"),
+    max_retries: int = typer.Option(10, "--max-retries"),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Print extra diagnostics"
     ),
@@ -415,13 +709,36 @@ def run_cmd(
         "--refresh-packet",
         help="Ignore cached .conduit/packets entry and re-synthesize from detect signals",
     ),
+    allow_partial: bool = typer.Option(
+        False,
+        "--allow-partial",
+        help="Allow PASSED when high-severity call sites were found but not rewritten",
+    ),
 ) -> None:
     """Full pipeline: detect → prune → packet → apply → verify → PR."""
     global _VERBOSE
     if verbose:
         _VERBOSE = True
     root = _resolve_root(path)
-    packet_file, packet_package = _resolve_packet_arg(packet)
+    packet_file, packet_package = _resolve_packet_arg(
+        packet, root=root, refresh=refresh_packet
+    )
+    loaded = load_consumer_env(root)
+    preflight_warnings = collect_run_preflight_warnings(
+        root,
+        packet_file=packet_file,
+        demo=demo,
+        skip_modules=skip_modules,
+        skip_lockfile=skip_lockfile,
+        skip_export_delta=skip_export_delta,
+        skip_tests=skip_tests,
+        skip_pr=skip_pr,
+    )
+    print_run_preflight(
+        console,
+        warnings=preflight_warnings,
+        env_loaded=loaded,
+    )
     start_pulse(console, "awakening")
     try:
         _run_pipeline(
@@ -440,6 +757,7 @@ def run_cmd(
             max_retries=max_retries,
             demo=demo,
             refresh_packet=refresh_packet,
+            allow_partial=allow_partial,
         )
     finally:
         stop_pulse()
@@ -462,7 +780,11 @@ def _run_pipeline(
     max_retries: int,
     demo: bool,
     refresh_packet: bool,
+    allow_partial: bool = False,
 ) -> None:
+    from conduit.gitignore import ensure_conduit_gitignore
+
+    gitignore_rel = ensure_conduit_gitignore(root, log=console.print)
     pkg_hint = package or packet_package
     if package and packet_package and package.lower() != packet_package.lower():
         console.print(
@@ -470,16 +792,34 @@ def _run_pipeline(
             f"--packet package name {packet_package!r}; using --package"
         )
 
+    published: dict | None = None
+    scan_packages = None
+    skip_vendor = skip_modules
+    if packet_file is not None:
+        published = json.loads(packet_file.read_text(encoding="utf-8"))
+        file_pkg = str(published.get("package") or "")
+        if package and file_pkg and package.lower() != file_pkg.lower():
+            console.print(
+                f"[yellow]Warning:[/yellow] --package {package!r} differs from "
+                f"packet file package {file_pkg!r}; using packet file"
+            )
+        pkg_hint = file_pkg or pkg_hint
+        if not pkg_hint:
+            console.print("[red]Packet file has no package field.[/red]")
+            raise typer.Exit(2)
+        scan_packages = dependency_packages(published)
+        skip_vendor = True
+
     names = [module] if module else _detect_module_names_for_package(pkg_hint)
-    if demo:
-        console.print("[dim]Demo mode: using offline detect fixtures[/dim]")
     beat("detect")
     detected = run_detect(
         root,
         base_ref=base_ref,
         module_names=names,
-        skip_modules=skip_modules,
+        skip_modules=skip_vendor,
         skip_lockfile=skip_lockfile,
+        scan_client=True,
+        scan_packages=scan_packages,
         demo=demo,
         verbose=_VERBOSE,
         log=console.print,
@@ -496,13 +836,8 @@ def _run_pipeline(
     pkg = _pick_package(detected.signals, pkg_hint)
 
     if packet_file is not None:
-        pkt_data = json.loads(packet_file.read_text(encoding="utf-8"))
+        pkt_data = published or json.loads(packet_file.read_text(encoding="utf-8"))
         file_pkg = str(pkt_data.get("package") or "")
-        if package and file_pkg and package.lower() != file_pkg.lower():
-            console.print(
-                f"[yellow]Warning:[/yellow] --package {package!r} differs from "
-                f"packet file package {file_pkg!r}; using packet file"
-            )
         pkg = file_pkg or pkg
         if not pkg:
             console.print("[red]Packet file has no package field.[/red]")
@@ -554,19 +889,34 @@ def _run_pipeline(
         f"ecosystem={pkt.get('ecosystem')!r}"
     )
 
-    # Always print source packet + migration packet + coverage diff
-    coverage = _print_packet_coverage(
-        root=root,
-        package=pkg,
-        detected=detected,
-        packet=pkt,
-        persist_source=True,
-    )
+    pin, _pin_warn = _ecosystem_client_pin(root, pkt)
+    state = (detected.package_states or {}).get(pkg) or (
+        detected.package_states or {}
+    ).get((pkg or "").lower())
+    if state is not None:
+        state.installed_version = pin or None
+
+    from conduit.packet.bind import bind_packet_to_client
+
+    pkt = bind_packet_to_client(pkt, installed_version=pin)
 
     beat("prune")
-    files = prune_by_imports(root, [pkg])
-    console.print(f"Pruned to {len(files)} file(s) importing {pkg}")
+    pkgs = dependency_packages(pkt)
+    files = prune_by_imports(root, pkgs)
+    console.print(
+        f"Pruned to {len(files)} file(s) importing {', '.join(pkgs)}"
+    )
 
+    from conduit.export_delta.path_bridge import rules_from_path_bridge
+    from conduit.export_delta.usage import (
+        collect_package_calls,
+        leftover_calls,
+        legacy_resource_calls,
+        merge_calls_into_api_patterns,
+    )
+    from conduit.packet.synthesize import merge_packet_rules
+
+    delta = None
     if not skip_export_delta:
         from_v = str(pkt.get("from_version") or "")
         to_v = str(pkt.get("to_version") or "")
@@ -595,11 +945,197 @@ def _run_pipeline(
                 f"symbols from={len(delta.from_symbols)} to={len(delta.to_symbols)} "
                 f"changed={len(delta.changed_symbols)}"
             )
+            if delta.resource_paths:
+                _vprint(f"resource paths={len(delta.resource_paths)}")
+
+    calls = collect_package_calls(root, files, pkg)
+    if delta is not None and not delta.skipped_reason:
+        gone = delta.gone_symbols
+        removed_hits = leftover_calls(calls, gone)
+        path_hits = legacy_resource_calls(calls, delta.resource_paths)
+        if state is not None:
+            state.api_patterns = merge_calls_into_api_patterns(
+                list(state.api_patterns), [*removed_hits, *path_hits]
+            )
+        bridge_rules = rules_from_path_bridge(
+            resource_paths=delta.resource_paths,
+            calls=calls,
+        )
+        if bridge_rules:
+            pkt["rules"] = merge_packet_rules(list(pkt.get("rules") or []), bridge_rules)
+            console.print(
+                f"Path-bridge: {len(bridge_rules)} AST_CALL_REWRITE rule(s) "
+                f"from export delta ∩ {len(path_hits)} resource-path call(s)"
+            )
+
+    from conduit.detect.coverage import build_coverage_report
+
+    pre_coverage = build_coverage_report(
+        package=pkg,
+        state=state,
+        signals=detected.signals,
+        packet=pkt,
+    )
+    pkt, src_dict = _prepare_client_packet(
+        root,
+        pkt,
+        source=pre_coverage.source_packet,
+        installed_version=pin,
+        coverage_no_rule=pre_coverage.no_rule,
+    )
+    coverage = _print_packet_coverage(
+        root=root,
+        package=pkg,
+        detected=detected,
+        packet=pkt,
+        persist_source=True,
+    )
 
     beat("apply")
-    report = apply_packet(root, pkt, dry_run=False, file_allowlist=files or None)
+    from conduit.prune.grep_imports import (
+        expand_allowlist_for_exact_rules,
+        expand_apply_allowlist_oracle,
+    )
+
+    before_expand = len(files)
+    files = expand_allowlist_for_exact_rules(root, files, pkt)
+    files = expand_apply_allowlist_oracle(root, files, pkt, changed_files=None)
+    if len(files) != before_expand:
+        console.print(
+            f"Expanded apply allowlist to {len(files)} file(s) "
+            f"(+{len(files) - before_expand} for string-rule hits)"
+        )
+    sdk_rules, rest_rules, _post, _unknown = partition_rules(list(pkt.get("rules") or []))
+    console.print(f"Applying SDK rules ({len(sdk_rules)})…")
+    console.print(f"Applying REST rules ({len(rest_rules)})…")
+
+    from conduit.anticheat.audit_log import MigrationAuditLog
+    from conduit.patcher.impact.engine import analyze_impacts, merge_runtime_packet
+
+    audit_log = MigrationAuditLog.from_packet(pkt, root=root)
+    impact = analyze_impacts(root, pkt, file_allowlist=files or None, log=console.print)
+    audit_log.record_impact(impact)
+    if impact.blocked:
+        console.print(f"[red]Impact analysis blocked migration:[/red] {impact.block_reason}")
+        try:
+            audit_log.persist(root)
+        except OSError:
+            pass
+        raise typer.Exit(2)
+
+    pkt = merge_runtime_packet(pkt, impact.packet_patches)
+    from conduit.anticheat.baseline import save_anticheat_baseline
+
+    save_anticheat_baseline(root, files, log=console.print)
+    report = apply_packet(
+        root,
+        pkt,
+        dry_run=False,
+        file_allowlist=files or None,
+        path_defer=impact.defer_paths,
+    )
+    if gitignore_rel and gitignore_rel not in report.files_modified:
+        report.files_modified.append(gitignore_rel)
     for change in report.changes:
         console.print(f"[{change.rule_type}] {change.path}: {change.detail}")
+    try:
+        from conduit.detect.modules.openai import format_model_auto_update_line
+
+        model_line = format_model_auto_update_line(pkt, report.changes)
+        if model_line:
+            console.print(model_line)
+    except Exception:
+        pass
+
+    from conduit.patcher.sync_env import VerifyEnvError, sync_bumped_packages
+
+    try:
+        sync_bumped_packages(pkt, root=root, log=console.print)
+    except VerifyEnvError as exc:
+        console.print(f"[red]Verify env blocked migration:[/red]\n{exc}")
+        try:
+            audit_log.persist(root)
+        except OSError:
+            pass
+        raise typer.Exit(2) from exc
+
+    from conduit.patcher.post_rules.engine import apply_post_rules
+
+    post_report = apply_post_rules(
+        root,
+        pkt,
+        file_allowlist=files or None,
+        extra_rules=impact.post_rules,
+    )
+    for change in post_report.changes:
+        console.print(f"[post-rule] {change.path}: {change.detail}")
+        if change.path not in report.files_modified:
+            report.files_modified.append(change.path)
+
+    from conduit.patcher.openai_client_chain import apply_openai_client_chain
+
+    chain_report = apply_openai_client_chain(
+        root, files, to_version=str(pkt.get("to_version") or "")
+    )
+    for change in chain_report.changes:
+        console.print(f"[CLIENT_CHAIN] {change.path}: {change.detail}")
+        if change.path not in report.files_modified:
+            report.files_modified.append(change.path)
+    report.merge(chain_report)
+
+    leftover_lines: list[str] = []
+    from conduit.patcher.leftovers import (
+        format_leftover_lines,
+        leftover_handoff_paths,
+        leftovers_failure,
+        scan_leftovers,
+    )
+
+    post_calls = collect_package_calls(root, files, pkg)
+    leftover_items = scan_leftovers(
+        root=root,
+        calls=post_calls,
+        delta=delta,
+        packet=pkt,
+        files=files,
+    )
+    leftover_lines = [item.display() for item in leftover_items]
+    if leftover_items:
+        handoff = leftover_handoff_paths(leftover_items)
+        if handoff:
+            console.print(
+                "[yellow]Apply incomplete; handing off to repair: "
+                + ", ".join(handoff)
+                + "[/yellow]"
+            )
+        for line in format_leftover_lines(leftover_items):
+            console.print(f"[red]{line}[/red]" if not allow_partial else f"[yellow]{line}[/yellow]")
+        if not allow_partial:
+            from conduit.test_runner import TestResult as _TR
+
+            test_result = leftovers_failure(leftover_items)
+            console.print(test_result.summary)
+            _print_run_summary(
+                packet=pkt,
+                report=report,
+                test_result=test_result,
+                coverage=coverage,
+                detected=detected,
+                generated=[],
+                corrected=[],
+                skip_tests=skip_tests,
+                audit_log=audit_log,
+                impact=impact,
+                leftover_lines=leftover_lines,
+            )
+            raise typer.Exit(2)
+        console.print("[yellow]Continuing with --allow-partial despite leftovers.[/yellow]")
+
+    audit_log.record_apply(report)
+    try:
+        audit_log.persist(root)
+    except OSError:
+        pass
 
     if skip_tests:
         from conduit.test_runner import TestResult
@@ -615,23 +1151,15 @@ def _run_pipeline(
         generated: list[str] = []
         corrected: list[str] = []
     else:
-        beat("hatch")
-        generated = ensure_tests(root, pkt, changed_files=report.files_modified)
-        for rel in generated:
-            console.print(f"[test-gen] created {rel}")
-            if rel not in report.files_modified:
-                report.files_modified.append(rel)
-
-        beat("repair")
         src_state = (detected.package_states or {}).get(pkg) or (
             detected.package_states or {}
         ).get((pkg or "").lower())
-        test_result, corrected = verify_with_self_correct(
+        test_result, generated, corrected, audit_log = _verify_with_oracle(
             root,
             pkt,
             max_retries=max_retries,
-            verbose=_VERBOSE,
-            log=console.print,
+            changed_files=report.files_modified,
+            file_allowlist=files,
             source=src_state.to_dict() if src_state is not None else None,
             coverage_missed=(
                 [
@@ -641,13 +1169,26 @@ def _run_pipeline(
                 if coverage is not None
                 else None
             ),
+            audit_log=audit_log,
+            demo=demo,
         )
+        for rel in generated:
+            if rel not in report.files_modified:
+                report.files_modified.append(rel)
         for rel in corrected:
             console.print(f"[self-correct] updated {rel}")
             if rel not in report.files_modified:
                 report.files_modified.append(rel)
 
     console.print(test_result.summary)
+    verify_notes = [
+        n
+        for n in (getattr(test_result, "extra_notes", None) or [])
+        if n.startswith("verify_")
+    ]
+    if verify_notes:
+        console.print("[verify] " + "; ".join(verify_notes))
+    docs_synced: list[str] = []
     if not test_result.passed:
         console.print("[red]Tests still failing after self-correction; aborting PR.[/red]")
         if test_result.stdout:
@@ -663,8 +1204,26 @@ def _run_pipeline(
             generated=generated,
             corrected=corrected,
             skip_tests=skip_tests,
+            audit_log=audit_log,
+            impact=impact,
+            leftover_lines=leftover_lines,
         )
         raise typer.Exit(2)
+
+    # Post-green: sync leftover tokens in docs/README/scripts/ops (not mid-repair).
+    from conduit.patcher.surface_sync import sync_surfaces
+
+    sync_report = sync_surfaces(root, pkt, log=console.print)
+    docs_synced = list(sync_report.files_modified)
+    for rel in docs_synced:
+        if rel not in report.files_modified:
+            report.files_modified.append(rel)
+    if docs_synced and audit_log is not None:
+        audit_log.record_surface_sync(docs_synced)
+        try:
+            audit_log.persist(root)
+        except OSError:
+            pass
 
     if skip_pr:
         console.print("[green]Patches applied and tests passed (PR skipped).[/green]")
@@ -679,12 +1238,23 @@ def _run_pipeline(
             skip_tests=skip_tests,
             pr_created=None,
             pr_message="PR skipped (--skip-pr)",
+            audit_log=audit_log,
+            impact=impact,
+            docs_synced=docs_synced,
+            leftover_lines=leftover_lines,
         )
         raise typer.Exit(0)
 
     detect_summary = "\n".join(
-        f"- [{s.source}] {s.package} {s.change_type}: "
-        f"{s.description or s.affected_pattern or ''}"
+        (
+            f"- [{s.source}] {s.package} {s.change_type}: "
+            f"{s.description or s.affected_pattern or ''}"
+            + (
+                f" (shutdown {s.deadline.split('T', 1)[0]})"
+                if s.deadline
+                else ""
+            )
+        )
         for s in detected.signals[:20]
     )
     review_markdown = format_run_summary_markdown(
@@ -697,6 +1267,10 @@ def _run_pipeline(
             generated=generated,
             corrected=corrected,
             skip_tests=skip_tests,
+            audit_log=audit_log,
+            impact=impact,
+            docs_synced=docs_synced,
+            leftover_lines=leftover_lines,
         )
     )
     beat("pr")
@@ -722,6 +1296,10 @@ def _run_pipeline(
         skip_tests=skip_tests,
         pr_created=pr.created,
         pr_message=pr.message,
+        audit_log=audit_log,
+        impact=impact,
+        docs_synced=docs_synced,
+        leftover_lines=leftover_lines,
     )
     raise typer.Exit(0 if pr.created or skip_pr else 3)
 
@@ -828,157 +1406,202 @@ def packet_new_cmd(
     ecosystem: Optional[str] = typer.Option(
         None, "--ecosystem", help="pypi / npm / go / maven (default: pypi)"
     ),
-    version: Optional[str] = typer.Option(
-        None, "--version", "--to", help="Target version to migrate to"
+    from_version: Optional[str] = typer.Option(
+        None, "--from", help="From version (or use --from-consumer)"
     ),
-    source_url: Optional[List[str]] = typer.Option(
-        None,
-        "--source-url",
-        help="Migration guide / changelog / docs URL (repeatable)",
+    to_version: Optional[str] = typer.Option(None, "--to", help="Target version"),
+    path: Optional[Path] = typer.Option(
+        None, "--path", help="Consumer repo for --from-consumer pin"
+    ),
+    from_consumer: bool = typer.Option(
+        False, "--from-consumer", help="Read from-version from consumer pin"
+    ),
+    enrich: bool = typer.Option(False, "--enrich", help="Optional LLM enrich"),
+    demo: bool = typer.Option(False, "--demo", help="Offline detect fixtures"),
+    scaffold_only: bool = typer.Option(
+        False, "--scaffold-only", help="Skip from-detect; write empty scaffold"
     ),
     out: Optional[Path] = typer.Option(
-        None,
-        "--out",
-        help="Output JSON path (default packets/{pkg}-{eco}-{version}.json)",
-    ),
-    no_enrich: bool = typer.Option(
-        False, "--no-enrich", help="Skip LLM enrichment even when configured"
-    ),
-    scaffold_only: bool = typer.Option(
-        False,
-        "--scaffold-only",
-        help="Write dependency hop + sources only; skip LLM enrichment",
+        None, "--out", help="Output JSON path (default packets/{pkg}-{eco}-{to}.json)"
     ),
 ) -> None:
-    """Author a packet from source URLs (TTY prompts or flags)."""
-    import sys
+    """Guided hop packet: from-detect or scaffold, validate, write, print try-it."""
+    from conduit.packet.author import (
+        consumer_pin,
+        create_packet_new,
+        default_packet_out_path,
+    )
 
-    from conduit.packet.author import create_packet_new, default_packet_out_path
-
-    def _ask(label: str, default: str = "") -> str:
-        if not sys.stdin.isatty():
-            return default
-        try:
-            return str(typer.prompt(label, default=default or ""))
-        except Exception:
-            return default
-
-    pkg = (package or "").strip() or _ask("Package")
-    if not pkg:
-        console.print("[red]--package is required[/red]")
-        raise typer.Exit(2)
-    eco = (ecosystem or "").strip() or _ask("Ecosystem", "pypi") or "pypi"
+    pkg = (package or "").strip() or typer.prompt("Package")
+    eco = (ecosystem or "").strip() or typer.prompt("Ecosystem", default="pypi")
     eco = eco.lower()
-    ver = (version or "").strip() or _ask("Target version")
-    if not ver:
-        console.print("[red]--version / --to is required[/red]")
-        raise typer.Exit(2)
+    to_v = (to_version or "").strip() or typer.prompt("To version")
+    from_v = (from_version or "").strip()
+    if from_consumer:
+        root = _resolve_root(path or Path("."))
+        pin = consumer_pin(root, pkg, eco)
+        if not pin:
+            console.print(
+                f"[red]No {pkg} pin for ecosystem {eco!r} under {root}[/red]"
+            )
+            raise typer.Exit(2)
+        from_v = pin
+        console.print(f"[dim]from-consumer pin: {from_v}[/dim]")
+    if not from_v:
+        from_v = typer.prompt("From version", default="0")
 
-    urls = [u.strip() for u in (source_url or []) if u and str(u).strip()]
-    if sys.stdin.isatty():
-        console.print(
-            "[dim]Source URLs (migrate guide, changelog, docs). Blank line ends.[/dim]"
-        )
-        while True:
-            raw = _ask("Source URL", "")
-            text = (raw or "").strip()
-            if not text:
-                break
-            if text not in urls:
-                urls.append(text)
-
-    dest = out or default_packet_out_path(package=pkg, ecosystem=eco, version=ver)
+    dest = out or default_packet_out_path(
+        package=pkg, ecosystem=eco, to_version=to_v
+    )
     path_written, packet, warnings = create_packet_new(
         package=pkg,
         ecosystem=eco,
-        version=ver,
-        source_urls=urls,
+        from_version=from_v,
+        to_version=to_v,
         out=dest,
-        enrich=not (no_enrich or scaffold_only),
-        scaffold_only=scaffold_only,
+        enrich=enrich,
+        demo=demo,
+        prefer_detect=not scaffold_only,
         log=console.print,
     )
     for warning in warnings:
         console.print(f"[yellow]Warning:[/yellow] {warning}")
     n_rules = len(packet.get("rules") or [])
-    n_effects = len(packet.get("side_effects") or [])
     console.print(
         f"[green]Wrote[/green] {path_written}  "
-        f"({pkg} → {packet.get('to_version')}, {n_rules} rule(s), "
-        f"{n_effects} side_effect(s))"
+        f"({pkg} {packet.get('from_version')} → {packet.get('to_version')}, "
+        f"{n_rules} rule(s))"
     )
+    consumer = path or Path("./examples/demo-consumer")
     console.print(
         "[dim]Try it:[/dim] "
-        f"conduit packet test --packet {path_written}"
+        f"conduit packet test --packet {path_written} --path {consumer}"
     )
     console.print(
         "[dim]Or:[/dim] "
-        f"conduit apply --packet {path_written} --path <consumer> --dry-run"
+        f"conduit run --path {consumer} --packet {path_written} --skip-pr"
     )
+
+
+@packet_app.command("diff-rules")
+def packet_diff_rules_cmd(
+    packet: Path = typer.Argument(..., help="Current hop packet JSON"),
+    previous: Optional[Path] = typer.Option(
+        None, "--previous", help="Previous hop packet (else search sibling dir)"
+    ),
+) -> None:
+    """Show rules added/removed vs the previous hop snapshot."""
+    from conduit.packet.author import (
+        diff_packet_rules,
+        load_previous_for_diff,
+        summarize_rule,
+    )
+
+    current = json.loads(packet.read_text(encoding="utf-8"))
+    prev = load_previous_for_diff(
+        current,
+        previous_path=previous,
+        search_dir=packet.parent,
+    )
+    if prev is None:
+        console.print(
+            "[yellow]No previous snapshot found "
+            "(pass --previous or place an older hop JSON beside this file).[/yellow]"
+        )
+        raise typer.Exit(1)
+    diff = diff_packet_rules(current, prev)
+    console.print(
+        f"[bold]{current.get('package')}[/bold] "
+        f"{prev.get('to_version')} → {current.get('to_version')} "
+        f"({current.get('ecosystem')})"
+    )
+    added = diff["added"]
+    removed = diff["removed"]
+    console.print(f"[green]Added[/green] ({len(added)})")
+    for rule in added:
+        console.print(f"  + {summarize_rule(rule)}")
+    console.print(f"[red]Removed[/red] ({len(removed)})")
+    for rule in removed:
+        console.print(f"  - {summarize_rule(rule)}")
+    if not added and not removed:
+        console.print("[dim]No rule key differences.[/dim]")
 
 
 @packet_app.command("test")
 def packet_test_cmd(
     packet: Path = typer.Option(..., "--packet", help="Migration packet JSON"),
-    path: Optional[Path] = typer.Option(
-        None,
+    path: Path = typer.Option(
+        Path("examples/demo-consumer"),
         "--path",
-        help="Optional consumer repo for dry-run apply + coverage",
+        help="Consumer repo (default: examples/demo-consumer)",
     ),
 ) -> None:
-    """Validate + summarize a packet; optional dry-run apply (no verify)."""
-    from conduit.packet.author import format_packet_summary
+    """Validate + dry-run apply + coverage (no verify / no credentials)."""
+    from conduit.detect.client_state import scan_package_state
 
+    root = _resolve_root(path)
     data = json.loads(packet.read_text(encoding="utf-8"))
     errors = validate_packet(data)
     if errors:
         for err in errors:
             console.print(f"[red]{err}[/red]")
         raise typer.Exit(1)
-
     console.print("[green]Packet is valid.[/green]")
-    console.print(format_packet_summary(data))
 
-    if path is None:
-        console.print("[dim]packet test OK (validate + summary)[/dim]")
-        raise typer.Exit(0)
-
-    root = _resolve_root(path)
     report = apply_packet(root, data, dry_run=True, require_context=False)
     console.print(
-        f"[dim]Dry-run apply:[/dim] would modify {len(report.files_modified)} file(s)"
+        f"[dim]Dry-run apply:[/dim] would touch {len(report.files_modified)} file(s), "
+        f"{len(report.changes)} change(s)"
     )
-    for change in report.changes[:50]:
-        console.print(f"  [DRY-RUN] [{change.rule_type}] {change.path}: {change.detail}")
-    if len(report.changes) > 50:
-        console.print(f"  … {len(report.changes) - 50} more")
+    for change in report.changes[:20]:
+        console.print(f"  [would] {change.path}: {change.detail}")
+    if len(report.changes) > 20:
+        console.print(f"  … +{len(report.changes) - 20} more")
 
     pkg = str(data.get("package") or "")
-    if pkg:
-        try:
-            from conduit.detect.client_state import scan_package_state
+    data, _src = _prepare_client_packet(root, data)
+    state = (
+        scan_package_state(root, pkg, demo=False, use_llm=False) if pkg else None
+    )
+    cov = build_coverage_report(
+        package=pkg,
+        state=state,
+        signals=[],
+        packet=data,
+    )
+    console.print(format_coverage_report(cov, verbose=_VERBOSE))
+    console.print("[green]packet test OK[/green] (validate + dry-run + coverage)")
 
-            state = scan_package_state(root, pkg, use_llm=False)
-            cov = build_coverage_report(
-                package=pkg,
-                state=state,
-                signals=[],
-                packet=data,
-            )
-            console.print(format_coverage_report(cov, verbose=_VERBOSE))
-        except Exception as exc:
-            console.print(f"[dim]Coverage skipped: {exc}[/dim]")
 
-    effects = data.get("side_effects") or []
-    if effects:
-        console.print("[bold]Side effects checklist[/bold]")
-        for effect in effects:
-            if isinstance(effect, dict):
-                console.print(
-                    f"  • [{effect.get('kind') or 'other'}] {effect.get('detail')}"
-                )
+@packet_app.command("export-post-rules")
+def packet_export_post_rules_cmd(
+    path: Path = typer.Option(Path("."), "--path", help="Consumer repo root"),
+    packet_file: Path = typer.Option(..., "--packet", help="Migration packet JSON"),
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Output packet path (default: overwrite --packet)"
+    ),
+    merge: bool = typer.Option(
+        True, "--merge/--no-merge", help="Merge learned rules into packet post_rules"
+    ),
+) -> None:
+    """Promote .conduit/post_rules.json into a portable packet."""
+    from conduit.patcher.post_rules.store import (
+        export_post_rules_to_packet,
+        load_learned_post_rules,
+    )
 
-    console.print("[green]packet test OK[/green]")
+    root = _resolve_root(path)
+    pkt = json.loads(packet_file.read_text(encoding="utf-8"))
+    learned = load_learned_post_rules(root) if merge else []
+    if not learned:
+        console.print("[yellow]No learned post-rules in .conduit/post_rules.json[/yellow]")
+        raise typer.Exit(1)
+    merged = export_post_rules_to_packet(pkt, learned)
+    dest = out or packet_file
+    dest.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    console.print(
+        f"[green]Wrote[/green] {len(merged.get('post_rules') or [])} post_rule(s) to {dest}"
+    )
 
 
 @packet_app.command("validate")
@@ -1031,6 +1654,85 @@ def packet_synthesize_cmd(
             console.print(f"  {err}")
     else:
         console.print(f"[green]Wrote valid packet[/green] {out}")
+
+
+@packet_app.command("from-detect")
+def packet_from_detect_cmd(
+    module: str = typer.Option(..., "--module", help="Detect module (e.g. openai)"),
+    out_dir: Path = typer.Option(Path("."), "--out-dir", help="Directory for snapshot JSON files"),
+    package: Optional[str] = typer.Option(None, "--package"),
+    ecosystem: Optional[str] = typer.Option(
+        None, "--ecosystem", help="Write only this chain (pypi, npm, go, maven)"
+    ),
+    previous: Optional[Path] = typer.Option(
+        None, "--previous", help="Previous snapshot JSON (requires --ecosystem)"
+    ),
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Explicit output file (requires --ecosystem)"
+    ),
+    demo: bool = typer.Option(False, "--demo", help="Offline detect fixtures"),
+    enrich: bool = typer.Option(
+        False, "--enrich", help="Optional LLM rule pass (off = scrape only)"
+    ),
+) -> None:
+    """Freeze catalog snapshot packets from detect (no consumer repo)."""
+    from conduit.packet.from_detect import run_packet_from_detect
+
+    if previous is not None and not ecosystem:
+        console.print("[red]--previous requires --ecosystem[/red]")
+        raise typer.Exit(2)
+    if out is not None and not ecosystem:
+        console.print("[red]--out requires --ecosystem[/red]")
+        raise typer.Exit(2)
+    if ecosystem and ecosystem.lower() not in {"pypi", "npm", "go", "maven", "other"}:
+        console.print(f"[red]Unknown ecosystem {ecosystem!r}[/red]")
+        raise typer.Exit(2)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        writes, warnings = run_packet_from_detect(
+            module=module,
+            out_dir=out_dir,
+            package=package,
+            ecosystem=ecosystem.lower() if ecosystem else None,
+            previous_path=previous,
+            out_path=out,
+            demo=demo,
+            enrich=enrich,
+            log=console.print,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+
+    for warning in warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+    if not writes:
+        console.print("[red]Scan produced no SDK target version (nothing to write).[/red]")
+        raise typer.Exit(2)
+
+    wrote = 0
+    for item in writes:
+        pkt = item.packet
+        pkg = pkt.get("package")
+        eco = pkt.get("ecosystem")
+        to_v = pkt.get("to_version")
+        from_v = pkt.get("from_version")
+        console.print(f"target {pkg} {to_v} ({eco})")
+        if from_v and from_v != "0":
+            console.print(f"previous snapshot {from_v}")
+        else:
+            console.print("previous snapshot (none)")
+        n_rules = len(pkt.get("rules") or [])
+        if item.skipped:
+            console.print(f"[dim]skip[/dim] {item.path} ({item.skip_reason})")
+        else:
+            wrote += 1
+            console.print(f"[green]wrote[/green] {item.path}  ({n_rules} rules)")
+
+    if wrote == 0:
+        console.print("[dim]All snapshot chains already up to date.[/dim]")
 
 
 if __name__ == "__main__":

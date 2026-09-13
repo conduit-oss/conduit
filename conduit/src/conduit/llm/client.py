@@ -181,11 +181,16 @@ class _OpenAIResponsesClient:
         previous_id: str | None = None
         last_text = ""
         emit = self.log
+        force_final_nudge = (
+            "Stop using tools. Reply now with a single JSON object only "
+            "(no markdown fences, no tool calls)."
+        )
 
         for turn_idx in range(turns):
             beat("think")
-            if emit is not None:
-                emit(f"[llm] turn {turn_idx + 1}/{turns}")
+            if emit is not None and turn_idx == 0:
+                emit(f"[repair] agent starting (up to {turns} turns)…")
+            last_turn = turn_idx >= turns - 1
             create_kwargs: dict[str, Any] = {}
             if previous_id:
                 create_kwargs["previous_response_id"] = previous_id
@@ -193,7 +198,22 @@ class _OpenAIResponsesClient:
             else:
                 create_kwargs["input"] = input_items
 
-            if tool_list:
+            if last_turn:
+                # Force a final JSON answer: no tools on the last turn.
+                nudge_input: list[Any] = [
+                    {"role": "user", "content": force_final_nudge}
+                ]
+                if previous_id:
+                    create_kwargs["input"] = [
+                        *(input_items or []),
+                        *nudge_input,
+                    ]
+                else:
+                    create_kwargs["input"] = [
+                        *input_items,
+                        *nudge_input,
+                    ]
+            elif tool_list:
                 create_kwargs["tools"] = tool_list
                 create_kwargs["tool_choice"] = "auto"
 
@@ -204,6 +224,22 @@ class _OpenAIResponsesClient:
             if not calls:
                 return _parse_json_response(last_text)
 
+            if last_turn:
+                # Ignore tool calls past the budget; parse whatever text we got.
+                if emit is not None:
+                    emit(
+                        f"[repair] last turn ignored tool call(s): "
+                        f"{', '.join(str(c.get('name') or '?') for c in calls)}"
+                    )
+                parsed = _parse_json_response(last_text)
+                if parsed:
+                    return parsed
+                if emit is not None:
+                    emit(f"[repair] exceeded max_turns ({turns})")
+                return {
+                    "error": "agent exceeded max_turns without a final JSON answer",
+                }
+
             if tool_executor is None:
                 return _parse_json_response(last_text) or {
                     "error": "model requested tools but no executor was provided",
@@ -211,8 +247,9 @@ class _OpenAIResponsesClient:
                 }
 
             names = [str(c.get("name") or "?") for c in calls]
-            if emit is not None:
-                emit(f"[llm] tools: {', '.join(names)}")
+            # Per-tool detail comes from RepoToolExecutor; keep this line short.
+            if emit is not None and len(names) > 1:
+                emit(f"[repair] tools: {', '.join(names)}")
 
             input_items = []
             for call in calls:
@@ -229,7 +266,7 @@ class _OpenAIResponsesClient:
                 )
 
         if emit is not None:
-            emit(f"[llm] exceeded max_turns ({turns})")
+            emit(f"[repair] exceeded max_turns ({turns})")
         return _parse_json_response(last_text) or {
             "error": "agent exceeded max_turns without a final JSON answer",
         }
@@ -425,3 +462,12 @@ def get_llm_client(
         reasoning_effort=effort,
         log=log,
     )
+
+
+def attach_llm_log(
+    client: LlmClient | None, log: Callable[[str], None] | None
+) -> LlmClient | None:
+    """Set ``client.log`` when present so mocks of ``get_llm_client()`` stay valid."""
+    if client is not None and log is not None and hasattr(client, "log"):
+        client.log = log
+    return client

@@ -70,6 +70,8 @@ def test_agent_tools_modes():
     assert "run_tests" in repair_names
     assert "run_shell" in repair_names
     assert "grep" in repair_names
+    assert "list_files" not in repair_names
+    assert "list_files" in enrich_names
 
 
 def test_repo_executor_read_write(tmp_path: Path):
@@ -236,7 +238,7 @@ def test_responses_agent_emits_turn_logs(monkeypatch, tmp_path: Path):
         log=lines.append,
     )
     client._client = FakeOpenAI()
-    ex = RepoToolExecutor(root=tmp_path, allow_writes=False)
+    ex = RepoToolExecutor(root=tmp_path, allow_writes=False, log=lines.append)
     data = client.run_agent(
         system="s",
         user="u",
@@ -245,9 +247,120 @@ def test_responses_agent_emits_turn_logs(monkeypatch, tmp_path: Path):
         max_turns=4,
     )
     assert data == {"ok": True}
-    assert "[llm] turn 1/4" in lines
-    assert "[llm] tools: read_file" in lines
-    assert "[llm] turn 2/4" in lines
+    assert any("agent starting" in line for line in lines)
+    assert any("read a.py" in line for line in lines)
+    # Single-tool turns log via the executor, not a tools summary line.
+    assert not any(line.startswith("[llm] turn ") for line in lines)
+
+
+def test_responses_agent_last_turn_strips_tools(monkeypatch, tmp_path: Path):
+    (tmp_path / "a.py").write_text("print(1)\n", encoding="utf-8")
+    lines: list[str] = []
+    saw_tools: list[bool] = []
+
+    class FakeResponsesAPI:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            saw_tools.append("tools" in kwargs)
+            if self.calls == 1:
+                return SimpleNamespace(
+                    id="resp_1",
+                    output_text="",
+                    output=[
+                        SimpleNamespace(
+                            type="function_call",
+                            name="read_file",
+                            call_id="c1",
+                            arguments=json.dumps({"path": "a.py"}),
+                        )
+                    ],
+                )
+            # Last turn (max_turns=2): should have no tools; return JSON text.
+            return SimpleNamespace(
+                id="resp_2",
+                output_text='{"done": true}',
+                output=[],
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = FakeResponsesAPI()
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "openai",
+        SimpleNamespace(OpenAI=FakeOpenAI),
+    )
+
+    client = _OpenAIResponsesClient(
+        model="gpt-5.4-mini",
+        api_key="sk-test",
+        reasoning_effort="high",
+        log=lines.append,
+    )
+    client._client = FakeOpenAI()
+    ex = RepoToolExecutor(root=tmp_path, allow_writes=False)
+    data = client.run_agent(
+        system="s",
+        user="u",
+        tools=agent_tools(mode="enrich_scoped"),
+        tool_executor=ex,
+        max_turns=2,
+    )
+    assert data == {"done": True}
+    assert saw_tools == [True, False]
+    assert any("agent starting" in line for line in lines)
+
+
+def test_responses_agent_last_turn_ignores_tool_calls(monkeypatch, tmp_path: Path):
+    lines: list[str] = []
+
+    class FakeResponsesAPI:
+        def create(self, **kwargs):
+            # Single turn that still tries to call a tool — must not loop.
+            return SimpleNamespace(
+                id="resp_1",
+                output_text="",
+                output=[
+                    SimpleNamespace(
+                        type="function_call",
+                        name="read_file",
+                        call_id="c1",
+                        arguments=json.dumps({"path": "missing.py"}),
+                    )
+                ],
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.responses = FakeResponsesAPI()
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "openai",
+        SimpleNamespace(OpenAI=FakeOpenAI),
+    )
+
+    client = _OpenAIResponsesClient(
+        model="gpt-5.4-mini",
+        api_key="sk-test",
+        reasoning_effort="high",
+        log=lines.append,
+    )
+    client._client = FakeOpenAI()
+    ex = RepoToolExecutor(root=tmp_path, allow_writes=False)
+    data = client.run_agent(
+        system="s",
+        user="u",
+        tools=agent_tools(mode="enrich_scoped"),
+        tool_executor=ex,
+        max_turns=1,
+    )
+    assert data.get("error")
+    assert any("ignored tool" in line.lower() for line in lines)
 
 
 def test_default_openai_model(monkeypatch):
@@ -291,6 +404,34 @@ def test_repo_executor_grep_and_shell(tmp_path: Path):
     assert ok.get("returncode") == 0
 
 
+def test_shell_rejects_file_io_python_c(tmp_path: Path):
+    from conduit.llm.executors import shell_command_allowed
+
+    assert shell_command_allowed(
+        'python -c "import openai; print(getattr(openai, \'__version__\', None))"'
+    )
+    assert not shell_command_allowed(
+        "python -c \"from pathlib import Path; Path('x').write_text('y')\""
+    )
+    assert not shell_command_allowed("python -c \"print('hi')\"")
+    assert not shell_command_allowed("python -c \"1/0\"")
+    ex = RepoToolExecutor(
+        root=tmp_path, allow_writes=False, allow_run_tests=False, allow_shell=True
+    )
+    denied = json.loads(
+        ex(
+            "run_shell",
+            {
+                "command": (
+                    "python -c \"from pathlib import Path; "
+                    "Path('configs/x.json').write_text('{}')\""
+                )
+            },
+        )
+    )
+    assert "allowlisted" in denied["error"]
+
+
 def test_resolve_max_turns(monkeypatch):
     from conduit.llm.tools import resolve_max_turns
 
@@ -298,3 +439,98 @@ def test_resolve_max_turns(monkeypatch):
     assert resolve_max_turns() == 32
     monkeypatch.setenv("CONDUIT_LLM_MAX_TURNS", "8")
     assert resolve_max_turns() == 8
+
+
+def test_self_correct_executor_allowlist_blocks_inventory(tmp_path: Path):
+    (tmp_path / "seed.py").write_text("a = 1\n", encoding="utf-8")
+    (tmp_path / "other.py").write_text("b = 2\n", encoding="utf-8")
+    ex = RepoToolExecutor(
+        root=tmp_path,
+        allow_writes=True,
+        allow_run_tests=True,
+        path_allowlist={"seed.py"},
+    )
+    listed = json.loads(ex("list_files", {"directory": "."}))
+    assert "error" in listed
+    assert "list_files" in listed["error"]
+    bad = json.loads(ex("read_file", {"path": "other.py"}))
+    assert "allowlist" in bad["error"].lower()
+    ok = json.loads(ex("read_file", {"path": "seed.py"}))
+    assert "a = 1" in ok["contents"]
+
+
+def test_run_tests_tool_accepts_nodeids(tmp_path: Path, monkeypatch):
+    (tmp_path / "conftest.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_conduit_oracle.py").write_text(
+        "def test_a():\n    assert True\n", encoding="utf-8"
+    )
+    captured: dict = {}
+
+    def fake_run_tests(root, *, timeout=300.0, nodeids=None):
+        captured["nodeids"] = nodeids
+        return SimpleNamespace(
+            passed=True,
+            returncode=0,
+            runner="pytest",
+            command=["python", "-m", "pytest", "-q", *(nodeids or [])],
+            stdout="1 passed",
+            stderr="",
+            summary="ok",
+        )
+
+    monkeypatch.setattr("conduit.test_runner.run_tests", fake_run_tests)
+    ex = RepoToolExecutor(
+        root=tmp_path, allow_writes=False, allow_run_tests=True
+    )
+    out = json.loads(
+        ex(
+            "run_tests",
+            {"nodeids": ["tests/test_conduit_oracle.py::test_a"]},
+        )
+    )
+    assert out["passed"] is True
+    assert captured["nodeids"] == ["tests/test_conduit_oracle.py::test_a"]
+
+
+def test_write_file_allowlisted_ok(tmp_path: Path):
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    ex = RepoToolExecutor(
+        root=tmp_path,
+        allow_writes=True,
+        path_allowlist={"app.py"},
+    )
+    ok = json.loads(ex("write_file", {"path": "app.py", "contents": "x = 2\n"}))
+    assert ok.get("ok") is True
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "x = 2\n"
+
+
+def test_write_file_rejects_celery_stub(tmp_path: Path):
+    from conduit.anticheat.rules import forbidden_write_reason
+
+    ex = RepoToolExecutor(
+        root=tmp_path,
+        allow_writes=True,
+        path_allowlist=None,
+        reject_write=lambda rel, _c: forbidden_write_reason(rel),
+    )
+    denied = json.loads(
+        ex("write_file", {"path": "celery/__init__.py", "contents": "app = None\n"})
+    )
+    assert "error" in denied
+    assert "stub" in denied["error"].lower() or "rejected" in denied["error"].lower()
+    assert not (tmp_path / "celery").exists()
+
+
+def test_write_file_rejects_off_allowlist(tmp_path: Path):
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    ex = RepoToolExecutor(
+        root=tmp_path,
+        allow_writes=True,
+        path_allowlist={"app.py"},
+    )
+    denied = json.loads(
+        ex("write_file", {"path": "django/__init__.py", "contents": ""})
+    )
+    assert "allowlist" in denied["error"].lower()
+    assert not (tmp_path / "django").exists()

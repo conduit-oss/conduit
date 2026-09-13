@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conduit.detect.client_state import PackageClientState, scan_package_state
+from conduit.detect.client_state import (
+    PackageClientState,
+    looks_like_sdk_api_pattern,
+    scan_package_state,
+)
 from conduit.detect.modules.openai.known_models import (
     collect_known_model_ids,
     extract_model_kwarg_ids,
@@ -108,6 +112,41 @@ def test_model_polling_emits_removed_for_discovered_legacy(tmp_path: Path):
     assert any(s.affected_pattern == "text-davinci-003" for s in signals)
 
 
+def test_llm_enrich_skips_when_dossier_complete(tmp_path: Path, monkeypatch):
+    """Regex already found everything — enrich agent must not run."""
+    (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        'import openai\nMODEL = "gpt-4o-mini"\n',
+        encoding="utf-8",
+    )
+
+    class FakeLLM:
+        def complete_json(self, *, system: str, user: str):
+            raise AssertionError("enrich should be skipped when dossier is complete")
+
+        def run_agent(self, **kwargs):
+            raise AssertionError("enrich should be skipped when dossier is complete")
+
+    monkeypatch.setattr(
+        "conduit.llm.client.get_llm_client",
+        lambda: FakeLLM(),
+    )
+    monkeypatch.setattr(
+        "conduit.detect.modules.openai.known_models.collect_known_model_ids",
+        lambda **kwargs: {"gpt-4o-mini"},
+    )
+    state = scan_package_state(
+        tmp_path,
+        "openai",
+        installed={"openai": "1.0.0"},
+        demo=False,
+        use_llm=True,
+    )
+    assert "gpt-4o-mini" in state.model_ids
+    assert state.source == "regex"
+    assert any("dossier complete" in n for n in state.notes)
+
+
 def test_llm_enrich_merges_grounded_tokens_only(tmp_path: Path, monkeypatch):
     (tmp_path / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
     (tmp_path / "app.py").write_text(
@@ -125,6 +164,11 @@ def test_llm_enrich_merges_grounded_tokens_only(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         "conduit.llm.client.get_llm_client",
         lambda: FakeLLM(),
+    )
+    # Force the agent/merge path even when the mechanical dossier looks complete.
+    monkeypatch.setattr(
+        "conduit.detect.client_state._dossier_enrich_complete",
+        lambda _d: False,
     )
     # Avoid live catalog/deprecation fetches in this unit test.
     monkeypatch.setattr(
@@ -173,6 +217,10 @@ def test_agent_scan_grounds_usages_and_drops_invented(tmp_path: Path, monkeypatc
             }
 
     monkeypatch.setattr("conduit.llm.client.get_llm_client", lambda: FakeLLM())
+    monkeypatch.setattr(
+        "conduit.detect.client_state._dossier_enrich_complete",
+        lambda _d: False,
+    )
     monkeypatch.setattr(
         "conduit.detect.modules.openai.known_models.collect_known_model_ids",
         lambda **kwargs: {"text-davinci-edit-001"},
@@ -227,6 +275,10 @@ def test_agent_scan_does_not_promote_usage_ids_to_models(tmp_path: Path, monkeyp
             }
 
     monkeypatch.setattr("conduit.llm.client.get_llm_client", lambda: FakeLLM())
+    monkeypatch.setattr(
+        "conduit.detect.client_state._dossier_enrich_complete",
+        lambda _d: False,
+    )
     monkeypatch.setattr(
         "conduit.detect.modules.openai.known_models.collect_known_model_ids",
         lambda **kwargs: {"text-davinci-edit-001"},
@@ -288,3 +340,62 @@ def test_sdk_release_demo_uses_fixture_latest():
     assert "deferred" in (signals[0].description or "").lower() or "2.0" in (
         signals[0].extra.get("reason") or ""
     )
+
+
+def test_looks_like_sdk_api_pattern_filters_orm_and_files():
+    assert looks_like_sdk_api_pattern("openai.Edit.create", "openai")
+    assert looks_like_sdk_api_pattern("ChatCompletion.create", "openai")
+    assert looks_like_sdk_api_pattern("/v1/chat/completions", "openai")
+    assert looks_like_sdk_api_pattern("chat.completions.create", "openai")
+    assert not looks_like_sdk_api_pattern("web/reNgine/llm.py", "openai")
+    assert not looks_like_sdk_api_pattern("Project.objects.create", "openai")
+    assert not looks_like_sdk_api_pattern("Scan.objects.create", "openai")
+
+
+def test_agent_scan_does_not_merge_paths_or_orm_into_api_patterns(
+    tmp_path: Path, monkeypatch
+):
+    (tmp_path / "requirements.txt").write_text("openai==0.28.1\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        "import openai\n"
+        "openai.ChatCompletion.create()\n"
+        "Project.objects.create()\n"
+        "# also mentioned: web/reNgine/llm.py /v1/chat/completions\n",
+        encoding="utf-8",
+    )
+
+    class FakeLLM:
+        def run_agent(self, **kwargs):
+            return {
+                "model_ids": [],
+                "api_patterns": ["ChatCompletion.create", "Project.objects.create"],
+                "usages": [
+                    {
+                        "id": "ChatCompletion.create",
+                        "callees": ["ChatCompletion.create", "Project.objects.create"],
+                        "paths": ["web/reNgine/llm.py", "/v1/chat/completions"],
+                        "files": ["app.py"],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr("conduit.llm.client.get_llm_client", lambda: FakeLLM())
+    monkeypatch.setattr(
+        "conduit.detect.client_state._dossier_enrich_complete",
+        lambda _d: False,
+    )
+    monkeypatch.setattr(
+        "conduit.detect.modules.openai.known_models.collect_known_model_ids",
+        lambda **kwargs: set(),
+    )
+    state = scan_package_state(
+        tmp_path,
+        "openai",
+        installed={"openai": "0.28.1"},
+        demo=False,
+        use_llm=True,
+    )
+    assert "ChatCompletion.create" in state.api_patterns
+    assert "Project.objects.create" not in state.api_patterns
+    assert "web/reNgine/llm.py" not in state.api_patterns
+    assert "/v1/chat/completions" in state.api_patterns

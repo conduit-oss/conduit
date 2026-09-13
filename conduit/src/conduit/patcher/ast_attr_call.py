@@ -75,7 +75,12 @@ def rename_python_attr(content: str, old_attr: str, new_attr: str) -> tuple[str,
     transformer = _AttrRenameTransformer(old_attr, new_attr)
     updated = module.visit(transformer)
     if transformer.changes:
-        return updated.code, transformer.changes
+        code = updated.code
+        if old_attr in code:
+            n_extra = code.count(old_attr)
+            code = code.replace(old_attr, new_attr)
+            return code, transformer.changes + n_extra
+        return code, transformer.changes
     updated = content.replace(old_attr, new_attr)
     return updated, content.count(old_attr) if updated != content else 0
 
@@ -91,7 +96,12 @@ def rewrite_python_call(content: str, old_callee: str, new_callee: str) -> tuple
     transformer = _CallRewriteTransformer(old_callee, new_callee)
     updated = module.visit(transformer)
     if transformer.changes:
-        return updated.code, transformer.changes
+        code = updated.code
+        if old_callee in code:
+            n_extra = code.count(old_callee)
+            code = code.replace(old_callee, new_callee)
+            return code, transformer.changes + n_extra
+        return code, transformer.changes
     updated = content.replace(old_callee, new_callee)
     return updated, content.count(old_callee) if updated != content else 0
 
