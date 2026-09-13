@@ -110,13 +110,15 @@ Write/update packet leftover-token oracle tests, then run the suite + self-corre
 
 ## `conduit module`
 
+Advanced / maintainer tooling. Prefer [`packet new`](#packet-new) for the public authoring path. OpenAI remains the reference detect module; do not treat scaffolded empty vendor modules as “supported.”
+
 ### `module list`
 
 List built-in / entry-point modules and whether they apply to installed manifests.
 
 ### `module new`
 
-Scaffold a **profile-backed** detect module. On a TTY, prompts for source URLs (deprecations, changelog, OpenAPI, SDK repo, catalog). Flags skip prompts when provided.
+Scaffold a **profile-backed** detect module (advanced). On a TTY, prompts for source URLs (deprecations, changelog, OpenAPI, SDK repo, catalog). Flags skip prompts when provided.
 
 | Option | Description |
 |--------|-------------|
@@ -206,41 +208,12 @@ Writes `{package}-{ecosystem}-{to_version}.json` (e.g. `openai-pypi-2.0.0.json`,
 
 Unknown `--module` or no scanned target version → exit 2.
 
-### `packet new`
-
-Guided hop packet: prefer `from-detect` when a detect module exists, else scaffold; validate; write; print a try-it line.
-
-| Option | Description |
-|--------|-------------|
-| `--package` | Package name (prompted if omitted) |
-| `--ecosystem` | `pypi` / `npm` / `go` / `maven` (default prompt: `pypi`) |
-| `--from` / `--to` | Version hop |
-| `--from-consumer` | Read `--from` from consumer pin under `--path` |
-| `--path` | Consumer repo for `--from-consumer` / try-it path |
-| `--enrich` | Optional LLM enrich (same as `from-detect --enrich`) |
-| `--demo` | Offline detect fixtures |
-| `--scaffold-only` | Skip from-detect; write empty scaffold |
-| `--out` | Output JSON (default `packets/{pkg}-{eco}-{to}.json`) |
-
-```bash
-conduit packet new --package openai --ecosystem pypi --from 0.28.1 --to 1.0.0 --scaffold-only
-conduit packet test --packet ./packets/openai-pypi-1.0.0.json --path ./examples/demo-consumer
-```
-
 ### `packet diff-rules`
 
 Summarize rules added/removed vs the previous hop snapshot (`--previous`, or search the packet’s directory).
 
 ```bash
 conduit packet diff-rules ./packets/openai-pypi-1.40.0.json --previous ./packets/openai-pypi-1.0.0.json
-```
-
-### `packet test`
-
-Validate + dry-run apply + coverage on `--path` (default `examples/demo-consumer`). No verify and no credential gate.
-
-```bash
-conduit packet test --packet ./packets/openai-pypi-1.0.0.json --path ./examples/demo-consumer
 ```
 
 ### `packet export-post-rules`

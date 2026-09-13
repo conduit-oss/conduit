@@ -1453,7 +1453,8 @@ def packet_new_cmd(
         raise typer.Exit(2)
 
     urls = [u.strip() for u in (source_url or []) if u and str(u).strip()]
-    if sys.stdin.isatty():
+    # Only prompt for URLs when none were passed as flags.
+    if sys.stdin.isatty() and not urls:
         console.print(
             "[dim]Source URLs (migrate guide, changelog, docs). Blank line ends.[/dim]"
         )

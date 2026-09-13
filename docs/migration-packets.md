@@ -134,15 +134,10 @@ Example: migrating consumers from `google-generativeai` to `google-genai` — au
 
 ### Empty scaffold / local synthesize
 
-```bash
-# Guided hop (from-detect when possible, else scaffold) + try-it line
-conduit packet new \
-  --package openai --ecosystem pypi --from 0.28.1 --to 1.0.0 \
-  --out ./packets/openai-pypi-1.0.0.json
-# --scaffold-only to skip detect; --from-consumer --path ./repo to read the pin
-# --enrich optional LLM; --demo offline fixtures
+Other packet commands (not the link-driven `packet new` hero path):
 
-# Dry-run apply + coverage (no verify / no API keys)
+```bash
+# Dry-run apply + coverage when you have a consumer checkout
 conduit packet test --packet ./packets/openai-pypi-1.0.0.json --path ./examples/demo-consumer
 
 # Show hop-chain rule delta vs previous snapshot
@@ -161,6 +156,7 @@ conduit packet synthesize \
   --out ./my-packet/conduit-packet.json
 
 # Catalog snapshots from detect (no consumer repo). Scan picks latest per ecosystem.
+# Advanced: requires a detect module (OpenAI is the reference).
 conduit packet from-detect --module openai --out-dir ./packets
 # packets/openai-pypi-<latest>.json
 # packets/openai-npm-<latest>.json
