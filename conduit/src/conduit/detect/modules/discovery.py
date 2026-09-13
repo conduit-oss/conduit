@@ -9,9 +9,10 @@ from conduit.detect.modules.base import DetectModule
 
 
 def _builtin_modules() -> list[DetectModule]:
+    from conduit.detect.modules.google_genai import GoogleGenaiModule
     from conduit.detect.modules.openai import OpenAIModule
 
-    return [OpenAIModule()]
+    return [OpenAIModule(), GoogleGenaiModule()]
 
 
 def _entry_point_modules() -> list[DetectModule]:
