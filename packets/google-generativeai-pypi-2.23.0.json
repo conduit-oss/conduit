@@ -1,0 +1,97 @@
+{
+  "packet_id": "google-generativeai-0.8.6-2.23.0",
+  "package": "google-generativeai",
+  "ecosystem": "pypi",
+  "from_version": "0.8.6",
+  "to_version": "2.23.0",
+  "sources": [
+    {
+      "url": "https://ai.google.dev/gemini-api/docs/migrate",
+      "kind": "docs"
+    },
+    {
+      "url": "https://googleapis.github.io/python-genai/",
+      "kind": "docs"
+    }
+  ],
+  "notes": "Migrate google-generativeai (legacy Gemini Python SDK) to google-genai (Google GenAI SDK). Package rename is DEPENDENCY_REMOVE + DEPENDENCY_ADD; import path google.generativeai → google.genai. GenerativeModel → Client.models.generate_content is multi-statement and is listed under side_effects, not fake-passed by string rewrite. Source: https://ai.google.dev/gemini-api/docs/migrate",
+  "side_effects": [
+    {
+      "kind": "other",
+      "detail": "Replace genai.configure(api_key=...) with genai.Client(api_key=...) or GEMINI_API_KEY / GOOGLE_API_KEY env; configure has no 1:1 callee."
+    },
+    {
+      "kind": "other",
+      "detail": "Replace model = genai.GenerativeModel('...'); model.generate_content(...) with client = genai.Client(); client.models.generate_content(model=..., contents=...). Same for start_chat → client.chats.create, count_tokens, and generate_content_stream."
+    },
+    {
+      "kind": "config",
+      "detail": "generation_config=genai.GenerationConfig(...) becomes config=types.GenerateContentConfig(...); system_instruction moves into config. Add `from google.genai import types` when using typed config."
+    },
+    {
+      "kind": "other",
+      "detail": "Module-level helpers genai.upload_file / list_files / get_file / delete_file / embed_content become client.files.* / client.models.embed_content (needs a Client)."
+    }
+  ],
+  "rules": [
+    {
+      "type": "DEPENDENCY_REMOVE",
+      "package": "google-generativeai",
+      "from_version": "0.8.6",
+      "ecosystems": ["pip", "pyproject"],
+      "reason": "Legacy package EOL path; replace with google-genai per Google migrate guide."
+    },
+    {
+      "type": "DEPENDENCY_ADD",
+      "package": "google-genai",
+      "to_version": "2.23.0",
+      "scope": "main",
+      "ecosystems": ["pip", "pyproject"],
+      "reason": "Official Google GenAI SDK successor package (PyPI google-genai)."
+    },
+    {
+      "type": "AST_IMPORT_REWRITE",
+      "target_files": ["*.py"],
+      "old_import": "google.generativeai",
+      "new_import": "google.genai",
+      "reason": "Import path changes from google.generativeai to google.genai (from google import genai)."
+    },
+    {
+      "type": "EXACT_STRING_REPLACE",
+      "target_files": ["*.py"],
+      "match": "google.generativeai",
+      "replace": "google.genai",
+      "reason": "Catch remaining string/module references after AST import rewrite."
+    },
+    {
+      "type": "EXACT_STRING_REPLACE",
+      "target_files": ["*.py"],
+      "match": "GenerationConfig",
+      "replace": "GenerateContentConfig",
+      "reason": "Legacy GenerationConfig renamed to GenerateContentConfig in google.genai.types."
+    },
+    {
+      "type": "AST_PARAM_RENAME",
+      "target_files": ["*.py"],
+      "function_target": "embed_content",
+      "old_param": "content",
+      "new_param": "contents",
+      "reason": "embed_content kwarg content → contents in the new SDK."
+    },
+    {
+      "type": "AST_PARAM_RENAME",
+      "target_files": ["*.py"],
+      "function_target": "upload_file",
+      "old_param": "path",
+      "new_param": "file",
+      "reason": "files.upload uses file= instead of path=."
+    },
+    {
+      "type": "AST_PARAM_DROP",
+      "target_files": ["*.py"],
+      "function_target": "start_chat",
+      "param": "enable_automatic_function_calling",
+      "reason": "AFC is default in new SDK generate_content/chat; start_chat flag is gone."
+    }
+  ]
+}
