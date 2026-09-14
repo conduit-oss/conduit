@@ -1435,7 +1435,23 @@ def packet_new_cmd(
     scaffold_only: bool = typer.Option(
         False,
         "--scaffold-only",
-        help="Write dependency hop + sources only; skip LLM enrichment",
+        help=(
+            "Skip LLM enrichment; plugin propose still runs "
+            "(use --plugin none for hop-only)"
+        ),
+    ),
+    plugin: Optional[str] = typer.Option(
+        None,
+        "--plugin",
+        help=(
+            "Packet plugin name, or 'none' to disable. "
+            "Default: auto-match by package / CONDUIT_PACKET_PLUGIN"
+        ),
+    ),
+    no_plugin: bool = typer.Option(
+        False,
+        "--no-plugin",
+        help="Disable packet plugins (same as --plugin none)",
     ),
 ) -> None:
     """Author a packet from source URLs (TTY prompts or flags)."""
@@ -1476,17 +1492,30 @@ def packet_new_cmd(
             if text not in urls:
                 urls.append(text)
 
+    plugin_arg: Optional[str]
+    if no_plugin:
+        plugin_arg = "none"
+    elif plugin is not None and str(plugin).strip():
+        plugin_arg = str(plugin).strip()
+    else:
+        plugin_arg = None
+
     dest = out or default_packet_out_path(package=pkg, ecosystem=eco, version=ver)
-    path_written, packet, warnings = create_packet_new(
-        package=pkg,
-        ecosystem=eco,
-        version=ver,
-        source_urls=urls,
-        out=dest,
-        enrich=not (no_enrich or scaffold_only),
-        scaffold_only=scaffold_only,
-        log=console.print,
-    )
+    try:
+        path_written, packet, warnings = create_packet_new(
+            package=pkg,
+            ecosystem=eco,
+            version=ver,
+            source_urls=urls,
+            out=dest,
+            enrich=not (no_enrich or scaffold_only),
+            scaffold_only=scaffold_only,
+            plugin=plugin_arg,
+            log=console.print,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
     for warning in warnings:
         console.print(f"[yellow]Warning:[/yellow] {warning}")
     n_rules = len(packet.get("rules") or [])

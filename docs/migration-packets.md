@@ -129,13 +129,39 @@ conduit packet new \
   --source-url https://googleapis.github.io/python-genai/ \
   --source-url https://github.com/googleapis/python-genai/blob/main/CHANGELOG.md
 
-# Skip LLM even when configured
+# Skip LLM even when configured (plugin propose still runs if matched)
 conduit packet new --package google-genai --version 1.0.0 \
   --source-url https://example.com/migrate --scaffold-only
+
+# Force no plugin (hop + sources only)
+conduit packet new --package example-sdk --version 2.0.0 --plugin none --scaffold-only
+
+# Explicit plugin (entry point conduit.packet_plugins)
+conduit packet new --package example-sdk --version 2.0.0 --plugin example-sdk \
+  --source-url https://example.com/example-sdk/migrate --scaffold-only
 ```
 
 Default output: `packets/{package}-{ecosystem}-{version}.json` (e.g. `packets/google-genai-pypi-1.0.0.json`).  
 `packet_id` matches that slug. Top-level `from_version` is `*` (any consumer pin; resolved at apply/run); `to_version` is the target you picked.
+
+### Packet plugins (optional)
+
+OSS users do **not** need detect modules. A small **packet plugin** library can:
+
+1. **`propose`** — deterministically add rules/sources/`side_effects` (no LLM; runs under `--scaffold-only`)
+2. **`guide_enrich`** — seeds, queries, hosts, and prompt hints for the existing enrich agent
+3. **`after_enrich`** — validate / drop uncited enrich rewrites
+
+Register via entry points:
+
+```toml
+[project.entry-points."conduit.packet_plugins"]
+example-sdk = "conduit.packet.plugins.example_sdk:ExampleSdkPlugin"
+```
+
+Built-in demo: `example-sdk` (see [`conduit/src/conduit/packet/plugins/example_sdk.py`](../conduit/src/conduit/packet/plugins/example_sdk.py)). Tiny plugins = seeds + maybe a rename table; dense AST still needs OpenAPI/maps (vendor-specific work), not a 50-line stub.
+
+Rule `reason` is stamped with `[plugin:<name>]` / `[enrich:research]` for provenance. Published catalog packets stay baked JSON — apply does not require the plugin to be installed.
 
 Try it without a demo consumer:
 

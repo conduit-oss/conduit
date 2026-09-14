@@ -2,7 +2,7 @@
 
 Detect modules are **vendor-specific plugins** that emit `ChangeSignal`s (API renames, deprecations, suggested packet rules) beyond raw lockfile diffs.
 
-**Public positioning:** the OSS hero path is [`packet new` → `packet test` → apply](migration-packets.md). Modules are **advanced / reference** tooling. Keep **OpenAI** as the supported reference module; do not market `module new` scaffolds as fully supported vendors.
+**Public positioning:** the OSS hero path is [`packet new` → optional packet plugin → `packet test` → apply](migration-packets.md). Detect modules are **advanced / reference** tooling (OpenAI remains the supported reference module). Prefer packet plugins for authoring fills; do not market `module new` scaffolds as fully supported vendors.
 
 ## Interface
 

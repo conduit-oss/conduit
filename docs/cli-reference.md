@@ -156,9 +156,11 @@ Author a Migration Packet from source URLs (TTY prompts or flags). Writes `packe
 | `--source-url` | Repeatable migrate guide / changelog / docs URL |
 | `--out` | Output JSON path |
 | `--no-enrich` | Skip LLM enrichment |
-| `--scaffold-only` | Dependency hop + sources only (skip LLM) |
+| `--scaffold-only` | Skip LLM enrichment; **plugin propose still runs** (use `--plugin none` for hop-only) |
+| `--plugin` | Packet plugin name, or `none` to disable (default: auto-match by package / `CONDUIT_PACKET_PLUGIN`) |
+| `--no-plugin` | Same as `--plugin none` |
 
-On a TTY, after package/ecosystem/version, prompts for source URLs until a blank line. Fetches URLs into `sources`; when an LLM is configured and sources are present, enriches rules by default. Without an LLM, still writes a valid packet with `DEPENDENCY_BUMP` + sources (never invents AST rules). Multi-statement gaps go in `side_effects`.
+On a TTY, after package/ecosystem/version, prompts for source URLs until a blank line. Fetches URLs into `sources`. Optional **packet plugins** (`conduit.packet_plugins` entry points) run deterministic `propose` even without an LLM, then may guide enrich when an LLM is configured. Without a plugin or LLM you still get a schema-valid packet with a `DEPENDENCY_BUMP` + sources (never invents AST rules). Multi-statement gaps go in `side_effects`.
 
 ### `packet test`
 
