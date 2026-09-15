@@ -172,15 +172,24 @@ def create_packet_new(
     out: Path | None = None,
     enrich: bool = True,
     scaffold_only: bool = False,
+    plugin: str | None = None,
     log: LogFn | None = None,
 ) -> tuple[Path, dict[str, Any], list[str]]:
     """
     Author a target-version packet from source URLs.
 
     Always writes a schema-valid packet with a DEPENDENCY_BUMP hop and recorded
-    sources. When ``enrich`` and an LLM is configured, fills rules from fetched
-    docs / evidence seeds. Never invents AST rules without an LLM.
+    sources. Optional packet plugins run ``propose`` (no LLM) even under
+    ``--scaffold-only``. When ``enrich`` and an LLM is configured, fills more
+    rules from fetched docs / evidence seeds (plugin may guide that step).
     """
+    from conduit.packet.plugin import (
+        ENRICH_REASON_TAG,
+        merge_propose_into_packet,
+        stamp_new_rules,
+    )
+    from conduit.packet.plugin_discovery import PluginResolveError, resolve_plugin
+
     warnings: list[str] = []
     emit = log if callable(log) else None
 
@@ -245,53 +254,138 @@ def create_packet_new(
 
     packet["sources"] = _dedupe_sources(sources)
 
+    try:
+        plug = resolve_plugin(package=package, ecosystem=ecosystem, plugin=plugin)
+    except PluginResolveError as exc:
+        raise ValueError(str(exc)) from exc
+
+    if plug is not None:
+        if emit:
+            emit(f"Using packet plugin {plug.name}")
+        warnings.append(f"Using packet plugin {plug.name}")
+        try:
+            proposed = plug.propose(
+                package=package,
+                ecosystem=ecosystem,
+                from_version=_ANY_FROM,
+                to_version=version,
+                base_packet=packet,
+                source_urls=unique_urls,
+            )
+            before_n = len(packet.get("rules") or [])
+            packet = merge_propose_into_packet(packet, proposed, plugin_name=plug.name)
+            added = max(0, len(packet.get("rules") or []) - before_n)
+            if emit:
+                emit(f"Plugin propose: {added} rule(s) merged")
+        except Exception as exc:
+            warnings.append(f"Plugin propose failed ({plug.name}): {exc}")
+            if emit:
+                emit(f"Warning: Plugin propose failed ({plug.name}): {exc}")
+
     llm_ready = get_llm_client() is not None
-    do_enrich = bool(unique_urls) and enrich and not scaffold_only and llm_ready
-    if unique_urls and enrich and not scaffold_only and not llm_ready:
+    # Enrich needs either user URLs or plugin guide seeds.
+    do_enrich = enrich and not scaffold_only and llm_ready
+    if enrich and not scaffold_only and not llm_ready:
         warnings.append(
-            "LLM not configured; wrote dependency hop + sources only (no invented rules)"
+            "LLM not configured; wrote dependency hop + sources "
+            "(+ plugin propose if any); no invented rules"
         )
     if scaffold_only or not enrich:
-        warnings.append("Enrichment skipped (--scaffold-only / --no-enrich)")
+        warnings.append(
+            "Enrichment skipped (--scaffold-only / --no-enrich); "
+            "plugin propose still runs unless --plugin none"
+        )
 
     if do_enrich:
-        joined = "\n\n".join(fetched_parts)
-        if emit:
-            emit("Synthesizing rules from fetched sources…")
-        packet = synthesize_from_docs(
-            package=package,
-            from_version=_ANY_FROM,
-            to_version=version,
-            ecosystem=ecosystem,
-            changelog_text=joined,
-            docs_text="",
-            base=packet,
-            append_local_sources=False,
-        )
-        packet["packet_id"] = packet_id_for_target(package, ecosystem, version)
-        packet["from_version"] = _ANY_FROM
-        packet["to_version"] = version
+        seed_urls = list(unique_urls)
+        suggested = [
+            f"{package} migration guide {version}",
+            f"{package} changelog breaking changes {version}",
+        ]
+        allow_hosts: list[str] | None = None
+        prompt_extra = ""
+        context_extra: list[str] = []
+        if plug is not None:
+            try:
+                guide = plug.guide_enrich(
+                    package=package,
+                    ecosystem=ecosystem,
+                    from_version=_ANY_FROM,
+                    to_version=version,
+                    packet=packet,
+                    source_urls=unique_urls,
+                )
+                seed_urls = list(
+                    dict.fromkeys([*seed_urls, *(guide.seed_urls or [])])
+                )
+                if guide.suggested_queries:
+                    suggested = list(
+                        dict.fromkeys([*suggested, *guide.suggested_queries])
+                    )
+                if guide.allow_hosts:
+                    allow_hosts = list(guide.allow_hosts)
+                prompt_extra = str(guide.prompt_extra or "")
+                context_extra = list(guide.context_chunks or [])
+            except Exception as exc:
+                warnings.append(f"Plugin guide_enrich failed ({plug.name}): {exc}")
 
-        if emit:
-            emit("Evidence enrichment from source URLs…")
-        packet, ev_warnings = synthesize_from_evidence(
-            package=package,
-            from_version=_ANY_FROM,
-            to_version=version,
-            ecosystem=ecosystem,
-            signals=[],
-            base=packet,
-            seed_urls=unique_urls,
-            suggested_queries=[
-                f"{package} migration guide {version}",
-                f"{package} changelog breaking changes {version}",
-            ],
-            log=emit,
-        )
-        warnings.extend(ev_warnings)
-        packet["packet_id"] = packet_id_for_target(package, ecosystem, version)
-        packet["from_version"] = _ANY_FROM
-        packet["to_version"] = version
+        if not seed_urls and not suggested:
+            warnings.append("Enrichment skipped (no seed URLs or queries)")
+        else:
+            joined = "\n\n".join(fetched_parts)
+            if emit and joined:
+                emit("Synthesizing rules from fetched sources…")
+            if joined:
+                packet = synthesize_from_docs(
+                    package=package,
+                    from_version=_ANY_FROM,
+                    to_version=version,
+                    ecosystem=ecosystem,
+                    changelog_text=joined,
+                    docs_text="",
+                    base=packet,
+                    append_local_sources=False,
+                )
+                packet["packet_id"] = packet_id_for_target(
+                    package, ecosystem, version
+                )
+                packet["from_version"] = _ANY_FROM
+                packet["to_version"] = version
+
+            if emit:
+                emit("Evidence enrichment from source URLs…")
+            before_rules = list(packet.get("rules") or [])
+            packet, ev_warnings = synthesize_from_evidence(
+                package=package,
+                from_version=_ANY_FROM,
+                to_version=version,
+                ecosystem=ecosystem,
+                signals=[],
+                base=packet,
+                seed_urls=seed_urls,
+                suggested_queries=suggested,
+                allow_hosts=allow_hosts,
+                prompt_extra=prompt_extra or None,
+                context_chunks_extra=context_extra or None,
+                log=emit,
+            )
+            warnings.extend(ev_warnings)
+            packet = stamp_new_rules(
+                before_rules, packet, tag=ENRICH_REASON_TAG
+            )
+            packet["packet_id"] = packet_id_for_target(package, ecosystem, version)
+            packet["from_version"] = _ANY_FROM
+            packet["to_version"] = version
+
+            if plug is not None:
+                try:
+                    packet = plug.after_enrich(
+                        packet=packet, enrich_warnings=list(ev_warnings)
+                    )
+                except Exception as exc:
+                    warnings.append(
+                        f"Plugin after_enrich failed ({plug.name}): {exc}"
+                    )
 
     packet["rules"] = collapse_dependency_bumps(
         list(packet.get("rules") or []),

@@ -55,6 +55,9 @@ conduit = "conduit.main:app"
 [project.entry-points."conduit.detect_modules"]
 openai = "conduit.detect.modules.openai:OpenAIModule"
 
+[project.entry-points."conduit.packet_plugins"]
+example-sdk = "conduit.packet.plugins.example_sdk:ExampleSdkPlugin"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

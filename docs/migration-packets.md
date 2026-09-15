@@ -62,13 +62,29 @@ Coverage scores each client `model_id` / API token against **migrate-from** rule
 
 ## Where packets come from (`ensure_packet`)
 
-Resolution order in `conduit run`:
+Resolution order for `--packet` / `conduit run`:
 
-1. **`--packet` file path** — if the value names an existing file, load that JSON
-2. **`--packet` package name** — e.g. `--packet openai` (same idea as `--package openai`): synthesize/cache for that package
-3. **Cache** — `.conduit/packets/{package}-{from}-{to}.json` (skip with `--refresh-packet`)
-4. **Synthesize from detect signals** — fold `suggested_rules` into a packet
-5. **OpenAI fixture fallback** — only when `--demo` is set and package is `openai` with empty rules (warns)
+1. **http(s) URL** — download JSON and cache under `.conduit/packets/`
+2. **File path** — if the value names an existing file, load that JSON
+3. **Catalog slug** — when `CONDUIT_PACKET_CATALOG_BASE` is set (no trailing slash), a bare id such as `example-sdk-pypi-1.0.0` is fetched from  
+   `{BASE}/by-package/{package}/{ecosystem}/{id}.json`  
+   (see public catalog layout). On miss, fall through.
+4. **Package name** — e.g. `--packet openai`: synthesize/cache for that package via detect
+5. **Cache** — `.conduit/packets/{package}-{from}-{to}.json` (skip with `--refresh-packet`)
+6. **Synthesize from detect signals** — fold `suggested_rules` into a packet
+7. **OpenAI fixture fallback** — only when `--demo` is set and package is `openai` with empty rules (warns)
+
+```bash
+# File
+conduit run --path . --packet ./packets/my-sdk-pypi-2.0.0.json
+
+# Direct URL (raw GitHub, CDN, etc.)
+conduit run --path . --packet https://raw.githubusercontent.com/conduit-oss/conduit-packets/main/by-package/example-sdk/pypi/example-sdk-pypi-1.0.0.json
+
+# Catalog name (requires base URL)
+export CONDUIT_PACKET_CATALOG_BASE=https://raw.githubusercontent.com/conduit-oss/conduit-packets/main
+conduit run --path . --packet example-sdk-pypi-1.0.0
+```
 
 Cached after synthesis so the next run is instant. Explicit packet **files** are never overwritten by version rewriting. Use `--refresh-packet` when live detect has new signals and you want to rebuild the cached packet for the same version pair — **required after detect/normalize or LLM-evidence changes**, otherwise `conduit run` may keep applying a stale cached packet.
 
@@ -113,13 +129,39 @@ conduit packet new \
   --source-url https://googleapis.github.io/python-genai/ \
   --source-url https://github.com/googleapis/python-genai/blob/main/CHANGELOG.md
 
-# Skip LLM even when configured
+# Skip LLM even when configured (plugin propose still runs if matched)
 conduit packet new --package google-genai --version 1.0.0 \
   --source-url https://example.com/migrate --scaffold-only
+
+# Force no plugin (hop + sources only)
+conduit packet new --package example-sdk --version 2.0.0 --plugin none --scaffold-only
+
+# Explicit plugin (entry point conduit.packet_plugins)
+conduit packet new --package example-sdk --version 2.0.0 --plugin example-sdk \
+  --source-url https://example.com/example-sdk/migrate --scaffold-only
 ```
 
 Default output: `packets/{package}-{ecosystem}-{version}.json` (e.g. `packets/google-genai-pypi-1.0.0.json`).  
 `packet_id` matches that slug. Top-level `from_version` is `*` (any consumer pin; resolved at apply/run); `to_version` is the target you picked.
+
+### Packet plugins (optional)
+
+OSS users do **not** need detect modules. A small **packet plugin** library can:
+
+1. **`propose`** — deterministically add rules/sources/`side_effects` (no LLM; runs under `--scaffold-only`)
+2. **`guide_enrich`** — seeds, queries, hosts, and prompt hints for the existing enrich agent
+3. **`after_enrich`** — validate / drop uncited enrich rewrites
+
+Register via entry points:
+
+```toml
+[project.entry-points."conduit.packet_plugins"]
+example-sdk = "conduit.packet.plugins.example_sdk:ExampleSdkPlugin"
+```
+
+Built-in demo: `example-sdk` (see [`conduit/src/conduit/packet/plugins/example_sdk.py`](../conduit/src/conduit/packet/plugins/example_sdk.py)). Tiny plugins = seeds + maybe a rename table; dense AST still needs OpenAPI/maps (vendor-specific work), not a 50-line stub.
+
+Rule `reason` is stamped with `[plugin:<name>]` / `[enrich:research]` for provenance. Published catalog packets stay baked JSON — apply does not require the plugin to be installed.
 
 Try it without a demo consumer:
 
@@ -134,15 +176,10 @@ Example: migrating consumers from `google-generativeai` to `google-genai` — au
 
 ### Empty scaffold / local synthesize
 
-```bash
-# Guided hop (from-detect when possible, else scaffold) + try-it line
-conduit packet new \
-  --package openai --ecosystem pypi --from 0.28.1 --to 1.0.0 \
-  --out ./packets/openai-pypi-1.0.0.json
-# --scaffold-only to skip detect; --from-consumer --path ./repo to read the pin
-# --enrich optional LLM; --demo offline fixtures
+Other packet commands (not the link-driven `packet new` hero path):
 
-# Dry-run apply + coverage (no verify / no API keys)
+```bash
+# Dry-run apply + coverage when you have a consumer checkout
 conduit packet test --packet ./packets/openai-pypi-1.0.0.json --path ./examples/demo-consumer
 
 # Show hop-chain rule delta vs previous snapshot
@@ -161,6 +198,7 @@ conduit packet synthesize \
   --out ./my-packet/conduit-packet.json
 
 # Catalog snapshots from detect (no consumer repo). Scan picks latest per ecosystem.
+# Advanced: requires a detect module (OpenAI is the reference).
 conduit packet from-detect --module openai --out-dir ./packets
 # packets/openai-pypi-<latest>.json
 # packets/openai-npm-<latest>.json

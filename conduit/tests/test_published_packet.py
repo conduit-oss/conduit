@@ -115,6 +115,26 @@ def test_fetch_packet_url_http_error(tmp_path: Path, monkeypatch):
         assert "404" in str(exc)
 
 
+def test_catalog_url_for_name(monkeypatch):
+    from conduit.packet.fetch import catalog_url_for_name
+
+    monkeypatch.delenv("CONDUIT_PACKET_CATALOG_BASE", raising=False)
+    assert catalog_url_for_name("example-sdk-pypi-1.0.0") is None
+
+    monkeypatch.setenv(
+        "CONDUIT_PACKET_CATALOG_BASE",
+        "https://raw.githubusercontent.com/conduit-oss/conduit-packets/main/",
+    )
+    assert (
+        catalog_url_for_name("example-sdk-pypi-1.0.0")
+        == "https://raw.githubusercontent.com/conduit-oss/conduit-packets/main/by-package/example-sdk/pypi/example-sdk-pypi-1.0.0.json"
+    )
+    assert catalog_url_for_name("https://example.com/x.json") is None
+    assert catalog_url_for_name("openai") == (
+        "https://raw.githubusercontent.com/conduit-oss/conduit-packets/main/openai.json"
+    )
+
+
 def test_run_file_packet_skips_vendor_and_writes_source(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
 

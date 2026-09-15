@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <strong>Self-hosted CLI that updates your code when dependencies make breaking API changes.</strong>
+  <strong>Self-hosted CLI that applies Migration Packets when dependencies make breaking API changes.</strong>
 </p>
 
 <p align="center">
-  Bump a package. Conduit finds the call sites, applies structural fixes, runs your tests, and opens a PR.
+  Author a packet from docs links, test it, then apply structural fixes and open a PR.
 </p>
 
 <p align="center">
@@ -15,7 +15,7 @@
 </p>
 
 ```text
-Detect upgrade  →  Prune files  →  Apply migration rules  →  Test / fix  →  Open PR
+packet new  →  packet test  →  apply / run  →  verify  →  PR
 ```
 
 <p align="center">
@@ -33,6 +33,18 @@ python -m venv .venv
 source .venv/bin/activate          # Windows: .venv/Scripts/activate
 python -m pip install -e "./conduit[llm,langs,dev]"
 
+# 1) Author a packet from migrate-guide / changelog URLs
+conduit packet new \
+  --package google-genai \
+  --ecosystem pypi \
+  --version 1.0.0 \
+  --source-url https://ai.google.dev/gemini-api/docs/migrate \
+  --scaffold-only
+
+# 2) Validate + summarize (no consumer repo required)
+conduit packet test --packet ./packets/google-genai-pypi-1.0.0.json
+
+# 3) Apply a known packet to a consumer (demo)
 conduit run \
   --path ./examples/demo-consumer \
   --packet ./examples/sample-packet/conduit-packet.json \
@@ -42,25 +54,19 @@ conduit run \
 
 The GitHub repo is **private** under `conduit-oss`; you need access to clone it.
 
-`--demo` uses offline detect fixtures and does **not** require a consumer `OPENAI_API_KEY` for verify. Optional LLM self-correct still uses `CONDUIT_LLM_*` if configured. For apply-only (no tests), add `--skip-tests`.
-
-This **really applies** the sample Migration Packet, runs the demo tests, and skips only PR creation so you can inspect the diff:
-
-```bash
-git -C examples/demo-consumer diff
-```
+`--scaffold-only` writes a schema-valid dependency hop + sources (no invented AST rules). Drop it when an LLM is configured to enrich rules from the fetched URLs. `--demo` on `run` uses offline detect fixtures and does **not** require a consumer `OPENAI_API_KEY` for verify.
 
 On your own repo:
 
 ```bash
-conduit run --path /path/to/your/repo --packet openai -v
-# or an explicit packet file
-conduit run --path /path/to/your/repo --packet ./my-packet/conduit-packet.json
+conduit run --path /path/to/your/repo --packet ./packets/my-packet.json -v
+# package name still works when a detect module / cache can synthesize:
+# conduit run --path /path/to/your/repo --packet openai -v
 ```
 
-`--packet` accepts a **package name** or a path to `conduit-packet.json`. Use `-v` for version-source and export-delta diagnostics.
+`--packet` accepts a **file path**, an **https URL**, or a **package name**. Use `-v` for version-source and export-delta diagnostics.
 
-More: [Getting started](docs/getting-started.md) · [CLI reference](docs/cli-reference.md)
+More: [Getting started](docs/getting-started.md) · [Migration packets](docs/migration-packets.md) · [CLI reference](docs/cli-reference.md)
 
 ---
 
@@ -68,15 +74,16 @@ More: [Getting started](docs/getting-started.md) · [CLI reference](docs/cli-ref
 
 | Step | What happens |
 |------|----------------|
-| **Detect** | Lockfile/manifest git diffs + vendor detect modules |
-| **Prune** | Keep files that import the upgraded package |
-| **Export delta** | Compare public APIs between old/new versions |
-| **Packet** | Load or build `conduit-packet.json` rules |
-| **Apply** | Deterministic AST/string codemods for Python, JS/TS, Java, Go (no LLM required) |
+| **Author** | `conduit packet new` from docs links → schema-valid Migration Packet |
+| **Test** | `conduit packet test` validates / dry-runs without requiring a demo consumer |
+| **Detect** (optional) | Lockfile/manifest + client usage scan; `--module openai` is the reference vendor module |
+| **Apply** | Deterministic AST/string codemods from the packet (no LLM required) |
 | **Verify** | Native tests + optional LLM self-correct |
 | **PR** | Branch `conduit/upgrade-{package}-{version}` |
 
-Deep dive: [Architecture](docs/architecture.md)
+Vendor **detect modules** (`conduit module new`) are **advanced** tooling for maintainers who need OpenAI-style signal workers. The public hero path is packets, not module sprawl.
+
+Deep dive: [Architecture](docs/architecture.md) · [Detect modules](docs/detect-modules.md)
 
 ---
 

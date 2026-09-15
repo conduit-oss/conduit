@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -13,6 +14,10 @@ from conduit.packet.cache import packets_dir, save_packet
 
 MAX_PACKET_BYTES = 2 * 1024 * 1024
 
+# Env: base URL for public catalog (no trailing slash), e.g.
+# https://raw.githubusercontent.com/conduit-oss/conduit-packets/main
+CATALOG_BASE_ENV = "CONDUIT_PACKET_CATALOG_BASE"
+
 
 class PacketFetchError(Exception):
     """URL packet could not be downloaded or parsed."""
@@ -21,6 +26,43 @@ class PacketFetchError(Exception):
 def is_packet_url(raw: str) -> bool:
     text = (raw or "").strip().lower()
     return text.startswith("http://") or text.startswith("https://")
+
+
+def catalog_base_url() -> str | None:
+    raw = (os.environ.get(CATALOG_BASE_ENV) or "").strip().rstrip("/")
+    return raw or None
+
+
+def catalog_url_for_name(name: str) -> str | None:
+    """
+    Build a catalog URL for a packet id / slug when CONDUIT_PACKET_CATALOG_BASE is set.
+
+    Tries:
+      {base}/by-package/{package}/{ecosystem}/{name}.json
+      {base}/by-package/{name}.json   (flat fallback)
+      {base}/{name}.json
+    when ``name`` looks like ``{package}-{ecosystem}-{version}`` (ecosystem token known).
+    """
+    base = catalog_base_url()
+    if not base:
+        return None
+    slug = (name or "").strip()
+    if not slug or is_packet_url(slug) or "/" in slug or "\\" in slug:
+        return None
+    if not slug.endswith(".json"):
+        slug_file = f"{slug}.json"
+    else:
+        slug_file = slug
+        slug = slug[: -len(".json")]
+
+    ecosystems = ("pypi", "npm", "go", "maven", "other")
+    for eco in ecosystems:
+        token = f"-{eco}-"
+        if token in slug:
+            package, _, rest = slug.partition(token)
+            if package and rest:
+                return f"{base}/by-package/{package}/{eco}/{slug_file}"
+    return f"{base}/{slug_file}"
 
 
 def _filename_from_url(url: str) -> str | None:

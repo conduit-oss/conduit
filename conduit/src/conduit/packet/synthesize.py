@@ -829,6 +829,9 @@ def synthesize_from_evidence(
     log: Any | None = None,
     seed_urls: list[str] | None = None,
     suggested_queries: list[str] | None = None,
+    allow_hosts: list[str] | None = None,
+    prompt_extra: str | None = None,
+    context_chunks_extra: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     LLM-author rules via Responses agent tools (web_search / fetch_url / read_file).
@@ -836,6 +839,8 @@ def synthesize_from_evidence(
 
     When ``seed_urls`` / ``suggested_queries`` are provided, they override detect-module
     evidence metadata (so authoring from links works without a vendor module).
+    Packet plugins may also pass ``allow_hosts``, ``prompt_extra``, and
+    ``context_chunks_extra`` to guide enrich.
     """
     from conduit.llm import attach_llm_log, get_llm_client
     from conduit.llm.executors import RepoToolExecutor
@@ -857,12 +862,11 @@ def synthesize_from_evidence(
     queries = (
         list(suggested_queries) if suggested_queries is not None else list(mod_queries)
     )
-    hosts = list(mod_hosts)
-    if seed_urls is not None:
-        for url in seeds:
-            host = (urlparse(url).hostname or "").lower()
-            if host and host not in hosts:
-                hosts.append(host)
+    hosts = list(allow_hosts) if allow_hosts is not None else list(mod_hosts)
+    for url in seeds:
+        host = (urlparse(url).hostname or "").lower()
+        if host and host not in hosts:
+            hosts.append(host)
     if not seeds and not queries:
         warnings.append(
             f"LLM packet enrichment skipped (no evidence seeds for package {package!r})"
@@ -904,6 +908,8 @@ def synthesize_from_evidence(
     if isinstance(source_packet, dict):
         context_chunks.extend(str(x) for x in source_packet.get("model_ids") or [])
         context_chunks.extend(str(x) for x in source_packet.get("api_patterns") or [])
+    if context_chunks_extra:
+        context_chunks.extend(str(x) for x in context_chunks_extra if str(x).strip())
 
     migration_payload: dict[str, str] = {}
     router_urls = list(seeds)
@@ -935,6 +941,9 @@ def synthesize_from_evidence(
         "openapi_structs pre-loaded below. Use fetch_url on seed_urls for any "
         "gap before emitting rules. Do not guess API successors.\n"
     )
+    extra = (prompt_extra or "").strip()
+    if extra:
+        research_prefix = research_prefix + f"Plugin guidance: {extra}\n"
     if publisher or not has_source_usage:
         instructions = (
             research_prefix
@@ -969,6 +978,7 @@ def synthesize_from_evidence(
         "seed_urls": router_urls,
         "allow_hosts": hosts or ["github.com"],
         "suggested_queries": queries,
+        "plugin_context": list(context_chunks_extra or []),
         "instructions": instructions,
     }
     user_payload.update(migration_payload)

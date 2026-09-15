@@ -1,8 +1,10 @@
 # Detection
 
-Detection answers: **which packages jumped versions, and what vendor signals exist?**
+Detection answers: **what changed in this repo’s dependencies / usage, and (optionally) what vendor signals exist?**
 
-Command: `conduit detect` (also the first stage of `conduit run`).
+Command: `conduit detect` (also used inside `conduit run` when synthesizing a packet).
+
+The **OSS hero path** is packet author → test → apply. Detect’s default story is **repo reality**: lockfile/manifest diffs + client usage scan + coverage against a packet when one is present. Vendor modules (`--module openai`) are **optional / reference** — not required to author or apply a Migration Packet.
 
 ## Sources
 
