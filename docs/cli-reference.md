@@ -116,7 +116,7 @@ conduit watch \
 
 ## `conduit apply`
 
-Apply a packet only (no oracle tests, no verify).
+Apply a frozen packet only (no oracle tests, no verify, no LLM). Codemod engines run the packet rules deterministically.
 
 | Option | Default | Description |
 |--------|---------|-------------|
