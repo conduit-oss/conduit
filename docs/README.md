@@ -1,6 +1,6 @@
 # Conduit documentation
 
-Two audiences share this repo. Consumers apply published packets. Producers author and publish them. Detect stays Advanced.
+Two audiences share this repo. Producers author packets (LLM or hand). Consumers apply and Watch frozen packets with no LLM. Detect stays Advanced.
 
 Start with the [root README](../README.md) for both paths in one screen.
 

@@ -1,6 +1,6 @@
 # Getting started
 
-Consumers load a packet, apply it, then gate leftovers with Watch. Producers author and publish packets. Detect modules are Advanced. Skip them until you need vendor signals.
+Consumers load a frozen packet, apply it, then gate leftovers with Watch. Apply and Watch use no LLM. Producers author packets (LLM enrich, hand edit, or scaffold) and publish them. Detect modules are Advanced. Skip them until you need vendor signals.
 
 ## Requirements
 
@@ -48,7 +48,7 @@ String/regex rules also apply to YAML, JSON, and `.env*` files. Install `[langs]
 
 ## 1. Apply a Migration Packet (recommended first run)
 
-The repo ships a tiny consumer stuck on **openai 0.28** (`openai.ChatCompletion.create`) plus a sample Migration Packet that performs the structural 0.28 → 1.x hop.
+The repo ships a tiny consumer stuck on **openai 0.28** (`openai.ChatCompletion.create`) plus a sample Migration Packet that performs the structural 0.28 → 1.x hop. That sample is the offline harness proof for apply and Watch. It does not need LLM keys.
 
 ```bash
 conduit run \
@@ -101,7 +101,7 @@ Wire the same gate in CI: [GitHub Actions](github-actions.md). CLI details: [CLI
 
 ## 3. Produce a packet (maintainers)
 
-Vendors and maintainers author a hop from migrate-guide URLs, dry-run it, then publish into a catalog.
+Vendors and maintainers author a hop from migrate-guide URLs, dry-run it, then publish into a catalog. No LLM keys are required. Without enrichment, `packet new` writes a schema-valid dependency hop and recorded `sources`. Add `--scaffold-only` or omit a configured model for the keyless path.
 
 1. **Author** from links (`from_version` is `*` at author time; `to_version` is the target you pick):
 
@@ -149,7 +149,7 @@ Full flags: [CLI reference](cli-reference.md#conduit-run). If Conduit must guess
 
 ## Configure an LLM (optional)
 
-Primary edits do **not** need an LLM. Configure one if you want synthesis / self-correct / auto smoke tests.
+Apply and Watch do **not** need an LLM. Configure one if you want packet enrichment at author time, self-correct after verify, or auto smoke tests.
 
 ```bash
 # Local Ollama. No API key.

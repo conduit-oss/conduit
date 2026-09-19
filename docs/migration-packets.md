@@ -8,10 +8,10 @@ Schema: [`schema/conduit-packet.schema.json`](../schema/conduit-packet.schema.js
 
 | Role | Typical action |
 |------|----------------|
-| Vendor / maintainer (producer) | `conduit packet new` → `packet test` → `packet publish` into the catalog. Hop scaffolding also via `packet init` / `synthesize` / `from-detect`. |
-| Consumer (client) | Pull from the catalog (`CONDUIT_PACKET_CATALOG_BASE` or a raw URL), then `conduit packet test` / `conduit run --packet …` / `conduit watch` |
+| Vendor / maintainer (producer) | Author the packet (`packet new` with optional LLM enrich, hand edit, or `--scaffold-only`), then `packet test` → `packet publish` into the catalog. Hop scaffolding also via `packet init`, `synthesize`, or `from-detect`. |
+| Consumer (client) | Pull a frozen packet from the catalog (`CONDUIT_PACKET_CATALOG_BASE` or a raw URL), then `conduit apply` / `conduit run` / `conduit watch`. No LLM at apply or Watch. |
 
-Producer flow is **publish, then consumer pull**. `packet publish` writes catalog JSON only. It does not open PRs into consumer repos.
+Producer flow is **publish, then consumer pull**. `packet publish` writes catalog JSON only. It does not open PRs into consumer repos. An LLM may help author rules. Apply and Watch only execute the frozen JSON.
 
 ## Minimal shape
 

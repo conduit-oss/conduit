@@ -7,13 +7,14 @@
 </p>
 
 <p align="center">
-  Deterministic AST engines for <strong>Python, JS/TS, Java, and Go</strong>. LLM only as backup.
+  Deterministic AST engines for <strong>Python, JS/TS, Java, and Go</strong>.
+  An LLM or a maintainer authors the packet. Apply and Watch run that frozen packet with no LLM.
 </p>
 
 ```text
 Consumer (client)                    Producer (vendor / maintainer)
 ─────────────────                    ─────────────────────────────
-load a packet                        conduit packet new
+load a frozen packet                 conduit packet new (LLM or hand)
 conduit apply / conduit run          conduit packet test
 conduit watch                        conduit packet publish → catalog
 ```
@@ -45,7 +46,7 @@ conduit run \
 
 The GitHub repo is **private** under `conduit-oss`. You need access to clone it.
 
-`--demo` uses offline fixtures and does **not** require a consumer `OPENAI_API_KEY` for verify. `--skip-tests` proves the structural openai 0.28 `ChatCompletion.create` → 1.x kill-bar hop without running demo suite asserts that intentionally encode the legacy surface. Restore with `git -C examples/demo-consumer checkout -- .` when finished.
+The openai sample packet is the offline harness proof for apply and Watch. `--demo` uses offline fixtures and does **not** require a consumer `OPENAI_API_KEY` for verify. `--skip-tests` proves the structural openai 0.28 `ChatCompletion.create` → 1.x kill-bar hop without running demo suite asserts that intentionally encode the legacy surface. Restore with `git -C examples/demo-consumer checkout -- .` when finished.
 
 This **really applies** the sample Migration Packet and skips only PR creation so you can inspect the diff:
 
@@ -77,7 +78,7 @@ More: [Getting started](docs/getting-started.md) · [CLI reference](docs/cli-ref
 
 ## Produce a packet
 
-For vendors and maintainers who publish rules into a catalog:
+For vendors and maintainers who publish rules into a catalog. Hand-authored or scaffold-only packets need no LLM keys. Enrichment is optional when a model is configured.
 
 ```bash
 conduit packet new \
@@ -97,11 +98,11 @@ Details: [Migration packets](docs/migration-packets.md)
 
 | Audience | Step | What happens |
 |----------|------|----------------|
-| Consumer | **Packet** | Load `conduit-packet.json` rules for one version hop |
-| Consumer | **Apply / Run** | Deterministic AST/string codemods (no LLM required) |
+| Consumer | **Packet** | Load a frozen `conduit-packet.json` for one version hop |
+| Consumer | **Apply / Run** | Deterministic AST/string codemods (no LLM) |
 | Consumer | **Watch** | Fail CI when the pin reached `to_version` but `old_callee` leftovers remain |
 | Consumer | **Verify / PR** | Native tests, optional LLM self-correct, branch `conduit/upgrade-{package}-{version}` |
-| Producer | **packet new** | Author from migrate-guide URLs; writes `packets/{pkg}-{eco}-{version}.json` |
+| Producer | **packet new** | Author rules (LLM enrich, hand edit, or `--scaffold-only`); writes `packets/{pkg}-{eco}-{version}.json` |
 | Producer | **packet test** | Validate and optional dry-run apply |
 | Producer | **packet publish** | Place the hop in a catalog under `by-package/…` |
 
@@ -113,7 +114,7 @@ Deep dive: [Architecture](docs/architecture.md)
 
 ## LLM (optional)
 
-Packet **apply** never needs an LLM. Configure one only for synthesis, failed-test repair, or smoke-test generation.
+Apply and Watch never call an LLM. They execute a frozen packet. Configure a model only to author or enrich rules, repair failed tests, or generate smoke tests.
 
 | Provider | API key? |
 |----------|----------|
