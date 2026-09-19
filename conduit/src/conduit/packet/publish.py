@@ -47,6 +47,13 @@ class PublishResult:
     notice_posted: bool = False
 
 
+def _safe_path_token(value: str, *, label: str) -> str:
+    text = (value or "").strip()
+    if not text or "/" in text or "\\" in text or ".." in text or text in {".", ".."}:
+        raise PacketPublishError(f"unsafe {label}: {value!r}")
+    return text.replace(" ", "")
+
+
 def catalog_paths_for_packet(packet: dict[str, Any]) -> CatalogPaths:
     """
     Canonical layout plus optional root mirror.
@@ -55,26 +62,19 @@ def catalog_paths_for_packet(packet: dict[str, Any]) -> CatalogPaths:
     omits ``-<ecosystem>-`` (e.g. ``openai-0.28.1-1.0.0``), also mirror at
     ``<packet_id>.json`` so ``catalog_url_for_name`` slug fetch works.
     """
-    package = str(packet.get("package") or "").strip()
-    ecosystem = str(packet.get("ecosystem") or "").strip().lower()
-    packet_id = str(packet.get("packet_id") or "").strip()
-    if not package or not ecosystem or not packet_id:
-        raise PacketPublishError(
-            "packet requires package, ecosystem, and packet_id for catalog layout"
-        )
+    package = _safe_path_token(str(packet.get("package") or ""), label="package")
+    ecosystem = _safe_path_token(
+        str(packet.get("ecosystem") or "").strip().lower(), label="ecosystem"
+    )
+    packet_id = _safe_path_token(str(packet.get("packet_id") or ""), label="packet_id")
     if ecosystem not in KNOWN_ECOSYSTEMS:
         raise PacketPublishError(f"unsupported ecosystem {ecosystem!r}")
-    safe_id = packet_id.replace("/", "_").replace("\\", "_").replace(" ", "")
-    if not safe_id.endswith(".json"):
-        filename = f"{safe_id}.json"
-    else:
-        filename = safe_id
-        safe_id = safe_id[: -len(".json")]
+    filename = f"{packet_id}.json"
 
     by_package = Path("by-package") / package / ecosystem / filename
     flat_root: Path | None = None
     for eco in KNOWN_ECOSYSTEMS:
-        if f"-{eco}-" in safe_id:
+        if f"-{eco}-" in packet_id:
             break
     else:
         flat_root = Path(filename)

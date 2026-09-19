@@ -70,6 +70,20 @@ def test_catalog_paths_skip_flat_when_eco_in_id():
     assert paths.flat_root is None
 
 
+def test_catalog_paths_reject_path_traversal():
+    try:
+        catalog_paths_for_packet(
+            {
+                "packet_id": "ok-1.0.0",
+                "package": "../evil",
+                "ecosystem": "pypi",
+            }
+        )
+        assert False, "expected PacketPublishError"
+    except PacketPublishError as exc:
+        assert "unsafe package" in str(exc).lower()
+
+
 def test_publish_writes_by_package_layout(tmp_path: Path):
     catalog = _init_git_catalog(tmp_path / "catalog")
     result = publish_packet(SAMPLE_PACKET, str(catalog))
