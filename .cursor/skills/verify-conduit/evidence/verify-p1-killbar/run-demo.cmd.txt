@@ -1,0 +1,1 @@
+conduit run --path "C:\Users\xlor1\AppData\Local\Temp\tmpmjhumz.tmp-demo\demo-consumer" --packet ./examples/sample-packet/conduit-packet.json --demo --skip-tests --skip-pr

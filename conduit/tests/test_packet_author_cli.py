@@ -253,14 +253,19 @@ def test_cli_packet_new_missing_flags_non_tty(monkeypatch):
 
 
 def test_cli_packet_new_help_has_no_from():
-    result = CliRunner().invoke(app, ["packet", "new", "--help"])
+    # Wide + no color so Rich does not wrap/ANSI-split option names.
+    result = CliRunner(env={"COLUMNS": "120", "NO_COLOR": "1", "TERM": "dumb"}).invoke(
+        app, ["packet", "new", "--help"]
+    )
     assert result.exit_code == 0
-    assert "--from-consumer" not in result.output
-    assert "From version" not in result.output
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    plain = re.sub(r"\s+", " ", plain)
+    assert "--from-consumer" not in plain
+    assert "From version" not in plain
     # Exact option --from should not appear (allow --from in prose only if any)
-    assert re.search(r"--from\b", result.output) is None
-    assert "--source-url" in result.output
-    assert "--version" in result.output or "--to" in result.output
+    assert re.search(r"--from\b", plain) is None
+    assert "--source-url" in plain
+    assert "--version" in plain or "--to" in plain
 
 
 def test_packet_test_validate_only(tmp_path: Path, monkeypatch):

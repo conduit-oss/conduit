@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import openai
+from openai import OpenAI
 
-DEFAULT_MODEL = "gpt-4-0613"
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+DEFAULT_MODEL = "gpt-4o"
 
 
 def complete(prompt: str, model: str = DEFAULT_MODEL) -> str:
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=64,
+        max_completion_tokens=64,
     )
-    return response["choices"][0]["message"]["content"] or ""
+    return response.choices[0].message.content or ""
 
 
 if __name__ == "__main__":
     print(f"Using model {DEFAULT_MODEL}")
+
