@@ -153,6 +153,143 @@ def normalize_packet_side_effects(side_effects: Any) -> list[dict[str, Any]]:
     return out
 
 
+# LLM often emits short aliases (old/new/scope) instead of schema field names.
+_DEFAULT_TARGET_FILES = ["*.py"]
+_LLM_RULE_FIELD_ALIASES: dict[str, tuple[str, str]] = {
+    # rtype -> (old_key, new_key) when only old/new were supplied
+    "AST_CALL_REWRITE": ("old_callee", "new_callee"),
+    "AST_ATTR_RENAME": ("old_attr", "new_attr"),
+    "AST_PARAM_RENAME": ("old_param", "new_param"),
+    "AST_IMPORT_REWRITE": ("old_import", "new_import"),
+    "KEY_RENAME": ("old_key", "new_key"),
+}
+_LLM_RULE_ALLOWED_KEYS: dict[str, frozenset[str]] = {
+    "AST_CALL_REWRITE": frozenset(
+        {"type", "target_files", "old_callee", "new_callee", "reason"}
+    ),
+    "AST_ATTR_RENAME": frozenset(
+        {"type", "target_files", "old_attr", "new_attr", "reason"}
+    ),
+    "AST_PARAM_RENAME": frozenset(
+        {
+            "type",
+            "target_files",
+            "function_target",
+            "old_param",
+            "new_param",
+            "reason",
+        }
+    ),
+    "AST_PARAM_DROP": frozenset(
+        {
+            "type",
+            "target_files",
+            "function_target",
+            "param",
+            "values",
+            "reason",
+        }
+    ),
+    "AST_IMPORT_REWRITE": frozenset(
+        {"type", "target_files", "old_import", "new_import", "reason"}
+    ),
+    "KEY_RENAME": frozenset(
+        {"type", "target_files", "old_key", "new_key", "reason"}
+    ),
+    "EXACT_STRING_REPLACE": frozenset(
+        {"type", "target_files", "match", "replace", "reason"}
+    ),
+    "REGEX_REPLACE": frozenset(
+        {"type", "target_files", "pattern", "replace", "reason"}
+    ),
+    "DEPENDENCY_BUMP": frozenset(
+        {
+            "type",
+            "package",
+            "from_version",
+            "to_version",
+            "ecosystems",
+            "scope",
+            "reason",
+        }
+    ),
+    "DEPENDENCY_ADD": frozenset(
+        {
+            "type",
+            "package",
+            "to_version",
+            "ecosystems",
+            "scope",
+            "reason",
+        }
+    ),
+    "DEPENDENCY_REMOVE": frozenset(
+        {
+            "type",
+            "package",
+            "from_version",
+            "ecosystems",
+            "scope",
+            "reason",
+        }
+    ),
+}
+
+
+def normalize_llm_rule(rule: dict[str, Any]) -> dict[str, Any]:
+    """Map common LLM aliases onto schema field names; strip unknown keys."""
+    if not isinstance(rule, dict):
+        return rule
+    rtype = str(rule.get("type") or "").strip()
+    out = dict(rule)
+
+    pair = _LLM_RULE_FIELD_ALIASES.get(rtype)
+    if pair:
+        old_key, new_key = pair
+        if not out.get(old_key) and out.get("old") is not None:
+            out[old_key] = out["old"]
+        if not out.get(new_key) and out.get("new") is not None:
+            out[new_key] = out["new"]
+
+    if rtype == "AST_PARAM_DROP" and not out.get("param") and out.get("old") is not None:
+        out["param"] = out["old"]
+
+    if rtype in {"AST_PARAM_RENAME", "AST_PARAM_DROP"}:
+        if not out.get("function_target"):
+            scope = out.get("scope") or out.get("function") or out.get("target")
+            if scope:
+                out["function_target"] = str(scope)
+
+    needs_targets = rtype in {
+        "AST_CALL_REWRITE",
+        "AST_ATTR_RENAME",
+        "AST_PARAM_RENAME",
+        "AST_PARAM_DROP",
+        "AST_IMPORT_REWRITE",
+        "KEY_RENAME",
+        "EXACT_STRING_REPLACE",
+        "REGEX_REPLACE",
+    }
+    if needs_targets:
+        targets = out.get("target_files")
+        if not isinstance(targets, list) or not targets:
+            out["target_files"] = list(_DEFAULT_TARGET_FILES)
+
+    allowed = _LLM_RULE_ALLOWED_KEYS.get(rtype)
+    if allowed is not None:
+        out = {k: v for k, v in out.items() if k in allowed}
+    return out
+
+
+def normalize_llm_rules(rules: Any) -> list[dict[str, Any]]:
+    """Normalize a rules list from LLM JSON; drop non-dict rows."""
+    if not isinstance(rules, list):
+        return []
+    return [
+        normalize_llm_rule(r) for r in rules if isinstance(r, dict) and r.get("type")
+    ]
+
+
 def _parse_ver(value: str | None):
     if not value:
         return None
@@ -583,6 +720,14 @@ def synthesize_from_docs(
             "side_effects, rules. "
             "Rules may use EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
             "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE. "
+            "AST_CALL_REWRITE requires target_files, old_callee, new_callee "
+            "(never old/new). "
+            "AST_ATTR_RENAME requires target_files, old_attr, new_attr. "
+            "AST_PARAM_RENAME requires target_files, function_target, old_param, "
+            "new_param. "
+            "AST_IMPORT_REWRITE requires target_files, old_import, new_import. "
+            "Use target_files=['*.py'] when unsure. Do not emit scope/arguments/"
+            "old/new aliases. "
             "sources[].kind MUST be exactly one of: github_release, changelog, docs, "
             "openapi, other. Never use synonyms (documentation, repository, repo, "
             "guide, release, webpage). "
@@ -607,6 +752,9 @@ def synthesize_from_docs(
             system=(
                 "You author Conduit migration packets. JSON only. "
                 "Never invent API successors. Put uncodemodable gaps in side_effects. "
+                "Rule fields must match schema names "
+                "(old_callee/new_callee, old_attr/new_attr, old_param/new_param) "
+                "plus target_files. "
                 "sources[].kind must be exactly github_release|changelog|docs|openapi|other. "
                 "side_effects[].kind must be exactly webhook|database|config|other."
             ),
@@ -619,18 +767,20 @@ def synthesize_from_docs(
                 data["side_effects"] = normalize_packet_side_effects(
                     data.get("side_effects")
                 )
-        if data and not validate_packet(data):
-            return data
-        if data:
-            packet["rules"] = data.get("rules") or packet.get("rules") or []
-            packet["notes"] = data.get("notes") or packet.get("notes")
-            side = data.get("side_effects")
-            if isinstance(side, list) and side:
-                packet["side_effects"] = normalize_packet_side_effects(side)
-            if isinstance(data.get("sources"), list) and data["sources"]:
-                packet["sources"] = normalize_packet_sources(
-                    list(packet.get("sources") or []) + list(data["sources"])
-                )
+            if "rules" in data:
+                data["rules"] = normalize_llm_rules(data.get("rules"))
+            # Keep seed identity fields so validate_packet can succeed.
+            for key in (
+                "packet_id",
+                "package",
+                "ecosystem",
+                "from_version",
+                "to_version",
+            ):
+                if not data.get(key) and packet.get(key) is not None:
+                    data[key] = packet[key]
+            if not validate_packet(data):
+                return data
     except Exception:
         pass
     return packet
@@ -642,6 +792,11 @@ _EVIDENCE_SYSTEM = (
     "side_effects (list of {kind, detail}), rules (list). "
     "Allowed rule types: EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
     "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE. "
+    "AST_CALL_REWRITE fields: target_files, old_callee, new_callee (never old/new). "
+    "AST_ATTR_RENAME fields: target_files, old_attr, new_attr. "
+    "AST_PARAM_RENAME fields: target_files, function_target, old_param, new_param. "
+    "AST_IMPORT_REWRITE fields: target_files, old_import, new_import. "
+    "Default target_files to ['*.py']. Do not emit scope/arguments aliases. "
     "sources[].kind MUST be exactly one of: github_release, changelog, docs, "
     "openapi, other. Never use synonyms (documentation, repository, repo, guide, "
     "release, webpage). "
@@ -1040,6 +1195,7 @@ def synthesize_from_evidence(
     if not isinstance(llm_rules, list):
         warnings.append("LLM packet enrichment missing rules list")
         return base, warnings
+    llm_rules = normalize_llm_rules(llm_rules)
 
     probe = {
         "packet_id": base.get("packet_id"),

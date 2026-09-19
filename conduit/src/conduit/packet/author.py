@@ -13,6 +13,7 @@ from conduit.packet.from_detect import find_previous_snapshot
 from conduit.packet.synthesize import (
     collapse_dependency_bumps,
     empty_packet,
+    normalize_llm_rules,
     synthesize_from_docs,
     synthesize_from_evidence,
 )
@@ -340,7 +341,7 @@ def create_packet_new(
         packet["to_version"] = version
 
     packet["rules"] = collapse_dependency_bumps(
-        list(packet.get("rules") or []),
+        normalize_llm_rules(list(packet.get("rules") or [])),
         package=package,
         from_version=_ANY_FROM,
         to_version=version,

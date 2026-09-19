@@ -642,3 +642,58 @@ def test_evidence_enrich_normalizes_synonym_source_kinds(monkeypatch):
     effects = packet.get("side_effects") or []
     assert effects
     assert effects[0]["kind"] == "database"
+
+
+def test_normalize_llm_rule_aliases_match_schema():
+    from conduit.packet.synthesize import normalize_llm_rules
+
+    rules = normalize_llm_rules(
+        [
+            {
+                "type": "AST_CALL_REWRITE",
+                "scope": "pydantic.BaseModel",
+                "old": "dict",
+                "new": "model_dump",
+                "arguments": {"x": 1},
+                "reason": "rename",
+            },
+            {
+                "type": "AST_ATTR_RENAME",
+                "old": "__fields__",
+                "new": "model_fields",
+                "reason": "rename",
+            },
+            {
+                "type": "AST_PARAM_RENAME",
+                "scope": "Config",
+                "old": "orm_mode",
+                "new": "from_attributes",
+                "reason": "rename",
+            },
+            {
+                "type": "DEPENDENCY_BUMP",
+                "package": "pydantic",
+                "from_version": "*",
+                "to_version": "2.0.0",
+                "ecosystems": ["pip"],
+                "reason": "pin",
+            },
+        ]
+    )
+    packet = {
+        "packet_id": "pydantic-pypi-2.0.0",
+        "package": "pydantic",
+        "ecosystem": "pypi",
+        "from_version": "*",
+        "to_version": "2.0.0",
+        "rules": rules,
+    }
+    assert validate_packet(packet) == []
+    assert rules[0]["old_callee"] == "dict"
+    assert rules[0]["new_callee"] == "model_dump"
+    assert rules[0]["target_files"] == ["*.py"]
+    assert "arguments" not in rules[0]
+    assert "scope" not in rules[0]
+    assert rules[1]["old_attr"] == "__fields__"
+    assert rules[2]["function_target"] == "Config"
+    assert rules[2]["old_param"] == "orm_mode"
