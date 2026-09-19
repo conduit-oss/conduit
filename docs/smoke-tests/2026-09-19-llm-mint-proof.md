@@ -1,49 +1,59 @@
 # Smoke: LLM-mint proof (2026-09-19)
 
-**Status:** BLOCKED for live-model mint. No `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
-provider keys in the owner environment. Appendix C path: stubbed `packet new`
-(no LLM) still freezes, applies, and Watches. Live-model receipt parked until keys
-exist. Do not treat this packet as rich.
+**Status:** LIVE recorded. Provider `openai`, model `gpt-5.4-mini`. Frozen packet is
+rich (call-site rules beyond `DEPENDENCY_*`). The earlier blocked stub remains only as
+a superseded historical receipt for the no-keys Appendix C path.
 
-Compares against P5's hand-authored `pydantic-validator-hop.json` shape on the
-same fixture. This stub is pin-only. P5's hop carries call-site rules.
+Compares against P5's hand-authored `pydantic-validator-hop.json` on the same fixture.
+P5 encodes the Watch-visible `validator` → `field_validator` hop. This live mint encodes
+broader BaseModel rename rules from the migration guide and does not rewrite the
+fixture's `@validator` / `class Config` / short-name `.dict()` surface.
 
-## Inputs
+## LIVE section
+
+### Inputs
 
 | Item | Value |
 |------|-------|
-| Mint command | `conduit packet new --package pydantic --ecosystem pypi --version 2.0.0 --source-url https://docs.pydantic.dev/2.0/migration/ --out examples/sample-packet/pydantic-llm-mint-stub-blocked.json` |
-| Model / provider | none (LLM not configured) |
+| Mint command | `conduit packet new --package pydantic --ecosystem pypi --version 2.0.0 --source-url https://docs.pydantic.dev/2.0/migration/ --out examples/sample-packet/pydantic-llm-mint-live.json` |
+| Model / provider | `gpt-5.4-mini` / `openai` |
 | Sources | `https://docs.pydantic.dev/2.0/migration/` (`kind: docs`) |
-| Frozen packet | `examples/sample-packet/pydantic-llm-mint-stub-blocked.json` |
-| Packet SHA-256 | `097b9e92cabe1c3dc20b4aa0b62e8d4ec926a3d38d694621e8b6a58077cea002` |
+| Frozen packet | `examples/sample-packet/pydantic-llm-mint-live.json` |
+| Packet SHA-256 | `e5ab11b54ff4927ccf9d3e818a2bf1a3bd31c8ba736250f7bf0b493025e32a8d` |
 | Consumer | `examples/pydantic-validator-fixture/` (repo fixture; pin `pydantic==1.10.13`) |
 | Consumer commit | head of this PR (`git rev-parse HEAD` at record time) |
 | Replay | `docs/smoke-tests/replay-llm-mint-proof.py` |
 
-Mint warning captured: `LLM not configured; wrote dependency hop + sources only (no invented rules)`.
+First mint with keys produced schema-invalid aliases (`old`/`new` instead of
+`old_callee`/`new_callee`). That is IB-02 packet authoring. Mint normalize + prompt
+field names were fixed, then mint was re-run once. Remint wrote a schema-valid rich
+packet. No apply vendor branch was added.
 
-## Rule-family counts
+### Rule-family counts
 
 | Family | Count |
 |--------|-------|
 | `DEPENDENCY_BUMP` | 1 |
-| `AST_*` / call-site | 0 |
-| `side_effects` | 0 |
+| `AST_CALL_REWRITE` | 10 |
+| `AST_ATTR_RENAME` | 3 |
+| `AST_PARAM_RENAME` | 3 |
+| `AST_IMPORT_REWRITE` | 1 |
+| Call-site (non-`DEPENDENCY_*`) | 17 |
+| `side_effects` | 3 |
 
-## Measured run
+### Measured run
 
 Copy the fixture to a temp tree. Run Watch → apply → Watch. No enrich at apply
-(published packet path). Env had no LLM keys.
+(published packet path). Keys were present for mint only.
 
 | Step | Result |
 |------|--------|
-| Mint wall (informational) | ~9 s including URL fetch; remint without keys stays pin-only |
+| Mint wall (informational) | ~300 s remint after IB-02 normalize fix (first attempt ~192 s, schema-invalid) |
 | `packet test` | exit 0 |
-| Pre-apply Watch | exit 0; `status=pre_bump`; pin `1.10.13`; `leftover_count=0` (packet has no call-site rules) |
-| Apply | exit 0; pin → `pydantic==2.0.0`; log includes `pin-only: no call-site rules`; no enrich |
-| Post-apply Watch | exit 0; `status=no_rules`; pin `2.0.0`; `leftover_count=0` |
-| Apply + Watch wall | 30.1 s on rebased P3+P5 tip (dominated by verify-venv install) |
+| Pre-apply Watch | exit 0; `status=pre_bump`; pin `1.10.13`; `leftover_count=0` |
+| Apply | exit 0; pin → `pydantic==2.0.0`; no `packet enrichment` log; AST rules did not rewrite fixture body (`BaseModel.dict` vs short `.dict()`) |
+| Post-apply Watch | exit 0; `status=clean`; pin `2.0.0`; `leftover_count=0` |
+| Apply + Watch wall | 44.1 s (under 180 s rule; dominated by verify-venv install) |
 
 ### Leftover score
 
@@ -54,42 +64,61 @@ Packet-visible leftovers (Watch keys on packet `old_callee` / call-site rules):
 | Pre-apply | 0 | `[]` |
 | Post-apply | 0 | `[]` |
 
-Manual residue on the fixture after apply (completeness, not Watch-visible for this thin packet):
+Manual residue on the fixture after apply (completeness, not Watch-visible for this packet's callees):
 
 | Token / pattern | Pre | Post |
 |-----------------|-----|------|
-| `@validator(` / import `validator` | 1 | 1 |
+| `@validator(` / import `validator` | 1 / present | 1 / present |
 | `class Config` | 1 | 1 |
 | `.dict(` | 1 | 1 |
+| `model_dump` | 0 | 0 |
+| `orm_mode` | 1 | 1 |
 
-## Dual verdict
+### Dual verdict
 
 | Gate | Verdict |
 |------|---------|
 | Gate validity (freeze → apply without re-enrich; pin hop lands; Watch matches packet rules) | PASS |
-| Migration completeness (rich LLM mint / mergeable pydantic v2) | FAIL |
+| Migration completeness (rich LLM mint covers fixture v1 surface / mergeable pydantic v2) | FAIL |
 
-Completeness fails because enrich never ran. The stub is honest pin-only. P5's
-frozen hop is the call-site comparison shape, not this file.
+Completeness fails because the live mint's call-site rules do not hit this fixture's
+`validator`, inner `Config`, or short-name `.dict()` usages. Gate validity still passes
+because the pin hop lands and Watch finds no leftovers for the packet's declared
+`old_callee` values. P5's frozen hop remains the fixture-visible comparison shape.
 
-## Thin-result follow-up
+### Thin-result follow-up
 
-Not IB-01 / IB-02. Enrich was skipped for missing keys, not a thin LLM result.
-Parked: re-run the same mint with keys, freeze a new packet if rich, replace this
-receipt's live-model section. No apply vendor branch was added.
+n/a (rich). IB-02 normalize ran once before the remint because the first live packet
+failed `packet test`. No inventing of fixture-specific AST rules by hand. No apply
+vendor branch.
 
-## Perf
+### Perf
 
 | Metric | Value |
 |--------|-------|
-| Apply + Watch at head | 30.1 s (under 180 s rule) |
+| Apply + Watch at head | 44.1 s (under 180 s rule) |
 | Trunk baseline | n/a (feature) |
-| Mint wall | informational only |
+| Mint wall | informational only (~300 s remint) |
 
-## Pytest
+### Pytest
 
-Related mint / pydantic smoke still green on this branch tip:
+Related mint / pydantic smoke green on this branch tip:
 
 ```text
-python -m pytest -q conduit/tests/test_pydantic_validator_smoke.py
+python -m pytest -q conduit/tests/test_packet_author_cli.py conduit/tests/test_pydantic_validator_smoke.py
 ```
+
+## SUPERSEDED: blocked stub (no keys)
+
+**Status:** SUPERSEDED by the LIVE section above. Kept for Appendix C history when
+keys were absent.
+
+| Item | Value |
+|------|-------|
+| Frozen packet | `examples/sample-packet/pydantic-llm-mint-stub-blocked.json` |
+| Packet SHA-256 | `c0c8c91f1139794137e55940bb2c26362b894d5adde5db6c4c43dac62d62c1d5` |
+| Model / provider | none (LLM not configured) |
+| Call-site rules | 0 (`DEPENDENCY_BUMP` only) |
+
+Mint warning then: `LLM not configured; wrote dependency hop + sources only (no invented rules)`.
+Do not treat the stub packet as rich.

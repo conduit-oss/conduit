@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay the P6 blocked LLM-mint proof: checksum, packet test, apply, Watch."""
+"""Replay the P6 live LLM-mint proof: checksum, packet test, apply, Watch."""
 
 from __future__ import annotations
 
@@ -13,9 +13,17 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PACKET = ROOT / "examples" / "sample-packet" / "pydantic-llm-mint-stub-blocked.json"
+PACKET = ROOT / "examples" / "sample-packet" / "pydantic-llm-mint-live.json"
 FIXTURE = ROOT / "examples" / "pydantic-validator-fixture"
-EXPECTED_SHA256 = "097b9e92cabe1c3dc20b4aa0b62e8d4ec926a3d38d694621e8b6a58077cea002"
+EXPECTED_SHA256 = "e5ab11b54ff4927ccf9d3e818a2bf1a3bd31c8ba736250f7bf0b493025e32a8d"
+
+
+def _conduit_bin() -> str:
+    for name in ("conduit.exe", "conduit"):
+        candidate = Path(sys.executable).with_name(name)
+        if candidate.is_file():
+            return str(candidate)
+    return "conduit"
 
 
 def _run(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -36,7 +44,8 @@ def main() -> int:
         return 1
     print(f"checksum ok {digest}")
 
-    test = _run(["conduit", "packet", "test", "--packet", str(PACKET)])
+    conduit = _conduit_bin()
+    test = _run([conduit, "packet", "test", "--packet", str(PACKET)])
     print(test.stdout or test.stderr)
     if test.returncode != 0:
         return test.returncode
@@ -45,9 +54,9 @@ def main() -> int:
         tree = Path(tmp) / "consumer"
         shutil.copytree(FIXTURE, tree)
         t0 = time.perf_counter()
-        apply = _run(["conduit", "apply", "--path", str(tree), "--packet", str(PACKET)])
+        apply = _run([conduit, "apply", "--path", str(tree), "--packet", str(PACKET)])
         watch = _run(
-            ["conduit", "watch", "--path", str(tree), "--packet", str(PACKET), "--json"]
+            [conduit, "watch", "--path", str(tree), "--packet", str(PACKET), "--json"]
         )
         elapsed = time.perf_counter() - t0
         apply_text = (apply.stdout or "") + (apply.stderr or "")

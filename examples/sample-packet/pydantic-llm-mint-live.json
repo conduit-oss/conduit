@@ -1,0 +1,180 @@
+{
+  "packet_id": "pydantic-pypi-2.0.0",
+  "package": "pydantic",
+  "ecosystem": "pypi",
+  "from_version": "*",
+  "to_version": "2.0.0",
+  "sources": [
+    {
+      "url": "https://docs.pydantic.dev/2.0/migration/",
+      "kind": "docs"
+    }
+  ],
+  "notes": "Generated from the Pydantic v2 migration guide. Direct 1:1 API renames are automated; config migration, raw/file parsing, schema JSON wrappers, and settings-package changes need follow-up.",
+  "side_effects": [
+    {
+      "kind": "config",
+      "detail": "`from_orm()`-style validation requires model config updates (`from_attributes=True`), and legacy `class Config` blocks may need conversion to `model_config = ConfigDict(...)`."
+    },
+    {
+      "kind": "other",
+      "detail": "`parse_raw()` / `parse_file()` / `schema_json()` are not universally safe single-step rewrites because file IO, content-type handling, and JSON-string wrapping may need manual refactoring."
+    },
+    {
+      "kind": "other",
+      "detail": "`BaseSettings` moved to the separate `pydantic-settings` package; projects need to add that dependency when applying the import rewrite."
+    }
+  ],
+  "rules": [
+    {
+      "type": "DEPENDENCY_BUMP",
+      "package": "pydantic",
+      "from_version": "*",
+      "to_version": "2.0.0",
+      "ecosystems": [
+        "pip",
+        "pyproject"
+      ],
+      "reason": "Pin pydantic to 2.0.0"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.dict",
+      "new_callee": "BaseModel.model_dump"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.json",
+      "new_callee": "BaseModel.model_dump_json"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.parse_obj",
+      "new_callee": "BaseModel.model_validate"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.parse_raw",
+      "new_callee": "BaseModel.model_validate_json"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.from_orm",
+      "new_callee": "BaseModel.model_validate"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.construct",
+      "new_callee": "BaseModel.model_construct"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.copy",
+      "new_callee": "BaseModel.model_copy"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.schema",
+      "new_callee": "BaseModel.model_json_schema"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.update_forward_refs",
+      "new_callee": "BaseModel.model_rebuild"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.validate",
+      "new_callee": "BaseModel.model_validate"
+    },
+    {
+      "type": "AST_ATTR_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "old_attr": "__fields__",
+      "new_attr": "model_fields"
+    },
+    {
+      "type": "AST_ATTR_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "old_attr": "__fields_set__",
+      "new_attr": "model_fields_set"
+    },
+    {
+      "type": "AST_ATTR_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "old_attr": "__config__",
+      "new_attr": "model_config"
+    },
+    {
+      "type": "AST_PARAM_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "function_target": "pydantic.Field",
+      "old_param": "regex",
+      "new_param": "pattern"
+    },
+    {
+      "type": "AST_PARAM_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "function_target": "pydantic.Field",
+      "old_param": "min_items",
+      "new_param": "min_length"
+    },
+    {
+      "type": "AST_PARAM_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "function_target": "pydantic.Field",
+      "old_param": "max_items",
+      "new_param": "max_length"
+    },
+    {
+      "type": "AST_IMPORT_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_import": "from pydantic import BaseSettings",
+      "new_import": "from pydantic_settings import BaseSettings"
+    }
+  ]
+}
