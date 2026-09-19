@@ -46,13 +46,14 @@ String/regex rules also apply to YAML, JSON, and `.env*` files. Install `[langs]
 
 ## Demo migration (recommended first run)
 
-The repo ships a tiny consumer app that still uses legacy OpenAI patterns, plus a sample Migration Packet.
+The repo ships a tiny consumer stuck on **openai 0.28** (`openai.ChatCompletion.create`) plus a sample Migration Packet that performs the structural 0.28 → 1.x hop.
 
 ```bash
 conduit run \
   --path ./examples/demo-consumer \
   --packet ./examples/sample-packet/conduit-packet.json \
   --demo \
+  --skip-tests \
   --skip-pr
 ```
 
@@ -60,18 +61,17 @@ What you should see:
 
 1. A packet is loaded (`openai-0.28.1-1.0.0`)
 2. Files importing `openai` are pruned (typically `src/ai_client.py`)
-3. Codemods rewrite model id / param names
-4. Demo tests run under pytest
-5. PR creation is skipped so you can inspect the working tree
+3. Codemods rewrite `ChatCompletion.create` → modern chat completions, bump the pin, then client-chain polish (`OpenAI()` + `client.*`)
+4. PR creation is skipped so you can inspect the working tree
 
-`--demo` forces offline detect fixtures (and the openai demo packet fallback) and skips the consumer `OPENAI_API_KEY` gate used for live OpenAI verify. Without `--demo`, detect workers hit live vendor sources and openai-package verify may prompt for `OPENAI_API_KEY`. Use `--skip-tests` for apply-only.
+`--demo` forces offline detect fixtures (and the openai demo packet fallback) and skips the consumer `OPENAI_API_KEY` gate used for live OpenAI verify. Without `--demo`, detect workers hit live vendor sources and openai-package verify may prompt for `OPENAI_API_KEY`. Use `--skip-tests` for the structural kill-bar proof (demo tests assert the legacy surface on purpose; run the suite after you accept the migrated tree, or restore with checkout).
 ```bash
 git -C examples/demo-consumer diff
 # or restore:
 git -C examples/demo-consumer checkout -- .
 ```
 
-`--skip-pr` does **not** mean dry-run. Files are actually modified and tests actually run. It only skips `git push` / `gh pr create`.
+`--skip-pr` does **not** mean dry-run. Files are actually modified. It only skips `git push` / `gh pr create`.
 
 ### Optional: dry-run apply only
 

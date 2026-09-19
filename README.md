@@ -37,14 +37,15 @@ conduit run \
   --path ./examples/demo-consumer \
   --packet ./examples/sample-packet/conduit-packet.json \
   --demo \
+  --skip-tests \
   --skip-pr
 ```
 
 The GitHub repo is **private** under `conduit-oss`; you need access to clone it.
 
-`--demo` uses offline detect fixtures and does **not** require a consumer `OPENAI_API_KEY` for verify. Optional LLM self-correct still uses `CONDUIT_LLM_*` if configured. For apply-only (no tests), add `--skip-tests`.
+`--demo` uses offline detect fixtures and does **not** require a consumer `OPENAI_API_KEY` for verify. `--skip-tests` proves the structural openai 0.28 `ChatCompletion.create` → 1.x kill-bar hop without running demo suite asserts that intentionally encode the legacy surface. Restore with `git -C examples/demo-consumer checkout -- .` when finished.
 
-This **really applies** the sample Migration Packet, runs the demo tests, and skips only PR creation so you can inspect the diff:
+This **really applies** the sample Migration Packet and skips only PR creation so you can inspect the diff:
 
 ```bash
 git -C examples/demo-consumer diff

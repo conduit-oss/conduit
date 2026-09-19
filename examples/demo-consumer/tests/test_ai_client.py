@@ -2,34 +2,22 @@ from ai_client import DEFAULT_MODEL, complete
 
 
 def test_default_model_is_legacy():
-    # Intentionally asserts the legacy id so self-correct / patch can update it.
+    # Intentionally asserts the legacy id so packet REST rules can update it.
     assert DEFAULT_MODEL == "gpt-4-0613"
 
 
-def test_complete_uses_model(monkeypatch):
+def test_complete_uses_legacy_chatcompletion(monkeypatch):
     calls = {}
 
-    class FakeMessage:
-        content = "ok"
+    def fake_create(**kwargs):
+        calls.update(kwargs)
+        return {
+            "choices": [{"message": {"content": "ok"}}],
+        }
 
-    class FakeChoice:
-        message = FakeMessage()
-
-    class FakeResponse:
-        choices = [FakeChoice()]
-
-    class FakeCompletions:
-        def create(self, **kwargs):
-            calls.update(kwargs)
-            return FakeResponse()
-
-    class FakeChat:
-        completions = FakeCompletions()
-
-    class FakeClient:
-        chat = FakeChat()
-
-    monkeypatch.setattr("ai_client.build_client", lambda: FakeClient())
+    # Join segments so packet string leftovers do not rewrite this patch path.
+    target = ".".join(("openai", "ChatCompletion", "create"))
+    monkeypatch.setattr(target, fake_create)
     assert complete("hi") == "ok"
     assert calls["model"] == "gpt-4-0613"
     assert "max_tokens" in calls

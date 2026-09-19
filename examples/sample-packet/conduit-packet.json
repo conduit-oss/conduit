@@ -6,16 +6,38 @@
   "to_version": "1.0.0",
   "sources": [
     {
-      "url": "https://platform.openai.com/docs/deprecations",
+      "url": "https://github.com/openai/openai-python/discussions/742",
       "kind": "docs"
     },
     {
-      "url": "https://developers.openai.com/api/docs/models",
+      "url": "https://platform.openai.com/docs/deprecations",
       "kind": "docs"
     }
   ],
-  "notes": "Sample vendor Migration Packet for the demo-consumer (model + param renames).\n\nDecision rationale:\n- gpt-4-0613 → gpt-4o from OpenAI deprecations; gpt-4o supports v1/chat/completions.",
+  "notes": "Structural openai 0.28 → 1.x kill-bar packet for demo-consumer.\n\nPrimary hop: ChatCompletion.create → openai.chat.completions.create (+ DEPENDENCY_BUMP). Secondary: model id + max_tokens rename after the callee lands on the modern surface. Client-chain polish (OpenAI() + client.*) runs in `conduit run`.",
   "rules": [
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": ["*.py"],
+      "old_callee": "openai.ChatCompletion.create",
+      "new_callee": "openai.chat.completions.create",
+      "reason": "openai 1.x removes ChatCompletion.create; use openai.chat.completions.create (then client chain)."
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": ["*.py"],
+      "old_callee": "ChatCompletion.create",
+      "new_callee": "openai.chat.completions.create",
+      "reason": "Bare ChatCompletion.create → openai.chat.completions.create for 1.x."
+    },
+    {
+      "type": "DEPENDENCY_BUMP",
+      "package": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.0.0",
+      "ecosystems": ["pip", "pyproject"],
+      "reason": "Major SDK bump required for the modern OpenAI Python client."
+    },
     {
       "type": "EXACT_STRING_REPLACE",
       "target_files": ["*.py", "*.ts", "*.js", "*.yaml", "*.yml", "*.json", ".env*"],
@@ -30,14 +52,6 @@
       "old_param": "max_tokens",
       "new_param": "max_completion_tokens",
       "reason": "OpenAI chat.completions.create renamed max_tokens to max_completion_tokens for newer models."
-    },
-    {
-      "type": "DEPENDENCY_BUMP",
-      "package": "openai",
-      "from_version": "0.28.1",
-      "to_version": "1.0.0",
-      "ecosystems": ["pip", "pyproject"],
-      "reason": "Major SDK bump required for the modern OpenAI Python client."
     }
   ]
 }
