@@ -544,6 +544,53 @@ def detect_cmd(
     raise typer.Exit(0 if result.signals else 1)
 
 
+@app.command("watch")
+def watch_cmd(
+    path: Path = typer.Option(Path("."), "--path"),
+    packet: str = typer.Option(
+        ...,
+        "--packet",
+        help="Path or http(s) URL to conduit-packet.json",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable verdict"),
+) -> None:
+    """Fail when the pin is at to_version but packet old_callee leftovers remain.
+
+    Read-only. Exit 0 when the pin is still at from_version (warns if leftovers
+    exist) or when the pin is at to_version and leftovers are empty.
+    """
+    root = _resolve_root(path)
+    packet_file, _ = _resolve_packet_arg(
+        str(packet), root=root, allow_package_name=False
+    )
+    if packet_file is None:
+        console.print("[red]--packet must be a file path or http(s) URL.[/red]")
+        raise typer.Exit(2)
+    if not packet_file.is_file():
+        console.print(f"[red]Packet not found:[/red] {packet_file}")
+        raise typer.Exit(2)
+    data = json.loads(packet_file.read_text(encoding="utf-8"))
+    errors = validate_packet(data)
+    if errors:
+        for err in errors:
+            console.print(f"[red]schema:[/red] {err}")
+        raise typer.Exit(1)
+
+    from conduit.watch import evaluate_watch
+
+    verdict = evaluate_watch(root=root, packet=data)
+    if json_out:
+        console.print_json(data=verdict.to_dict())
+    else:
+        color = "red" if verdict.exit_code else (
+            "yellow" if verdict.status == "pre_bump" and verdict.leftovers else "green"
+        )
+        console.print(f"[{color}]{verdict.message}[/{color}]")
+        for item in verdict.leftovers:
+            console.print(f"  leftover: {item.display()}")
+    raise typer.Exit(verdict.exit_code)
+
+
 @app.command("apply")
 def apply_cmd(
     path: Path = typer.Option(Path("."), "--path"),

@@ -73,6 +73,18 @@ git -C examples/demo-consumer checkout -- .
 
 `--skip-pr` does **not** mean dry-run. Files are actually modified. It only skips `git push` / `gh pr create`.
 
+### Optional: watch the pin (CI gate)
+
+After a Dependabot bump, fail CI when the pin is at the packet `to_version` but call sites still use packet `old_callee` symbols. Read-only; does not rewrite files.
+
+```bash
+conduit watch \
+  --path ./examples/demo-consumer \
+  --packet ./examples/sample-packet/conduit-packet.json
+```
+
+Exit `0` while the pin is still at `from_version` (warns if leftovers exist). Exit non-zero when the pin has reached `to_version` and leftovers remain. Exit `0` when the pin is at `to_version` and leftovers are empty. See [CLI reference](cli-reference.md#conduit-watch).
+
 ### Optional: dry-run apply only
 
 If you want to preview transforms without writing:

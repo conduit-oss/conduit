@@ -83,6 +83,34 @@ Exit `0` if any signals, else `1`.
 
 ---
 
+## `conduit watch`
+
+Read-only CI gate. Scans for packet `old_callee` leftovers and compares the consumer pin to the packet hop.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path` | `.` | Repo root |
+| `--packet` | required | Packet **file** path or **http(s) URL** |
+| `--json` | false | Machine-readable verdict (`status`, `exit_code`, leftovers) |
+
+Exit codes:
+
+| Exit | When |
+|------|------|
+| `0` | Pin still at `from_version` (prints a **warn** if leftovers exist), or pin at `to_version` with no leftovers |
+| `1` | Pin has reached `to_version` and leftover `old_callee` calls remain |
+| `2` | Missing path / packet / pin, or invalid packet path |
+
+Does not rewrite files. Use after Dependabot bumps the pin so CI fails until call sites are migrated (or until `conduit apply` / `conduit run` clears them).
+
+```bash
+conduit watch \
+  --path ./examples/demo-consumer \
+  --packet ./examples/sample-packet/conduit-packet.json
+```
+
+---
+
 ## `conduit apply`
 
 Apply a packet only (no oracle tests, no verify).
