@@ -9,10 +9,7 @@ from typing import Any, Literal
 from packaging.version import InvalidVersion, Version
 
 from conduit.detect.manifests import pin_for_packet_ecosystem, read_installed_by_ecosystem
-from conduit.export_delta.usage import collect_package_calls
-from conduit.patcher.dependency_update import dependency_packages
-from conduit.patcher.leftovers import Leftover, scan_leftovers
-from conduit.prune.grep_imports import prune_by_imports
+from conduit.patcher.leftovers import Leftover, scan_packet_leftovers
 
 WatchStatus = Literal["pre_bump", "bump_dirty", "clean", "no_pin"]
 
@@ -64,26 +61,6 @@ def read_package_pin(root: Path, packet: dict) -> str | None:
     eco = str(packet.get("ecosystem") or "")
     by_eco = read_installed_by_ecosystem(root)
     return pin_for_packet_ecosystem(by_eco, pkg, eco or None)
-
-
-def scan_packet_leftovers(root: Path, packet: dict) -> list[Leftover]:
-    """Collect leftover packet old_callee hits. Read-only."""
-    packages = dependency_packages(packet) or [
-        str(packet.get("package") or "").strip()
-    ]
-    packages = [p for p in packages if p]
-    files = prune_by_imports(root, packages) if packages else []
-    if not files:
-        files = list(root.rglob("*.py"))
-    pkg = str(packet.get("package") or (packages[0] if packages else "")).strip()
-    calls = collect_package_calls(root, files, pkg) if pkg else []
-    return scan_leftovers(
-        root=root,
-        calls=calls,
-        delta=None,
-        packet=packet,
-        files=files,
-    )
 
 
 def evaluate_watch(*, root: Path, packet: dict) -> WatchVerdict:

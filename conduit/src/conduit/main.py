@@ -691,6 +691,21 @@ def apply_cmd(
         f"{'Would modify' if dry_run else 'Modified'} "
         f"{len(report.files_modified)} file(s)."
     )
+    if dry_run:
+        return
+
+    from conduit.patcher.leftovers import evaluate_apply_leftovers
+
+    leftover_verdict = evaluate_apply_leftovers(root=root, packet=data)
+    if leftover_verdict.status == "pin_only":
+        console.print(f"[yellow]{leftover_verdict.message}[/yellow]")
+        return
+    if leftover_verdict.exit_code != 0:
+        console.print(f"[red]{leftover_verdict.message}[/red]")
+        for item in leftover_verdict.leftovers:
+            console.print(f"  leftover: {item.display()}")
+        raise typer.Exit(leftover_verdict.exit_code)
+    console.print(f"[green]{leftover_verdict.message}[/green]")
 
 
 @app.command("verify")

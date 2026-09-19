@@ -6,7 +6,7 @@ import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Literal
 
 from conduit.export_delta import ExportDelta
 from conduit.export_delta.usage import PackageCall, leftover_calls, legacy_resource_calls
@@ -15,6 +15,10 @@ from conduit.test_runner import TestResult, annotate_verify
 _VERSION_GUARD_RE = re.compile(
     r"__version__|openai\s*<\s*1(?:\.0)?|_openai_has_legacy",
     re.I,
+)
+
+_DEPENDENCY_RULE_TYPES = frozenset(
+    {"DEPENDENCY_BUMP", "DEPENDENCY_ADD", "DEPENDENCY_REMOVE"}
 )
 
 
@@ -28,6 +32,81 @@ class Leftover:
     def display(self) -> str:
         loc = f"{self.rel}:{self.lineno}" if self.lineno else self.rel
         return f"{loc}  {self.callee}  ({self.reason})"
+
+
+@dataclass(frozen=True)
+class ApplyLeftoverVerdict:
+    """Outcome of the post-apply leftover gate for ``conduit apply``."""
+
+    status: Literal["clean", "dirty", "pin_only"]
+    leftovers: tuple[Leftover, ...]
+    exit_code: int
+    message: str
+
+
+def packet_has_call_site_rules(packet: dict) -> bool:
+    """True when the packet declares rewrite rules beyond DEPENDENCY_*."""
+    for rule in (packet or {}).get("rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        rtype = str(rule.get("type") or "").strip()
+        if not rtype or rtype in _DEPENDENCY_RULE_TYPES:
+            continue
+        return True
+    return False
+
+
+def scan_packet_leftovers(root: Path, packet: dict) -> list[Leftover]:
+    """Collect leftover packet old_callee hits. Read-only. Shared by apply + Watch."""
+    from conduit.export_delta.usage import collect_package_calls
+    from conduit.patcher.dependency_update import dependency_packages
+    from conduit.prune.grep_imports import prune_by_imports
+
+    packages = dependency_packages(packet) or [
+        str(packet.get("package") or "").strip()
+    ]
+    packages = [p for p in packages if p]
+    files = prune_by_imports(root, packages) if packages else []
+    if not files:
+        files = list(root.rglob("*.py"))
+    pkg = str(packet.get("package") or (packages[0] if packages else "")).strip()
+    calls = collect_package_calls(root, files, pkg) if pkg else []
+    return scan_leftovers(
+        root=root,
+        calls=calls,
+        delta=None,
+        packet=packet,
+        files=files,
+    )
+
+
+def evaluate_apply_leftovers(*, root: Path, packet: dict) -> ApplyLeftoverVerdict:
+    """Gate apply success on Watch leftover predicate for rules-bearing packets."""
+    if not packet_has_call_site_rules(packet):
+        return ApplyLeftoverVerdict(
+            status="pin_only",
+            leftovers=(),
+            exit_code=0,
+            message="pin-only: no call-site rules",
+        )
+    leftovers = tuple(scan_packet_leftovers(root, packet))
+    if leftovers:
+        detail = "; ".join(item.display() for item in leftovers[:8])
+        return ApplyLeftoverVerdict(
+            status="dirty",
+            leftovers=leftovers,
+            exit_code=1,
+            message=(
+                f"apply incomplete: {len(leftovers)} leftover call(s) remain "
+                f"({detail})"
+            ),
+        )
+    return ApplyLeftoverVerdict(
+        status="clean",
+        leftovers=(),
+        exit_code=0,
+        message="apply complete: no leftover packet calls",
+    )
 
 
 def scan_leftovers(
