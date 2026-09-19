@@ -1,8 +1,8 @@
 # Smoke: pydantic validator hop (2026-09-19)
 
-Offline, no LLM keys. Proves Watch dirty → apply → Watch clean for a frozen
-`validator` → `field_validator` hop on a tiny fixture. Does not claim a mergeable
-pydantic v2 upgrade of pydavinci or any other real consumer.
+Offline, no LLM keys. Proves CLI `conduit watch` → `conduit apply` → `conduit watch`
+exits 1 → 0 → 0 for a frozen `validator` → `field_validator` hop on a tiny fixture.
+Does not claim a mergeable pydantic v2 upgrade of pydavinci or any other real consumer.
 
 ## Inputs
 
@@ -10,7 +10,8 @@ pydantic v2 upgrade of pydavinci or any other real consumer.
 |------|------|
 | Fixture | `examples/pydantic-validator-fixture/` (`pydantic==1.10.13`, `@validator("name")`) |
 | Packet | `examples/sample-packet/pydantic-validator-hop.json` |
-| Unit | `conduit/tests/test_pydantic_validator_smoke.py` |
+| Unit | `conduit/tests/test_pydantic_validator_smoke.py` (CliRunner) |
+| CI | `.github/workflows/conduit-watch-demo.yml` jobs `pydantic-watch-dirty-fail` and `pydantic-watch-clean-pass` |
 
 Packet rules: `DEPENDENCY_BUMP` to `2.0.0`, `AST_IMPORT_REWRITE` on the import-clause
 fragment `BaseModel, validator` → `BaseModel, field_validator`, then
@@ -20,6 +21,9 @@ fragment on purpose. A bare `validator` string fallback would re-prefix
 
 `side_effects` name uncovered work: `.dict()`, inner `Config`, and
 signature / `classmethod` reshape.
+
+Catalog publish of this hop under `packets/` is deferred. The smoke loads the
+committed sample-packet path. CLI lock is this slice.
 
 ## Inventory
 
@@ -31,17 +35,20 @@ signature / `classmethod` reshape.
 
 ## Measured run (head of this PR)
 
+Seed the fixture pin at `pydantic==2.0.0` so the first Watch is `bump_dirty`, not
+`pre_bump`. Then apply and Watch again on the same tree.
+
 | Step | Result |
 |------|--------|
-| Watch at `to_version` with seeded leftover | `bump_dirty`, exit 1, leftover callee `validator` |
-| Apply | `@field_validator("name")`, pin `pydantic==2.0.0`, no `field_field_validator` |
-| Second apply | Model and requirements bytes unchanged (report may still list `requirements.txt` for `DEPENDENCY_BUMP`) |
-| Watch post | `clean`, exit 0 |
+| CLI Watch at `to_version` with seeded leftover | exit 1 |
+| CLI apply | exit 0; `@field_validator("name")`; pin `pydantic==2.0.0`; no `field_field_validator` |
+| Second CLI apply | Model and requirements bytes unchanged |
+| CLI Watch post | exit 0 |
 | Residue `.dict(` count | 1 |
 | Residue `class Config` count | 1 |
-| Apply + Watch wall time | 0.03 s (under 60 s budget) |
 
-Commands used no LLM env vars.
+Commands used no LLM env vars. Pytest stubs `sync_bumped_packages` so the unit
+path stays offline. CI runs real `conduit apply` including env sync.
 
 ## Dual verdict
 
