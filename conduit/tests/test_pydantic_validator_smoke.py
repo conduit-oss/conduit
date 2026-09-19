@@ -1,4 +1,4 @@
-"""Offline pydantic validator-hop smoke: Watch dirty then clean without LLM keys."""
+"""Offline pydantic validator-hop smoke: CLI watch → apply → watch without LLM keys."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import json
 import shutil
 from pathlib import Path
 
+from typer.testing import CliRunner
+
+from conduit.main import app
 from conduit.packet.validate import validate_packet
-from conduit.patcher.engine import apply_packet
-from conduit.prune.grep_imports import prune_by_imports
-from conduit.watch import evaluate_watch
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "examples" / "pydantic-validator-fixture"
@@ -34,6 +34,21 @@ def _residue_counts(root: Path) -> tuple[int, int]:
     return text.count(".dict("), text.count("class Config")
 
 
+def _disable_llm(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CONDUIT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("CONDUIT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("CONDUIT_LLM_BASE_URL", raising=False)
+
+
+def _stub_sync(monkeypatch):
+    monkeypatch.setattr(
+        "conduit.patcher.sync_env.sync_bumped_packages",
+        lambda *args, **kwargs: [],
+    )
+
+
 def test_pydantic_validator_hop_packet_validates():
     data = _packet()
     assert validate_packet(data) == []
@@ -48,21 +63,27 @@ def test_pydantic_validator_hop_packet_validates():
     assert "classmethod" in joined.lower() or "signature" in joined.lower()
 
 
-def test_pydantic_validator_smoke_watch_apply_idempotent(tmp_path: Path):
+def test_pydantic_validator_smoke_cli_watch_apply_watch(tmp_path: Path, monkeypatch):
+    _disable_llm(monkeypatch)
+    _stub_sync(monkeypatch)
     tree = _copy_fixture(tmp_path / "fixture")
-    packet = _packet()
     src = tree / "src" / "model.py"
+    # Seed pin at to_version so first Watch is bump_dirty (exit 1), not pre_bump.
+    (tree / "requirements.txt").write_text("pydantic==2.0.0\n", encoding="utf-8")
+    runner = CliRunner()
+    packet_arg = str(PACKET_PATH)
 
-    dirty_tree = _copy_fixture(tmp_path / "dirty")
-    (dirty_tree / "requirements.txt").write_text("pydantic==2.0.0\n", encoding="utf-8")
-    dirty = evaluate_watch(root=dirty_tree, packet=packet)
-    assert dirty.status == "bump_dirty"
-    assert dirty.exit_code != 0
-    assert any(item.callee == "validator" for item in dirty.leftovers)
+    dirty = runner.invoke(
+        app, ["watch", "--path", str(tree), "--packet", packet_arg, "--json"]
+    )
+    assert dirty.exit_code == 1, dirty.output
+    dirty_payload = json.loads(dirty.stdout)
+    assert dirty_payload["status"] == "bump_dirty"
+    assert dirty_payload["exit_code"] == 1
+    assert any("validator" in item for item in dirty_payload["leftovers"])
 
-    files = prune_by_imports(tree, ["pydantic"])
-    report = apply_packet(tree, packet, dry_run=False, file_allowlist=files or None)
-    assert report.files_modified
+    applied = runner.invoke(app, ["apply", "--path", str(tree), "--packet", packet_arg])
+    assert applied.exit_code == 0, applied.output
     after = src.read_text(encoding="utf-8")
     assert '@field_validator("name")' in after
     assert "field_field_validator" not in after
@@ -73,16 +94,20 @@ def test_pydantic_validator_smoke_watch_apply_idempotent(tmp_path: Path):
         "model": src.read_text(encoding="utf-8"),
         "req": (tree / "requirements.txt").read_text(encoding="utf-8"),
     }
-    apply_packet(tree, packet, dry_run=False, file_allowlist=files or None)
+    second = runner.invoke(app, ["apply", "--path", str(tree), "--packet", packet_arg])
+    assert second.exit_code == 0, second.output
     assert src.read_text(encoding="utf-8") == before_second["model"]
     assert (tree / "requirements.txt").read_text(encoding="utf-8") == before_second["req"]
     assert "field_field_validator" not in src.read_text(encoding="utf-8")
 
-    clean = evaluate_watch(root=tree, packet=packet)
-    assert clean.status == "clean"
-    assert clean.exit_code == 0
-    assert clean.leftovers == ()
-    assert not any(item.callee == "validator" for item in clean.leftovers)
+    clean = runner.invoke(
+        app, ["watch", "--path", str(tree), "--packet", packet_arg, "--json"]
+    )
+    assert clean.exit_code == 0, clean.output
+    clean_payload = json.loads(clean.stdout)
+    assert clean_payload["status"] == "clean"
+    assert clean_payload["exit_code"] == 0
+    assert clean_payload["leftovers"] == []
 
     dict_hits, config_hits = _residue_counts(tree)
     assert dict_hits >= 1
