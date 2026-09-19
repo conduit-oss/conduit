@@ -1,6 +1,6 @@
 # Getting started
 
-The public path is **packets, apply, and Watch**. Detect modules are advanced / private-factory adjacent; skip them until you need to author signals from vendor sources.
+Consumers load a packet, apply it, then gate leftovers with Watch. Producers author and publish packets. Detect modules are Advanced. Skip them until you need vendor signals.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ pip install -e "./conduit[llm,langs,dev]"
 conduit --help
 ```
 
-The `conduit-oss/conduit` repo is **private**; cloning requires GitHub access to that org.
+The `conduit-oss/conduit` repo is **private**. Cloning requires GitHub access to that org.
 
 Extras:
 
@@ -99,19 +99,43 @@ Exit `0` while the pin is still at `from_version` (warns if leftovers exist). Ex
 
 Wire the same gate in CI: [GitHub Actions](github-actions.md). CLI details: [CLI reference](cli-reference.md#conduit-watch).
 
+## 3. Produce a packet (maintainers)
+
+Vendors and maintainers author a hop from migrate-guide URLs, dry-run it, then publish into a catalog.
+
+1. **Author** from links (`from_version` is `*` at author time; `to_version` is the target you pick):
+
+```bash
+conduit packet new \
+  --package google-genai \
+  --ecosystem pypi \
+  --version 1.0.0 \
+  --source-url https://googleapis.github.io/python-genai/
+```
+
+2. **Test** (validate; optional dry-run apply with `--path`):
+
+```bash
+conduit packet test --packet ./packets/google-genai-pypi-1.0.0.json
+```
+
+3. **Publish** into a catalog checkout or git URL:
+
+```bash
+conduit packet publish \
+  --packet ./packets/google-genai-pypi-1.0.0.json \
+  --catalog /path/to/conduit-packets
+```
+
+Full authoring: [Migration packets](migration-packets.md). Flags: [CLI reference](cli-reference.md#conduit-packet).
+
 ## Run on your own repository
 
 ```bash
-# Typical: Dependabot already bumped the lockfile on this branch
-conduit run --path /path/to/your/repo --base-ref origin/main --package openai
-
-# Package name as --packet (any package; synthesizes/caches rules from detect)
 conduit run --path /path/to/your/repo --packet openai -v
-
-# Or supply a packet file explicitly
+# or an explicit packet file
 conduit run --path /path/to/your/repo --packet ./packets/openai-1.0.0.json
-
-# Apply + test locally, no PR
+# apply + test locally, no PR
 conduit run --path /path/to/your/repo --packet openai --skip-pr
 ```
 
@@ -121,30 +145,14 @@ On Windows, prefer forward slashes or quoted paths if backslashes get stripped b
 conduit run --path "C:/Users/you/my-repo" --packet openai -v
 ```
 
-Useful flags:
-
-| Flag | Meaning |
-|------|---------|
-| `--packet <name\|file>` | Package name **or** path to `conduit-packet.json` |
-| `--demo` | Offline fixtures / openai demo packet fallback (default: live detect) |
-| `--refresh-packet` | Rebuild packet from detect signals (ignore `.conduit/packets` cache) |
-| `-v` / `--verbose` | Show version sources, export-delta diagnostics, self-correct failure/fix details |
-| `--skip-pr` | Do not open a PR |
-| `--no-push` | Commit locally but do not push |
-| `--skip-tests` | Skip test gen + verify (not recommended) |
-| `--skip-export-delta` | Skip downloading old/new package versions for export compare |
-| `--max-retries N` | Self-correct attempts after test failure (default 5) |
-
-If Conduit must guess placeholder versions (`0.0.0` / `1.0.0`) or fall back to the openai demo fixture, it prints a **warning**. Prefer a real manifest pin + a published packet so apply and Watch stay grounded.
-
-See [CLI reference](cli-reference.md) for the full list.
+Full flags: [CLI reference](cli-reference.md#conduit-run). If Conduit must guess placeholder versions (`0.0.0` / `1.0.0`) or fall back to the openai demo fixture, it prints a **warning**. Prefer a real manifest pin and a published packet so apply and Watch stay grounded.
 
 ## Configure an LLM (optional)
 
 Primary edits do **not** need an LLM. Configure one if you want synthesis / self-correct / auto smoke tests.
 
 ```bash
-# Local Ollama — no API key
+# Local Ollama. No API key.
 export CONDUIT_LLM_PROVIDER=ollama
 export CONDUIT_LLM_MODEL=llama3.2
 ```

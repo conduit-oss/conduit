@@ -7,19 +7,19 @@
 </p>
 
 <p align="center">
-  Load a Migration Packet, apply structural fixes, then gate CI with <strong>Watch</strong>.
-</p>
-
-<p align="center">
-  Deterministic AST engines for <strong>Python, JS/TS, Java, and Go</strong> — LLM only as backup.
+  Deterministic AST engines for <strong>Python, JS/TS, Java, and Go</strong>. LLM only as backup.
 </p>
 
 ```text
-Packet  →  Apply  →  Watch (CI fail/pass on leftovers)
+Consumer (client)                    Producer (vendor / maintainer)
+─────────────────                    ─────────────────────────────
+load a packet                        conduit packet new
+conduit apply / conduit run          conduit packet test
+conduit watch                        conduit packet publish → catalog
 ```
 
 <p align="center">
-  📚 <a href="docs/README.md"><strong>Full documentation</strong></a>
+  <a href="docs/README.md"><strong>Full documentation</strong></a>
   · <a href="docs/migration-packets.md">Packets</a>
   · <a href="docs/github-actions.md">Watch in CI</a>
 </p>
@@ -43,7 +43,7 @@ conduit run \
   --skip-pr
 ```
 
-The GitHub repo is **private** under `conduit-oss`; you need access to clone it.
+The GitHub repo is **private** under `conduit-oss`. You need access to clone it.
 
 `--demo` uses offline fixtures and does **not** require a consumer `OPENAI_API_KEY` for verify. `--skip-tests` proves the structural openai 0.28 `ChatCompletion.create` → 1.x kill-bar hop without running demo suite asserts that intentionally encode the legacy surface. Restore with `git -C examples/demo-consumer checkout -- .` when finished.
 
@@ -75,17 +75,37 @@ More: [Getting started](docs/getting-started.md) · [CLI reference](docs/cli-ref
 
 ---
 
+## Produce a packet
+
+For vendors and maintainers who publish rules into a catalog:
+
+```bash
+conduit packet new \
+  --package google-genai --ecosystem pypi --version 1.0.0 \
+  --source-url https://googleapis.github.io/python-genai/
+conduit packet test --packet ./packets/google-genai-pypi-1.0.0.json
+conduit packet publish \
+  --packet ./packets/google-genai-pypi-1.0.0.json \
+  --catalog /path/to/conduit-packets
+```
+
+Details: [Migration packets](docs/migration-packets.md)
+
+---
+
 ## How it works
 
-| Step | What happens |
-|------|----------------|
-| **Packet** | Load `conduit-packet.json` rules for one version hop |
-| **Apply** | Deterministic AST/string codemods for Python, JS/TS, Java, Go (no LLM required) |
-| **Watch** | Fail CI when the pin reached `to_version` but `old_callee` leftovers remain |
-| **Verify** | Native tests + optional LLM self-correct |
-| **PR** | Branch `conduit/upgrade-{package}-{version}` |
+| Audience | Step | What happens |
+|----------|------|----------------|
+| Consumer | **Packet** | Load `conduit-packet.json` rules for one version hop |
+| Consumer | **Apply / Run** | Deterministic AST/string codemods (no LLM required) |
+| Consumer | **Watch** | Fail CI when the pin reached `to_version` but `old_callee` leftovers remain |
+| Consumer | **Verify / PR** | Native tests, optional LLM self-correct, branch `conduit/upgrade-{package}-{version}` |
+| Producer | **packet new** | Author from migrate-guide URLs; writes `packets/{pkg}-{eco}-{version}.json` |
+| Producer | **packet test** | Validate and optional dry-run apply |
+| Producer | **packet publish** | Place the hop in a catalog under `by-package/…` |
 
-Build order for the public product surface is **apply, then Watch, then packet publish**. Detect modules stay available as a private-factory adjacent path; see [Detect modules](docs/detect-modules.md).
+Detect modules stay Advanced / private-factory adjacent. See [Detect modules](docs/detect-modules.md).
 
 Deep dive: [Architecture](docs/architecture.md)
 
@@ -113,7 +133,8 @@ Details: [LLM configuration](docs/llm.md)
 
 | Topic | Link |
 |-------|------|
-| Getting started | [docs/getting-started.md](docs/getting-started.md) |
+| Getting started (consumer) | [docs/getting-started.md](docs/getting-started.md) |
+| Produce a packet (producer) | [docs/migration-packets.md](docs/migration-packets.md#authoring-cli) |
 | Migration packets | [docs/migration-packets.md](docs/migration-packets.md) |
 | GitHub Actions / Watch | [docs/github-actions.md](docs/github-actions.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
