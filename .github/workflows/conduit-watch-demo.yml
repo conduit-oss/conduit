@@ -1,0 +1,84 @@
+name: Conduit Watch Demo
+
+on:
+  push:
+    branches: [main, "stack/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  watch-dirty-fail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Conduit
+        run: pip install -e "./conduit[langs,dev]"
+      - name: Ephemeral bump-dirty fixture must fail Watch
+        run: |
+          set -euo pipefail
+          FIXTURE=$(mktemp -d)
+          mkdir -p "$FIXTURE/src"
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          root = Path(os.environ["FIXTURE"])
+          (root / "src" / "ai_client.py").write_text(
+              'import openai\n\n'
+              'DEFAULT_MODEL = "gpt-4-0613"\n\n'
+              'def complete(prompt: str, model: str = DEFAULT_MODEL) -> str:\n'
+              '    response = openai.ChatCompletion.create(\n'
+              '        model=model,\n'
+              '        messages=[{"role": "user", "content": prompt}],\n'
+              '        max_tokens=64,\n'
+              '    )\n'
+              '    return response["choices"][0]["message"]["content"] or ""\n',
+              encoding="utf-8",
+          )
+          (root / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
+          PY
+          set +e
+          conduit watch --path "$FIXTURE" --packet ./examples/sample-packet/conduit-packet.json
+          code=$?
+          set -e
+          test "$code" -ne 0
+        env:
+          FIXTURE: ${{ runner.temp }}/watch-dirty
+
+  watch-clean-pass:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Conduit
+        run: pip install -e "./conduit[langs,dev]"
+      - name: Ephemeral clean fixture must pass Watch
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          root = Path(os.environ["FIXTURE"])
+          (root / "src").mkdir(parents=True, exist_ok=True)
+          (root / "src" / "ai_client.py").write_text(
+              'from openai import OpenAI\n\n'
+              'client = OpenAI()\n'
+              'DEFAULT_MODEL = "gpt-4o"\n\n'
+              'def complete(prompt: str, model: str = DEFAULT_MODEL) -> str:\n'
+              '    response = client.chat.completions.create(\n'
+              '        model=model,\n'
+              '        messages=[{"role": "user", "content": prompt}],\n'
+              '        max_completion_tokens=64,\n'
+              '    )\n'
+              '    return response.choices[0].message.content or ""\n',
+              encoding="utf-8",
+          )
+          (root / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
+          PY
+          conduit watch --path "$FIXTURE" --packet ./examples/sample-packet/conduit-packet.json
+        env:
+          FIXTURE: ${{ runner.temp }}/watch-clean

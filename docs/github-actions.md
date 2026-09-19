@@ -7,8 +7,31 @@ Conduit ships workflows you can copy into consumer repos, plus a composite actio
 | File | Trigger | Purpose |
 |------|---------|---------|
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Push / PR | Unit tests + dry-run apply sanity |
+| [`.github/workflows/conduit-watch-demo.yml`](../.github/workflows/conduit-watch-demo.yml) | Push / PR | Watch dirty-fail + clean-pass on ephemeral fixtures |
 | [`.github/workflows/conduit-dependabot.yml`](../.github/workflows/conduit-dependabot.yml) | PR touching manifests/lockfiles | Intercept Dependabot/Renovate bumps |
 | [`.github/workflows/conduit-nightly.yml`](../.github/workflows/conduit-nightly.yml) | Cron `0 0 * * *` | Nightly detect/migrate pass |
+
+## Watch (CI gate)
+
+`conduit watch` is a read-only gate. It fails when the package pin has reached the packet `to_version` but call sites still hit packet `old_callee` leftovers.
+
+This repo proves it with ephemeral fixtures in [`.github/workflows/conduit-watch-demo.yml`](../.github/workflows/conduit-watch-demo.yml) (no `OPENAI_API_KEY`, committed demo tree untouched).
+
+Consumer copy pattern:
+
+```yaml
+- uses: conduit-oss/conduit/conduit@main
+  with:
+    mode: watch
+    path: .
+    packet: ./packets/my-hop.json
+```
+
+Or call the CLI directly:
+
+```bash
+conduit watch --path . --packet ./packets/my-hop.json
+```
 
 ## Dependabot / Renovate intercept
 
@@ -33,9 +56,11 @@ Runs `conduit run` on a schedule. In *this* monorepo it also exercises the demo 
 
 ## Composite action
 
-[`conduit/action.yml`](../conduit/action.yml) installs Conduit with `[llm,langs,dev]` and runs `conduit run` with inputs:
+[`conduit/action.yml`](../conduit/action.yml) installs Conduit with `[llm,langs,dev]` and runs `conduit run` (default) or `conduit watch` when `mode: watch`.
 
-- `path`, `base-ref`, `package`, `packet` (file path **or** package name), `skip-pr`, `python-version`
+Inputs:
+
+- `path`, `base-ref`, `package`, `packet` (file path **or** package name), `skip-pr`, `mode` (`run` or `watch`), `python-version`
 
 Pass-through env for LLMs:
 

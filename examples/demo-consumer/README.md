@@ -18,3 +18,12 @@ conduit run --path ./examples/demo-consumer \
 ```
 
 After a successful run you should see `ChatCompletion.create` gone, an `OpenAI` client call chain, and the dependency pin bumped past 0.28. Restore with `git -C examples/demo-consumer checkout -- .` when you are done inspecting.
+
+Watch (read-only CI gate) against the same packet:
+
+```bash
+conduit watch --path ./examples/demo-consumer \
+  --packet ./examples/sample-packet/conduit-packet.json
+```
+
+With the committed 0.28 pin this exits 0 (pre-bump warn). After a pin-only bump that leaves `ChatCompletion.create`, Watch fails. CI covers both with ephemeral fixtures in `.github/workflows/conduit-watch-demo.yml` so this tree stays the kill-bar baseline.
