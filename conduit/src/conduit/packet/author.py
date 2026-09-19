@@ -21,6 +21,44 @@ from conduit.packet.validate import validate_packet
 LogFn = Callable[[str], None]
 
 _ANY_FROM = "*"
+PIN_ONLY_MARKER = "pin_only=allow"
+PIN_ONLY_WARNING = (
+    "Pin-only packet: not a rules-bearing hop "
+    f"(marker {PIN_ONLY_MARKER})"
+)
+_DEPENDENCY_RULE_PREFIX = "DEPENDENCY_"
+
+
+class ThinEnrichError(ValueError):
+    """Enrich ran with fetched sources but produced no call-site rewrite rules."""
+
+
+def call_site_rewrite_rules(packet: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rules beyond the DEPENDENCY_* pin family (package-neutral)."""
+    out: list[dict[str, Any]] = []
+    for rule in packet.get("rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        rtype = str(rule.get("type") or "")
+        if rtype.startswith(_DEPENDENCY_RULE_PREFIX):
+            continue
+        out.append(rule)
+    return out
+
+
+def _mark_pin_only(packet: dict[str, Any], *, reason: str) -> None:
+    note = f"{PIN_ONLY_MARKER} ({reason})"
+    existing = str(packet.get("notes") or "").strip()
+    if PIN_ONLY_MARKER in existing:
+        return
+    packet["notes"] = f"{existing}\n{note}".strip() if existing else note
+
+
+def _require_pin_only_marker(packet: dict[str, Any]) -> None:
+    if PIN_ONLY_MARKER not in str(packet.get("notes") or ""):
+        raise ThinEnrichError(
+            f"allow-pin-only override requires {PIN_ONLY_MARKER} in packet notes"
+        )
 
 
 def _safe_slug(value: str) -> str:
@@ -172,6 +210,7 @@ def create_packet_new(
     out: Path | None = None,
     enrich: bool = True,
     scaffold_only: bool = False,
+    allow_pin_only: bool = False,
     log: LogFn | None = None,
 ) -> tuple[Path, dict[str, Any], list[str]]:
     """
@@ -180,6 +219,10 @@ def create_packet_new(
     Always writes a schema-valid packet with a DEPENDENCY_BUMP hop and recorded
     sources. When ``enrich`` and an LLM is configured, fills rules from fetched
     docs / evidence seeds. Never invents AST rules without an LLM.
+
+    After enrich with at least one fetched source, refuses to write when the
+    packet has no call-site rewrite rules beyond DEPENDENCY_* unless
+    ``allow_pin_only`` is set (noisy: warning + ``pin_only=allow`` note).
     """
     warnings: list[str] = []
     emit = log if callable(log) else None
@@ -228,6 +271,7 @@ def create_packet_new(
     ]
 
     fetched_parts: list[str] = []
+    fetched_urls: list[str] = []
     sources: list[dict[str, Any]] = []
     for url in unique_urls:
         kind = guess_source_kind(url)
@@ -236,6 +280,7 @@ def create_packet_new(
             body = fetch_url(url)
             if body and body.strip():
                 fetched_parts.append(f"### Source: {url}\n\n{body.strip()}")
+                fetched_urls.append(url)
             elif emit:
                 emit(f"Fetched empty body for {url}")
         except Exception as exc:
@@ -251,7 +296,8 @@ def create_packet_new(
         warnings.append(
             "LLM not configured; wrote dependency hop + sources only (no invented rules)"
         )
-    if scaffold_only or not enrich:
+    deliberate_pin = bool(scaffold_only or not enrich)
+    if deliberate_pin:
         warnings.append("Enrichment skipped (--scaffold-only / --no-enrich)")
 
     if do_enrich:
@@ -319,6 +365,27 @@ def create_packet_new(
         )
 
     packet["sources"] = _dedupe_sources(list(packet.get("sources") or []) + sources)
+
+    thin_after_enrich = (
+        do_enrich and bool(fetched_urls) and not call_site_rewrite_rules(packet)
+    )
+    if thin_after_enrich and not allow_pin_only:
+        src_list = ", ".join(fetched_urls)
+        raise ThinEnrichError(
+            "zero call-site rules after enrich with fetched sources: "
+            f"{src_list}. Re-run with richer docs or pass --allow-pin-only "
+            "for a deliberate pin-only hop."
+        )
+    if thin_after_enrich or deliberate_pin:
+        reason = (
+            "enrich produced dependency pin only"
+            if thin_after_enrich
+            else "scaffold-only / no-enrich deliberate pin hop"
+        )
+        _mark_pin_only(packet, reason=reason)
+        _require_pin_only_marker(packet)
+        if PIN_ONLY_WARNING not in warnings:
+            warnings.append(PIN_ONLY_WARNING)
 
     errs = validate_packet(packet)
     if errs:

@@ -1487,11 +1487,24 @@ def packet_new_cmd(
         "--scaffold-only",
         help="Write dependency hop + sources only; skip LLM enrichment",
     ),
+    allow_pin_only: bool = typer.Option(
+        False,
+        "--allow-pin-only",
+        help=(
+            "Allow writing a pin-only packet after thin enrich "
+            "(warns on stderr; records pin_only=allow in notes)"
+        ),
+    ),
 ) -> None:
     """Author a packet from source URLs (TTY prompts or flags)."""
     import sys
 
-    from conduit.packet.author import create_packet_new, default_packet_out_path
+    from conduit.packet.author import (
+        PIN_ONLY_WARNING,
+        ThinEnrichError,
+        create_packet_new,
+        default_packet_out_path,
+    )
 
     def _ask(label: str, default: str = "") -> str:
         if not sys.stdin.isatty():
@@ -1526,18 +1539,26 @@ def packet_new_cmd(
                 urls.append(text)
 
     dest = out or default_packet_out_path(package=pkg, ecosystem=eco, version=ver)
-    path_written, packet, warnings = create_packet_new(
-        package=pkg,
-        ecosystem=eco,
-        version=ver,
-        source_urls=urls,
-        out=dest,
-        enrich=not (no_enrich or scaffold_only),
-        scaffold_only=scaffold_only,
-        log=console.print,
-    )
+    try:
+        path_written, packet, warnings = create_packet_new(
+            package=pkg,
+            ecosystem=eco,
+            version=ver,
+            source_urls=urls,
+            out=dest,
+            enrich=not (no_enrich or scaffold_only),
+            scaffold_only=scaffold_only,
+            allow_pin_only=allow_pin_only,
+            log=console.print,
+        )
+    except ThinEnrichError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     for warning in warnings:
-        console.print(f"[yellow]Warning:[/yellow] {warning}")
+        if warning == PIN_ONLY_WARNING:
+            typer.echo(f"Warning: {warning}", err=True)
+        else:
+            console.print(f"[yellow]Warning:[/yellow] {warning}")
     n_rules = len(packet.get("rules") or [])
     n_effects = len(packet.get("side_effects") or [])
     console.print(
