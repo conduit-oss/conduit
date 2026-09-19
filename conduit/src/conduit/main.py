@@ -567,10 +567,11 @@ def watch_cmd(
     ),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable verdict"),
 ) -> None:
-    """Fail when the pin is at to_version but packet old_callee leftovers remain.
+    """Fail when pin is at or past to_version but packet old_callee leftovers remain.
 
-    Read-only. Exit 0 when the pin is still at from_version (warns if leftovers
-    exist) or when the pin is at to_version and leftovers are empty.
+    Read-only. Exit 0 for pre_bump (warns if leftovers exist), clean, or
+    no_rules (pin-only packet at or past target; message includes
+    ``no call-site rules``). Exit 1 for bump_dirty. Exit 2 for no_pin.
     """
     root = _resolve_root(path)
     packet_file, _ = _resolve_packet_arg(
@@ -595,9 +596,14 @@ def watch_cmd(
     if json_out:
         console.print_json(data=verdict.to_dict())
     else:
-        color = "red" if verdict.exit_code else (
-            "yellow" if verdict.status == "pre_bump" and verdict.leftovers else "green"
-        )
+        if verdict.exit_code:
+            color = "red"
+        elif verdict.status == "no_rules" or (
+            verdict.status == "pre_bump" and verdict.leftovers
+        ):
+            color = "yellow"
+        else:
+            color = "green"
         console.print(f"[{color}]{verdict.message}[/{color}]")
         for item in verdict.leftovers:
             console.print(f"  leftover: {item.display()}")
@@ -691,6 +697,21 @@ def apply_cmd(
         f"{'Would modify' if dry_run else 'Modified'} "
         f"{len(report.files_modified)} file(s)."
     )
+    if dry_run:
+        return
+
+    from conduit.patcher.leftovers import evaluate_apply_leftovers
+
+    leftover_verdict = evaluate_apply_leftovers(root=root, packet=data)
+    if leftover_verdict.status == "pin_only":
+        console.print(f"[yellow]{leftover_verdict.message}[/yellow]")
+        return
+    if leftover_verdict.exit_code != 0:
+        console.print(f"[red]{leftover_verdict.message}[/red]")
+        for item in leftover_verdict.leftovers:
+            console.print(f"  leftover: {item.display()}")
+        raise typer.Exit(leftover_verdict.exit_code)
+    console.print(f"[green]{leftover_verdict.message}[/green]")
 
 
 @app.command("verify")
