@@ -354,6 +354,224 @@ def test_normalize_side_effect_kind_aliases():
     assert normalize_side_effect_kind("webhook") == "webhook"
 
 
+def _pin_only_llm_client():
+    class FakeClient:
+        def complete_json(self, *args, **kwargs):
+            return {
+                "packet_id": "ignored",
+                "package": "widgets",
+                "ecosystem": "pypi",
+                "from_version": "*",
+                "to_version": "2.0.0",
+                "sources": [],
+                "notes": "pin only",
+                "side_effects": [],
+                "rules": [
+                    {
+                        "type": "DEPENDENCY_BUMP",
+                        "package": "widgets",
+                        "from_version": "*",
+                        "to_version": "2.0.0",
+                        "ecosystems": ["pip", "pyproject"],
+                        "reason": "pin only",
+                    }
+                ],
+            }
+
+        def run_agent(self, *args, **kwargs):
+            return {
+                "notes": "evidence pin only",
+                "sources": [],
+                "side_effects": [],
+                "rules": [],
+            }
+
+    return FakeClient()
+
+
+def test_create_packet_new_thin_enrich_refuses_write(tmp_path: Path, monkeypatch):
+    from conduit.packet.author import ThinEnrichError
+
+    client = _pin_only_llm_client()
+    monkeypatch.setattr("conduit.packet.author.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr("conduit.llm.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr(
+        "conduit.packet.author.fetch_url",
+        lambda url, **kwargs: "migration guide body with no rewrite hints",
+    )
+    out = tmp_path / "widgets-pypi-2.0.0.json"
+    try:
+        create_packet_new(
+            package="widgets",
+            ecosystem="pypi",
+            version="2.0.0",
+            source_urls=["https://docs.example.com/migrate"],
+            out=out,
+            enrich=True,
+        )
+        raise AssertionError("expected ThinEnrichError")
+    except ThinEnrichError as exc:
+        msg = str(exc)
+        assert "zero call-site rules" in msg
+        assert "https://docs.example.com/migrate" in msg
+    assert not out.exists()
+
+
+def test_create_packet_new_allow_pin_only_is_noisy(tmp_path: Path, monkeypatch):
+    from conduit.packet.author import PIN_ONLY_MARKER
+
+    client = _pin_only_llm_client()
+    monkeypatch.setattr("conduit.packet.author.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr("conduit.llm.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr(
+        "conduit.packet.author.fetch_url",
+        lambda url, **kwargs: "migration guide body",
+    )
+    out = tmp_path / "widgets-pypi-2.0.0.json"
+    _path, packet, warnings = create_packet_new(
+        package="widgets",
+        ecosystem="pypi",
+        version="2.0.0",
+        source_urls=["https://docs.example.com/migrate"],
+        out=out,
+        enrich=True,
+        allow_pin_only=True,
+    )
+    assert out.is_file()
+    assert PIN_ONLY_MARKER in str(packet.get("notes") or "")
+    assert any("not a rules-bearing hop" in w for w in warnings)
+    assert validate_packet(packet) == []
+
+
+def test_create_packet_new_allow_pin_only_without_marker_hard_fails(
+    tmp_path: Path, monkeypatch
+):
+    from conduit.packet.author import PIN_ONLY_MARKER, ThinEnrichError
+
+    client = _pin_only_llm_client()
+    monkeypatch.setattr("conduit.packet.author.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr("conduit.llm.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr(
+        "conduit.packet.author.fetch_url",
+        lambda url, **kwargs: "migration guide body",
+    )
+
+    def _broken_mark(packet, *, reason: str) -> None:
+        packet["notes"] = "deliberately missing marker"
+
+    monkeypatch.setattr("conduit.packet.author._mark_pin_only", _broken_mark)
+    out = tmp_path / "widgets-pypi-2.0.0.json"
+    try:
+        create_packet_new(
+            package="widgets",
+            ecosystem="pypi",
+            version="2.0.0",
+            source_urls=["https://docs.example.com/migrate"],
+            out=out,
+            enrich=True,
+            allow_pin_only=True,
+        )
+        raise AssertionError("expected ThinEnrichError")
+    except ThinEnrichError as exc:
+        assert PIN_ONLY_MARKER in str(exc)
+    assert not out.exists()
+
+
+def test_create_packet_new_scaffold_only_marks_pin_only(tmp_path: Path, monkeypatch):
+    from conduit.packet.author import PIN_ONLY_MARKER
+
+    monkeypatch.setattr("conduit.packet.author.get_llm_client", lambda **kwargs: object())
+    monkeypatch.setattr(
+        "conduit.packet.author.fetch_url",
+        lambda url, **kwargs: "docs body",
+    )
+    out = tmp_path / "widgets-pypi-2.0.0.json"
+    _path, packet, warnings = create_packet_new(
+        package="widgets",
+        ecosystem="pypi",
+        version="2.0.0",
+        source_urls=["https://docs.example.com/migrate"],
+        out=out,
+        scaffold_only=True,
+        enrich=False,
+    )
+    assert packet["rules"][0]["type"] == "DEPENDENCY_BUMP"
+    assert PIN_ONLY_MARKER in str(packet.get("notes") or "")
+    assert any("not a rules-bearing hop" in w for w in warnings)
+    assert any("Enrichment skipped" in w for w in warnings)
+    assert validate_packet(packet) == []
+
+
+def test_cli_packet_new_thin_enrich_exits_nonzero(tmp_path: Path, monkeypatch):
+    client = _pin_only_llm_client()
+    monkeypatch.setattr("conduit.packet.author.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr("conduit.llm.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr(
+        "conduit.packet.author.fetch_url",
+        lambda url, **kwargs: "migration guide body",
+    )
+    out = tmp_path / "widgets-pypi-2.0.0.json"
+    result = CliRunner().invoke(
+        app,
+        [
+            "packet",
+            "new",
+            "--package",
+            "widgets",
+            "--ecosystem",
+            "pypi",
+            "--version",
+            "2.0.0",
+            "--source-url",
+            "https://docs.example.com/migrate",
+            "--out",
+            str(out),
+        ],
+    )
+    combined = (result.stdout or "") + (result.stderr or "")
+    assert result.exit_code != 0, combined
+    assert "zero call-site rules" in combined
+    assert "https://docs.example.com/migrate" in combined
+    assert not out.exists()
+
+
+def test_cli_packet_new_allow_pin_only_warns_stderr(tmp_path: Path, monkeypatch):
+    from conduit.packet.author import PIN_ONLY_MARKER
+
+    client = _pin_only_llm_client()
+    monkeypatch.setattr("conduit.packet.author.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr("conduit.llm.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr(
+        "conduit.packet.author.fetch_url",
+        lambda url, **kwargs: "migration guide body",
+    )
+    out = tmp_path / "widgets-pypi-2.0.0.json"
+    result = CliRunner().invoke(
+        app,
+        [
+            "packet",
+            "new",
+            "--package",
+            "widgets",
+            "--ecosystem",
+            "pypi",
+            "--version",
+            "2.0.0",
+            "--source-url",
+            "https://docs.example.com/migrate",
+            "--allow-pin-only",
+            "--out",
+            str(out),
+        ],
+    )
+    combined = (result.stdout or "") + (result.stderr or "")
+    assert result.exit_code == 0, combined
+    assert "not a rules-bearing hop" in (result.stderr or combined)
+    assert out.is_file()
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert PIN_ONLY_MARKER in str(data.get("notes") or "")
+
+
 def test_evidence_enrich_normalizes_synonym_source_kinds(monkeypatch):
     class FakeClient:
         def run_agent(self, *args, **kwargs):
