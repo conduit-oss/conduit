@@ -54,6 +54,7 @@ conduit = "conduit.main:app"
 
 [project.entry-points."conduit.detect_modules"]
 openai = "conduit.detect.modules.openai:OpenAIModule"
+google_genai = "conduit.detect.modules.google_genai:GoogleGenaiModule"
 
 [tool.setuptools.packages.find]
 where = ["src"]
