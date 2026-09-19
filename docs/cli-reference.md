@@ -36,7 +36,7 @@ Full pipeline: detect → prune → export delta → packet → apply → verify
 | `--base-ref` | none | Git ref for lockfile diff (e.g. `origin/main`) |
 | `--package` | auto | Package to migrate |
 | `--module` | auto | Restrict detect modules (if omitted and a package name is known, Conduit uses a matching detect module when one exists) |
-| `--packet` | cache/synth | Path to a packet JSON, **http(s) URL**, or a package name (e.g. `openai`, `stripe`). A file or URL **loads** the packet (no OpenAI scrape / synthesis). A package name still synthesizes from detect. |
+| `--packet` | cache/synth | Path to a packet JSON, **http(s) URL**, catalog **packet_id** (when `CONDUIT_PACKET_CATALOG_BASE` is set), or a package name (e.g. `openai`). File / URL / catalog slug **loads** the packet. A bare package name still synthesizes from detect. |
 | `--demo` | false | Offline detect fixtures + openai demo packet fallback (default is **live** vendor sources) |
 | `--refresh-packet` | false | Ignore `.conduit/packets` cache and re-synthesize from current detect signals (use after detect/normalize changes) |
 | `--skip-tests` | false | Skip oracle generation + verify (apply only) |
@@ -52,11 +52,14 @@ Full pipeline: detect → prune → export delta → packet → apply → verify
 
 1. If the value is an **http(s) URL** → download JSON into `.conduit/packets/` (reuse the cached file unless `--refresh-packet`) and load it.
 2. If the value is an **existing file** → load that packet JSON.
-3. Otherwise treat it as a **package name** → same idea as `--package <name>`: detect/synthesize a packet for that package.
-4. If both `--packet <file-or-url>` and `--package` disagree on the package field, the **packet file** wins (with a warning).
-5. If `--packet <name>` and `--package` disagree, **`--package`** wins (with a warning).
+3. If `CONDUIT_PACKET_CATALOG_BASE` is set and the value looks like a **packet_id** (e.g. `example-sdk-pypi-1.0.0`) → fetch `{BASE}/by-package/{package}/{ecosystem}/{id}.json`. Hop ids without `-<ecosystem>-` (e.g. `openai-0.28.1-1.0.0`) use the root mirror `{BASE}/{id}.json` that `packet publish` writes. On miss, fall through.
+4. Otherwise treat it as a **package name** → same idea as `--package <name>`: detect/synthesize a packet for that package.
+5. If both `--packet <file-or-url>` and `--package` disagree on the package field, the **packet file** wins (with a warning).
+6. If `--packet <name>` and `--package` disagree, **`--package`** wins (with a warning).
 
 A **file or URL** skips vendor detect workers (no GitHub/OpenAI scrape). Conduit still scans the consumer repo for a **source packet** (imports / models) so prune and coverage work. Catalog floor `from_version` `0` is stamped from the client pin before export-delta/apply; unused catalog string rules are dropped. `--packet openai` (a name) still runs vendor detect and synthesizes.
+
+Public catalog layout: `conduit-oss/conduit-packets` (`by-package/<pkg>/<ecosystem>/<packet_id>.json`).
 
 ### Version defaults and warnings
 
@@ -212,6 +215,25 @@ Build rules from `--changelog` / `--docs` (LLM if configured).
 ### `packet validate`
 
 JSON Schema validation; exit non-zero on errors.
+
+### `packet publish`
+
+Validate a packet and place it in a **catalog** checkout under `by-package/<pkg>/<eco>/<packet_id>.json`. Catalog only; does **not** open consumer PRs.
+
+| Option | Description |
+|--------|-------------|
+| `--packet` | Packet JSON path (required) |
+| `--catalog` | Local catalog directory (git preferred) or git URL to shallow-clone |
+| `--notice-url` | Optional webhook; POSTs `packet_id` / package / path metadata after write |
+| `--no-commit` | Write files only; print `git add` / `commit` / `push` commands |
+
+Second publish of the same hop is idempotent (same path, no duplicate commit when content matches). When `packet_id` lacks `-<ecosystem>-`, also writes root `<packet_id>.json` for slug fetch. Prefer a full raw URL while the catalog is private.
+
+```bash
+conduit packet publish \
+  --packet ./examples/sample-packet/conduit-packet.json \
+  --catalog /path/to/conduit-packets
+```
 
 ### `packet show`
 

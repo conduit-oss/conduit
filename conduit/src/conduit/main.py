@@ -32,7 +32,12 @@ from conduit.detect.manifests import (
 from conduit.detect.orchestrator import run_detect
 from conduit.export_delta import compute_export_delta, prune_by_export_symbols
 from conduit.packet.cache import save_packet
-from conduit.packet.fetch import PacketFetchError, fetch_packet_url, is_packet_url
+from conduit.packet.fetch import (
+    PacketFetchError,
+    catalog_url_for_name,
+    fetch_packet_url,
+    is_packet_url,
+)
 from conduit.packet.synthesize import (
     ensure_packet,
     load_fixture_openai_packet,
@@ -435,6 +440,14 @@ def _resolve_packet_arg(
     if any(sep in raw for sep in ("/", "\\")) or raw.endswith(".json"):
         console.print(f"[red]Packet file not found:[/red] {raw}")
         raise typer.Exit(2)
+    # Catalog slug (packet_id) when CONDUIT_PACKET_CATALOG_BASE is set
+    catalog_url = catalog_url_for_name(raw)
+    if catalog_url:
+        try:
+            return fetch_packet_url(catalog_url, root=root, refresh=refresh), None
+        except PacketFetchError:
+            # Fall through to package-name synthesis when catalog miss
+            pass
     if not allow_package_name:
         console.print(f"[red]Packet file not found:[/red] {raw}")
         raise typer.Exit(2)
@@ -1681,6 +1694,69 @@ def packet_export_post_rules_cmd(
     dest.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     console.print(
         f"[green]Wrote[/green] {len(merged.get('post_rules') or [])} post_rule(s) to {dest}"
+    )
+
+
+@packet_app.command("publish")
+def packet_publish_cmd(
+    packet: Path = typer.Option(
+        ...,
+        "--packet",
+        help="Path to conduit-packet.json",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    catalog: str = typer.Option(
+        ...,
+        "--catalog",
+        help="Local catalog git checkout path, or git URL to clone",
+    ),
+    notice_url: Optional[str] = typer.Option(
+        None,
+        "--notice-url",
+        help="Optional webhook URL; POSTs packet_id metadata after write",
+    ),
+    no_commit: bool = typer.Option(
+        False,
+        "--no-commit",
+        help="Write files only; print git commands instead of committing",
+    ),
+) -> None:
+    """Publish a packet into a catalog repo (by-package layout). Catalog only; no consumer PRs."""
+    from conduit.packet.publish import PacketPublishError, publish_packet
+
+    try:
+        result = publish_packet(
+            packet,
+            catalog,
+            notice_url=notice_url,
+            commit=not no_commit,
+        )
+    except PacketPublishError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    for rel in result.written:
+        console.print(f"[green]wrote[/green] {result.catalog_root / rel}")
+    for rel in result.unchanged:
+        console.print(f"[dim]unchanged[/dim] {result.catalog_root / rel}")
+
+    if result.committed:
+        console.print(
+            f"[green]committed[/green] {result.commit_sha or ''} "
+            f"(packet {result.packet_id})"
+        )
+    elif result.git_commands:
+        console.print("[dim]git commands (catalog only; no consumer PR fan-out):[/dim]")
+        for cmd in result.git_commands:
+            console.print(f"  {cmd}")
+
+    if result.notice_posted:
+        console.print("[green]notice posted[/green]")
+    console.print(
+        "[dim]Publish targets the packet catalog only. "
+        "Consumers pull; this command does not open consumer PRs.[/dim]"
     )
 
 
