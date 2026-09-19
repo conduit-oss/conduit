@@ -214,10 +214,19 @@ See [`examples/sample-packet/conduit-packet.json`](../examples/sample-packet/con
 
 | Role | Typical action |
 |------|----------------|
-| Vendor / maintainer | `conduit packet new` / `from-detect` / init/synthesize; `diff-rules` for hop chains; share JSON |
-| Consumer | `conduit packet test` then `conduit run --packet ./file.json` or `--packet https://…` (one hop); source packet from client inventory |
+| Vendor / maintainer | `conduit packet new` / `from-detect` / init/synthesize; `diff-rules` for hop chains; then `conduit packet publish` into the catalog |
+| Consumer | Pull from the catalog (`CONDUIT_PACKET_CATALOG_BASE` or a raw URL), then `conduit packet test` / `conduit run --packet …` |
 
-There is not yet a `conduit packet publish` registry command — share packets via git/HTTP for now.
+Producer flow is **publish, then consumer pull**. `packet publish` writes catalog JSON only. It does not open PRs into consumer repos.
+
+```bash
+conduit packet publish \
+  --packet ./examples/sample-packet/conduit-packet.json \
+  --catalog /path/to/conduit-packets
+# or --catalog git@github.com:conduit-oss/conduit-packets.git
+```
+
+Layout: `by-package/<package>/<ecosystem>/<packet_id>.json`. When `packet_id` lacks `-<ecosystem>-` (for example `openai-0.28.1-1.0.0`), publish also writes a root `<packet_id>.json` so slug fetch via `CONDUIT_PACKET_CATALOG_BASE` can resolve without the eco token. While the catalog is private, or the slug cannot be parsed, prefer a full raw URL for `--packet`.
 
 ## Related docs
 

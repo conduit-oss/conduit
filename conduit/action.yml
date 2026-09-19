@@ -23,6 +23,10 @@ inputs:
     description: Apply patches and run tests without opening a PR
     required: false
     default: "false"
+  mode:
+    description: "run (default) or watch (read-only CI gate)"
+    required: false
+    default: "run"
   python-version:
     description: Python version for the action runner
     required: false
@@ -53,6 +57,14 @@ runs:
         GH_TOKEN: ${{ github.token }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
+        if [ "${{ inputs.mode }}" = "watch" ]; then
+          if [ -z "${{ inputs.packet }}" ]; then
+            echo "mode=watch requires packet=" >&2
+            exit 2
+          fi
+          conduit watch --path "${{ inputs.path }}" --packet "${{ inputs.packet }}"
+          exit $?
+        fi
         ARGS=(run --path "${{ inputs.path }}")
         if [ -n "${{ inputs.base-ref }}" ]; then
           ARGS+=(--base-ref "${{ inputs.base-ref }}")
