@@ -122,11 +122,12 @@ def _looks_like_git_url(raw: str) -> bool:
     return raw.startswith("git@")
 
 
-def resolve_catalog_root(catalog: str) -> tuple[Path, Path | None]:
+def resolve_catalog_root(catalog: str) -> Path:
     """
     Resolve ``--catalog`` to a local directory.
 
-    Returns ``(root, clone_tmpdir)``. Caller must clean ``clone_tmpdir`` when set.
+    Local paths are used as-is. Git URLs are shallow-cloned into a temp dir
+    (left on disk so the operator can push).
     """
     raw = (catalog or "").strip()
     if not raw:
@@ -147,12 +148,12 @@ def resolve_catalog_root(catalog: str) -> tuple[Path, Path | None]:
             raise PacketPublishError(
                 f"git clone failed: {(proc.stderr or proc.stdout or '').strip()}"
             )
-        return tmp, tmp
+        return tmp
 
     root = Path(raw).expanduser().resolve()
     if not root.is_dir():
         raise PacketPublishError(f"catalog path is not a directory: {root}")
-    return root, None
+    return root
 
 
 def _git_commands_for(relpaths: list[str], packet_id: str) -> list[str]:
@@ -188,9 +189,6 @@ def _try_commit(root: Path, relpaths: list[str], packet_id: str) -> tuple[bool, 
             text=True,
         )
         if commit.returncode != 0:
-            combined = (commit.stdout + commit.stderr).lower()
-            if "nothing to commit" in combined:
-                return False, None
             return False, None
         sha_proc = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
@@ -254,60 +252,54 @@ def publish_packet(
     if errors:
         raise PacketPublishError("invalid packet:\n" + "\n".join(errors))
 
-    root, clone_tmpdir = resolve_catalog_root(catalog)
-    try:
-        paths = catalog_paths_for_packet(data)
-        packet_id = str(data.get("packet_id") or "")
-        targets: list[tuple[str, Path]] = [
-            (paths.by_package.as_posix(), root / paths.by_package)
-        ]
-        if paths.flat_root is not None:
-            targets.append((paths.flat_root.as_posix(), root / paths.flat_root))
+    root = resolve_catalog_root(catalog)
+    paths = catalog_paths_for_packet(data)
+    packet_id = str(data.get("packet_id") or "")
+    targets: list[tuple[str, Path]] = [
+        (paths.by_package.as_posix(), root / paths.by_package)
+    ]
+    if paths.flat_root is not None:
+        targets.append((paths.flat_root.as_posix(), root / paths.flat_root))
 
-        written: list[str] = []
-        unchanged: list[str] = []
-        for rel, dest in targets:
-            if dest.is_file():
-                try:
-                    existing = json.loads(dest.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    existing = None
-                if isinstance(existing, dict) and _packets_equal(existing, data):
-                    unchanged.append(rel)
-                    continue
-            save_packet(dest, data)
-            written.append(rel)
+    written: list[str] = []
+    unchanged: list[str] = []
+    for rel, dest in targets:
+        if dest.is_file():
+            try:
+                existing = json.loads(dest.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                existing = None
+            if isinstance(existing, dict) and _packets_equal(existing, data):
+                unchanged.append(rel)
+                continue
+        save_packet(dest, data)
+        written.append(rel)
 
-        relpaths = [rel for rel, _ in targets]
+    relpaths = [rel for rel, _ in targets]
+    git_cmds = _git_commands_for(relpaths, packet_id)
+    committed = False
+    commit_sha: str | None = None
+    if commit and written and _is_git_repo(root):
+        committed, commit_sha = _try_commit(root, relpaths, packet_id)
+    elif not commit:
         git_cmds = _git_commands_for(relpaths, packet_id)
-        committed = False
-        commit_sha: str | None = None
-        if commit and written and _is_git_repo(root):
-            committed, commit_sha = _try_commit(root, relpaths, packet_id)
-        elif not commit:
-            git_cmds = _git_commands_for(relpaths, packet_id)
 
-        notice_posted = False
-        if notice_url:
-            post_notice(
-                notice_url,
-                packet=data,
-                relpath=paths.by_package.as_posix(),
-            )
-            notice_posted = True
-
-        return PublishResult(
-            packet_id=packet_id,
-            catalog_root=root,
-            written=written,
-            unchanged=unchanged,
-            committed=committed,
-            commit_sha=commit_sha,
-            git_commands=[] if committed else git_cmds,
-            notice_posted=notice_posted,
+    notice_posted = False
+    if notice_url:
+        post_notice(
+            notice_url,
+            packet=data,
+            relpath=paths.by_package.as_posix(),
         )
-    finally:
-        # Leave clones in place when commit succeeded so the user can push;
-        # only discard empty failed clones. Tests always pass local paths.
-        if clone_tmpdir is not None and not (clone_tmpdir / ".git").exists():
-            pass
+        notice_posted = True
+
+    return PublishResult(
+        packet_id=packet_id,
+        catalog_root=root,
+        written=written,
+        unchanged=unchanged,
+        committed=committed,
+        commit_sha=commit_sha,
+        git_commands=[] if committed else git_cmds,
+        notice_posted=notice_posted,
+    )
