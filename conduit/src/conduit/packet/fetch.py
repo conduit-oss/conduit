@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -13,6 +14,12 @@ from conduit.packet.cache import packets_dir, save_packet
 
 MAX_PACKET_BYTES = 2 * 1024 * 1024
 
+# Env: base URL for public catalog (no trailing slash), e.g.
+# https://raw.githubusercontent.com/conduit-oss/conduit-packets/main
+CATALOG_BASE_ENV = "CONDUIT_PACKET_CATALOG_BASE"
+
+_KNOWN_ECOSYSTEMS = ("pypi", "npm", "go", "maven", "other")
+
 
 class PacketFetchError(Exception):
     """URL packet could not be downloaded or parsed."""
@@ -21,6 +28,77 @@ class PacketFetchError(Exception):
 def is_packet_url(raw: str) -> bool:
     text = (raw or "").strip().lower()
     return text.startswith("http://") or text.startswith("https://")
+
+
+def catalog_base_url() -> str | None:
+    raw = (os.environ.get(CATALOG_BASE_ENV) or "").strip().rstrip("/")
+    return raw or None
+
+
+def catalog_url_for_packet(packet: dict[str, Any]) -> str | None:
+    """
+    Build ``{BASE}/by-package/{package}/{ecosystem}/{packet_id}.json`` from
+    packet fields when ``CONDUIT_PACKET_CATALOG_BASE`` is set.
+    """
+    base = catalog_base_url()
+    if not base:
+        return None
+    package = str(packet.get("package") or "").strip()
+    ecosystem = str(packet.get("ecosystem") or "").strip().lower()
+    packet_id = str(packet.get("packet_id") or "").strip()
+    if not package or not ecosystem or not packet_id:
+        return None
+    slug = packet_id if packet_id.endswith(".json") else f"{packet_id}.json"
+    return f"{base}/by-package/{package}/{ecosystem}/{slug}"
+
+
+def catalog_url_for_name(
+    name: str,
+    *,
+    package: str | None = None,
+    ecosystem: str | None = None,
+) -> str | None:
+    """
+    Build a catalog URL for a packet id / slug when CONDUIT_PACKET_CATALOG_BASE is set.
+
+    Resolution order:
+      1. Explicit ``package`` + ``ecosystem`` → by-package path (P4 slug WARN fix)
+      2. ``{package}-{ecosystem}-{version}`` token in the name → by-package path
+      3. Else root ``{name}.json`` (flat mirror written by ``packet publish`` for
+         hop ids such as ``openai-0.28.1-1.0.0`` that omit the ecosystem token)
+
+    Bare package names with no ``-`` (e.g. ``openai``) return None so callers
+    fall through to detect synthesis instead of a bogus root URL.
+    """
+    base = catalog_base_url()
+    if not base:
+        return None
+    slug = (name or "").strip()
+    if not slug or is_packet_url(slug) or "/" in slug or "\\" in slug:
+        return None
+    if not slug.endswith(".json"):
+        slug_file = f"{slug}.json"
+    else:
+        slug_file = slug
+        slug = slug[: -len(".json")]
+
+    pkg = (package or "").strip() or None
+    eco = (ecosystem or "").strip().lower() or None
+    if pkg and eco:
+        return f"{base}/by-package/{pkg}/{eco}/{slug_file}"
+
+    for eco_tok in _KNOWN_ECOSYSTEMS:
+        token = f"-{eco_tok}-"
+        if token in slug:
+            package_part, _, rest = slug.partition(token)
+            if package_part and rest:
+                return f"{base}/by-package/{package_part}/{eco_tok}/{slug_file}"
+
+    # Bare package name (no version / hop markers) is not a catalog slug.
+    if "-" not in slug:
+        return None
+
+    return f"{base}/{slug_file}"
 
 
 def _filename_from_url(url: str) -> str | None:
