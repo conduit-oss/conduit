@@ -64,25 +64,26 @@ def _make_attr(parts: list[str]) -> cst.BaseExpression:
     return node
 
 
+def _text_mop_up(content: str, old: str, new: str) -> tuple[str, int]:
+    if not old or old in new or old not in content:
+        return content, 0
+    updated = content.replace(old, new)
+    return updated, content.count(old) if updated != content else 0
+
+
 def rename_python_attr(content: str, old_attr: str, new_attr: str) -> tuple[str, int]:
     if not old_attr or old_attr not in content:
         return content, 0
     try:
         module = cst.parse_module(content)
     except Exception:
-        updated = content.replace(old_attr, new_attr)
-        return updated, content.count(old_attr) if updated != content else 0
+        return _text_mop_up(content, old_attr, new_attr)
     transformer = _AttrRenameTransformer(old_attr, new_attr)
     updated = module.visit(transformer)
     if transformer.changes:
-        code = updated.code
-        if old_attr in code:
-            n_extra = code.count(old_attr)
-            code = code.replace(old_attr, new_attr)
-            return code, transformer.changes + n_extra
-        return code, transformer.changes
-    updated = content.replace(old_attr, new_attr)
-    return updated, content.count(old_attr) if updated != content else 0
+        code, n_extra = _text_mop_up(updated.code, old_attr, new_attr)
+        return code, transformer.changes + n_extra
+    return _text_mop_up(content, old_attr, new_attr)
 
 
 def rewrite_python_call(content: str, old_callee: str, new_callee: str) -> tuple[str, int]:
@@ -91,19 +92,13 @@ def rewrite_python_call(content: str, old_callee: str, new_callee: str) -> tuple
     try:
         module = cst.parse_module(content)
     except Exception:
-        updated = content.replace(old_callee, new_callee)
-        return updated, content.count(old_callee) if updated != content else 0
+        return _text_mop_up(content, old_callee, new_callee)
     transformer = _CallRewriteTransformer(old_callee, new_callee)
     updated = module.visit(transformer)
     if transformer.changes:
-        code = updated.code
-        if old_callee in code:
-            n_extra = code.count(old_callee)
-            code = code.replace(old_callee, new_callee)
-            return code, transformer.changes + n_extra
-        return code, transformer.changes
-    updated = content.replace(old_callee, new_callee)
-    return updated, content.count(old_callee) if updated != content else 0
+        code, n_extra = _text_mop_up(updated.code, old_callee, new_callee)
+        return code, transformer.changes + n_extra
+    return _text_mop_up(content, old_callee, new_callee)
 
 
 def apply_attr_rename(
