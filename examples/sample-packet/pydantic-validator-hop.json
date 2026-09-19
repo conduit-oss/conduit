@@ -1,0 +1,52 @@
+{
+  "packet_id": "pydantic-1.10.13-2.0.0",
+  "package": "pydantic",
+  "ecosystem": "pypi",
+  "from_version": "1.10.13",
+  "to_version": "2.0.0",
+  "sources": [
+    {
+      "url": "https://docs.pydantic.dev/2.0/migration/",
+      "kind": "docs"
+    }
+  ],
+  "notes": "Frozen harness smoke for a Watch-visible validator hop only. Not a mergeable pydantic v2 upgrade. AST_IMPORT_REWRITE uses the import-clause fragment BaseModel, validator so the short-name string fallback cannot re-prefix field_validator on a second apply. Hand-authored; not LLM packet new.",
+  "side_effects": [
+    {
+      "kind": "other",
+      "detail": "Instance .dict() stays Watch-blind and is not rewritten; migrate to model_dump by hand."
+    },
+    {
+      "kind": "config",
+      "detail": "Inner class Config / orm_mode is out of engine; migrate to model_config by hand."
+    },
+    {
+      "kind": "other",
+      "detail": "field_validator often needs @classmethod and signature or mode= reshape; not expressed by AST_CALL_REWRITE."
+    }
+  ],
+  "rules": [
+    {
+      "type": "DEPENDENCY_BUMP",
+      "package": "pydantic",
+      "from_version": "1.10.13",
+      "to_version": "2.0.0",
+      "ecosystems": ["pip", "pyproject"],
+      "reason": "Pin the consumer at pydantic 2.0.0 for the validator hop smoke."
+    },
+    {
+      "type": "AST_IMPORT_REWRITE",
+      "target_files": ["*.py"],
+      "old_import": "BaseModel, validator",
+      "new_import": "BaseModel, field_validator",
+      "reason": "Rewrite the from-import clause only. Avoid bare validator so a second apply cannot re-prefix field_validator."
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": ["*.py"],
+      "old_callee": "validator",
+      "new_callee": "field_validator",
+      "reason": "@validator(...) becomes @field_validator(...). Watch leftovers key on this old_callee."
+    }
+  ]
+}
