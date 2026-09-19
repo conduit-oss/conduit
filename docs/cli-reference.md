@@ -7,6 +7,8 @@ conduit --help
 conduit <command> --help
 ```
 
+Top-level `--help` keeps packet, apply, Watch, verify, and run in **Commands**. `detect` and `module` appear under **Advanced**.
+
 ## Global options
 
 | Option | Description |

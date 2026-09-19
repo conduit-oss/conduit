@@ -65,7 +65,7 @@ app = typer.Typer(
 )
 module_app = typer.Typer(help="Detect module tools")
 packet_app = typer.Typer(help="Migration packet tools")
-app.add_typer(module_app, name="module")
+app.add_typer(module_app, name="module", rich_help_panel="Advanced")
 app.add_typer(packet_app, name="packet")
 console = Console()
 _VERBOSE = False
@@ -463,7 +463,7 @@ def _detect_module_names_for_package(package: str | None) -> list[str] | None:
     return None
 
 
-@app.command("detect")
+@app.command("detect", rich_help_panel="Advanced")
 def detect_cmd(
     path: Path = typer.Option(Path("."), "--path"),
     base_ref: Optional[str] = typer.Option(None, "--base-ref"),

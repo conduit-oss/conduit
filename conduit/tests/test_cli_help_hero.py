@@ -1,5 +1,3 @@
-"""Top-level help shows packet / apply / Watch as hero; detect stays Advanced."""
-
 from __future__ import annotations
 
 from typer.testing import CliRunner
@@ -27,12 +25,26 @@ def _panel_body(help_text: str, title: str) -> str:
     return rest
 
 
+def _command_names(panel_body: str) -> set[str]:
+    names: set[str] = set()
+    for line in panel_body.splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith("│"):
+            continue
+        inner = stripped[1:].strip()
+        if not inner or set(inner) <= {"─", "│", "┌", "┐", "└", "┘"}:
+            continue
+        name = inner.split(None, 1)[0]
+        names.add(name)
+    return names
+
+
 def test_top_level_help_demotes_detect_and_module():
     code, text = _help_text("--help")
     assert code == 0
 
-    commands = _panel_body(text, "Commands")
-    advanced = _panel_body(text, "Advanced")
+    commands = _command_names(_panel_body(text, "Commands"))
+    advanced = _command_names(_panel_body(text, "Advanced"))
 
     for hero in ("packet", "watch", "apply"):
         assert hero in commands, f"{hero} missing from Commands panel:\n{text}"
