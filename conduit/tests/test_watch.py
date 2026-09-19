@@ -66,7 +66,7 @@ def test_pre_bump_warns_and_exits_zero(tmp_path: Path):
     assert "warn" in verdict.message.lower()
 
 
-def test_bump_dirty_fails(tmp_path: Path):
+def test_bump_dirty_fails_when_pin_equals_to_version(tmp_path: Path):
     tree = _make_tree(tmp_path / "demo", pin="openai==1.0.0", src=DIRTY_SRC)
     verdict = evaluate_watch(root=tree, packet=_packet())
     assert verdict.exit_code != 0
@@ -74,12 +74,65 @@ def test_bump_dirty_fails(tmp_path: Path):
     assert any("ChatCompletion" in item.callee for item in verdict.leftovers)
 
 
-def test_clean_pass(tmp_path: Path):
+def test_bump_dirty_fails_when_pin_past_to_version(tmp_path: Path):
+    tree = _make_tree(tmp_path / "demo", pin="openai==1.5.0", src=DIRTY_SRC)
+    verdict = evaluate_watch(root=tree, packet=_packet())
+    assert verdict.exit_code != 0
+    assert verdict.status == "bump_dirty"
+    assert any("ChatCompletion" in item.callee for item in verdict.leftovers)
+
+
+def test_clean_pass_when_pin_equals_to_version(tmp_path: Path):
     tree = _make_tree(tmp_path / "demo", pin="openai==1.0.0", src=CLEAN_SRC)
     verdict = evaluate_watch(root=tree, packet=_packet())
     assert verdict.exit_code == 0
     assert verdict.status == "clean"
     assert verdict.leftovers == ()
+
+
+def test_clean_pass_when_pin_past_to_version(tmp_path: Path):
+    tree = _make_tree(tmp_path / "demo", pin="openai==1.5.0", src=CLEAN_SRC)
+    verdict = evaluate_watch(root=tree, packet=_packet())
+    assert verdict.exit_code == 0
+    assert verdict.status == "clean"
+    assert verdict.leftovers == ()
+
+
+def _pin_only_packet() -> dict:
+    return {
+        "packet_id": "demo-pin-only-1.0.0",
+        "package": "openai",
+        "ecosystem": "pypi",
+        "from_version": "0.28.1",
+        "to_version": "1.0.0",
+        "rules": [
+            {
+                "type": "DEPENDENCY_BUMP",
+                "package": "openai",
+                "from_version": "0.28.1",
+                "to_version": "1.0.0",
+                "ecosystems": ["pip"],
+                "reason": "pin only",
+            }
+        ],
+    }
+
+
+def test_pin_only_at_to_version_is_no_rules_not_clean(tmp_path: Path):
+    tree = _make_tree(tmp_path / "demo", pin="openai==1.0.0", src=CLEAN_SRC)
+    verdict = evaluate_watch(root=tree, packet=_pin_only_packet())
+    assert verdict.status == "no_rules"
+    assert verdict.status != "clean"
+    assert verdict.exit_code == 0
+    assert "no call-site rules" in verdict.message
+
+
+def test_pin_only_past_to_version_is_no_rules_not_clean(tmp_path: Path):
+    tree = _make_tree(tmp_path / "demo", pin="openai==1.5.0", src=CLEAN_SRC)
+    verdict = evaluate_watch(root=tree, packet=_pin_only_packet())
+    assert verdict.status == "no_rules"
+    assert verdict.exit_code == 0
+    assert "no call-site rules" in verdict.message
 
 
 def test_watch_cli_bump_dirty_exit_and_no_rewrite(tmp_path: Path):
@@ -107,3 +160,18 @@ def test_watch_cli_json_encodes_status(tmp_path: Path):
     assert payload["status"] == "pre_bump"
     assert payload["exit_code"] == 0
     assert payload["leftover_count"] >= 1
+
+
+def test_watch_cli_json_encodes_no_rules(tmp_path: Path):
+    tree = _make_tree(tmp_path / "demo", pin="openai==1.0.0", src=CLEAN_SRC)
+    packet_path = tmp_path / "pin-only.json"
+    packet_path.write_text(json.dumps(_pin_only_packet()), encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["watch", "--path", str(tree), "--packet", str(packet_path), "--json"],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "no_rules"
+    assert "no call-site rules" in payload["message"]
