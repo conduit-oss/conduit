@@ -1,5 +1,7 @@
 # Detect modules
 
+**Leave-public-OSS / private-factory note.** Detect modules and `conduit module *` are a **private-factory adjacent** surface. The public consumer path is packets, apply, and Watch. This page stays in the public tree so the CLI still works, but treat module authoring as maintainer tooling, not the product hero. A later program may move this code to a private repo; this demotion does not delete it.
+
 Detect modules are **vendor-specific plugins** that emit `ChangeSignal`s (API renames, deprecations, suggested packet rules) beyond raw lockfile diffs.
 
 ## Interface
@@ -112,6 +114,7 @@ conduit run --skip-modules          # lockfile only
 
 ## Related docs
 
+- [Getting started](getting-started.md) (consumer path first)
 - [Detection](detection.md)
 - [Migration packets](migration-packets.md)
 - [CLI reference](cli-reference.md)
