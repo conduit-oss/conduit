@@ -1,13 +1,16 @@
 # Conduit documentation
 
-Deep dives for every major part of the system. Start with the [root README](../README.md) for the consumer path (**packets → apply → Watch**), then use these pages when you need detail.
+Two audiences share this repo. Consumers apply published packets. Producers author and publish them. Detect stays Advanced.
 
-## Consumer path
+Start with the [root README](../README.md) for both paths in one screen.
+
+## Consumer
+
+Load a packet, apply or run, then gate leftovers with Watch.
 
 | Doc | Covers |
 |-----|--------|
 | [Getting started](getting-started.md) | Install, packet apply, Watch gate, first real-repo run |
-| [Migration packets](migration-packets.md) | Schema, `--packet` name/file, version resolution, cache, synthesis |
 | [GitHub Actions](github-actions.md) | Watch CI gate, Dependabot intercept, nightly, composite action |
 | [CLI reference](cli-reference.md) | Every command and flag |
 | [Codemods](codemods.md) | Rule types and pluggable language engines (Python, JS/TS, Java, Go) |
@@ -16,9 +19,20 @@ Deep dives for every major part of the system. Start with the [root README](../R
 | [Pull requests](pull-requests.md) | Branching, `gh`, PR body |
 | [Architecture](architecture.md) | End-to-end pipeline and design principles |
 
-## Advanced / private-factory adjacent
+## Producer
 
-Detect modules and lockfile-first detection remain in this repo for maintainers who author packets from vendor signals. They are not the public hero path. See the leave-public-OSS note in [Detect modules](detect-modules.md).
+Author Migration Packets and publish them into a catalog.
+
+| Doc | Covers |
+|-----|--------|
+| [Migration packets](migration-packets.md) | Schema, `packet new` / `test` / `publish`, hop scaffolding, version resolution |
+| [CLI reference](cli-reference.md#conduit-packet) | Packet subcommands and flags |
+| [Codemods](codemods.md) | Rule types you put in a packet |
+| [LLM configuration](llm.md) | Enrichment for `packet new` and `packet synthesize` |
+
+## Advanced
+
+Detect modules and lockfile-first detection remain for maintainers who author packets from vendor signals. They are not the public hero path. See the leave-public-OSS note in [Detect modules](detect-modules.md).
 
 | Doc | Covers |
 |-----|--------|

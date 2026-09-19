@@ -172,7 +172,7 @@ Scaffold a **profile-backed** detect module. On a TTY, prompts for source URLs (
 
 ### `packet new`
 
-Author a Migration Packet from source URLs (TTY prompts or flags). Writes `packets/{pkg}-{eco}-{version}.json` by default.
+Author a Migration Packet from source URLs (TTY prompts or flags). Writes `packets/{pkg}-{eco}-{version}.json` by default. Top-level `from_version` is `*` at author time.
 
 | Option | Description |
 |--------|-------------|
@@ -184,7 +184,13 @@ Author a Migration Packet from source URLs (TTY prompts or flags). Writes `packe
 | `--no-enrich` | Skip LLM enrichment |
 | `--scaffold-only` | Dependency hop + sources only (skip LLM) |
 
-On a TTY, after package/ecosystem/version, prompts for source URLs until a blank line. Fetches URLs into `sources`; when an LLM is configured and sources are present, enriches rules by default. Without an LLM, still writes a valid packet with `DEPENDENCY_BUMP` + sources (never invents AST rules). Multi-statement gaps go in `side_effects`.
+On a TTY, after package/ecosystem/version, prompts for source URLs until a blank line. Fetches URLs into `sources`. When an LLM is configured and sources are present, enriches rules by default. Without an LLM, still writes a valid packet with `DEPENDENCY_BUMP` + sources (never invents AST rules). Multi-statement gaps go in `side_effects`.
+
+```bash
+conduit packet new \
+  --package google-genai --ecosystem pypi --version 1.0.0 \
+  --source-url https://googleapis.github.io/python-genai/
+```
 
 ### `packet test`
 
@@ -197,24 +203,10 @@ Validate + summarize a packet. Optional dry-run apply (no verify / no credential
 
 Without `--path`, prints validity + summary (rules, sources, side_effects). Does not require `examples/*-consumer`.
 
-### `packet init`
-
-Scaffold an empty packet directory / file.
-
-| Option | Description |
-|--------|-------------|
-| `--package` | required |
-| `--from` / `--to` | versions |
-| `--ecosystem` | `pypi` default |
-| `--out` | output directory |
-
-### `packet synthesize`
-
-Build rules from `--changelog` / `--docs` (LLM if configured).
-
-### `packet validate`
-
-JSON Schema validation; exit non-zero on errors.
+```bash
+conduit packet test --packet ./packets/google-genai-pypi-1.0.0.json
+conduit packet test --packet ./packets/google-genai-pypi-1.0.0.json --path ./examples/demo-consumer
+```
 
 ### `packet publish`
 
@@ -234,6 +226,25 @@ conduit packet publish \
   --packet ./examples/sample-packet/conduit-packet.json \
   --catalog /path/to/conduit-packets
 ```
+
+### `packet init`
+
+Scaffold an empty packet directory / file. Explicit `--from` / `--to` hop (not used by `packet new`).
+
+| Option | Description |
+|--------|-------------|
+| `--package` | required |
+| `--from` / `--to` | versions |
+| `--ecosystem` | `pypi` default |
+| `--out` | output directory |
+
+### `packet synthesize`
+
+Build rules from `--changelog` / `--docs` (LLM if configured). Requires `--package`, `--from`, `--to`.
+
+### `packet validate`
+
+JSON Schema validation; exit non-zero on errors.
 
 ### `packet show`
 
@@ -256,41 +267,12 @@ Writes `{package}-{ecosystem}-{to_version}.json` (e.g. `openai-pypi-2.0.0.json`,
 
 Unknown `--module` or no scanned target version → exit 2.
 
-### `packet new`
-
-Guided hop packet: prefer `from-detect` when a detect module exists, else scaffold; validate; write; print a try-it line.
-
-| Option | Description |
-|--------|-------------|
-| `--package` | Package name (prompted if omitted) |
-| `--ecosystem` | `pypi` / `npm` / `go` / `maven` (default prompt: `pypi`) |
-| `--from` / `--to` | Version hop |
-| `--from-consumer` | Read `--from` from consumer pin under `--path` |
-| `--path` | Consumer repo for `--from-consumer` / try-it path |
-| `--enrich` | Optional LLM enrich (same as `from-detect --enrich`) |
-| `--demo` | Offline detect fixtures |
-| `--scaffold-only` | Skip from-detect; write empty scaffold |
-| `--out` | Output JSON (default `packets/{pkg}-{eco}-{to}.json`) |
-
-```bash
-conduit packet new --package openai --ecosystem pypi --from 0.28.1 --to 1.0.0 --scaffold-only
-conduit packet test --packet ./packets/openai-pypi-1.0.0.json --path ./examples/demo-consumer
-```
-
 ### `packet diff-rules`
 
 Summarize rules added/removed vs the previous hop snapshot (`--previous`, or search the packet’s directory).
 
 ```bash
 conduit packet diff-rules ./packets/openai-pypi-1.40.0.json --previous ./packets/openai-pypi-1.0.0.json
-```
-
-### `packet test`
-
-Validate + dry-run apply + coverage on `--path` (default `examples/demo-consumer`). No verify and no credential gate.
-
-```bash
-conduit packet test --packet ./packets/openai-pypi-1.0.0.json --path ./examples/demo-consumer
 ```
 
 ### `packet export-post-rules`
