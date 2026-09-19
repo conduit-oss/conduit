@@ -187,7 +187,13 @@ conduit run --path . --packet https://example.com/packets/openai-pypi-1.109.1.js
 
 Give a Python client the **pypi** hops with `to_version` greater than their pin, in order. Node clients get the **npm** chain. There is no `--packet-dir` chain runner yet. The wrong hop still rewrites the pin and can skip earlier delta rules.
 
-**Apply order.** `conduit run` / `conduit apply` runs two stages on the scoped packet. **SDK** first (dependency bumps + AST call/import/param rules on code files), then **REST** (EXACT/REGEX path and model literals, KEY_RENAME in configs). REST path strings such as `/v1/fine-tunes` are never applied as Python callees. Invalid `AST_CALL_REWRITE` rules are skipped at apply time.
+### Apply order
+
+`conduit run` / `conduit apply` runs two stages on the scoped packet. **SDK** first (dependency bumps + AST call/import/param rules on code files), then **REST** (EXACT/REGEX path and model literals, KEY_RENAME in configs). REST path strings such as `/v1/fine-tunes` are never applied as Python callees. Invalid `AST_CALL_REWRITE` rules are skipped at apply time.
+
+### OpenAI client chain
+
+After those packet stages, `conduit run` still calls `apply_openai_client_chain`. That step rewrites module-level openai calls into `OpenAI()` + `client.*` form and strips stale pre-1.0 guards. It is openai-only polish, not a generic apply path for every packet. The demo kill bar needs both the sample packet rules and this chain. Packet rules alone are not the full openai kill bar.
 
 ## Publish into a catalog
 

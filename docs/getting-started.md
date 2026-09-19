@@ -63,7 +63,7 @@ What you should see:
 
 1. A packet is loaded (`openai-0.28.1-1.0.0`)
 2. Files importing `openai` are pruned (typically `src/ai_client.py`)
-3. Codemods rewrite `ChatCompletion.create` → modern chat completions, bump the pin, then client-chain polish (`OpenAI()` + `client.*`)
+3. Codemods rewrite `ChatCompletion.create` → modern chat completions and bump the pin. Then openai-only `apply_openai_client_chain` polish runs (`OpenAI()` + `client.*`). Packet rules alone are not the full openai kill bar.
 4. PR creation is skipped so you can inspect the working tree
 
 `--demo` forces offline fixtures (and the openai demo packet fallback) and skips the consumer `OPENAI_API_KEY` gate used for live OpenAI verify. Use `--skip-tests` for the structural kill-bar proof (demo tests assert the legacy surface on purpose; run the suite after you accept the migrated tree, or restore with checkout).

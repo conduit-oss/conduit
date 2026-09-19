@@ -43,6 +43,8 @@ Conduit is a **self-hosted migration engine**. It does not rely on a central pac
 └─────────────────┘
 ```
 
+After packet apply, `conduit run` still calls `apply_openai_client_chain` for openai client-shape polish (`OpenAI()` + `client.*`, stale pre-1.0 guard strip). That step is openai-only. It is not a generic apply path for other packages. Packet rules alone are not the full openai kill bar. See [OpenAI client chain](migration-packets.md#openai-client-chain).
+
 Packet `from_version` prefers lockfile jump signals, else the version declared in manifests (`read_installed`). `to_version` comes from signals or `DEPENDENCY_BUMP` rules. See [Migration packets](migration-packets.md).
 
 ## Tiered scoping (why it stays fast)
