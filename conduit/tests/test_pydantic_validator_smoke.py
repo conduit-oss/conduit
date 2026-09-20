@@ -58,8 +58,13 @@ def test_pydantic_validator_hop_packet_validates():
     assert "AST_CALL_REWRITE" in types
     effects = data.get("side_effects") or []
     joined = " ".join(str(e.get("detail") or "") for e in effects)
-    assert ".dict()" in joined
     assert "classmethod" in joined.lower() or "signature" in joined.lower()
+    assert any(
+        str(r.get("old_callee") or "").endswith(".dict")
+        or str(r.get("old_callee") or "") == "dict"
+        for r in data["rules"]
+        if isinstance(r, dict)
+    )
 
 
 def test_pydantic_validator_smoke_cli_watch_apply_watch(tmp_path: Path, monkeypatch):
@@ -109,8 +114,10 @@ def test_pydantic_validator_smoke_cli_watch_apply_watch(tmp_path: Path, monkeypa
     assert clean_payload["leftovers"] == []
 
     dict_hits, config_hits = _residue_counts(tree)
-    assert dict_hits >= 1
+    assert dict_hits == 0
     assert config_hits == 0
-    assert "model_config = ConfigDict(from_attributes=True)" in src.read_text(
-        encoding="utf-8"
-    ).replace(" ", "") or "from_attributes=True" in src.read_text(encoding="utf-8")
+    body = src.read_text(encoding="utf-8")
+    assert "model_dump" in body
+    assert "model_config = ConfigDict(from_attributes=True)" in body.replace(
+        " ", ""
+    ) or "from_attributes=True" in body

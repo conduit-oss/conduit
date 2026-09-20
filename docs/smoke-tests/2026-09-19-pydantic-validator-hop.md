@@ -1,65 +1,55 @@
-# Smoke: pydantic validator hop (2026-09-19)
+# Smoke: pydantic validator hop (updated for remint-trust cook)
 
 Offline, no LLM keys. Proves CLI `conduit watch` → `conduit apply` → `conduit watch`
-exits 1 → 0 → 0 for a frozen `validator` → `field_validator` hop on a tiny fixture.
-Does not claim a mergeable pydantic v2 upgrade of pydavinci or any other real consumer.
+exits 1 → 0 → 0 for a frozen gold-shape hop on a tiny fixture: `validator` →
+`field_validator`, `BaseModel.dict` → `model_dump`, inner `Config` → `model_config`.
+Does not claim a mergeable pydantic v2 upgrade of a real consumer.
 
 ## Inputs
 
 | Item | Path |
 |------|------|
-| Fixture | `examples/pydantic-validator-fixture/` (`pydantic==1.10.13`, `@validator("name")`) |
+| Fixture | `examples/pydantic-validator-fixture/` (`pydantic==1.10.13`, `@validator("name")`, `self.dict()`, nested `Config`) |
 | Packet | `examples/sample-packet/pydantic-validator-hop.json` |
+| Packet SHA-256 | `7d64c3ff437b01479f6fdb65d937527ec2667683e524af3bead17356eda3c3a6` |
+| Receipt | `docs/smoke-tests/check-remint-receipt.py --packet examples/sample-packet/pydantic-validator-hop.json` |
 | Unit | `conduit/tests/test_pydantic_validator_smoke.py` (CliRunner) |
-| CI | `.github/workflows/conduit-watch-demo.yml` jobs `pydantic-watch-dirty-fail` and `pydantic-watch-clean-pass` |
 
-Packet rules: `DEPENDENCY_BUMP` to `2.0.0`, `AST_IMPORT_REWRITE` on the import-clause
-fragment `BaseModel, validator` → `BaseModel, field_validator`, then
-`AST_CALL_REWRITE` `validator` → `field_validator`. Import rewrite uses the clause
-fragment on purpose. A bare `validator` string fallback would re-prefix
-`field_validator` on a second apply.
+Packet rules: `DEPENDENCY_BUMP` to `2.0.0`; `AST_DECLARATION_REWRITE`
+`import_member` + `inner_class_to_assignment`; `AST_CALL_REWRITE` for bare
+`validator` and `BaseModel.dict`. Clause-fragment `AST_IMPORT_REWRITE` is refused
+at normalize; companions come from cook.
 
-`side_effects` name uncovered work: `.dict()`, inner `Config`, and
-signature / `classmethod` reshape.
+`side_effects` name uncovered reshape work (`@classmethod` / signature / `mode=`).
 
-Catalog publish of this hop under `packets/` is deferred. The smoke loads the
-committed sample-packet path. CLI lock is this slice.
+## Gold obligations (typed receipt)
 
-## Inventory
+| Shape | Mode |
+|-------|------|
+| dict (`AST_CALL_REWRITE` leaf) | mechanical |
+| validator (CALL + `import_member`) | mechanical |
+| Config (`inner_class_to_assignment`) | mechanical |
 
-| Bucket | Items |
-|--------|-------|
-| Watch-visible | Pin at `to_version` with leftover `old_callee` `validator` |
-| Apply-only | Import-clause rewrite (`AST_IMPORT_REWRITE`); pin bump |
-| Out-of-engine | `.dict()`, `class Config` / `orm_mode`, `@classmethod` / signature / `mode=` |
-
-## Measured run (head of this PR)
+## Measured run
 
 Seed the fixture pin at `pydantic==2.0.0` so the first Watch is `bump_dirty`, not
 `pre_bump`. Then apply and Watch again on the same tree.
 
 | Step | Result |
 |------|--------|
-| CLI Watch at `to_version` with seeded leftover | exit 1 |
-| CLI apply | exit 0; `@field_validator("name")`; pin `pydantic==2.0.0`; no `field_field_validator` |
+| CLI Watch at `to_version` with seeded leftover | exit 1 (`validator` leftover) |
+| CLI apply | exit 0; `@field_validator`; `self.model_dump()`; `model_config = ConfigDict(...)`; pin `2.0.0` |
 | Second CLI apply | Model and requirements bytes unchanged |
-| CLI Watch post | exit 0 |
-| Residue `.dict(` count | 1 |
-| Residue `class Config` count | 1 |
-
-Commands used no LLM env vars. Pytest stubs `sync_bumped_packages` so the unit
-path stays offline. CI runs real `conduit apply` including env sync.
+| CLI Watch post | exit 0; leftovers `[]` |
+| Residue `.dict(` | 0 |
+| Residue `class Config` | 0 |
 
 ## Dual verdict
 
 | Gate | Verdict |
 |------|---------|
-| Gate validity (Watch red → green for this hop, no double prefix) | PASS |
+| Gate validity (Watch red → green; gold shapes mechanical) | PASS |
 | Migration completeness (full pydantic v2 / mergeable consumer) | FAIL |
-
-Full v2 still needs the `side_effects` work and more. This smoke only proves the
-Watch-visible hop on a fixture that avoids pydavinci’s `settings.validator`
-module-name smash.
 
 ## Pytest
 

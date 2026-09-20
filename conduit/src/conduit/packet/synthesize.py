@@ -239,11 +239,16 @@ _LLM_RULE_ALLOWED_KEYS: dict[str, frozenset[str]] = {
 }
 
 
-def normalize_llm_rule(rule: dict[str, Any]) -> dict[str, Any] | None:
+def normalize_llm_rule(
+    rule: dict[str, Any],
+    *,
+    package: str | None = None,
+) -> dict[str, Any] | None:
     """Map common LLM aliases onto schema field names; strip unknown keys.
 
-    Returns ``None`` when the rule should be dropped (e.g. class-shaped
-    ``AST_PARAM_RENAME`` that belongs in ``AST_DECLARATION_REWRITE`` / side_effects).
+    Returns ``None`` when the rule should be dropped (e.g. invalid import
+    fragments). Class-shaped ``AST_PARAM_RENAME`` is promoted to
+    ``AST_DECLARATION_REWRITE`` ``inner_class_to_assignment`` when possible.
     """
     if not isinstance(rule, dict):
         return rule
@@ -270,7 +275,16 @@ def normalize_llm_rule(rule: dict[str, Any]) -> dict[str, Any] | None:
     if rtype == "AST_PARAM_RENAME" and _is_class_shaped_param_target(
         str(out.get("function_target") or "")
     ):
-        return None
+        return _promote_class_param_to_declaration(out, package=package)
+
+    if rtype == "AST_IMPORT_REWRITE":
+        from conduit.packet.cook import is_module_path_import
+
+        old_imp = str(out.get("old_import") or "").strip()
+        new_imp = str(out.get("new_import") or "").strip()
+        if not is_module_path_import(old_imp) or not is_module_path_import(new_imp):
+            # Clause fragments / statement strings belong in import_member, not here.
+            return None
 
     needs_targets = rtype in {
         "AST_CALL_REWRITE",
@@ -294,6 +308,43 @@ def normalize_llm_rule(rule: dict[str, Any]) -> dict[str, Any] | None:
     return out
 
 
+def _promote_class_param_to_declaration(
+    rule: dict[str, Any],
+    *,
+    package: str | None,
+) -> dict[str, Any] | None:
+    """Turn Config/orm_mode-style PARAM into inner_class_to_assignment."""
+    inner = str(rule.get("function_target") or "").strip()
+    old_param = str(rule.get("old_param") or "").strip()
+    new_param = str(rule.get("new_param") or "").strip()
+    if not inner or not old_param.isidentifier() or not new_param.isidentifier():
+        return None
+    targets = rule.get("target_files")
+    if not isinstance(targets, list) or not targets:
+        targets = list(_DEFAULT_TARGET_FILES)
+    emit: dict[str, Any] = {
+        "target": "model_config",
+        "constructor": "ConfigDict",
+    }
+    pkg = (package or "").strip()
+    if pkg:
+        emit["ensure_import"] = {"module": pkg, "name": "ConfigDict"}
+    return {
+        "type": "AST_DECLARATION_REWRITE",
+        "target_files": list(targets),
+        "operation": {
+            "kind": "inner_class_to_assignment",
+            "selector": {"inner_name": inner, "parent_bases_any": []},
+            "keys": {old_param: new_param},
+            "emit": emit,
+            "unmapped_assignments": "refuse",
+            "unsupported_members": "refuse",
+        },
+        "reason": rule.get("reason")
+        or f"Promoted class-shaped PARAM {inner}.{old_param} -> {new_param}",
+    }
+
+
 _CLASS_SHAPED_PARAM_TARGETS = frozenset(
     {"config", "meta", "modelconfig", "options", "settings"}
 )
@@ -310,7 +361,11 @@ def _is_class_shaped_param_target(function_target: str) -> bool:
     return bool(ft.isidentifier() and ft[0].isupper())
 
 
-def normalize_llm_rules(rules: Any) -> list[dict[str, Any]]:
+def normalize_llm_rules(
+    rules: Any,
+    *,
+    package: str | None = None,
+) -> list[dict[str, Any]]:
     """Normalize a rules list from LLM JSON; attach surface floor for call rewrites."""
     from conduit.surface.mint_surface import enrich_minted_rules
 
@@ -320,7 +375,7 @@ def normalize_llm_rules(rules: Any) -> list[dict[str, Any]]:
     for r in rules:
         if not isinstance(r, dict) or not r.get("type"):
             continue
-        cleaned = normalize_llm_rule(r)
+        cleaned = normalize_llm_rule(r, package=package)
         if cleaned is not None:
             normalized.append(cleaned)
     return enrich_minted_rules(normalized)
@@ -769,8 +824,8 @@ def synthesize_from_docs(
             "AST_ATTR_RENAME requires target_files, old_attr, new_attr. "
             "AST_PARAM_RENAME requires target_files, function_target (a call chain like "
             "client.chat.completions.create — never bare Config/Meta), old_param, "
-            "new_param. Class/nested-config renames use AST_DECLARATION_REWRITE or "
-            "side_effects, not AST_PARAM_RENAME. "
+            "new_param. Class/nested-config renames use AST_DECLARATION_REWRITE "
+            "inner_class_to_assignment (cook also promotes bare Config PARAM). "
             "AST_IMPORT_REWRITE is module-path only (old_import/new_import dotted modules). "
             "AST_DECLARATION_REWRITE operation.kind import_member "
             "(source/target {module,name}) renames a name inside from-imports; "
@@ -821,7 +876,10 @@ def synthesize_from_docs(
                     data.get("side_effects")
                 )
             if "rules" in data:
-                data["rules"] = normalize_llm_rules(data.get("rules"))
+                data["rules"] = normalize_llm_rules(
+                    data.get("rules"),
+                    package=str(packet.get("package") or package or "") or None,
+                )
             # Keep seed identity fields so validate_packet can succeed.
             for key in (
                 "packet_id",
@@ -933,6 +991,11 @@ def _rule_dedupe_key(rule: dict[str, Any]) -> str:
                 "old_callee": rule.get("old_callee"),
                 "new_callee": rule.get("new_callee"),
             },
+            sort_keys=True,
+        )
+    if rtype == "AST_DECLARATION_REWRITE":
+        return json.dumps(
+            {"type": rtype, "operation": rule.get("operation")},
             sort_keys=True,
         )
     if rtype == "AST_ATTR_RENAME":
@@ -1265,7 +1328,7 @@ def synthesize_from_evidence(
     if not isinstance(llm_rules, list):
         warnings.append("LLM packet enrichment missing rules list")
         return base, warnings
-    llm_rules = normalize_llm_rules(llm_rules)
+    llm_rules = normalize_llm_rules(llm_rules, package=package)
 
     probe = {
         "packet_id": base.get("packet_id"),

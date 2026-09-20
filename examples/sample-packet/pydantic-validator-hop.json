@@ -10,12 +10,8 @@
       "kind": "docs"
     }
   ],
-  "notes": "Frozen harness smoke for Watch-visible validator hop + declaration rewrites. AST_DECLARATION_REWRITE renames import members and collapses inner Config; AST_CALL_REWRITE covers @validator. Hand-authored; not LLM packet new.",
+  "notes": "Frozen harness smoke for Watch-visible validator hop + declaration rewrites + BaseModel.dict CALL. AST_DECLARATION_REWRITE renames import members and collapses inner Config; AST_CALL_REWRITE covers @validator and BaseModel.dict. Hand-authored; not LLM packet new.",
   "side_effects": [
-    {
-      "kind": "other",
-      "detail": "Instance .dict() stays Watch-blind and is not rewritten; migrate to model_dump by hand."
-    },
     {
       "kind": "other",
       "detail": "field_validator often needs @classmethod and signature or mode= reshape; not expressed by AST_CALL_REWRITE."
@@ -62,6 +58,13 @@
         "unsupported_members": "refuse"
       },
       "reason": "Inner Config with mapped keys becomes model_config = ConfigDict(...)."
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": ["*.py"],
+      "old_callee": "BaseModel.dict",
+      "new_callee": "BaseModel.model_dump",
+      "reason": "BaseModel.dict() → model_dump(); instance .dict() without receiver bind stays Watch-visible residual."
     },
     {
       "type": "AST_CALL_REWRITE",
