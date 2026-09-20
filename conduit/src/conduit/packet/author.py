@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -29,9 +30,20 @@ PIN_ONLY_WARNING = (
 )
 _DEPENDENCY_RULE_PREFIX = "DEPENDENCY_"
 
+# Mechanical SDK surfaces that make a remint "rules-bearing" for apply/Watch.
+# PARAM/EXACT/REGEX alone are false-rich (pass old thin gate, miss real hops).
+_SURFACE_REWRITE_TYPES = frozenset(
+    {
+        "AST_CALL_REWRITE",
+        "AST_ATTR_RENAME",
+        "AST_IMPORT_REWRITE",
+        "AST_DECLARATION_REWRITE",
+    }
+)
+
 
 class ThinEnrichError(ValueError):
-    """Enrich ran with fetched sources but produced no call-site rewrite rules."""
+    """Enrich ran with fetched sources but produced no usable surface rewrite rules."""
 
 
 def call_site_rewrite_rules(packet: dict[str, Any]) -> list[dict[str, Any]]:
@@ -45,6 +57,27 @@ def call_site_rewrite_rules(packet: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         out.append(rule)
     return out
+
+
+def surface_rewrite_rules(packet: dict[str, Any]) -> list[dict[str, Any]]:
+    """AST call/attr/import/declaration rules that drive real SDK hops."""
+    out: list[dict[str, Any]] = []
+    for rule in packet.get("rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        if str(rule.get("type") or "") in _SURFACE_REWRITE_TYPES:
+            out.append(rule)
+    return out
+
+
+def enrich_is_false_rich(packet: dict[str, Any]) -> bool:
+    """True when non-dependency rules exist but none are surface rewrites."""
+    return bool(call_site_rewrite_rules(packet)) and not surface_rewrite_rules(packet)
+
+
+def enrich_lacks_surface(packet: dict[str, Any]) -> bool:
+    """True when enrich produced no surface rewrite family (thin or false-rich)."""
+    return not surface_rewrite_rules(packet)
 
 
 def _mark_pin_only(packet: dict[str, Any], *, reason: str) -> None:
@@ -222,8 +255,11 @@ def create_packet_new(
     docs / evidence seeds. Never invents AST rules without an LLM.
 
     After enrich with at least one fetched source, refuses to write when the
-    packet has no call-site rewrite rules beyond DEPENDENCY_* unless
-    ``allow_pin_only`` is set (noisy: warning + ``pin_only=allow`` note).
+    packet has no *surface* rewrite rules (AST_CALL_REWRITE, AST_ATTR_RENAME,
+    AST_IMPORT_REWRITE, AST_DECLARATION_REWRITE) unless ``allow_pin_only`` is set
+    (noisy: warning + ``pin_only=allow`` note). PARAM/EXACT/REGEX-only enrich is
+    treated as false-rich and refused the same way. One automatic evidence retry
+    runs before the refuse.
     """
     warnings: list[str] = []
     emit = log if callable(log) else None
@@ -301,87 +337,170 @@ def create_packet_new(
     if deliberate_pin:
         warnings.append("Enrichment skipped (--scaffold-only / --no-enrich)")
 
-    if do_enrich:
+    def _normalize_and_ensure_bump(p: dict[str, Any]) -> dict[str, Any]:
+        p = dict(p)
+        p["rules"] = collapse_dependency_bumps(
+            normalize_llm_rules(list(p.get("rules") or [])),
+            package=package,
+            from_version=_ANY_FROM,
+            to_version=version,
+        )
+        has_bump = any(
+            isinstance(r, dict)
+            and r.get("type") == "DEPENDENCY_BUMP"
+            and str(r.get("package") or "").lower() == package.lower()
+            for r in p.get("rules") or []
+        )
+        if not has_bump:
+            p.setdefault("rules", []).insert(
+                0,
+                {
+                    "type": "DEPENDENCY_BUMP",
+                    "package": package,
+                    "from_version": _ANY_FROM,
+                    "to_version": version,
+                    "ecosystems": ecosystems_for_packet(ecosystem),
+                    "reason": f"Pin {package} to target version {version}",
+                },
+            )
+        p["sources"] = _dedupe_sources(list(p.get("sources") or []) + sources)
+        p["packet_id"] = packet_id_for_target(package, ecosystem, version)
+        p["from_version"] = _ANY_FROM
+        p["to_version"] = version
+        return p
+
+    def _enrich_once(base: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        local_warnings: list[str] = []
         joined = "\n\n".join(fetched_parts)
         if emit:
             emit("Synthesizing rules from fetched sources…")
-        packet = synthesize_from_docs(
+        p = synthesize_from_docs(
             package=package,
             from_version=_ANY_FROM,
             to_version=version,
             ecosystem=ecosystem,
             changelog_text=joined,
             docs_text="",
-            base=packet,
+            base=base,
             append_local_sources=False,
         )
-        packet["packet_id"] = packet_id_for_target(package, ecosystem, version)
-        packet["from_version"] = _ANY_FROM
-        packet["to_version"] = version
+        p["packet_id"] = packet_id_for_target(package, ecosystem, version)
+        p["from_version"] = _ANY_FROM
+        p["to_version"] = version
 
+        queries = [
+            f"{package} migration guide {version}",
+            f"{package} changelog breaking changes {version}",
+        ]
         if emit:
             emit("Evidence enrichment from source URLs…")
-        packet, ev_warnings = synthesize_from_evidence(
+
+        p, ev_warnings = synthesize_from_evidence(
             package=package,
             from_version=_ANY_FROM,
             to_version=version,
             ecosystem=ecosystem,
             signals=[],
-            base=packet,
+            base=p,
             seed_urls=unique_urls,
-            suggested_queries=[
-                f"{package} migration guide {version}",
-                f"{package} changelog breaking changes {version}",
-            ],
+            suggested_queries=queries,
             log=emit,
         )
-        warnings.extend(ev_warnings)
-        packet["packet_id"] = packet_id_for_target(package, ecosystem, version)
-        packet["from_version"] = _ANY_FROM
-        packet["to_version"] = version
+        local_warnings.extend(ev_warnings)
+        return _normalize_and_ensure_bump(p), local_warnings
 
-    packet["rules"] = collapse_dependency_bumps(
-        normalize_llm_rules(list(packet.get("rules") or [])),
-        package=package,
-        from_version=_ANY_FROM,
-        to_version=version,
-    )
-    has_bump = any(
-        isinstance(r, dict)
-        and r.get("type") == "DEPENDENCY_BUMP"
-        and str(r.get("package") or "").lower() == package.lower()
-        for r in packet.get("rules") or []
-    )
-    if not has_bump:
-        packet.setdefault("rules", []).insert(
-            0,
-            {
-                "type": "DEPENDENCY_BUMP",
-                "package": package,
-                "from_version": _ANY_FROM,
-                "to_version": version,
-                "ecosystems": ecosystems_for_packet(ecosystem),
-                "reason": f"Pin {package} to target version {version}",
-            },
-        )
-
-    packet["sources"] = _dedupe_sources(list(packet.get("sources") or []) + sources)
+    if do_enrich:
+        packet, ev_w = _enrich_once(packet)
+        warnings.extend(ev_w)
+        if (
+            bool(fetched_urls)
+            and enrich_lacks_surface(packet)
+            and not allow_pin_only
+        ):
+            if emit:
+                emit(
+                    "Enrich lacked surface rewrite families; "
+                    "retrying evidence once (keep prior rules)…"
+                )
+            warnings.append(
+                "enrich retry: no AST_CALL/ATTR/IMPORT/DECLARATION after first pass"
+            )
+            # Evidence-only retry: re-running docs can replace a false-rich packet
+            # with a thinner one. Keep prior rules and ask evidence for missing families.
+            retry_queries = [
+                f"{package} migration guide {version}",
+                f"{package} changelog breaking changes {version}",
+                (
+                    f"{package} renamed methods decorators imports "
+                    "AST_CALL_REWRITE AST_ATTR_RENAME AST_IMPORT_REWRITE "
+                    "AST_DECLARATION_REWRITE"
+                ),
+                (
+                    f"{package} avoid AST_PARAM_RENAME for Config class body; "
+                    "use AST_DECLARATION_REWRITE inner_class_to_assignment; "
+                    "cover validator/dict/Config as rules or side_effects"
+                ),
+            ]
+            if emit:
+                emit(
+                    "Evidence enrichment retry: prefer call/import/declaration "
+                    "surfaces over param-only rules…"
+                )
+            packet, ev_w2 = synthesize_from_evidence(
+                package=package,
+                from_version=_ANY_FROM,
+                to_version=version,
+                ecosystem=ecosystem,
+                signals=[],
+                base=packet,
+                seed_urls=unique_urls,
+                suggested_queries=retry_queries,
+                log=emit,
+            )
+            warnings.extend(ev_w2)
+            packet = _normalize_and_ensure_bump(packet)
+    else:
+        packet = _normalize_and_ensure_bump(packet)
 
     thin_after_enrich = (
         do_enrich and bool(fetched_urls) and not call_site_rewrite_rules(packet)
     )
-    if thin_after_enrich and not allow_pin_only:
+    false_rich_after_enrich = (
+        do_enrich and bool(fetched_urls) and enrich_is_false_rich(packet)
+    )
+    if (thin_after_enrich or false_rich_after_enrich) and not allow_pin_only:
         src_list = ", ".join(fetched_urls)
-        raise ThinEnrichError(
-            "zero call-site rules after enrich with fetched sources: "
-            f"{src_list}. Re-run with richer docs or pass --allow-pin-only "
-            "for a deliberate pin-only hop."
+        if thin_after_enrich:
+            raise ThinEnrichError(
+                "zero call-site rules after enrich with fetched sources: "
+                f"{src_list}. Re-run with richer docs or pass --allow-pin-only "
+                "for a deliberate pin-only hop."
+            )
+        kinds = sorted(
+            {
+                str(r.get("type") or "")
+                for r in call_site_rewrite_rules(packet)
+                if isinstance(r, dict)
+            }
         )
-    if thin_after_enrich or deliberate_pin:
+        raise ThinEnrichError(
+            "false-rich enrich: non-dependency rules but no surface rewrite "
+            f"families (AST_CALL_REWRITE / AST_ATTR_RENAME / AST_IMPORT_REWRITE / "
+            f"AST_DECLARATION_REWRITE); got {kinds or ['(none)']} from {src_list}. "
+            "Re-run with richer docs or pass --allow-pin-only for a deliberate "
+            "pin-only hop."
+        )
+    if thin_after_enrich or deliberate_pin or (
+        false_rich_after_enrich and allow_pin_only
+    ):
         reason = (
             "enrich produced dependency pin only"
             if thin_after_enrich
-            else "scaffold-only / no-enrich deliberate pin hop"
+            else (
+                "enrich produced false-rich non-surface rules only"
+                if false_rich_after_enrich
+                else "scaffold-only / no-enrich deliberate pin hop"
+            )
         )
         _mark_pin_only(packet, reason=reason)
         _require_pin_only_marker(packet)
@@ -409,6 +528,13 @@ def format_packet_summary(packet: dict[str, Any]) -> str:
         f"sources: {len(packet.get('sources') or [])}",
         f"side_effects: {len(packet.get('side_effects') or [])}",
     ]
+    counts = remint_family_counts(packet)
+    surface_n = sum(counts.get(t, 0) for t in _SURFACE_REWRITE_TYPES)
+    lines.append(
+        "families: "
+        + ", ".join(f"{k}={v}" for k, v in sorted(counts.items()) if v)
+        + f" (surface={surface_n})"
+    )
     notes = packet.get("notes")
     if notes:
         lines.append(f"notes: {str(notes).strip()[:240]}")
@@ -421,3 +547,80 @@ def format_packet_summary(packet: dict[str, Any]) -> str:
                 f"  side_effect[{effect.get('kind') or 'other'}]: {effect.get('detail')}"
             )
     return "\n".join(lines)
+
+
+def remint_family_counts(packet: dict[str, Any]) -> dict[str, int]:
+    """Count rule types in a packet (for remint freeze receipts)."""
+    counts: dict[str, int] = {}
+    for rule in packet.get("rules") or []:
+        if not isinstance(rule, dict):
+            continue
+        rtype = str(rule.get("type") or "").strip() or "(missing)"
+        counts[rtype] = counts.get(rtype, 0) + 1
+    return counts
+
+
+_DEFAULT_FIXTURE_TOKENS = ("dict", "Config")
+
+
+def build_remint_receipt(
+    packet: dict[str, Any],
+    *,
+    fixture_tokens: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Remint freeze receipt: family counts + whether fixture tokens are addressed.
+
+    A token is addressed when it appears in a surface/call-site rule string field
+    or in a side_effect detail (case-insensitive substring).
+    """
+    tokens = tuple(fixture_tokens or _DEFAULT_FIXTURE_TOKENS)
+    counts = remint_family_counts(packet)
+    surface = surface_rewrite_rules(packet)
+    call_site = call_site_rewrite_rules(packet)
+    haystacks: list[str] = []
+    for rule in call_site:
+        for key, val in rule.items():
+            if key == "type":
+                continue
+            if isinstance(val, str):
+                haystacks.append(val)
+            elif isinstance(val, (list, dict)):
+                try:
+                    haystacks.append(json.dumps(val, sort_keys=True))
+                except TypeError:
+                    haystacks.append(str(val))
+    for effect in packet.get("side_effects") or []:
+        if isinstance(effect, dict):
+            detail = effect.get("detail")
+            if detail:
+                haystacks.append(str(detail))
+    blob = "\n".join(haystacks).lower()
+    token_hits = {tok: (tok.lower() in blob) for tok in tokens}
+    ok = bool(surface) and all(token_hits.values())
+    return {
+        "ok": ok,
+        "family_counts": counts,
+        "surface_count": len(surface),
+        "call_site_count": len(call_site),
+        "fixture_tokens": token_hits,
+        "side_effects": len(packet.get("side_effects") or []),
+    }
+
+
+def assert_remint_receipt_ok(
+    packet: dict[str, Any],
+    *,
+    fixture_tokens: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, Any]:
+    """Raise ValueError when the remint receipt fails the freeze checklist."""
+    receipt = build_remint_receipt(packet, fixture_tokens=fixture_tokens)
+    if receipt["ok"]:
+        return receipt
+    missing = [t for t, hit in receipt["fixture_tokens"].items() if not hit]
+    raise ValueError(
+        "remint receipt failed: "
+        f"surface_count={receipt['surface_count']} "
+        f"families={receipt['family_counts']} "
+        f"missing_tokens={missing or '(none)'}"
+    )

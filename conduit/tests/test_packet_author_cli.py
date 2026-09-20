@@ -665,9 +665,9 @@ def test_normalize_llm_rule_aliases_match_schema():
             },
             {
                 "type": "AST_PARAM_RENAME",
-                "scope": "Config",
-                "old": "orm_mode",
-                "new": "from_attributes",
+                "scope": "pydantic.Field",
+                "old": "regex",
+                "new": "pattern",
                 "reason": "rename",
             },
             {
@@ -695,5 +695,256 @@ def test_normalize_llm_rule_aliases_match_schema():
     assert "arguments" not in rules[0]
     assert "scope" not in rules[0]
     assert rules[1]["old_attr"] == "__fields__"
-    assert rules[2]["function_target"] == "Config"
-    assert rules[2]["old_param"] == "orm_mode"
+    assert rules[2]["function_target"] == "pydantic.Field"
+    assert rules[2]["old_param"] == "regex"
+
+
+def test_normalize_demotes_class_shaped_param_rename():
+    from conduit.packet.synthesize import normalize_llm_rule, normalize_llm_rules
+
+    dropped = normalize_llm_rule(
+        {
+            "type": "AST_PARAM_RENAME",
+            "function_target": "Config",
+            "old_param": "orm_mode",
+            "new_param": "from_attributes",
+            "target_files": ["*.py"],
+            "reason": "guide table",
+        }
+    )
+    assert dropped is None
+    kept = normalize_llm_rule(
+        {
+            "type": "AST_PARAM_RENAME",
+            "function_target": "client.chat.completions.create",
+            "old_param": "messages",
+            "new_param": "input",
+            "target_files": ["*.py"],
+            "reason": "real kwargs",
+        }
+    )
+    assert kept is not None
+    assert kept["function_target"] == "client.chat.completions.create"
+    rules = normalize_llm_rules(
+        [
+            {
+                "type": "AST_PARAM_RENAME",
+                "function_target": "Config",
+                "old_param": "orm_mode",
+                "new_param": "from_attributes",
+                "reason": "drop me",
+            },
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "BaseModel.dict",
+                "new_callee": "BaseModel.model_dump",
+                "reason": "keep",
+            },
+        ]
+    )
+    types = [r["type"] for r in rules]
+    assert "AST_PARAM_RENAME" not in types
+    assert "AST_CALL_REWRITE" in types
+
+
+def test_enrich_false_rich_helpers():
+    from conduit.packet.author import (
+        enrich_is_false_rich,
+        enrich_lacks_surface,
+        surface_rewrite_rules,
+    )
+
+    thin = {"rules": [{"type": "DEPENDENCY_BUMP", "package": "x"}]}
+    assert enrich_lacks_surface(thin)
+    assert not enrich_is_false_rich(thin)
+
+    false_rich = {
+        "rules": [
+            {"type": "DEPENDENCY_BUMP", "package": "x"},
+            {
+                "type": "AST_PARAM_RENAME",
+                "function_target": "foo.bar",
+                "old_param": "a",
+                "new_param": "b",
+                "target_files": ["*.py"],
+            },
+        ]
+    }
+    assert enrich_is_false_rich(false_rich)
+    assert enrich_lacks_surface(false_rich)
+
+    rich = {
+        "rules": [
+            {"type": "DEPENDENCY_BUMP", "package": "x"},
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "a.b",
+                "new_callee": "a.c",
+                "target_files": ["*.py"],
+            },
+        ]
+    }
+    assert not enrich_is_false_rich(rich)
+    assert surface_rewrite_rules(rich)
+
+
+def test_create_packet_new_false_rich_refuses_write(tmp_path: Path, monkeypatch):
+    from conduit.packet.author import ThinEnrichError
+
+    class FakeClient:
+        def complete_json(self, *args, **kwargs):
+            return {
+                "notes": "param only",
+                "sources": [],
+                "side_effects": [],
+                "rules": [
+                    {
+                        "type": "AST_PARAM_RENAME",
+                        "target_files": ["*.py"],
+                        "function_target": "widgets.Client.create",
+                        "old_param": "foo",
+                        "new_param": "bar",
+                        "reason": "guide table",
+                    }
+                ],
+            }
+
+        def run_agent(self, *args, **kwargs):
+            return self.complete_json()
+
+    client = FakeClient()
+    monkeypatch.setattr("conduit.packet.author.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr("conduit.llm.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr(
+        "conduit.packet.author.fetch_url",
+        lambda url, **kwargs: "migration guide with Config orm_mode table",
+    )
+    out = tmp_path / "widgets-pypi-2.0.0.json"
+    try:
+        create_packet_new(
+            package="widgets",
+            ecosystem="pypi",
+            version="2.0.0",
+            source_urls=["https://docs.example.com/migrate"],
+            out=out,
+            enrich=True,
+        )
+        raise AssertionError("expected ThinEnrichError")
+    except ThinEnrichError as exc:
+        msg = str(exc)
+        assert "false-rich" in msg
+        assert "AST_PARAM_RENAME" in msg
+    assert not out.exists()
+
+
+def test_create_packet_new_false_rich_retries_then_succeeds(
+    tmp_path: Path, monkeypatch
+):
+    calls = {"n": 0}
+
+    class FakeClient:
+        def complete_json(self, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                # First enrich pass (docs + evidence) stays param-only.
+                return {
+                    "notes": "param only",
+                    "sources": [],
+                    "side_effects": [],
+                    "rules": [
+                        {
+                            "type": "AST_PARAM_RENAME",
+                            "target_files": ["*.py"],
+                            "function_target": "widgets.Client.create",
+                            "old_param": "foo",
+                            "new_param": "bar",
+                            "reason": "table",
+                        }
+                    ],
+                }
+            return {
+                "notes": "retry surface",
+                "sources": [],
+                "side_effects": [
+                    {"kind": "config", "detail": "class Config → model_config"}
+                ],
+                "rules": [
+                    {
+                        "type": "AST_CALL_REWRITE",
+                        "target_files": ["*.py"],
+                        "old_callee": "widgets.Client.old",
+                        "new_callee": "widgets.Client.new",
+                        "reason": "retry",
+                    }
+                ],
+            }
+
+        def run_agent(self, *args, **kwargs):
+            return self.complete_json()
+
+    client = FakeClient()
+    monkeypatch.setattr("conduit.packet.author.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr("conduit.llm.get_llm_client", lambda **kwargs: client)
+    monkeypatch.setattr(
+        "conduit.packet.author.fetch_url",
+        lambda url, **kwargs: "migration guide body",
+    )
+    out = tmp_path / "widgets-pypi-2.0.0.json"
+    _path, packet, warnings = create_packet_new(
+        package="widgets",
+        ecosystem="pypi",
+        version="2.0.0",
+        source_urls=["https://docs.example.com/migrate"],
+        out=out,
+        enrich=True,
+    )
+    assert out.is_file()
+    types = {r.get("type") for r in packet["rules"]}
+    assert "AST_CALL_REWRITE" in types
+    assert any("enrich retry" in w for w in warnings)
+    # docs + evidence + evidence-only retry
+    assert calls["n"] >= 3
+
+
+def test_remint_receipt_requires_surface_and_fixture_tokens():
+    from conduit.packet.author import (
+        assert_remint_receipt_ok,
+        build_remint_receipt,
+    )
+
+    poor = {
+        "rules": [
+            {"type": "DEPENDENCY_BUMP", "package": "pydantic"},
+            {
+                "type": "AST_PARAM_RENAME",
+                "function_target": "pydantic.Field",
+                "old_param": "regex",
+                "new_param": "pattern",
+                "target_files": ["*.py"],
+            },
+        ],
+        "side_effects": [],
+    }
+    receipt = build_remint_receipt(poor)
+    assert not receipt["ok"]
+
+    good = {
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "BaseModel.dict",
+                "new_callee": "BaseModel.model_dump",
+                "target_files": ["*.py"],
+            },
+        ],
+        "side_effects": [
+            {"kind": "config", "detail": "Migrate class Config to model_config"}
+        ],
+    }
+    assert assert_remint_receipt_ok(good)["ok"]
+
+    # Optional stricter token (validator) can be required by callers.
+    strict = build_remint_receipt(
+        good, fixture_tokens=("validator", "dict", "Config")
+    )
+    assert not strict["ok"]

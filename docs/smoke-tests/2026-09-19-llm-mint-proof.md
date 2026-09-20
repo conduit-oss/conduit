@@ -121,6 +121,24 @@ Script: `docs/smoke-tests/run-prc-surface-upgrade.py` → `p6-prc-surface-upgrad
 | Apply | exit 0; `SURFACE_DEFINITE_REWRITE` `self.dict`→`self.model_dump` |
 | Post-apply Watch | `clean`; `completeness.status=complete` |
 
+## Remint strengthen (family gate)
+
+Mint no longer treats PARAM/EXACT/REGEX-only enrich as rich. After enrich with
+fetched sources, the packet must include at least one surface family
+(`AST_CALL_REWRITE` / `AST_ATTR_RENAME` / `AST_IMPORT_REWRITE` /
+`AST_DECLARATION_REWRITE`) or refuse (unless `--allow-pin-only`). Class-shaped
+`AST_PARAM_RENAME` targets (`Config`, bare PascalCase) are dropped at normalize.
+Link-only evidence enrich uses one-shot JSON (no multi-turn agent hang).
+
+Freeze receipt checklist:
+
+```text
+python docs/smoke-tests/check-remint-receipt.py
+```
+
+Default tokens: `dict`, `Config` (as rules or `side_effects`). Pass `--token validator`
+for a stricter bar; the P5 hand hop still owns `@validator` → `field_validator`.
+
 ## SUPERSEDED: blocked stub (no keys)
 
 **Status:** SUPERSEDED by the LIVE section above. Kept for Appendix C history when
