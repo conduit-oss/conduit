@@ -86,7 +86,11 @@ def test_enrich_preserves_authored_valid_surface():
             }
         ]
     )
-    assert rules[0]["surface"]["spellings"] == ["imported", "receiver_member"]
+    spellings = rules[0]["surface"]["spellings"]
+    assert "imported" in spellings
+    assert "receiver_member" in spellings
+    # Floor unions in; never narrows below binder defaults.
+    assert "qualified" in spellings
 
 
 def test_enrich_replaces_invalid_surface_with_floor():
@@ -102,6 +106,21 @@ def test_enrich_replaces_invalid_surface_with_floor():
         ]
     )
     assert "receiver_member" in rules[0]["surface"]["spellings"]
+
+
+def test_merge_overlay_adds_spellings_keeps_floor():
+    from conduit.surface.mint_surface import merge_surface_overlay
+
+    floor = derive_surface_floor("validator", "field_validator")
+    assert floor is not None
+    merged, used = merge_surface_overlay(
+        floor, {"spellings": ["imported"], "use_kinds": ["decorator", "bogus"]}
+    )
+    assert used
+    assert "imported" in merged["spellings"]
+    assert "qualified" in merged["spellings"]
+    assert "decorator" in merged["use_kinds"]
+    assert "bogus" not in merged["use_kinds"]
 
 
 def test_minted_dict_packet_not_unverified_on_fixture():

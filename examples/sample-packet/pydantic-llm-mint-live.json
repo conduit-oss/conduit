@@ -43,7 +43,22 @@
         "*.py"
       ],
       "old_callee": "BaseModel.dict",
-      "new_callee": "BaseModel.model_dump"
+      "new_callee": "BaseModel.model_dump",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "dict"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
     },
     {
       "type": "AST_CALL_REWRITE",
@@ -51,7 +66,22 @@
         "*.py"
       ],
       "old_callee": "BaseModel.json",
-      "new_callee": "BaseModel.model_dump_json"
+      "new_callee": "BaseModel.model_dump_json",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "json"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
     },
     {
       "type": "AST_CALL_REWRITE",
@@ -59,7 +89,22 @@
         "*.py"
       ],
       "old_callee": "BaseModel.parse_obj",
-      "new_callee": "BaseModel.model_validate"
+      "new_callee": "BaseModel.model_validate",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "parse_obj"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
     },
     {
       "type": "AST_CALL_REWRITE",
@@ -67,7 +112,22 @@
         "*.py"
       ],
       "old_callee": "BaseModel.parse_raw",
-      "new_callee": "BaseModel.model_validate_json"
+      "new_callee": "BaseModel.model_validate_json",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "parse_raw"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
     },
     {
       "type": "AST_CALL_REWRITE",
@@ -75,7 +135,22 @@
         "*.py"
       ],
       "old_callee": "BaseModel.from_orm",
-      "new_callee": "BaseModel.model_validate"
+      "new_callee": "BaseModel.model_validate",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "from_orm"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
     },
     {
       "type": "AST_CALL_REWRITE",
@@ -83,7 +158,22 @@
         "*.py"
       ],
       "old_callee": "BaseModel.construct",
-      "new_callee": "BaseModel.model_construct"
+      "new_callee": "BaseModel.model_construct",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "construct"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
     },
     {
       "type": "AST_CALL_REWRITE",
@@ -91,7 +181,22 @@
         "*.py"
       ],
       "old_callee": "BaseModel.copy",
-      "new_callee": "BaseModel.model_copy"
+      "new_callee": "BaseModel.model_copy",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "copy"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
     },
     {
       "type": "AST_CALL_REWRITE",
@@ -99,7 +204,22 @@
         "*.py"
       ],
       "old_callee": "BaseModel.schema",
-      "new_callee": "BaseModel.model_json_schema"
+      "new_callee": "BaseModel.model_json_schema",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "schema"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
     },
     {
       "type": "AST_CALL_REWRITE",
@@ -107,7 +227,22 @@
         "*.py"
       ],
       "old_callee": "BaseModel.update_forward_refs",
-      "new_callee": "BaseModel.model_rebuild"
+      "new_callee": "BaseModel.model_rebuild",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "update_forward_refs"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
     },
     {
       "type": "AST_CALL_REWRITE",
@@ -115,7 +250,22 @@
         "*.py"
       ],
       "old_callee": "BaseModel.validate",
-      "new_callee": "BaseModel.model_validate"
+      "new_callee": "BaseModel.model_validate",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "validate"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
     },
     {
       "type": "AST_ATTR_RENAME",
