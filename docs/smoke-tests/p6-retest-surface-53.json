@@ -1,0 +1,36 @@
+{
+  "packet_sha256": "e5ab11b54ff4927ccf9d3e818a2bf1a3bd31c8ba736250f7bf0b493025e32a8d",
+  "apply_exit": 0,
+  "watch_exit": 0,
+  "watch": {
+    "status": "clean",
+    "leftover_count": 0,
+    "completeness": {
+      "status": "unverified",
+      "observation_count": 0,
+      "observations": [],
+      "reasons": [
+        "no proof-eligible surface contracts"
+      ],
+      "explain": "no proof-eligible surface contracts"
+    }
+  },
+  "residue_pre": {
+    "validator_decorator": 1,
+    "dict_call": 1,
+    "model_dump": 0,
+    "class_Config": 1,
+    "orm_mode": 1
+  },
+  "residue_post": {
+    "validator_decorator": 1,
+    "dict_call": 0,
+    "model_dump": 1,
+    "class_Config": 1,
+    "orm_mode": 1
+  },
+  "elapsed_s": 64.796,
+  "surface_definite": true,
+  "gate_pass": true,
+  "dict_rewritten": true
+}

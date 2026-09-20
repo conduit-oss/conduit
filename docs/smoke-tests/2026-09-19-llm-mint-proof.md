@@ -108,6 +108,46 @@ Related mint / pydantic smoke green on this branch tip:
 python -m pytest -q conduit/tests/test_packet_author_cli.py conduit/tests/test_pydantic_validator_smoke.py
 ```
 
+## Retest on main after surface binder (#53)
+
+**Recorded:** 2026-09-19 (local). Head `69e5b6f` (merge of #53). Same frozen live
+packet (checksum unchanged). No remint. Keys loaded from `.env` for process env only
+(mint not re-run).
+
+Script: `docs/smoke-tests/retest-llm-mint-surface53.py` →
+`docs/smoke-tests/p6-retest-surface-53.json`.
+
+| Step | Result |
+|------|--------|
+| `packet test` | exit 0 |
+| Apply | exit 0; `[SURFACE_DEFINITE_REWRITE] self.dict -> self.model_dump (1x)` |
+| Post-apply Watch | exit 0; `status=clean`; `leftover_count=0` |
+| `completeness` JSON | `unverified` (lexical-only contracts); `observation_count=0` after rewrite |
+| Apply + Watch wall | 64.8 s (under 180 s) |
+
+### Residue delta (fixture `src/model.py`)
+
+| Token / pattern | Pre (#52 receipt) | Post (#53 retest) |
+|-----------------|-------------------|-------------------|
+| `@validator(` | 1 | 1 |
+| `class Config` | 1 | 1 |
+| `.dict(` | 1 | **0** |
+| `model_dump` | 0 | **1** |
+| `orm_mode` | 1 | 1 |
+
+### Dual verdict (updated)
+
+| Gate | Verdict |
+|------|---------|
+| Gate validity (freeze → apply without re-enrich; pin hop; Watch leftovers) | PASS |
+| Migration completeness vs full fixture v1 surface | FAIL (still: `@validator`, `Config` / `orm_mode`) |
+| `BaseModel.dict` / typed `self.dict` hop | PASS on this fixture after #53 definite rewrite |
+
+Completeness JSON stays `unverified` because the frozen LLM packet is still
+lexical-only (`old_callee` strings), not proof-eligible `SurfaceContract`s. The
+rewrite path still clears the definite `self.dict` observation. P5 remains the
+comparison shape for the Watch-visible validator hop.
+
 ## SUPERSEDED: blocked stub (no keys)
 
 **Status:** SUPERSEDED by the LIVE section above. Kept for Appendix C history when
