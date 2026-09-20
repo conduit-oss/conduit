@@ -19,6 +19,34 @@ _OLD_TOKEN_KEYS = {
 }
 
 
+def _rule_old_tokens(rule: dict[str, Any]) -> list[str]:
+    rtype = str(rule.get("type") or "")
+    if rtype == "AST_DECLARATION_REWRITE":
+        try:
+            from conduit.packet.declaration_rules import (
+                decode_declaration_rule,
+                declaration_old_tokens,
+            )
+
+            decoded = decode_declaration_rule(rule)
+            return list(declaration_old_tokens(decoded))
+        except Exception:
+            return []
+    key = _OLD_TOKEN_KEYS.get(rtype)
+    tokens: list[str] = []
+    if key:
+        val = str(rule.get(key) or "").strip()
+        if val:
+            tokens.append(val)
+    # Param renames key off old_param (often absent from usage index). Also
+    # keep the rule when function_target maps to a callee/path the client uses.
+    if rtype == "AST_PARAM_RENAME":
+        ft = str(rule.get("function_target") or "").strip()
+        if ft and ft not in tokens:
+            tokens.append(ft)
+    return tokens
+
+
 @dataclass
 class RuleScopeResult:
     rules: list[dict[str, Any]]
@@ -75,23 +103,6 @@ def collapse_replace_chains(rules: list[dict[str, Any]]) -> tuple[list[dict[str,
                 collapsed += 1
         out.append(item)
     return out, collapsed
-
-
-def _rule_old_tokens(rule: dict[str, Any]) -> list[str]:
-    rtype = str(rule.get("type") or "")
-    key = _OLD_TOKEN_KEYS.get(rtype)
-    tokens: list[str] = []
-    if key:
-        val = str(rule.get(key) or "").strip()
-        if val:
-            tokens.append(val)
-    # Param renames key off old_param (often absent from usage index). Also
-    # keep the rule when function_target maps to a callee/path the client uses.
-    if rtype == "AST_PARAM_RENAME":
-        ft = str(rule.get("function_target") or "").strip()
-        if ft and ft not in tokens:
-            tokens.append(ft)
-    return tokens
 
 
 def _token_in_index(token: str, index: dict[str, Any]) -> bool:

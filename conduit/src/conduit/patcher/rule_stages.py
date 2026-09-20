@@ -16,6 +16,7 @@ SDK_RULE_TYPES = frozenset(
         "AST_PARAM_RENAME",
         "AST_PARAM_DROP",
         "AST_IMPORT_REWRITE",
+        "AST_DECLARATION_REWRITE",
     }
 )
 

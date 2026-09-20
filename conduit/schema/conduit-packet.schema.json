@@ -112,6 +112,7 @@
         { "$ref": "#/$defs/dependency_add" },
         { "$ref": "#/$defs/dependency_remove" },
         { "$ref": "#/$defs/ast_import_rewrite" },
+        { "$ref": "#/$defs/ast_declaration_rewrite" },
         { "$ref": "#/$defs/ast_attr_rename" },
         { "$ref": "#/$defs/ast_call_rewrite" },
         { "$ref": "#/$defs/key_rename" }
@@ -293,6 +294,106 @@
         "old_import": { "type": "string" },
         "new_import": { "type": "string" },
         "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "symbol_ref": {
+      "type": "object",
+      "required": ["module", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "module": { "type": "string", "minLength": 1 },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_]\\w*$"
+        }
+      }
+    },
+    "ast_declaration_rewrite": {
+      "type": "object",
+      "required": ["type", "target_files", "operation"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "AST_DECLARATION_REWRITE" },
+        "target_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "operation": {
+          "oneOf": [
+            { "$ref": "#/$defs/import_member_operation" },
+            { "$ref": "#/$defs/inner_class_to_assignment_operation" }
+          ]
+        },
+        "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "import_member_operation": {
+      "type": "object",
+      "required": ["kind", "source", "target", "local_binding"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "import_member" },
+        "source": { "$ref": "#/$defs/symbol_ref" },
+        "target": { "$ref": "#/$defs/symbol_ref" },
+        "local_binding": { "const": "preserve" }
+      }
+    },
+    "inner_class_selector": {
+      "type": "object",
+      "required": ["inner_name"],
+      "additionalProperties": false,
+      "properties": {
+        "inner_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_]\\w*$"
+        },
+        "parent_bases_any": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "assignment_emission": {
+      "type": "object",
+      "required": ["target", "constructor"],
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "type": "string",
+          "pattern": "^[A-Za-z_]\\w*$"
+        },
+        "constructor": { "type": "string", "minLength": 1 },
+        "ensure_import": { "$ref": "#/$defs/symbol_ref" }
+      }
+    },
+    "inner_class_to_assignment_operation": {
+      "type": "object",
+      "required": [
+        "kind",
+        "selector",
+        "keys",
+        "emit",
+        "unmapped_assignments",
+        "unsupported_members"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "inner_class_to_assignment" },
+        "selector": { "$ref": "#/$defs/inner_class_selector" },
+        "keys": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[A-Za-z_]\\w*$" },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[A-Za-z_]\\w*$"
+          }
+        },
+        "emit": { "$ref": "#/$defs/assignment_emission" },
+        "unmapped_assignments": { "enum": ["preserve", "refuse"] },
+        "unsupported_members": { "const": "refuse" }
       }
     },
     "ast_attr_rename": {

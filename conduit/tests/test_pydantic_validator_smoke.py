@@ -54,12 +54,11 @@ def test_pydantic_validator_hop_packet_validates():
     assert validate_packet(data) == []
     types = {r.get("type") for r in data["rules"]}
     assert "DEPENDENCY_BUMP" in types
-    assert "AST_IMPORT_REWRITE" in types
+    assert "AST_DECLARATION_REWRITE" in types
     assert "AST_CALL_REWRITE" in types
     effects = data.get("side_effects") or []
     joined = " ".join(str(e.get("detail") or "") for e in effects)
     assert ".dict()" in joined
-    assert "Config" in joined
     assert "classmethod" in joined.lower() or "signature" in joined.lower()
 
 
@@ -111,4 +110,7 @@ def test_pydantic_validator_smoke_cli_watch_apply_watch(tmp_path: Path, monkeypa
 
     dict_hits, config_hits = _residue_counts(tree)
     assert dict_hits >= 1
-    assert config_hits >= 1
+    assert config_hits == 0
+    assert "model_config = ConfigDict(from_attributes=True)" in src.read_text(
+        encoding="utf-8"
+    ).replace(" ", "") or "from_attributes=True" in src.read_text(encoding="utf-8")

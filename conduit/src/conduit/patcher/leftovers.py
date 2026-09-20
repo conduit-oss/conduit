@@ -58,8 +58,10 @@ def packet_has_call_site_rules(packet: dict) -> bool:
 
 
 def scan_packet_leftovers(root: Path, packet: dict) -> list[Leftover]:
-    """Collect leftover packet old_callee hits. Read-only. Shared by apply + Watch."""
+    """Collect leftover packet hits. Read-only. Shared by apply + Watch."""
     from conduit.export_delta.usage import collect_package_calls
+    from conduit.packet.declaration_rules import DeclarationRuleError, declaration_rules
+    from conduit.patcher.declarations import scan_declaration_residuals
     from conduit.patcher.dependency_update import dependency_packages
     from conduit.prune.grep_imports import prune_by_imports
 
@@ -72,13 +74,38 @@ def scan_packet_leftovers(root: Path, packet: dict) -> list[Leftover]:
         files = list(root.rglob("*.py"))
     pkg = str(packet.get("package") or (packages[0] if packages else "")).strip()
     calls = collect_package_calls(root, files, pkg) if pkg else []
-    return scan_leftovers(
+    leftovers = scan_leftovers(
         root=root,
         calls=calls,
         delta=None,
         packet=packet,
         files=files,
     )
+
+    try:
+        decl = declaration_rules(packet)
+    except DeclarationRuleError:
+        decl = ()
+    if decl:
+        for path in files:
+            if path.suffix.lower() != ".py":
+                continue
+            try:
+                text = path.read_text(encoding="utf-8-sig")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for residual in scan_declaration_residuals(
+                path, text, decl, root=root
+            ):
+                leftovers.append(
+                    Leftover(
+                        rel=residual.rel,
+                        callee=residual.old_shape,
+                        reason=f"{residual.kind}: {residual.reason}",
+                        lineno=residual.line,
+                    )
+                )
+    return leftovers
 
 
 def evaluate_apply_leftovers(*, root: Path, packet: dict) -> ApplyLeftoverVerdict:

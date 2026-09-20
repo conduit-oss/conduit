@@ -193,6 +193,9 @@ _LLM_RULE_ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "AST_IMPORT_REWRITE": frozenset(
         {"type", "target_files", "old_import", "new_import", "reason"}
     ),
+    "AST_DECLARATION_REWRITE": frozenset(
+        {"type", "target_files", "operation", "reason"}
+    ),
     "KEY_RENAME": frozenset(
         {"type", "target_files", "old_key", "new_key", "reason"}
     ),
@@ -266,6 +269,7 @@ def normalize_llm_rule(rule: dict[str, Any]) -> dict[str, Any]:
         "AST_PARAM_RENAME",
         "AST_PARAM_DROP",
         "AST_IMPORT_REWRITE",
+        "AST_DECLARATION_REWRITE",
         "KEY_RENAME",
         "EXACT_STRING_REPLACE",
         "REGEX_REPLACE",
@@ -722,7 +726,8 @@ def synthesize_from_docs(
             "packet_id, package, ecosystem, from_version, to_version, sources, notes, "
             "side_effects, rules. "
             "Rules may use EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
-            "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE. "
+            "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_DECLARATION_REWRITE, "
+            "AST_ATTR_RENAME, AST_CALL_REWRITE. "
             "AST_CALL_REWRITE requires target_files, old_callee, new_callee "
             "(never old/new). "
             "Optional surface on AST_CALL_REWRITE: "
@@ -732,7 +737,12 @@ def synthesize_from_docs(
             "AST_ATTR_RENAME requires target_files, old_attr, new_attr. "
             "AST_PARAM_RENAME requires target_files, function_target, old_param, "
             "new_param. "
-            "AST_IMPORT_REWRITE requires target_files, old_import, new_import. "
+            "AST_IMPORT_REWRITE is module-path only (old_import/new_import dotted modules). "
+            "AST_DECLARATION_REWRITE operation.kind import_member "
+            "(source/target {module,name}) renames a name inside from-imports; "
+            "inner_class_to_assignment collapses a nested class body to an assignment "
+            "with a keys map. Never put import statement strings or comma fragments in "
+            "AST_IMPORT_REWRITE. "
             "Use target_files=['*.py'] when unsure. Do not emit scope/arguments/"
             "old/new aliases. "
             "sources[].kind MUST be exactly one of: github_release, changelog, docs, "
@@ -800,14 +810,17 @@ _EVIDENCE_SYSTEM = (
     "Emit JSON only with keys: notes (string), sources (list of {url, kind}), "
     "side_effects (list of {kind, detail}), rules (list). "
     "Allowed rule types: EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
-    "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_ATTR_RENAME, AST_CALL_REWRITE. "
+    "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_DECLARATION_REWRITE, AST_ATTR_RENAME, "
+    "AST_CALL_REWRITE. "
     "AST_CALL_REWRITE fields: target_files, old_callee, new_callee (never old/new). "
     "Optional AST_CALL_REWRITE.surface: export_path, spellings "
     "(qualified|imported|receiver_member), use_kinds (call|decorator). "
     "Omit surface when unsure. "
     "AST_ATTR_RENAME fields: target_files, old_attr, new_attr. "
     "AST_PARAM_RENAME fields: target_files, function_target, old_param, new_param. "
-    "AST_IMPORT_REWRITE fields: target_files, old_import, new_import. "
+    "AST_IMPORT_REWRITE fields: target_files, old_import, new_import (module paths only). "
+    "AST_DECLARATION_REWRITE: operation import_member {source,target:{module,name}} "
+    "or inner_class_to_assignment {selector,keys,emit,...}. Never clause fragments. "
     "Default target_files to ['*.py']. Do not emit scope/arguments aliases. "
     "sources[].kind MUST be exactly one of: github_release, changelog, docs, "
     "openapi, other. Never use synonyms (documentation, repository, repo, guide, "
