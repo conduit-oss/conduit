@@ -10,15 +10,11 @@
       "kind": "docs"
     }
   ],
-  "notes": "Frozen harness smoke for a Watch-visible validator hop only. Not a mergeable pydantic v2 upgrade. AST_IMPORT_REWRITE uses the import-clause fragment BaseModel, validator so the short-name string fallback cannot re-prefix field_validator on a second apply. Hand-authored; not LLM packet new.",
+  "notes": "Frozen harness smoke for Watch-visible validator hop + declaration rewrites. AST_DECLARATION_REWRITE renames import members and collapses inner Config; AST_CALL_REWRITE covers @validator. Hand-authored; not LLM packet new.",
   "side_effects": [
     {
       "kind": "other",
       "detail": "Instance .dict() stays Watch-blind and is not rewritten; migrate to model_dump by hand."
-    },
-    {
-      "kind": "config",
-      "detail": "Inner class Config / orm_mode is out of engine; migrate to model_config by hand."
     },
     {
       "kind": "other",
@@ -35,11 +31,37 @@
       "reason": "Pin the consumer at pydantic 2.0.0 for the validator hop smoke."
     },
     {
-      "type": "AST_IMPORT_REWRITE",
+      "type": "AST_DECLARATION_REWRITE",
       "target_files": ["*.py"],
-      "old_import": "BaseModel, validator",
-      "new_import": "BaseModel, field_validator",
-      "reason": "Rewrite the from-import clause only. Avoid bare validator so a second apply cannot re-prefix field_validator."
+      "operation": {
+        "kind": "import_member",
+        "source": {"module": "pydantic", "name": "validator"},
+        "target": {"module": "pydantic", "name": "field_validator"},
+        "local_binding": "preserve"
+      },
+      "reason": "Rename validator inside multi-name from-imports without clause fragments."
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": ["*.py"],
+      "operation": {
+        "kind": "inner_class_to_assignment",
+        "selector": {
+          "inner_name": "Config",
+          "parent_bases_any": ["BaseModel"]
+        },
+        "keys": {
+          "orm_mode": "from_attributes"
+        },
+        "emit": {
+          "target": "model_config",
+          "constructor": "ConfigDict",
+          "ensure_import": {"module": "pydantic", "name": "ConfigDict"}
+        },
+        "unmapped_assignments": "refuse",
+        "unsupported_members": "refuse"
+      },
+      "reason": "Inner Config with mapped keys becomes model_config = ConfigDict(...)."
     },
     {
       "type": "AST_CALL_REWRITE",

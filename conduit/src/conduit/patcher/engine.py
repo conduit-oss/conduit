@@ -19,6 +19,8 @@ from conduit.patcher.rule_stages import partition_rules
 from conduit.patcher.string_replace import exact_replace, regex_replace, write_if_changed
 from conduit.prune.grep_imports import SKIP_DIRS
 from conduit.test_gen import is_conduit_generated_rel
+from conduit.packet.declaration_rules import DeclarationRuleError, declaration_rules
+from conduit.patcher.declarations import rewrite_declarations
 
 ApplyStages = Literal["all", "sdk", "rest"]
 
@@ -200,6 +202,7 @@ def _apply_rules_to_files(
                 "AST_PARAM_RENAME",
                 "AST_PARAM_DROP",
                 "AST_IMPORT_REWRITE",
+                "AST_DECLARATION_REWRITE",
                 "AST_ATTR_RENAME",
                 "REGEX_REPLACE",
             }:
@@ -321,6 +324,63 @@ def _apply_rules_to_files(
     return report
 
 
+def _apply_declaration_rules(
+    *,
+    root: Path,
+    files: list[Path],
+    rules: list[dict[str, Any]],
+    packet_id: str,
+    vendor: str,
+    dry_run: bool,
+    require_context: bool,
+    path_defer: set[str] | None,
+) -> PatchReport:
+    """Batch AST_DECLARATION_REWRITE once per file (shared import table)."""
+    report = PatchReport()
+    deferred = path_defer or set()
+    try:
+        decoded = declaration_rules({"rules": rules})
+    except DeclarationRuleError as exc:
+        report.skips.append(f"[sdk] invalid AST_DECLARATION_REWRITE: {exc}")
+        return report
+    if not decoded:
+        return report
+
+    for path in files:
+        if path.suffix.lower() != ".py":
+            continue
+        try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            rel = path.name
+        if is_conduit_generated_rel(rel):
+            continue
+        if rel in deferred:
+            skip = f"[sdk] deferred impact path {rel}"
+            if skip not in report.skips:
+                report.skips.append(skip)
+            continue
+        try:
+            original = path.read_text(encoding="utf-8-sig")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if require_context and not file_has_vendor_context(path, original, vendor):
+            continue
+        result = rewrite_declarations(path, original, decoded, root=root)
+        if result.applied and write_if_changed(
+            path, original, result.content, dry_run=dry_run
+        ):
+            report.add(
+                ChangeRecord(
+                    event_id=packet_id,
+                    path=rel,
+                    rule_type="AST_DECLARATION_REWRITE",
+                    detail=f"[sdk] Declaration rewrite ({result.applied}x)",
+                )
+            )
+    return report
+
+
 def apply_packet(
     root: Path,
     packet: dict[str, Any],
@@ -368,10 +428,33 @@ def apply_packet(
             report.skips.append(msg)
 
     if stages in {"all", "sdk"}:
+        decl_raw = [
+            r
+            for r in sdk_rules
+            if isinstance(r, dict) and r.get("type") == "AST_DECLARATION_REWRITE"
+        ]
+        other_sdk = [
+            r
+            for r in sdk_rules
+            if not (isinstance(r, dict) and r.get("type") == "AST_DECLARATION_REWRITE")
+        ]
+        if decl_raw:
+            report.merge(
+                _apply_declaration_rules(
+                    root=root,
+                    files=files,
+                    rules=decl_raw,
+                    packet_id=packet_id,
+                    vendor=vendor,
+                    dry_run=dry_run,
+                    require_context=require_context,
+                    path_defer=path_defer,
+                )
+            )
         sdk_report = _apply_rules_to_files(
             root=root,
             files=files,
-            rules=sdk_rules,
+            rules=other_sdk,
             packet_id=packet_id,
             vendor=vendor,
             dry_run=dry_run,

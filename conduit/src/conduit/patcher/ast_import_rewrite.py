@@ -41,22 +41,17 @@ class _ImportRewriteTransformer(cst.CSTTransformer):
         if updated_node.module is None:
             return updated_node
         dotted = _dotted_name(updated_node.module)
-        # Full module path rewrite
+        # Full module path rewrite only (imported aliases: AST_DECLARATION_REWRITE).
         if dotted == self.old_import:
             self.changes += 1
             return updated_node.with_changes(module=_make_attribute(self.new_import))
-        # Rewrite `from x import OldName` when old_import is a single name match
-        # or `pkg.Old` style — also handle exact module string replace in source form
-        if self.old_import.startswith(dotted + ".") or dotted.startswith(
-            self.old_import + "."
-        ):
-            # Replace module prefix
-            if dotted.startswith(self.old_import):
-                suffix = dotted[len(self.old_import) :]
-                self.changes += 1
-                return updated_node.with_changes(
-                    module=_make_attribute(self.new_import + suffix)
-                )
+        # Prefix rewrite for from old.sub import …
+        if dotted.startswith(self.old_import + "."):
+            suffix = dotted[len(self.old_import) :]
+            self.changes += 1
+            return updated_node.with_changes(
+                module=_make_attribute(self.new_import + suffix)
+            )
         return updated_node
 
 
@@ -84,6 +79,13 @@ def _make_attribute(dotted: str) -> cst.BaseExpression:
 
 
 def rewrite_python_imports(content: str, old_import: str, new_import: str) -> tuple[str, int]:
+    """Module-path rewrite only.
+
+    String fallback is restricted to dotted module tokens with an ``old not in new``
+    guard. Bare identifiers and clause fragments never substring-replace.
+    """
+    import re
+
     if not old_import or old_import not in content:
         return content, 0
     try:
@@ -95,8 +97,13 @@ def rewrite_python_imports(content: str, old_import: str, new_import: str) -> tu
     updated = module.visit(transformer)
     if transformer.changes:
         return updated.code, transformer.changes
-    # Fallback string replace for edge cases libcst missed
-    if old_import in content:
+    # Fallback: dotted module paths only; never bare names / comma fragments.
+    _MODULE_TOKEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+    if (
+        _MODULE_TOKEN.fullmatch(old_import)
+        and old_import not in new_import
+        and old_import in content
+    ):
         new_content = content.replace(old_import, new_import)
         return new_content, content.count(old_import)
     return content, 0
