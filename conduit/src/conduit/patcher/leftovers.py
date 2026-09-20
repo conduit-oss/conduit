@@ -38,10 +38,11 @@ class Leftover:
 class ApplyLeftoverVerdict:
     """Outcome of the post-apply leftover gate for ``conduit apply``."""
 
-    status: Literal["clean", "dirty", "pin_only"]
+    status: Literal["clean", "dirty", "pin_only", "incomplete", "unverified"]
     leftovers: tuple[Leftover, ...]
     exit_code: int
     message: str
+    binding: object | None = None
 
 
 def packet_has_call_site_rules(packet: dict) -> bool:
@@ -81,7 +82,13 @@ def scan_packet_leftovers(root: Path, packet: dict) -> list[Leftover]:
 
 
 def evaluate_apply_leftovers(*, root: Path, packet: dict) -> ApplyLeftoverVerdict:
-    """Gate apply success on Watch leftover predicate for rules-bearing packets."""
+    """Gate apply success on leftovers + shared surface binder."""
+    from conduit.surface.evaluate import (
+        binding_blocks_complete,
+        evaluate_packet_binding,
+    )
+    from conduit.surface.types import VerdictStatus
+
     if not packet_has_call_site_rules(packet):
         return ApplyLeftoverVerdict(
             status="pin_only",
@@ -90,6 +97,7 @@ def evaluate_apply_leftovers(*, root: Path, packet: dict) -> ApplyLeftoverVerdic
             message="pin-only: no call-site rules",
         )
     leftovers = tuple(scan_packet_leftovers(root, packet))
+    binding = evaluate_packet_binding(root, packet)
     if leftovers:
         detail = "; ".join(item.display() for item in leftovers[:8])
         return ApplyLeftoverVerdict(
@@ -100,12 +108,30 @@ def evaluate_apply_leftovers(*, root: Path, packet: dict) -> ApplyLeftoverVerdic
                 f"apply incomplete: {len(leftovers)} leftover call(s) remain "
                 f"({detail})"
             ),
+            binding=binding,
+        )
+    if binding_blocks_complete(binding):
+        status: Literal["incomplete", "unverified"] = (
+            "incomplete"
+            if binding.status == VerdictStatus.INCOMPLETE
+            else "unverified"
+        )
+        return ApplyLeftoverVerdict(
+            status=status,
+            leftovers=(),
+            exit_code=1,
+            message=(
+                f"apply {status}: completeness {binding.status.value}: "
+                f"{binding.explain()}"
+            ),
+            binding=binding,
         )
     return ApplyLeftoverVerdict(
         status="clean",
         leftovers=(),
         exit_code=0,
         message="apply complete: no leftover packet calls",
+        binding=binding,
     )
 
 

@@ -607,6 +607,12 @@ def watch_cmd(
         console.print(f"[{color}]{verdict.message}[/{color}]")
         for item in verdict.leftovers:
             console.print(f"  leftover: {item.display()}")
+        if verdict.binding is not None:
+            for obs in verdict.binding.observations[:12]:
+                console.print(
+                    f"  surface: {obs.span.path}:{obs.span.line}  "
+                    f"{obs.chain}  ({obs.evidence.name}/{obs.spelling.value})"
+                )
     raise typer.Exit(verdict.exit_code)
 
 
@@ -710,6 +716,13 @@ def apply_cmd(
         console.print(f"[red]{leftover_verdict.message}[/red]")
         for item in leftover_verdict.leftovers:
             console.print(f"  leftover: {item.display()}")
+        binding = getattr(leftover_verdict, "binding", None)
+        if binding is not None:
+            for obs in binding.observations[:12]:
+                console.print(
+                    f"  surface: {obs.span.path}:{obs.span.line}  "
+                    f"{obs.chain}  ({obs.evidence.name}/{obs.spelling.value})"
+                )
         raise typer.Exit(leftover_verdict.exit_code)
     console.print(f"[green]{leftover_verdict.message}[/green]")
 

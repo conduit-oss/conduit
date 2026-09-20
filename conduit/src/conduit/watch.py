@@ -1,4 +1,4 @@
-"""Read-only Watch: pin at or past to_version plus leftover old_callee calls."""
+"""Read-only Watch: pin at or past to_version plus leftover / surface binding gate."""
 
 from __future__ import annotations
 
@@ -10,8 +10,22 @@ from packaging.version import InvalidVersion, Version
 
 from conduit.detect.manifests import pin_for_packet_ecosystem, read_installed_by_ecosystem
 from conduit.patcher.leftovers import Leftover, packet_has_call_site_rules, scan_packet_leftovers
+from conduit.surface.evaluate import (
+    binding_blocks_complete,
+    binding_to_dict,
+    evaluate_packet_binding,
+)
+from conduit.surface.types import BindingVerdict, VerdictStatus
 
-WatchStatus = Literal["pre_bump", "bump_dirty", "clean", "no_pin", "no_rules"]
+WatchStatus = Literal[
+    "pre_bump",
+    "bump_dirty",
+    "clean",
+    "no_pin",
+    "no_rules",
+    "incomplete",
+    "unverified",
+]
 
 
 @dataclass(frozen=True)
@@ -25,9 +39,10 @@ class WatchVerdict:
     leftovers: tuple[Leftover, ...]
     exit_code: int
     message: str
+    binding: BindingVerdict | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "status": self.status,
             "pin": self.pin,
             "from_version": self.from_version,
@@ -37,6 +52,9 @@ class WatchVerdict:
             "exit_code": self.exit_code,
             "message": self.message,
         }
+        if self.binding is not None:
+            payload["completeness"] = binding_to_dict(self.binding)
+        return payload
 
 
 def _norm_version(value: str | None) -> str:
@@ -78,11 +96,15 @@ def read_package_pin(root: Path, packet: dict) -> str | None:
 
 
 def evaluate_watch(*, root: Path, packet: dict) -> WatchVerdict:
-    """Gate leftovers when pin is at or past to_version.
+    """Gate leftovers + surface binding when pin is at or past to_version.
 
     Exit policy:
     - ``bump_dirty`` (exit 1): rules-bearing packet, pin >= to_version, leftovers remain.
-    - ``clean`` (exit 0): rules-bearing packet, pin >= to_version, no leftovers.
+    - ``incomplete`` (exit 1): pin >= to_version, proof-eligible binder unresolved.
+    - ``unverified`` (exit 1): pin >= to_version, lexical binder still sees old sites
+      the leftover scanner missed.
+    - ``clean`` (exit 0): rules-bearing packet, pin >= to_version, no leftovers and
+      binder does not block (completeness may still be ``unverified`` with zero obs).
     - ``no_rules`` (exit 0): pin-only packet at or past to_version; not ``clean``.
     - ``pre_bump`` (exit 0): pin still below to_version (warns when leftovers exist).
     - ``no_pin`` (exit 2): package pin missing from the consumer tree.
@@ -92,6 +114,7 @@ def evaluate_watch(*, root: Path, packet: dict) -> WatchVerdict:
     pin = read_package_pin(root, packet)
     has_rules = packet_has_call_site_rules(packet)
     leftovers = tuple(scan_packet_leftovers(root, packet)) if has_rules else ()
+    binding = evaluate_packet_binding(root, packet) if has_rules else None
 
     if not pin:
         return WatchVerdict(
@@ -105,6 +128,7 @@ def evaluate_watch(*, root: Path, packet: dict) -> WatchVerdict:
                 f"no pin for package {packet.get('package')!r} "
                 f"in ecosystem {packet.get('ecosystem')!r}"
             ),
+            binding=binding,
         )
 
     at_or_past = version_at_or_past(pin, to_v)
@@ -121,6 +145,7 @@ def evaluate_watch(*, root: Path, packet: dict) -> WatchVerdict:
             message=(
                 f"pin {pin} at or past to_version {to_v}; no call-site rules"
             ),
+            binding=binding,
         )
 
     if at_or_past and leftovers:
@@ -135,6 +160,27 @@ def evaluate_watch(*, root: Path, packet: dict) -> WatchVerdict:
                 f"pin {pin} at or past to_version {to_v} with "
                 f"{len(leftovers)} leftover call(s)"
             ),
+            binding=binding,
+        )
+
+    if at_or_past and binding is not None and binding_blocks_complete(binding):
+        status: WatchStatus = (
+            "incomplete"
+            if binding.status == VerdictStatus.INCOMPLETE
+            else "unverified"
+        )
+        return WatchVerdict(
+            status=status,
+            pin=pin,
+            from_version=from_v,
+            to_version=to_v,
+            leftovers=(),
+            exit_code=1,
+            message=(
+                f"pin {pin} at or past to_version {to_v}; completeness "
+                f"{binding.status.value}: {binding.explain()}"
+            ),
+            binding=binding,
         )
 
     if at_or_past and not leftovers:
@@ -148,6 +194,7 @@ def evaluate_watch(*, root: Path, packet: dict) -> WatchVerdict:
             message=(
                 f"pin {pin} at or past to_version {to_v}; no leftover packet calls"
             ),
+            binding=binding,
         )
 
     if leftovers:
@@ -163,6 +210,7 @@ def evaluate_watch(*, root: Path, packet: dict) -> WatchVerdict:
                 f"warn: pin {pin} still at {label} "
                 f"({from_v}); {len(leftovers)} leftover call(s) allowed"
             ),
+            binding=binding,
         )
 
     return WatchVerdict(
@@ -173,4 +221,5 @@ def evaluate_watch(*, root: Path, packet: dict) -> WatchVerdict:
         leftovers=(),
         exit_code=0,
         message=f"pin {pin} not at to_version {to_v}; tree clean of packet leftovers",
+        binding=binding,
     )
