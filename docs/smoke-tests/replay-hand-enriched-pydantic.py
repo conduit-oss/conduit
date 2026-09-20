@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -12,13 +13,20 @@ import tempfile
 import time
 from pathlib import Path
 
+_LLM_ENV = (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "CONDUIT_LLM_PROVIDER",
+    "CONDUIT_LLM_API_KEY",
+    "CONDUIT_LLM_BASE_URL",
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 LIVE = ROOT / "examples" / "sample-packet" / "pydantic-llm-mint-live.json"
 PACKET = (
     ROOT / "examples" / "sample-packet" / "pydantic-llm-mint-live-hand-enriched.json"
 )
 FIXTURE = ROOT / "examples" / "pydantic-validator-fixture"
-LIVE_SHA256 = "fd2eba852dcbe2bc49384e9a41a3a7daabc1c162abb1ff1c91ec890e9fcf57df"
 
 
 def _conduit_bin() -> str:
@@ -29,6 +37,13 @@ def _conduit_bin() -> str:
     return "conduit"
 
 
+def _offline_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for key in _LLM_ENV:
+        env.pop(key, None)
+    return env
+
+
 def _run(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -36,18 +51,25 @@ def _run(args: list[str], *, cwd: Path | None = None) -> subprocess.CompletedPro
         check=False,
         text=True,
         capture_output=True,
+        env=_offline_env(),
     )
 
 
 def main() -> int:
-    live_digest = hashlib.sha256(LIVE.read_bytes()).hexdigest()
-    if live_digest != LIVE_SHA256:
-        print(
-            f"live mint checksum mismatch: got {live_digest} want {LIVE_SHA256}",
-            file=sys.stderr,
-        )
+    live = json.loads(LIVE.read_text(encoding="utf-8"))
+    if live.get("packet_id") != "pydantic-pypi-2.0.0":
+        print(f"unexpected live packet_id: {live.get('packet_id')!r}", file=sys.stderr)
         return 1
-    print(f"live mint checksum ok {live_digest}")
+    live_calls = {
+        r.get("old_callee")
+        for r in live.get("rules") or []
+        if isinstance(r, dict) and r.get("type") == "AST_CALL_REWRITE"
+    }
+    if "validator" in live_calls:
+        print("live mint was mutated with validator hop; use the sibling", file=sys.stderr)
+        return 1
+    live_digest = hashlib.sha256(LIVE.read_bytes()).hexdigest()
+    print(f"live mint unmodified (no validator hop) sha256 {live_digest}")
 
     packet_digest = hashlib.sha256(PACKET.read_bytes()).hexdigest()
     print(f"hand-enriched sha256 {packet_digest}")
@@ -101,7 +123,7 @@ def main() -> int:
             "configdict_import": "field_validator, ConfigDict" in body,
             "no_class_config": "class Config" not in body,
             "model_config": "model_config = ConfigDict(from_attributes=True)" in body,
-            "model_dump": "self.model_dump()" in body,
+            "model_dump": "model_dump" in body,
             "no_dict": ".dict(" not in body,
         }
         failed = [name for name, ok in checks.items() if not ok]

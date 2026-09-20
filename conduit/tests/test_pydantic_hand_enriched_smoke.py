@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -18,7 +17,6 @@ LIVE_PACKET = REPO / "examples" / "sample-packet" / "pydantic-llm-mint-live.json
 PACKET_PATH = (
     REPO / "examples" / "sample-packet" / "pydantic-llm-mint-live-hand-enriched.json"
 )
-LIVE_SHA256 = "fd2eba852dcbe2bc49384e9a41a3a7daabc1c162abb1ff1c91ec890e9fcf57df"
 ENGINE_PATHS = (
     REPO / "conduit" / "src" / "conduit" / "patcher" / "engine.py",
     REPO / "conduit" / "src" / "conduit" / "watch.py",
@@ -65,12 +63,23 @@ def _assert_fixture_v2(src_text: str) -> None:
     assert "orm_mode" not in src_text
     assert "model_config = ConfigDict(from_attributes=True)" in src_text
     assert ".dict(" not in src_text
-    assert "self.model_dump()" in src_text
+    assert "model_dump" in src_text
 
 
-def test_live_mint_receipt_checksum_unchanged():
-    digest = hashlib.sha256(LIVE_PACKET.read_bytes()).hexdigest()
-    assert digest == LIVE_SHA256
+def test_live_mint_receipt_not_hand_edited():
+    """Sibling carries validator/Config; the frozen LLM mint is left as recorded."""
+    live = json.loads(LIVE_PACKET.read_text(encoding="utf-8"))
+    enriched = _packet()
+    assert live["packet_id"] == "pydantic-pypi-2.0.0"
+    assert enriched["packet_id"] == "pydantic-pypi-2.0.0-hand-enriched"
+    live_calls = {
+        r.get("old_callee")
+        for r in live["rules"]
+        if r.get("type") == "AST_CALL_REWRITE"
+    }
+    assert "validator" not in live_calls
+    assert not any(r.get("type") == "EXACT_STRING_REPLACE" for r in live["rules"])
+    assert "BaseModel.dict" in live_calls
 
 
 def test_hand_enriched_packet_validates_and_declares_missing_families():

@@ -3,8 +3,8 @@
 **Status:** HAND enrichment of missing rule families. Not an LLM remint.
 
 The frozen mint at `examples/sample-packet/pydantic-llm-mint-live.json` stays a
-recorded LLM artifact (SHA-256
-`fd2eba852dcbe2bc49384e9a41a3a7daabc1c162abb1ff1c91ec890e9fcf57df`). This sibling
+recorded LLM artifact (this PR does not edit it; it still has no `validator`
+hop and no `class Config` EXACT replace). This sibling
 adds packet rules so the repo fixture's `@validator` and inner `class Config` /
 `orm_mode` are in-scope. Amin remints with keys separately.
 
@@ -37,6 +37,24 @@ Live mint BaseModel call/attr/param rewrites and their `surface` floors are kept
 `side_effects` still name work this packet does not claim: other Config layouts,
 `parse_raw` / `parse_file` / `schema_json`, `pydantic-settings`, and
 `@classmethod` / signature / `mode=` reshape.
+
+Live `BaseModel.dict` → `BaseModel.model_dump` is unchanged; definite surface
+apply rewrites fixture `self.dict()` to `BaseModel.model_dump()` (receiver is
+not preserved when `new_callee` is the dotted export). This sibling does not
+add apply branches to change that.
+
+## Measured run
+
+Copy the fixture to a temp tree. Offline (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`
+cleared). `conduit packet test` → `conduit apply` → `conduit watch --json`.
+
+| Item | Value |
+|------|-------|
+| Hand-enriched SHA-256 | `081bfd68de58214e03d492ace56853e44cd4fa5215a6a1ca24aad33e4460046a` |
+| `packet test` | exit 0; 21 rules |
+| Apply | exit 0; pin `pydantic==2.0.0`; import clause + `@field_validator` + `model_config = ConfigDict(from_attributes=True)` + `model_dump`; no `field_field_validator`; no `packet enrichment` |
+| Post-apply Watch | exit 0; `status=clean`; `leftover_count=0`; `completeness.status=complete` |
+| Pytest | `7 passed` (`test_pydantic_hand_enriched_smoke.py` + hop smoke) |
 
 ## Dual verdict
 

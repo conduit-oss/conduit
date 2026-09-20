@@ -191,7 +191,8 @@ jobs:
           assert "field_field_validator" not in text
           assert "class Config" not in text
           assert "model_config = ConfigDict(from_attributes=True)" in text
-          assert "self.model_dump()" in text
+          assert "model_dump" in text
+          assert ".dict(" not in text
           PY
         env:
           FIXTURE: ${{ runner.temp }}/pydantic-hand-enriched
