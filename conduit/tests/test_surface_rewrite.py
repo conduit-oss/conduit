@@ -105,6 +105,31 @@ def test_apply_does_not_rewrite_member_only_possible(tmp_path: Path):
     assert "payload.dict()" in (tree / "src" / "loose.py").read_text(encoding="utf-8")
 
 
+def test_definite_rewrite_respects_target_files_miss(tmp_path: Path):
+    tree = tmp_path / "miss"
+    (tree / "src").mkdir(parents=True)
+    (tree / "src" / "app.py").write_text(
+        "import widgets\n\nwidgets.legacy_fn()\n", encoding="utf-8"
+    )
+    (tree / "requirements.txt").write_text("widgets==2.0.0\n", encoding="utf-8")
+    packet = {
+        "packet_id": "widgets-miss",
+        "package": "widgets",
+        "ecosystem": "pypi",
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "target_files": ["never_matches.py"],
+                "old_callee": "legacy_fn",
+                "new_callee": "modern_fn",
+            }
+        ],
+    }
+    report = apply_definite_surface_rewrites(tree, packet, dry_run=False)
+    assert report.files_modified == []
+    assert "widgets.legacy_fn()" in (tree / "src" / "app.py").read_text(encoding="utf-8")
+
+
 def test_cli_apply_dict_packet_rewrites_self_dict(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

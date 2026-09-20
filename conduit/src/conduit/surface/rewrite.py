@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import fnmatch
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import libcst as cst
 
@@ -34,7 +35,11 @@ def apply_definite_surface_rewrites(
     *,
     dry_run: bool = False,
 ) -> PatchReport:
-    """Apply member-preserving rewrites for ``Confidence.DEFINITE`` sites only."""
+    """Apply member-preserving rewrites for ``Confidence.DEFINITE`` sites only.
+
+    Honors each contract's ``target_files`` the same way the SDK rule engine does,
+    so a misspecified glob cannot be bypassed by the surface path.
+    """
     root = root.resolve()
     report = PatchReport()
     contracts = contracts_from_packet(packet)
@@ -49,6 +54,8 @@ def apply_definite_surface_rewrites(
             continue
         contract = by_id.get(obs.surface_id)
         if contract is None:
+            continue
+        if not _path_matches_targets(obs.span.path, contract.target_files):
             continue
         new_chain = replacement_chain(contract, obs.chain)
         if not new_chain or new_chain == obs.chain:
@@ -92,6 +99,21 @@ def apply_definite_surface_rewrites(
                 )
             )
     return report
+
+
+def _path_matches_targets(rel: str, patterns: Sequence[str]) -> bool:
+    """True when ``rel`` matches any target_files glob (name or repo-relative)."""
+    if not patterns:
+        return True
+    norm = rel.replace("\\", "/")
+    name = Path(norm).name
+    for pattern in patterns:
+        pat = str(pattern or "").strip()
+        if not pat or pat == "*":
+            return True
+        if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(norm, pat):
+            return True
+    return False
 
 
 def replacement_chain(contract: PacketContract, old_chain: str) -> str | None:
