@@ -18,6 +18,7 @@ from conduit.packet.synthesize import (
     synthesize_from_docs,
     synthesize_from_evidence,
 )
+from conduit.packet.cook import cook_import_member_companions
 from conduit.packet.validate import validate_packet
 
 LogFn = Callable[[str], None]
@@ -339,8 +340,12 @@ def create_packet_new(
 
     def _normalize_and_ensure_bump(p: dict[str, Any]) -> dict[str, Any]:
         p = dict(p)
+        cooked = cook_import_member_companions(
+            normalize_llm_rules(list(p.get("rules") or []), package=package),
+            package=package,
+        )
         p["rules"] = collapse_dependency_bumps(
-            normalize_llm_rules(list(p.get("rules") or [])),
+            cooked,
             package=package,
             from_version=_ANY_FROM,
             to_version=version,
@@ -560,50 +565,40 @@ def remint_family_counts(packet: dict[str, Any]) -> dict[str, int]:
     return counts
 
 
-_DEFAULT_FIXTURE_TOKENS = ("dict", "Config")
-
-
 def build_remint_receipt(
     packet: dict[str, Any],
     *,
     fixture_tokens: tuple[str, ...] | list[str] | None = None,
+    config_manual_allowed: bool = False,
 ) -> dict[str, Any]:
     """
-    Remint freeze receipt: family counts + whether fixture tokens are addressed.
+    Remint freeze receipt: family counts + typed gold obligations.
 
-    A token is addressed when it appears in a surface/call-site rule string field
-    or in a side_effect detail (case-insensitive substring).
+    ``fixture_tokens`` is accepted for compatibility but ignored when empty/default;
+    obligation shapes (dict / validator / Config) replace substring token credit.
+    Pass ``config_manual_allowed=True`` only for transitional freezes before Config
+    declaration cook lands.
     """
-    tokens = tuple(fixture_tokens or _DEFAULT_FIXTURE_TOKENS)
+    from conduit.packet.obligations import evaluate_gold_obligations
+
+    _ = fixture_tokens  # legacy CLI flag; shapes supersede tokens
     counts = remint_family_counts(packet)
     surface = surface_rewrite_rules(packet)
     call_site = call_site_rewrite_rules(packet)
-    haystacks: list[str] = []
-    for rule in call_site:
-        for key, val in rule.items():
-            if key == "type":
-                continue
-            if isinstance(val, str):
-                haystacks.append(val)
-            elif isinstance(val, (list, dict)):
-                try:
-                    haystacks.append(json.dumps(val, sort_keys=True))
-                except TypeError:
-                    haystacks.append(str(val))
-    for effect in packet.get("side_effects") or []:
-        if isinstance(effect, dict):
-            detail = effect.get("detail")
-            if detail:
-                haystacks.append(str(detail))
-    blob = "\n".join(haystacks).lower()
-    token_hits = {tok: (tok.lower() in blob) for tok in tokens}
-    ok = bool(surface) and all(token_hits.values())
+    gold = evaluate_gold_obligations(
+        packet, config_manual_allowed=config_manual_allowed
+    )
+    ok = bool(surface) and bool(gold["ok"])
     return {
         "ok": ok,
         "family_counts": counts,
         "surface_count": len(surface),
         "call_site_count": len(call_site),
-        "fixture_tokens": token_hits,
+        "obligations": gold["obligations"],
+        # Back-compat mirror for older checkers: mechanical/manual → True.
+        "fixture_tokens": {
+            name: (mode != "missing") for name, mode in gold["obligations"].items()
+        },
         "side_effects": len(packet.get("side_effects") or []),
     }
 
@@ -612,15 +607,25 @@ def assert_remint_receipt_ok(
     packet: dict[str, Any],
     *,
     fixture_tokens: tuple[str, ...] | list[str] | None = None,
+    config_manual_allowed: bool = False,
 ) -> dict[str, Any]:
     """Raise ValueError when the remint receipt fails the freeze checklist."""
-    receipt = build_remint_receipt(packet, fixture_tokens=fixture_tokens)
+    receipt = build_remint_receipt(
+        packet,
+        fixture_tokens=fixture_tokens,
+        config_manual_allowed=config_manual_allowed,
+    )
     if receipt["ok"]:
         return receipt
-    missing = [t for t, hit in receipt["fixture_tokens"].items() if not hit]
+    missing = [
+        name
+        for name, mode in (receipt.get("obligations") or {}).items()
+        if mode == "missing"
+    ]
     raise ValueError(
         "remint receipt failed: "
         f"surface_count={receipt['surface_count']} "
         f"families={receipt['family_counts']} "
-        f"missing_tokens={missing or '(none)'}"
+        f"missing_obligations={missing or '(none)'} "
+        f"obligations={receipt.get('obligations')}"
     )

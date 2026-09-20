@@ -172,43 +172,24 @@ def _base_names(bases: Sequence[cst.BaseExpression]) -> tuple[str, ...]:
 
 
 def _has_inner_class(module: cst.Module, op: InnerClassToAssignmentSpec) -> bool:
-    class _Find(cst.CSTVisitor):
-        def __init__(self) -> None:
-            self.found = False
-            self._stack: list[tuple[str, tuple[str, ...]]] = []
+    """True when a matching inner class remains (same selector rules as apply)."""
 
-        def visit_ClassDef(self, node: cst.ClassDef) -> bool:
-            bases = _base_names(node.bases)
-            self._stack.append((node.name.value, bases))
-            return True
-
-        def leave_ClassDef(self, original: cst.ClassDef) -> None:
-            self._stack.pop()
-            if len(self._stack) < 1:
-                return  # top-level
-            if original.name.value != op.selector.inner_name:
-                return
-            parent_bases = self._stack[-1][1] if self._stack else ()
-            # After pop we lost parent — re-check via stack before pop handled wrong.
-            # Fix: check before pop using parent at stack[-2] when leaving nested.
-
-    # Simpler walk with parent tracking
-    for stmt in module.body:
-        if not isinstance(stmt, cst.ClassDef):
-            continue
-        parent_bases = _base_names(stmt.bases)
-        if op.selector.parent_bases_any:
-            if not any(
+    def _walk(node: cst.ClassDef, parent_bases: tuple[str, ...] | None) -> bool:
+        if parent_bases is not None and node.name.value == op.selector.inner_name:
+            if not op.selector.parent_bases_any or any(
                 b in parent_bases or b.split(".")[-1] in parent_bases
                 for b in op.selector.parent_bases_any
             ):
-                continue
-        for inner in stmt.body.body:
-            if (
-                isinstance(inner, cst.ClassDef)
-                and inner.name.value == op.selector.inner_name
-            ):
                 return True
+        bases = _base_names(node.bases)
+        for stmt in node.body.body:
+            if isinstance(stmt, cst.ClassDef) and _walk(stmt, bases):
+                return True
+        return False
+
+    for stmt in module.body:
+        if isinstance(stmt, cst.ClassDef) and _walk(stmt, None):
+            return True
     return False
 
 

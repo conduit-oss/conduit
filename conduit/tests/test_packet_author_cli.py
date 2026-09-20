@@ -699,10 +699,11 @@ def test_normalize_llm_rule_aliases_match_schema():
     assert rules[2]["old_param"] == "regex"
 
 
-def test_normalize_demotes_class_shaped_param_rename():
+def test_normalize_promotes_class_shaped_param_rename():
     from conduit.packet.synthesize import normalize_llm_rule, normalize_llm_rules
+    from conduit.packet.validate import validate_packet
 
-    dropped = normalize_llm_rule(
+    promoted = normalize_llm_rule(
         {
             "type": "AST_PARAM_RENAME",
             "function_target": "Config",
@@ -710,9 +711,18 @@ def test_normalize_demotes_class_shaped_param_rename():
             "new_param": "from_attributes",
             "target_files": ["*.py"],
             "reason": "guide table",
-        }
+        },
+        package="pydantic",
     )
-    assert dropped is None
+    assert promoted is not None
+    assert promoted["type"] == "AST_DECLARATION_REWRITE"
+    assert promoted["operation"]["kind"] == "inner_class_to_assignment"
+    assert promoted["operation"]["selector"]["inner_name"] == "Config"
+    assert promoted["operation"]["keys"] == {"orm_mode": "from_attributes"}
+    assert promoted["operation"]["emit"]["ensure_import"] == {
+        "module": "pydantic",
+        "name": "ConfigDict",
+    }
     kept = normalize_llm_rule(
         {
             "type": "AST_PARAM_RENAME",
@@ -732,7 +742,7 @@ def test_normalize_demotes_class_shaped_param_rename():
                 "function_target": "Config",
                 "old_param": "orm_mode",
                 "new_param": "from_attributes",
-                "reason": "drop me",
+                "reason": "promote me",
             },
             {
                 "type": "AST_CALL_REWRITE",
@@ -740,11 +750,99 @@ def test_normalize_demotes_class_shaped_param_rename():
                 "new_callee": "BaseModel.model_dump",
                 "reason": "keep",
             },
-        ]
+        ],
+        package="pydantic",
     )
     types = [r["type"] for r in rules]
     assert "AST_PARAM_RENAME" not in types
     assert "AST_CALL_REWRITE" in types
+    assert "AST_DECLARATION_REWRITE" in types
+    packet = {
+        "packet_id": "pydantic-pypi-2.0.0",
+        "package": "pydantic",
+        "ecosystem": "pypi",
+        "from_version": "*",
+        "to_version": "2.0.0",
+        "rules": rules,
+    }
+    assert validate_packet(packet) == []
+
+
+def test_normalize_drops_clause_fragment_import_rewrite():
+    from conduit.packet.synthesize import normalize_llm_rule
+
+    assert (
+        normalize_llm_rule(
+            {
+                "type": "AST_IMPORT_REWRITE",
+                "old_import": "from pydantic import BaseSettings",
+                "new_import": "from pydantic_settings import BaseSettings",
+                "target_files": ["*.py"],
+            }
+        )
+        is None
+    )
+    assert (
+        normalize_llm_rule(
+            {
+                "type": "AST_IMPORT_REWRITE",
+                "old_import": "BaseModel, validator",
+                "new_import": "BaseModel, field_validator",
+                "target_files": ["*.py"],
+            }
+        )
+        is None
+    )
+    kept = normalize_llm_rule(
+        {
+            "type": "AST_IMPORT_REWRITE",
+            "old_import": "pydantic",
+            "new_import": "pydantic_v2",
+            "target_files": ["*.py"],
+        }
+    )
+    assert kept is not None
+    assert kept["old_import"] == "pydantic"
+
+
+def test_cook_import_member_companion_for_bare_call():
+    from conduit.packet.cook import cook_import_member_companions
+    from conduit.packet.validate import validate_packet
+
+    rules = cook_import_member_companions(
+        [
+            {
+                "type": "AST_CALL_REWRITE",
+                "target_files": ["*.py"],
+                "old_callee": "validator",
+                "new_callee": "field_validator",
+                "reason": "decorator hop",
+            }
+        ],
+        package="pydantic",
+    )
+    types = [r["type"] for r in rules]
+    assert types.count("AST_CALL_REWRITE") == 1
+    assert types.count("AST_DECLARATION_REWRITE") == 1
+    decl = next(r for r in rules if r["type"] == "AST_DECLARATION_REWRITE")
+    assert decl["operation"]["kind"] == "import_member"
+    assert decl["operation"]["source"] == {"module": "pydantic", "name": "validator"}
+    assert decl["operation"]["target"] == {
+        "module": "pydantic",
+        "name": "field_validator",
+    }
+    # Idempotent
+    again = cook_import_member_companions(rules, package="pydantic")
+    assert sum(1 for r in again if r["type"] == "AST_DECLARATION_REWRITE") == 1
+    packet = {
+        "packet_id": "pydantic-pypi-2.0.0",
+        "package": "pydantic",
+        "ecosystem": "pypi",
+        "from_version": "*",
+        "to_version": "2.0.0",
+        "rules": again,
+    }
+    assert validate_packet(packet) == []
 
 
 def test_enrich_false_rich_helpers():
@@ -906,7 +1004,7 @@ def test_create_packet_new_false_rich_retries_then_succeeds(
     assert calls["n"] >= 3
 
 
-def test_remint_receipt_requires_surface_and_fixture_tokens():
+def test_remint_receipt_requires_surface_and_gold_obligations():
     from conduit.packet.author import (
         assert_remint_receipt_ok,
         build_remint_receipt,
@@ -927,8 +1025,10 @@ def test_remint_receipt_requires_surface_and_fixture_tokens():
     }
     receipt = build_remint_receipt(poor)
     assert not receipt["ok"]
+    assert receipt["obligations"]["dict"] == "missing"
 
-    good = {
+    # Surface CALL alone is not gold: validator + Config still missing.
+    surface_only = {
         "rules": [
             {
                 "type": "AST_CALL_REWRITE",
@@ -941,10 +1041,63 @@ def test_remint_receipt_requires_surface_and_fixture_tokens():
             {"kind": "config", "detail": "Migrate class Config to model_config"}
         ],
     }
-    assert assert_remint_receipt_ok(good)["ok"]
+    partial = build_remint_receipt(surface_only)
+    assert not partial["ok"]
+    assert partial["obligations"]["dict"] == "mechanical"
+    assert partial["obligations"]["validator"] == "missing"
+    assert partial["obligations"]["Config"] == "missing"
+    # Manual Config side_effect only counts when explicitly allowed.
+    allowed = build_remint_receipt(surface_only, config_manual_allowed=True)
+    assert allowed["obligations"]["Config"] == "manual"
+    assert not allowed["ok"]  # validator still missing
 
-    # Optional stricter token (validator) can be required by callers.
-    strict = build_remint_receipt(
-        good, fixture_tokens=("validator", "dict", "Config")
-    )
-    assert not strict["ok"]
+    gold = {
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "BaseModel.dict",
+                "new_callee": "BaseModel.model_dump",
+                "target_files": ["*.py"],
+            },
+            {
+                "type": "AST_CALL_REWRITE",
+                "old_callee": "validator",
+                "new_callee": "field_validator",
+                "target_files": ["*.py"],
+            },
+            {
+                "type": "AST_DECLARATION_REWRITE",
+                "target_files": ["*.py"],
+                "operation": {
+                    "kind": "import_member",
+                    "source": {"module": "pydantic", "name": "validator"},
+                    "target": {"module": "pydantic", "name": "field_validator"},
+                    "local_binding": "preserve",
+                },
+            },
+            {
+                "type": "AST_DECLARATION_REWRITE",
+                "target_files": ["*.py"],
+                "operation": {
+                    "kind": "inner_class_to_assignment",
+                    "selector": {"inner_name": "Config", "parent_bases_any": []},
+                    "keys": {"orm_mode": "from_attributes"},
+                    "emit": {
+                        "target": "model_config",
+                        "constructor": "ConfigDict",
+                        "ensure_import": {"module": "pydantic", "name": "ConfigDict"},
+                    },
+                    "unmapped_assignments": "refuse",
+                    "unsupported_members": "refuse",
+                },
+            },
+        ],
+        "side_effects": [],
+    }
+    assert assert_remint_receipt_ok(gold)["ok"]
+    ok_receipt = build_remint_receipt(gold)
+    assert ok_receipt["obligations"] == {
+        "dict": "mechanical",
+        "validator": "mechanical",
+        "Config": "mechanical",
+    }
