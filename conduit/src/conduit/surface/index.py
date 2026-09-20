@@ -126,8 +126,35 @@ def _collect_constructors(tree: ast.AST) -> dict[str, str]:
 
 def _collect_uses(tree: ast.AST, rel: str) -> list[UseSite]:
     uses: list[UseSite] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
+
+    class _Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._class_stack: list[str] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            enclosing = self._class_stack[-1] if self._class_stack else None
+            for dec in node.decorator_list:
+                self._add_decorator(dec, enclosing)
+            self._class_stack.append(node.name)
+            for child in node.body:
+                self.visit(child)
+            self._class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            enclosing = self._class_stack[-1] if self._class_stack else None
+            for dec in node.decorator_list:
+                self._add_decorator(dec, enclosing)
+            for child in node.body:
+                self.visit(child)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            enclosing = self._class_stack[-1] if self._class_stack else None
+            for dec in node.decorator_list:
+                self._add_decorator(dec, enclosing)
+            for child in node.body:
+                self.visit(child)
+
+        def visit_Call(self, node: ast.Call) -> None:
             chain = _attr_chain(node.func)
             if chain:
                 uses.append(
@@ -139,24 +166,32 @@ def _collect_uses(tree: ast.AST, rel: str) -> list[UseSite]:
                         ),
                         use_kind=UseKind.CALL,
                         chain=chain,
+                        enclosing_class=(
+                            self._class_stack[-1] if self._class_stack else None
+                        ),
                     )
                 )
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            for dec in node.decorator_list:
-                expr = dec.func if isinstance(dec, ast.Call) else dec
-                chain = _attr_chain(expr)
-                if chain:
-                    uses.append(
-                        UseSite(
-                            span=SourceSpan(
-                                path=rel,
-                                line=getattr(dec, "lineno", 0) or 0,
-                                col=getattr(dec, "col_offset", 0) or 0,
-                            ),
-                            use_kind=UseKind.DECORATOR,
-                            chain=chain,
-                        )
-                    )
+            self.generic_visit(node)
+
+        def _add_decorator(self, dec: ast.AST, enclosing: str | None) -> None:
+            expr = dec.func if isinstance(dec, ast.Call) else dec
+            chain = _attr_chain(expr)
+            if not chain:
+                return
+            uses.append(
+                UseSite(
+                    span=SourceSpan(
+                        path=rel,
+                        line=getattr(dec, "lineno", 0) or 0,
+                        col=getattr(dec, "col_offset", 0) or 0,
+                    ),
+                    use_kind=UseKind.DECORATOR,
+                    chain=chain,
+                    enclosing_class=enclosing,
+                )
+            )
+
+    _Visitor().visit(tree)
     return uses
 
 

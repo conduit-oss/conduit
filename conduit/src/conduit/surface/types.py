@@ -40,7 +40,28 @@ class VerdictStatus(str, Enum):
 
 
 @dataclass(frozen=True)
+class RenameTerminal:
+    """Rename only the leaf of an observed chain; always preserves the receiver prefix."""
+
+    old_member: str
+    new_member: str
+
+
+@dataclass(frozen=True)
+class ReplaceResolvedExport:
+    """Replace a proven qualified/imported export chain with another export chain."""
+
+    source: tuple[str, ...]
+    target: tuple[str, ...]
+
+
+RewriteIntent = RenameTerminal | ReplaceResolvedExport
+
+
+@dataclass(frozen=True)
 class Rewrite:
+    """Deprecated wire-compile shape; prefer ``RewriteIntent`` via ``intent_from``."""
+
     export_path: tuple[str, ...] | None = None
     member: str | None = None
 
@@ -53,7 +74,7 @@ class SurfaceContract:
     export_path: tuple[str, ...]
     use_kinds: frozenset[UseKind]
     spellings: frozenset[Spelling]
-    rewrite: Rewrite
+    rewrite: RewriteIntent | Rewrite
     target_files: tuple[str, ...] = ("*",)
     proof_eligible: bool = True
 
@@ -85,6 +106,7 @@ class UseSite:
     span: SourceSpan
     use_kind: UseKind
     chain: str
+    enclosing_class: str | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +144,8 @@ class Observation:
     evidence: MatchEvidence
     spelling: Spelling
     disposition: Literal["still_old"] = "still_old"
+    enclosing_class: str | None = None
+    resolved_export: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

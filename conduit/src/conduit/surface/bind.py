@@ -143,6 +143,8 @@ def _bind_file(
                 confidence=confidence,
                 evidence=evidence,
                 spelling=spelling,
+                enclosing_class=use.enclosing_class,
+                resolved_export=export_path,
             )
         )
     return out
@@ -185,7 +187,13 @@ def _match_use(
     if Spelling.RECEIVER_MEMBER in spellings and chain.endswith("." + member):
         if not imports_pkg:
             return None
-        if _receiver_proven(chain, file_index, package, export_path):
+        if _receiver_proven(
+            chain,
+            file_index,
+            package,
+            export_path,
+            enclosing_class=use.enclosing_class,
+        ):
             return (
                 Confidence.DEFINITE,
                 MatchEvidence.RECEIVER_TYPED,
@@ -248,6 +256,8 @@ def _receiver_proven(
     file_index: FileIndex,
     package: str,
     export_path: tuple[str, ...],
+    *,
+    enclosing_class: str | None = None,
 ) -> bool:
     receiver = chain.rsplit(".", 1)[0]
     owner = export_path[0] if export_path else ""
@@ -263,11 +273,12 @@ def _receiver_proven(
     )
     if type_name and _type_matches(type_name, file_index, candidates, package, owner):
         return True
-    # self / cls on a local subclass of the exported owner
+    # self / cls: only the enclosing class's bases count (not any class in the file).
     if receiver in {"self", "cls"}:
-        for bases in file_index.local_bases.values():
-            if any(_base_matches(base, candidates, package, owner) for base in bases):
-                return True
+        if not enclosing_class:
+            return False
+        bases = file_index.local_bases.get(enclosing_class) or ()
+        return any(_base_matches(base, candidates, package, owner) for base in bases)
     return False
 
 

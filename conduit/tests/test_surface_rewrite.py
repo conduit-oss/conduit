@@ -63,6 +63,95 @@ def test_replacement_chain_preserves_receiver():
     assert replacement_chain(contract, "obj.dict") == "obj.model_dump"
 
 
+def test_live_surface_contract_preserves_receiver_not_type_path():
+    """Live-mint shape: surface + dotted new_callee must keep self/obj."""
+    from conduit.surface.contracts import contracts_from_packet
+    from conduit.surface.types import MatchEvidence, Observation, SourceSpan, Spelling
+    from conduit.surface.rewrite import materialize, _intent_for
+    from conduit.surface.types import Confidence
+
+    packet = {
+        "packet_id": "live-shape",
+        "package": "pydantic",
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "target_files": ["*.py"],
+                "old_callee": "BaseModel.dict",
+                "new_callee": "BaseModel.model_dump",
+                "surface": {
+                    "export_path": ["BaseModel", "dict"],
+                    "spellings": ["qualified", "imported", "receiver_member"],
+                    "use_kinds": ["call", "decorator"],
+                },
+            }
+        ],
+    }
+    contract = contracts_from_packet(packet)[0]
+    intent = _intent_for(contract)
+    obs = Observation(
+        surface_id=contract.surface_id,
+        span=SourceSpan(path="src/model.py", line=10),
+        chain="self.dict",
+        confidence=Confidence.DEFINITE,
+        evidence=MatchEvidence.RECEIVER_TYPED,
+        spelling=Spelling.RECEIVER_MEMBER,
+        enclosing_class="User",
+        resolved_export=("BaseModel", "dict"),
+    )
+    assert materialize(intent, obs) == "self.model_dump"
+    assert materialize(intent, obs) != "BaseModel.model_dump"
+    # Qualified site still swaps the export leaf via RenameTerminal.
+    q = Observation(
+        surface_id=contract.surface_id,
+        span=SourceSpan(path="src/model.py", line=1),
+        chain="BaseModel.dict",
+        confidence=Confidence.DEFINITE,
+        evidence=MatchEvidence.EXACT,
+        spelling=Spelling.QUALIFIED,
+        resolved_export=("BaseModel", "dict"),
+    )
+    assert materialize(intent, q) == "BaseModel.model_dump"
+
+
+def test_apply_live_shaped_packet_keeps_self_receiver(tmp_path: Path):
+    tree = _copy_fixture(tmp_path / "fixture")
+    (tree / "requirements.txt").write_text("pydantic==2.0.0\n", encoding="utf-8")
+    packet = {
+        "packet_id": "live-shaped",
+        "package": "pydantic",
+        "ecosystem": "pypi",
+        "from_version": "*",
+        "to_version": "2.0.0",
+        "rules": [
+            {
+                "type": "DEPENDENCY_BUMP",
+                "package": "pydantic",
+                "from_version": "*",
+                "to_version": "2.0.0",
+                "ecosystems": ["pip"],
+            },
+            {
+                "type": "AST_CALL_REWRITE",
+                "target_files": ["*.py"],
+                "old_callee": "BaseModel.dict",
+                "new_callee": "BaseModel.model_dump",
+                "surface": {
+                    "export_path": ["BaseModel", "dict"],
+                    "spellings": ["qualified", "imported", "receiver_member"],
+                    "use_kinds": ["call"],
+                },
+            },
+        ],
+    }
+    report = apply_definite_surface_rewrites(tree, packet, dry_run=False)
+    assert report.files_modified
+    text = (tree / "src" / "model.py").read_text(encoding="utf-8")
+    assert "self.model_dump()" in text
+    assert "BaseModel.model_dump()" not in text
+    assert "self.dict()" not in text
+
+
 def test_replacement_chain_bare_import():
     contract = LexicalOnlyContract(
         surface_id="t",

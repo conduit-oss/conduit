@@ -7,7 +7,9 @@ from typing import Any, Mapping
 from conduit.surface.types import (
     LexicalOnlyContract,
     PacketContract,
-    Rewrite,
+    RenameTerminal,
+    ReplaceResolvedExport,
+    RewriteIntent,
     Spelling,
     SurfaceContract,
     UseKind,
@@ -33,6 +35,33 @@ def contracts_from_packet(packet: Mapping[str, Any]) -> tuple[PacketContract, ..
     return tuple(out)
 
 
+def intent_from(
+    *,
+    old_export: tuple[str, ...],
+    new_callee: str,
+) -> RewriteIntent | None:
+    """Compile wire callees into a closed rewrite intent.
+
+    Same-prefix leaf renames (``BaseModel.dict`` → ``BaseModel.model_dump``) and
+    bare new members become ``RenameTerminal`` so receivers stay intact.
+    Owner-changing hops become ``ReplaceResolvedExport``.
+    """
+    if not old_export:
+        return None
+    new = (new_callee or "").strip()
+    if not new:
+        return None
+    new_parts = tuple(p for p in new.split(".") if p)
+    if not new_parts:
+        return None
+    old_leaf = old_export[-1]
+    if len(new_parts) == 1:
+        return RenameTerminal(old_member=old_leaf, new_member=new_parts[0])
+    if len(old_export) >= 2 and old_export[:-1] == new_parts[:-1]:
+        return RenameTerminal(old_member=old_leaf, new_member=new_parts[-1])
+    return ReplaceResolvedExport(source=old_export, target=new_parts)
+
+
 def _contract_from_rule(rule: dict[str, Any], *, index: int) -> PacketContract | None:
     old = str(rule.get("old_callee") or "").strip()
     new = str(rule.get("new_callee") or "").strip()
@@ -46,6 +75,10 @@ def _contract_from_rule(rule: dict[str, Any], *, index: int) -> PacketContract |
     else:
         export_path = tuple(p for p in old.split(".") if p)
     if not export_path:
+        return None
+
+    intent = intent_from(old_export=export_path, new_callee=new)
+    if intent is None:
         return None
 
     targets = rule.get("target_files") or ["*"]
@@ -62,13 +95,12 @@ def _contract_from_rule(rule: dict[str, Any], *, index: int) -> PacketContract |
     if surface or rule.get("spellings") or rule.get("export_path"):
         spellings = _spellings_from(rule, surface, export_path)
         use_kinds = _use_kinds_from(rule, surface)
-        rewrite = _rewrite_from(new, export_path)
         return SurfaceContract(
             surface_id=sid,
             export_path=export_path,
             use_kinds=use_kinds,
             spellings=spellings,
-            rewrite=rewrite,
+            rewrite=intent,
             target_files=target_files,
             proof_eligible=True,
         )
@@ -81,15 +113,6 @@ def _contract_from_rule(rule: dict[str, Any], *, index: int) -> PacketContract |
         target_files=target_files,
         proof_eligible=False,
     )
-
-
-def _rewrite_from(new: str, export_path: tuple[str, ...]) -> Rewrite:
-    if not new:
-        return Rewrite()
-    new_parts = tuple(p for p in new.split(".") if p)
-    if len(new_parts) == 1 and len(export_path) >= 2:
-        return Rewrite(member=new_parts[0])
-    return Rewrite(export_path=new_parts)
 
 
 def _spellings_from(
