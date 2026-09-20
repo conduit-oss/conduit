@@ -1,0 +1,69 @@
+{
+  "sha256": "a37c6dcff5fcd1621ce50bfeecbffda70ab64b78b6920cf768603126e70aca32",
+  "mint_exit": 0,
+  "mint_wall_s": 223.534,
+  "rule_types": {
+    "DEPENDENCY_BUMP": 1,
+    "AST_IMPORT_REWRITE": 4,
+    "AST_CALL_REWRITE": 9,
+    "AST_ATTR_RENAME": 2
+  },
+  "call_site_rules": 15,
+  "ast_call_with_surface": 9,
+  "old_callees": [
+    "dict",
+    "json",
+    "copy",
+    "construct",
+    "parse_obj",
+    "update_forward_refs",
+    "validator",
+    "root_validator",
+    "validate_arguments"
+  ],
+  "interesting_callees": [
+    "dict",
+    "parse_obj",
+    "validator",
+    "root_validator"
+  ],
+  "side_effect_count": 3,
+  "side_effects_mention_config": true,
+  "side_effects_mention_validator": false,
+  "provider": "openai",
+  "model": "gpt-5.4-mini",
+  "packet_test_exit": 0,
+  "pre_apply_watch": {
+    "status": "pre_bump",
+    "leftover_count": 1,
+    "leftovers": [
+      "validator"
+    ],
+    "completeness": "incomplete",
+    "observation_count": 2
+  },
+  "apply": {
+    "exit": 0,
+    "rewrites": [
+      "AST_CALL_REWRITE dict -> model_dump",
+      "AST_CALL_REWRITE validator -> field_validator"
+    ],
+    "surface_rewrite": false
+  },
+  "post_apply_watch": {
+    "status": "clean",
+    "leftover_count": 0,
+    "completeness": "complete",
+    "elapsed_s": 48.634
+  },
+  "fixture_residue": {
+    "validator_decorator_pre": 1,
+    "validator_decorator_post": 0,
+    "field_validator_post": 1,
+    "import_still_validator": true,
+    "dict_pre": 1,
+    "dict_post": 0,
+    "model_dump_post": 1,
+    "class_Config_post": 1
+  }
+}

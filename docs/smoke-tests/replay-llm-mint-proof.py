@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PACKET = ROOT / "examples" / "sample-packet" / "pydantic-llm-mint-live.json"
 FIXTURE = ROOT / "examples" / "pydantic-validator-fixture"
-EXPECTED_SHA256 = "fd2eba852dcbe2bc49384e9a41a3a7daabc1c162abb1ff1c91ec890e9fcf57df"
+EXPECTED_SHA256 = "a37c6dcff5fcd1621ce50bfeecbffda70ab64b78b6920cf768603126e70aca32"
 
 
 def _conduit_bin() -> str:
