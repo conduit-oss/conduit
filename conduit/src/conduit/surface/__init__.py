@@ -10,6 +10,7 @@ from conduit.surface.evaluate import (
     evaluate_packet_binding,
 )
 from conduit.surface.index import index_python
+from conduit.surface.rewrite import apply_definite_surface_rewrites, replacement_chain
 from conduit.surface.types import (
     BindingVerdict,
     Confidence,
@@ -36,6 +37,7 @@ __all__ = [
     "SurfaceContract",
     "UseKind",
     "VerdictStatus",
+    "apply_definite_surface_rewrites",
     "bind",
     "binding_blocks_complete",
     "binding_to_dict",
@@ -43,4 +45,5 @@ __all__ = [
     "evaluate_binding",
     "evaluate_packet_binding",
     "index_python",
+    "replacement_chain",
 ]
