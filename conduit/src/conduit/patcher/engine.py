@@ -395,6 +395,13 @@ def apply_packet(
         )
         report.merge(rest_report)
 
+    if stages in {"all", "sdk"}:
+        from conduit.surface.rewrite import apply_definite_surface_rewrites
+
+        report.merge(
+            apply_definite_surface_rewrites(root, packet, dry_run=dry_run)
+        )
+
     return report
 
 
