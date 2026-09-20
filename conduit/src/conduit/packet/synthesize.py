@@ -165,7 +165,7 @@ _LLM_RULE_FIELD_ALIASES: dict[str, tuple[str, str]] = {
 }
 _LLM_RULE_ALLOWED_KEYS: dict[str, frozenset[str]] = {
     "AST_CALL_REWRITE": frozenset(
-        {"type", "target_files", "old_callee", "new_callee", "reason"}
+        {"type", "target_files", "old_callee", "new_callee", "reason", "surface"}
     ),
     "AST_ATTR_RENAME": frozenset(
         {"type", "target_files", "old_attr", "new_attr", "reason"}
@@ -282,12 +282,15 @@ def normalize_llm_rule(rule: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_llm_rules(rules: Any) -> list[dict[str, Any]]:
-    """Normalize a rules list from LLM JSON; drop non-dict rows."""
+    """Normalize a rules list from LLM JSON; attach surface floor for call rewrites."""
+    from conduit.surface.mint_surface import enrich_minted_rules
+
     if not isinstance(rules, list):
         return []
-    return [
+    normalized = [
         normalize_llm_rule(r) for r in rules if isinstance(r, dict) and r.get("type")
     ]
+    return enrich_minted_rules(normalized)
 
 
 def _parse_ver(value: str | None):
