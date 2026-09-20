@@ -239,8 +239,12 @@ _LLM_RULE_ALLOWED_KEYS: dict[str, frozenset[str]] = {
 }
 
 
-def normalize_llm_rule(rule: dict[str, Any]) -> dict[str, Any]:
-    """Map common LLM aliases onto schema field names; strip unknown keys."""
+def normalize_llm_rule(rule: dict[str, Any]) -> dict[str, Any] | None:
+    """Map common LLM aliases onto schema field names; strip unknown keys.
+
+    Returns ``None`` when the rule should be dropped (e.g. class-shaped
+    ``AST_PARAM_RENAME`` that belongs in ``AST_DECLARATION_REWRITE`` / side_effects).
+    """
     if not isinstance(rule, dict):
         return rule
     rtype = str(rule.get("type") or "").strip()
@@ -262,6 +266,11 @@ def normalize_llm_rule(rule: dict[str, Any]) -> dict[str, Any]:
             scope = out.get("scope") or out.get("function") or out.get("target")
             if scope:
                 out["function_target"] = str(scope)
+
+    if rtype == "AST_PARAM_RENAME" and _is_class_shaped_param_target(
+        str(out.get("function_target") or "")
+    ):
+        return None
 
     needs_targets = rtype in {
         "AST_CALL_REWRITE",
@@ -285,15 +294,35 @@ def normalize_llm_rule(rule: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+_CLASS_SHAPED_PARAM_TARGETS = frozenset(
+    {"config", "meta", "modelconfig", "options", "settings"}
+)
+
+
+def _is_class_shaped_param_target(function_target: str) -> bool:
+    """True for bare PascalCase / config-ish targets that are not call chains."""
+    ft = (function_target or "").strip()
+    if not ft or "." in ft or "(" in ft:
+        return False
+    if ft.lower() in _CLASS_SHAPED_PARAM_TARGETS:
+        return True
+    # Bare PascalCase identifier (Config, Meta, ModelConfig) — not a callee.
+    return bool(ft.isidentifier() and ft[0].isupper())
+
+
 def normalize_llm_rules(rules: Any) -> list[dict[str, Any]]:
     """Normalize a rules list from LLM JSON; attach surface floor for call rewrites."""
     from conduit.surface.mint_surface import enrich_minted_rules
 
     if not isinstance(rules, list):
         return []
-    normalized = [
-        normalize_llm_rule(r) for r in rules if isinstance(r, dict) and r.get("type")
-    ]
+    normalized: list[dict[str, Any]] = []
+    for r in rules:
+        if not isinstance(r, dict) or not r.get("type"):
+            continue
+        cleaned = normalize_llm_rule(r)
+        if cleaned is not None:
+            normalized.append(cleaned)
     return enrich_minted_rules(normalized)
 
 
@@ -725,18 +754,23 @@ def synthesize_from_docs(
             "Generate a Conduit migration packet JSON with keys: "
             "packet_id, package, ecosystem, from_version, to_version, sources, notes, "
             "side_effects, rules. "
-            "Rules may use EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
-            "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_DECLARATION_REWRITE, "
-            "AST_ATTR_RENAME, AST_CALL_REWRITE. "
+            "Prefer surface rewrites first: AST_CALL_REWRITE, AST_ATTR_RENAME, "
+            "AST_IMPORT_REWRITE, AST_DECLARATION_REWRITE. "
+            "Also allowed: EXACT_STRING_REPLACE, REGEX_REPLACE, DEPENDENCY_BUMP, "
+            "AST_PARAM_RENAME (call kwargs only — never class/Config fields). "
             "AST_CALL_REWRITE requires target_files, old_callee, new_callee "
-            "(never old/new). "
+            "(never old/new). Prefer qualified callees from evidence "
+            "(e.g. BaseModel.dict → BaseModel.model_dump, validator → field_validator) "
+            "— never bare method names like dict alone. "
             "Optional surface on AST_CALL_REWRITE: "
             "{export_path: [segments], spellings: [qualified|imported|receiver_member], "
             "use_kinds: [call|decorator]}. Prefer omitting surface when unsure; "
             "mint fills a safe floor. "
             "AST_ATTR_RENAME requires target_files, old_attr, new_attr. "
-            "AST_PARAM_RENAME requires target_files, function_target, old_param, "
-            "new_param. "
+            "AST_PARAM_RENAME requires target_files, function_target (a call chain like "
+            "client.chat.completions.create — never bare Config/Meta), old_param, "
+            "new_param. Class/nested-config renames use AST_DECLARATION_REWRITE or "
+            "side_effects, not AST_PARAM_RENAME. "
             "AST_IMPORT_REWRITE is module-path only (old_import/new_import dotted modules). "
             "AST_DECLARATION_REWRITE operation.kind import_member "
             "(source/target {module,name}) renames a name inside from-imports; "
@@ -809,15 +843,22 @@ _EVIDENCE_SYSTEM = (
     "You are a Staff Software Engineer authoring Conduit Migration Packets. "
     "Emit JSON only with keys: notes (string), sources (list of {url, kind}), "
     "side_effects (list of {kind, detail}), rules (list). "
-    "Allowed rule types: EXACT_STRING_REPLACE, REGEX_REPLACE, AST_PARAM_RENAME, "
-    "DEPENDENCY_BUMP, AST_IMPORT_REWRITE, AST_DECLARATION_REWRITE, AST_ATTR_RENAME, "
-    "AST_CALL_REWRITE. "
+    "Prefer surface families: AST_CALL_REWRITE, AST_ATTR_RENAME, AST_IMPORT_REWRITE, "
+    "AST_DECLARATION_REWRITE. Also allowed: EXACT_STRING_REPLACE, REGEX_REPLACE, "
+    "DEPENDENCY_BUMP, AST_PARAM_RENAME (call kwargs only), AST_PARAM_DROP. "
+    "Packets that only emit AST_PARAM_RENAME / EXACT / REGEX without a surface rewrite "
+    "are refused as false-rich — cover CALL/ATTR/IMPORT/DECLARATION when evidence shows "
+    "those hops. "
     "AST_CALL_REWRITE fields: target_files, old_callee, new_callee (never old/new). "
+    "Prefer qualified callees grounded in evidence (BaseModel.dict, validator) — "
+    "never emit a bare method name like dict or json as old_callee. "
     "Optional AST_CALL_REWRITE.surface: export_path, spellings "
     "(qualified|imported|receiver_member), use_kinds (call|decorator). "
     "Omit surface when unsure. "
     "AST_ATTR_RENAME fields: target_files, old_attr, new_attr. "
-    "AST_PARAM_RENAME fields: target_files, function_target, old_param, new_param. "
+    "AST_PARAM_RENAME fields: target_files, function_target (call chain from evidence — "
+    "never bare Config/Meta/ModelConfig), old_param, new_param. Nested class / config "
+    "field renames belong in AST_DECLARATION_REWRITE or side_effects. "
     "AST_IMPORT_REWRITE fields: target_files, old_import, new_import (module paths only). "
     "AST_DECLARATION_REWRITE: operation import_member {source,target:{module,name}} "
     "or inner_class_to_assignment {selector,keys,emit,...}. Never clause fragments. "
@@ -830,7 +871,7 @@ _EVIDENCE_SYSTEM = (
     "Every path replace, param rename, and call rewrite MUST be supported by the evidence "
     "excerpts (cite URLs in notes). "
     "For AST_PARAM_RENAME include explicit function_target(s) taken from evidence — "
-    "do not assume ChatCompletion vs chat.completions. "
+    "do not assume ChatCompletion vs chat.completions; never invent class-shaped targets. "
     "For AST_PARAM_DROP include function_target, param, and optional values "
     "(literal kwargs to omit). "
     "If a removed endpoint/param has no stated successor, mention it in notes and do NOT "
@@ -845,10 +886,11 @@ _EVIDENCE_SYSTEM = (
     "Honor any ignore list: do not emit rules whose only effect would be rewriting "
     "ignored contract patterns/files (LEGACY_/FORBIDDEN_ oracles). "
     "Scope rules to the provided source packet: only models/callees/paths the client "
-    "uses. Prefer AST_CALL_REWRITE / AST_ATTR_RENAME for SDK call surfaces observed "
-    "in source.usages (path-string replaces are not enough when the client calls "
-    "Resource.create). Use KEY_RENAME when request/response dict keys, JSON/YAML "
-    "fixtures, or .env names change (AST_PARAM_RENAME only rewrites call kwargs). "
+    "uses. Prefer AST_CALL_REWRITE / AST_ATTR_RENAME / AST_IMPORT_REWRITE / "
+    "AST_DECLARATION_REWRITE for SDK surfaces observed in source.usages "
+    "(path-string replaces are not enough when the client calls Resource.create). "
+    "Use KEY_RENAME when request/response dict keys, JSON/YAML fixtures, or .env names "
+    "change (AST_PARAM_RENAME only rewrites call kwargs). "
     "One primary DEPENDENCY_BUMP pinned to packet from_version → to_version. "
     "When evidence names companion packages (splits, extra wheels), emit "
     "DEPENDENCY_ADD / DEPENDENCY_REMOVE / extra DEPENDENCY_BUMP with ecosystems "
@@ -1184,7 +1226,10 @@ def synthesize_from_evidence(
 
         run_agent = getattr(client, "run_agent", None)
         label = "LLM coverage retry" if missed_items else "LLM packet enrichment"
-        if callable(run_agent):
+        # Link-only authoring (no consumer root): one-shot JSON. The multi-turn
+        # agent otherwise stalls on list_files/grep against Path(".") with no repo.
+        use_agent = callable(run_agent) and root is not None
+        if use_agent:
             max_turns = min(16, resolve_max_turns(32))
             if emit is not None:
                 emit(
