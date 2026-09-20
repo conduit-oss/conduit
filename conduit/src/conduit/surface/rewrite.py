@@ -12,12 +12,20 @@ import libcst as cst
 from conduit.packet.rule_safety import is_valid_python_callee
 from conduit.patcher.engine import ChangeRecord, PatchReport
 from conduit.patcher.string_replace import write_if_changed
-from conduit.surface.contracts import contracts_from_packet
+from conduit.surface.contracts import contracts_from_packet, intent_from
 from conduit.surface.evaluate import evaluate_packet_binding
 from conduit.surface.types import (
     Confidence,
     LexicalOnlyContract,
+    MatchEvidence,
+    Observation,
     PacketContract,
+    RenameTerminal,
+    ReplaceResolvedExport,
+    Rewrite,
+    RewriteIntent,
+    SourceSpan,
+    Spelling,
     SurfaceContract,
 )
 
@@ -57,7 +65,7 @@ def apply_definite_surface_rewrites(
             continue
         if not _path_matches_targets(obs.span.path, contract.target_files):
             continue
-        new_chain = replacement_chain(contract, obs.chain)
+        new_chain = materialize(_intent_for(contract), obs)
         if not new_chain or new_chain == obs.chain:
             continue
         if not is_valid_python_callee(obs.chain) or not is_valid_python_callee(new_chain):
@@ -116,42 +124,111 @@ def _path_matches_targets(rel: str, patterns: Sequence[str]) -> bool:
     return False
 
 
-def replacement_chain(contract: PacketContract, old_chain: str) -> str | None:
-    """Preserve receiver; replace renamed member or whole bare/qualified callee."""
+def _intent_for(contract: PacketContract) -> RewriteIntent | None:
     if isinstance(contract, SurfaceContract):
-        if contract.rewrite.member:
-            parts = old_chain.split(".")
-            if not parts:
-                return None
-            parts[-1] = contract.rewrite.member
-            return ".".join(parts)
-        if contract.rewrite.export_path:
-            new = ".".join(contract.rewrite.export_path)
-            if "." not in old_chain:
-                return contract.rewrite.export_path[-1]
-            return new
+        rewrite = contract.rewrite
+        if isinstance(rewrite, (RenameTerminal, ReplaceResolvedExport)):
+            return rewrite
+        if isinstance(rewrite, Rewrite):
+            # Legacy ShapeContract.rewrite during migration.
+            if rewrite.member:
+                return RenameTerminal(
+                    old_member=contract.export_path[-1],
+                    new_member=rewrite.member,
+                )
+            if rewrite.export_path:
+                return intent_from(
+                    old_export=contract.export_path,
+                    new_callee=".".join(rewrite.export_path),
+                )
         return None
-
     if isinstance(contract, LexicalOnlyContract):
-        new = (contract.new_callee or "").strip()
-        if not new:
-            return None
-        if "." not in old_chain:
-            # Bare import/decorator: validator -> field_validator
-            return new.split(".")[-1] if new.count(".") == 0 else new.split(".")[-1]
-        if "." not in new:
-            # Doc/type surface -> member rename: self.dict -> self.model_dump
-            parts = old_chain.split(".")
-            parts[-1] = new
-            return ".".join(parts)
-        # Full callee swap when chains align in length or exact old match
-        if old_chain == contract.old_callee or old_chain == ".".join(contract.export_path):
-            return new
-        # Otherwise member-only from the new leaf
-        parts = old_chain.split(".")
-        parts[-1] = new.split(".")[-1]
-        return ".".join(parts)
+        return intent_from(
+            old_export=contract.export_path or tuple(
+                p for p in contract.old_callee.split(".") if p
+            ),
+            new_callee=contract.new_callee,
+        )
     return None
+
+
+def materialize(intent: RewriteIntent | None, observation: Observation) -> str | None:
+    """Build a replacement chain from a closed intent and a typed observation.
+
+    ``RenameTerminal`` always preserves the observed receiver prefix.
+    ``ReplaceResolvedExport`` never applies to ``RECEIVER_MEMBER`` sites.
+    """
+    if intent is None:
+        return None
+    chain = observation.chain
+    if isinstance(intent, RenameTerminal):
+        if chain == intent.old_member:
+            return intent.new_member
+        if not chain.endswith("." + intent.old_member):
+            return None
+        parts = chain.split(".")
+        parts[-1] = intent.new_member
+        return ".".join(parts)
+
+    if isinstance(intent, ReplaceResolvedExport):
+        if observation.spelling == Spelling.RECEIVER_MEMBER:
+            # Owner-changing hops do not rewrite instance receivers.
+            return None
+        source = ".".join(intent.source)
+        target = ".".join(intent.target)
+        if not source or not target:
+            return None
+        if chain == source:
+            return target
+        if observation.resolved_export and observation.resolved_export == intent.source:
+            if chain.endswith("." + source):
+                return chain[: -len(source)] + target
+            if chain.split(".")[-1] == intent.source[-1] and len(intent.source) == 1:
+                return target
+        if chain == source or chain.endswith("." + source):
+            prefix_len = len(chain) - len(source)
+            if prefix_len >= 0 and chain[prefix_len:] == source:
+                return chain[:prefix_len] + target
+        return None
+    return None
+
+
+def replacement_chain(contract: PacketContract, old_chain: str) -> str | None:
+    """Compatibility helper: materialize without a full observation.
+
+    Prefer ``materialize`` with a real observation. This wrapper assumes
+    QUALIFIED spelling for dotted chains and IMPORTED for bare names so legacy
+    tests keep working.
+    """
+    intent = _intent_for(contract)
+    if intent is None:
+        return None
+    spelling = (
+        Spelling.IMPORTED if "." not in old_chain else Spelling.QUALIFIED
+    )
+    # Heuristic: dotted chains that are not the export look like receivers —
+    # use RECEIVER_MEMBER so RenameTerminal preserves them.
+    export = ()
+    if isinstance(contract, (SurfaceContract, LexicalOnlyContract)):
+        export = contract.export_path
+    if (
+        isinstance(intent, RenameTerminal)
+        and "." in old_chain
+        and export
+        and old_chain != ".".join(export)
+        and old_chain.endswith("." + intent.old_member)
+    ):
+        spelling = Spelling.RECEIVER_MEMBER
+    obs = Observation(
+        surface_id=getattr(contract, "surface_id", ""),
+        span=SourceSpan(path="", line=0),
+        chain=old_chain,
+        confidence=Confidence.DEFINITE,
+        evidence=MatchEvidence.EXACT,
+        spelling=spelling,
+        resolved_export=export,
+    )
+    return materialize(intent, obs)
 
 
 def rewrite_chains(content: str, mapping: Mapping[str, str]) -> tuple[str, int]:

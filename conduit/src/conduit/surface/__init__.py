@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from conduit.surface.bind import bind, evaluate_binding
-from conduit.surface.contracts import contracts_from_packet
+from conduit.surface.contracts import contracts_from_packet, intent_from
 from conduit.surface.evaluate import (
     binding_blocks_complete,
     binding_to_dict,
@@ -15,7 +15,11 @@ from conduit.surface.mint_surface import (
     enrich_minted_rules,
     merge_surface_overlay,
 )
-from conduit.surface.rewrite import apply_definite_surface_rewrites, replacement_chain
+from conduit.surface.rewrite import (
+    apply_definite_surface_rewrites,
+    materialize,
+    replacement_chain,
+)
 from conduit.surface.types import (
     BindingVerdict,
     Confidence,
@@ -24,6 +28,8 @@ from conduit.surface.types import (
     MatchEvidence,
     Observation,
     PacketContract,
+    RenameTerminal,
+    ReplaceResolvedExport,
     Spelling,
     SurfaceContract,
     UseKind,
@@ -38,6 +44,8 @@ __all__ = [
     "MatchEvidence",
     "Observation",
     "PacketContract",
+    "RenameTerminal",
+    "ReplaceResolvedExport",
     "Spelling",
     "SurfaceContract",
     "UseKind",
@@ -52,6 +60,8 @@ __all__ = [
     "evaluate_binding",
     "evaluate_packet_binding",
     "index_python",
+    "intent_from",
+    "materialize",
     "merge_surface_overlay",
     "replacement_chain",
 ]
