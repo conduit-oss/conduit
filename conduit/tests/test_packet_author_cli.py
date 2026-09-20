@@ -699,6 +699,107 @@ def test_normalize_llm_rule_aliases_match_schema():
     assert rules[2]["old_param"] == "regex"
 
 
+def test_normalize_maps_match_replace_and_strips_callish():
+    from conduit.packet.cook import cook_import_member_companions
+    from conduit.packet.synthesize import normalize_llm_rule, normalize_llm_rules
+    from conduit.packet.validate import validate_packet
+
+    call = normalize_llm_rule(
+        {
+            "type": "AST_CALL_REWRITE",
+            "match": "BaseModel.dict(...)",
+            "replace": "BaseModel.model_dump(...)",
+        }
+    )
+    assert call is not None
+    assert call["old_callee"] == "BaseModel.dict"
+    assert call["new_callee"] == "BaseModel.model_dump"
+
+    dec = normalize_llm_rule(
+        {
+            "type": "AST_CALL_REWRITE",
+            "match": "@validator(...)",
+            "replace": "@field_validator(...)",
+        }
+    )
+    assert dec is not None
+    assert dec["old_callee"] == "validator"
+    assert dec["new_callee"] == "field_validator"
+
+    attr = normalize_llm_rule(
+        {
+            "type": "AST_ATTR_RENAME",
+            "match": "model.__fields__",
+            "replace": "model.model_fields",
+        }
+    )
+    assert attr is not None
+    assert attr["old_attr"] == "__fields__"
+    assert attr["new_attr"] == "model_fields"
+
+    assert (
+        normalize_llm_rule(
+            {
+                "type": "AST_CALL_REWRITE",
+                "match": "Field(regex=...)",
+                "replace": "Field(pattern=...)",
+            }
+        )
+        is None
+    )
+    assert (
+        normalize_llm_rule(
+            {
+                "type": "AST_IMPORT_REWRITE",
+                "match": "from pydantic import validator",
+                "replace": "from pydantic import field_validator",
+            }
+        )
+        is None
+    )
+    assert (
+        normalize_llm_rule(
+            {
+                "type": "AST_DECLARATION_REWRITE",
+                "match": "class X(GenericModel):",
+                "replace": "class X(BaseModel):",
+            }
+        )
+        is None
+    )
+
+    rules = cook_import_member_companions(
+        normalize_llm_rules(
+            [
+                {
+                    "type": "AST_CALL_REWRITE",
+                    "match": "@validator(...)",
+                    "replace": "@field_validator(...)",
+                },
+                {
+                    "type": "AST_CALL_REWRITE",
+                    "match": "BaseModel.dict(...)",
+                    "replace": "BaseModel.model_dump(...)",
+                },
+            ],
+            package="pydantic",
+        ),
+        package="pydantic",
+    )
+    packet = {
+        "packet_id": "pydantic-pypi-2.0.0",
+        "package": "pydantic",
+        "ecosystem": "pypi",
+        "from_version": "*",
+        "to_version": "2.0.0",
+        "rules": rules,
+    }
+    assert validate_packet(packet) == []
+    types = [r["type"] for r in rules]
+    assert types.count("AST_CALL_REWRITE") == 2
+    assert types.count("AST_DECLARATION_REWRITE") == 1
+
+
 def test_normalize_promotes_class_shaped_param_rename():
     from conduit.packet.synthesize import normalize_llm_rule, normalize_llm_rules
     from conduit.packet.validate import validate_packet
@@ -843,6 +944,64 @@ def test_cook_import_member_companion_for_bare_call():
         "rules": again,
     }
     assert validate_packet(packet) == []
+
+
+def test_cook_package_qualified_call_and_config_side_effect():
+    from conduit.packet.author import assert_remint_receipt_ok
+    from conduit.packet.cook import cook_packet_rules
+
+    rules = cook_packet_rules(
+        [
+            {
+                "type": "AST_CALL_REWRITE",
+                "target_files": ["*.py"],
+                "old_callee": "pydantic.BaseModel.dict",
+                "new_callee": "pydantic.BaseModel.model_dump",
+            },
+            {
+                "type": "AST_CALL_REWRITE",
+                "target_files": ["*.py"],
+                "old_callee": "pydantic.validator",
+                "new_callee": "pydantic.field_validator",
+            },
+        ],
+        package="pydantic",
+        side_effects=[
+            {
+                "kind": "config",
+                "detail": "Nested Config: orm_mode→from_attributes becomes model_config",
+            }
+        ],
+    )
+    decls = [r for r in rules if r["type"] == "AST_DECLARATION_REWRITE"]
+    assert any(
+        (r.get("operation") or {}).get("kind") == "import_member"
+        and (r["operation"]["source"]["name"] == "validator")
+        for r in decls
+    )
+    assert any(
+        r.get("type") == "AST_CALL_REWRITE" and r.get("old_callee") == "validator"
+        for r in rules
+    )
+    assert any(
+        (r.get("operation") or {}).get("kind") == "inner_class_to_assignment"
+        for r in decls
+    )
+    packet = {
+        "packet_id": "pydantic-pypi-2.0.0",
+        "package": "pydantic",
+        "ecosystem": "pypi",
+        "from_version": "*",
+        "to_version": "2.0.0",
+        "rules": rules,
+        "side_effects": [
+            {
+                "kind": "config",
+                "detail": "Nested Config: orm_mode→from_attributes becomes model_config",
+            }
+        ],
+    }
+    assert assert_remint_receipt_ok(packet)["ok"]
 
 
 def test_enrich_false_rich_helpers():

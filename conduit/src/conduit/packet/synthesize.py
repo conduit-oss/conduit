@@ -139,6 +139,11 @@ def normalize_packet_side_effects(side_effects: Any) -> list[dict[str, Any]]:
     if not isinstance(side_effects, list):
         return out
     for effect in side_effects:
+        if isinstance(effect, str):
+            detail = effect.strip()
+            if detail:
+                out.append({"kind": "other", "detail": detail})
+            continue
         if not isinstance(effect, dict):
             continue
         detail = str(effect.get("detail") or "").strip()
@@ -151,6 +156,39 @@ def normalize_packet_side_effects(side_effects: Any) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def normalize_packet_notes(notes: Any) -> str | None:
+    """Coerce LLM notes (string or list of strings) to a single string."""
+    if notes is None:
+        return None
+    if isinstance(notes, list):
+        parts = [str(x).strip() for x in notes if str(x).strip()]
+        return "\n".join(parts) if parts else None
+    text = str(notes).strip()
+    return text or None
+
+
+def _strip_callish_callee(value: str) -> str:
+    """``BaseModel.dict(...)`` / ``@validator(...)`` → bare callee path."""
+    text = (value or "").strip()
+    if not text:
+        return text
+    if text.startswith("@"):
+        text = text[1:].strip()
+    if "(" in text:
+        text = text.split("(", 1)[0].strip()
+    return text
+
+
+def _attr_leaf(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return text
+    text = _strip_callish_callee(text)
+    if "." in text:
+        return text.rsplit(".", 1)[-1]
+    return text
 
 
 # LLM often emits short aliases (old/new/scope) instead of schema field names.
@@ -262,9 +300,16 @@ def normalize_llm_rule(
             out[old_key] = out["old"]
         if not out.get(new_key) and out.get("new") is not None:
             out[new_key] = out["new"]
+        # Models often reuse EXACT_STRING match/replace keys on AST families.
+        if not out.get(old_key) and out.get("match") is not None:
+            out[old_key] = out["match"]
+        if not out.get(new_key) and out.get("replace") is not None:
+            out[new_key] = out["replace"]
 
     if rtype == "AST_PARAM_DROP" and not out.get("param") and out.get("old") is not None:
         out["param"] = out["old"]
+    if rtype == "AST_PARAM_DROP" and not out.get("param") and out.get("match") is not None:
+        out["param"] = out["match"]
 
     if rtype in {"AST_PARAM_RENAME", "AST_PARAM_DROP"}:
         if not out.get("function_target"):
@@ -272,10 +317,36 @@ def normalize_llm_rule(
             if scope:
                 out["function_target"] = str(scope)
 
+    if rtype == "AST_CALL_REWRITE":
+        if out.get("old_callee") is not None:
+            out["old_callee"] = _strip_callish_callee(str(out["old_callee"]))
+        if out.get("new_callee") is not None:
+            out["new_callee"] = _strip_callish_callee(str(out["new_callee"]))
+        old_c = str(out.get("old_callee") or "").strip()
+        new_c = str(out.get("new_callee") or "").strip()
+        if not old_c or not new_c or old_c == new_c:
+            return None
+
+    if rtype == "AST_ATTR_RENAME":
+        if out.get("old_attr") is not None:
+            out["old_attr"] = _attr_leaf(str(out["old_attr"]))
+        if out.get("new_attr") is not None:
+            out["new_attr"] = _attr_leaf(str(out["new_attr"]))
+        if not str(out.get("old_attr") or "").strip() or not str(
+            out.get("new_attr") or ""
+        ).strip():
+            return None
+
     if rtype == "AST_PARAM_RENAME" and _is_class_shaped_param_target(
         str(out.get("function_target") or "")
     ):
         return _promote_class_param_to_declaration(out, package=package)
+
+    if rtype == "AST_DECLARATION_REWRITE":
+        op = out.get("operation")
+        if not isinstance(op, dict) or not str(op.get("kind") or "").strip():
+            # match/replace prose is not a declaration operation.
+            return None
 
     if rtype == "AST_IMPORT_REWRITE":
         from conduit.packet.cook import is_module_path_import
@@ -869,6 +940,8 @@ def synthesize_from_docs(
             user=json.dumps(prompt),
         )
         if data and isinstance(data, dict):
+            if "notes" in data:
+                data["notes"] = normalize_packet_notes(data.get("notes"))
             if "sources" in data:
                 data["sources"] = normalize_packet_sources(data.get("sources"))
             if "side_effects" in data:
@@ -1348,13 +1421,13 @@ def synthesize_from_evidence(
     if base.get("side_effects"):
         probe["side_effects"] = list(base["side_effects"])
     if data.get("notes"):
-        note = str(data["notes"])
+        note = normalize_packet_notes(data["notes"]) or ""
         prev = str(probe.get("notes") or "")
         probe["notes"] = f"{prev}\n{note}".strip() if prev else note
     side = data.get("side_effects")
     if isinstance(side, list) and side:
         existing = list(probe.get("side_effects") or [])
-        existing.extend(s for s in side if isinstance(s, dict))
+        existing.extend(normalize_packet_side_effects(side))
         probe["side_effects"] = existing
     for src in data.get("sources") or []:
         if isinstance(src, dict) and src.get("url"):
