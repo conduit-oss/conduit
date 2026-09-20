@@ -1,0 +1,19 @@
+{
+  "sha256": "fd2eba852dcbe2bc49384e9a41a3a7daabc1c162abb1ff1c91ec890e9fcf57df",
+  "apply_exit": 0,
+  "watch_exit": 0,
+  "watch_status": "clean",
+  "leftover_count": 0,
+  "completeness": {
+    "status": "complete",
+    "observation_count": 0,
+    "observations": [],
+    "reasons": [],
+    "explain": "status=complete observations=0"
+  },
+  "dict_pre": 1,
+  "dict_post": 0,
+  "model_dump_post": 1,
+  "surface_rewrite": true,
+  "elapsed_s": 54.133
+}

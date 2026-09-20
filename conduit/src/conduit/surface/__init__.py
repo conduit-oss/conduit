@@ -10,7 +10,11 @@ from conduit.surface.evaluate import (
     evaluate_packet_binding,
 )
 from conduit.surface.index import index_python
-from conduit.surface.mint_surface import derive_surface_floor, enrich_minted_rules
+from conduit.surface.mint_surface import (
+    derive_surface_floor,
+    enrich_minted_rules,
+    merge_surface_overlay,
+)
 from conduit.surface.rewrite import apply_definite_surface_rewrites, replacement_chain
 from conduit.surface.types import (
     BindingVerdict,
@@ -48,5 +52,6 @@ __all__ = [
     "evaluate_binding",
     "evaluate_packet_binding",
     "index_python",
+    "merge_surface_overlay",
     "replacement_chain",
 ]

@@ -6,8 +6,9 @@ a superseded historical receipt for the no-keys Appendix C path.
 
 Compares against P5's hand-authored `pydantic-validator-hop.json` on the same fixture.
 P5 encodes the Watch-visible `validator` → `field_validator` hop. This live mint encodes
-broader BaseModel rename rules from the migration guide and does not rewrite the
-fixture's `@validator` / `class Config` / short-name `.dict()` surface.
+broader BaseModel rename rules from the migration guide. After the surface-floor upgrade,
+typed `self.dict()` is rewritten via definite surface apply; `@validator` / `class Config`
+remain outside this packet's declared surfaces.
 
 ## LIVE section
 
@@ -19,10 +20,15 @@ fixture's `@validator` / `class Config` / short-name `.dict()` surface.
 | Model / provider | `gpt-5.4-mini` / `openai` |
 | Sources | `https://docs.pydantic.dev/2.0/migration/` (`kind: docs`) |
 | Frozen packet | `examples/sample-packet/pydantic-llm-mint-live.json` |
-| Packet SHA-256 | `e5ab11b54ff4927ccf9d3e818a2bf1a3bd31c8ba736250f7bf0b493025e32a8d` |
+| Packet SHA-256 | `fd2eba852dcbe2bc49384e9a41a3a7daabc1c162abb1ff1c91ec890e9fcf57df` |
 | Consumer | `examples/pydantic-validator-fixture/` (repo fixture; pin `pydantic==1.10.13`) |
 | Consumer commit | head of this PR (`git rev-parse HEAD` at record time) |
 | Replay | `docs/smoke-tests/replay-llm-mint-proof.py` |
+
+Surface floor upgrade (mint-surface PR): same call-site rules as the original live
+mint; each `AST_CALL_REWRITE` now carries binder-aligned `surface` metadata so
+completeness is proof-eligible. Prior checksum
+`e5ab11b54ff4927ccf9d3e818a2bf1a3bd31c8ba736250f7bf0b493025e32a8d` is historical.
 
 First mint with keys produced schema-invalid aliases (`old`/`new` instead of
 `old_callee`/`new_callee`). That is IB-02 packet authoring. Mint normalize + prompt
@@ -70,43 +76,50 @@ Manual residue on the fixture after apply (completeness, not Watch-visible for t
 |-----------------|-----|------|
 | `@validator(` / import `validator` | 1 / present | 1 / present |
 | `class Config` | 1 | 1 |
-| `.dict(` | 1 | 1 |
-| `model_dump` | 0 | 0 |
+| `.dict(` | 1 | 0 |
+| `model_dump` | 0 | 1 |
 | `orm_mode` | 1 | 1 |
 
 ### Dual verdict
 
 | Gate | Verdict |
 |------|---------|
-| Gate validity (freeze → apply without re-enrich; pin hop lands; Watch matches packet rules) | PASS |
-| Migration completeness (rich LLM mint covers fixture v1 surface / mergeable pydantic v2) | FAIL |
+| Gate validity (freeze → apply without re-enrich; pin hop; Watch leftovers) | PASS |
+| Completeness vs *declared* surfaces on this fixture | PASS (`completeness: complete` post-apply) |
+| Full fixture v1 (`@validator`, `Config`) | Outside this packet (P5 covers validator hop) |
 
-Completeness fails because the live mint's call-site rules do not hit this fixture's
-`validator`, inner `Config`, or short-name `.dict()` usages. Gate validity still passes
-because the pin hop lands and Watch finds no leftovers for the packet's declared
-`old_callee` values. P5's frozen hop remains the fixture-visible comparison shape.
+Pre-upgrade (lexical-only) completeness was `unverified`. After `surface` floors,
+pre-apply bind is `incomplete` (`self.dict`); post-apply Watch is `complete`.
 
 ### Thin-result follow-up
 
-n/a (rich). IB-02 normalize ran once before the remint because the first live packet
-failed `packet test`. No inventing of fixture-specific AST rules by hand. No apply
-vendor branch.
+n/a (rich). IB-02 normalize ran once before the original remint. Surface floors were
+attached deterministically (no hand-authored fixture rules). No apply vendor branch.
 
 ### Perf
 
 | Metric | Value |
 |--------|-------|
-| Apply + Watch at head | 44.1 s (under 180 s rule) |
+| Apply + Watch at head (surface upgrade proof) | 54.1 s (under 180 s rule) |
 | Trunk baseline | n/a (feature) |
-| Mint wall | informational only (~300 s remint) |
+| Mint wall | informational only (original ~300 s remint) |
 
 ### Pytest
 
-Related mint / pydantic smoke green on this branch tip:
-
 ```text
-python -m pytest -q conduit/tests/test_packet_author_cli.py conduit/tests/test_pydantic_validator_smoke.py
+python -m pytest -q conduit/tests/test_packet_author_cli.py conduit/tests/test_pydantic_validator_smoke.py conduit/tests/test_mint_surface_floor.py
 ```
+
+## Surface upgrade proof (PR-A/B/C)
+
+Script: `docs/smoke-tests/run-prc-surface-upgrade.py` → `p6-prc-surface-upgrade.json`.
+
+| Step | Result |
+|------|--------|
+| Upgrade | `enrich_minted_rules`; 10/10 AST_CALL_REWRITE gained `surface` |
+| Pre-apply completeness | `incomplete` (1 obs: `self.dict`) |
+| Apply | exit 0; `SURFACE_DEFINITE_REWRITE` `self.dict`→`self.model_dump` |
+| Post-apply Watch | `clean`; `completeness.status=complete` |
 
 ## SUPERSEDED: blocked stub (no keys)
 

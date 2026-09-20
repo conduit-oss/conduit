@@ -9,6 +9,10 @@ _SPELLING_IMPORTED = "imported"
 _SPELLING_RECEIVER = "receiver_member"
 _USE_CALL = "call"
 _USE_DECORATOR = "decorator"
+_ALLOWED_SPELL = frozenset(
+    {_SPELLING_QUALIFIED, _SPELLING_IMPORTED, _SPELLING_RECEIVER}
+)
+_ALLOWED_USE = frozenset({_USE_CALL, _USE_DECORATOR})
 
 
 def derive_surface_floor(old_callee: str, new_callee: str = "") -> dict[str, Any] | None:
@@ -40,12 +44,56 @@ def derive_surface_floor(old_callee: str, new_callee: str = "") -> dict[str, Any
     }
 
 
-def enrich_minted_rules(rules: list[Any] | Any) -> list[Any]:
-    """Attach floor ``surface`` to AST_CALL_REWRITE rules that lack a valid one.
+def merge_surface_overlay(
+    floor: dict[str, Any], overlay: Any
+) -> tuple[dict[str, Any], bool]:
+    """Merge optional LLM ``surface`` into the floor.
 
-    Authored / already-valid ``surface`` objects are left alone. Does not strip
-    a bad surface back to lexical-only when a floor can be derived: invalid
-    surface is replaced by the floor.
+    Returns ``(surface, used_overlay)``. Invalid overlays are ignored; the floor
+    is never stripped. Overlay may add spellings/use_kinds and may replace
+    ``export_path`` / ``surface_id`` when those fields are valid.
+    """
+    if not isinstance(overlay, dict):
+        return dict(floor), False
+
+    merged = dict(floor)
+    used = False
+
+    export_path = overlay.get("export_path")
+    if (
+        isinstance(export_path, list)
+        and export_path
+        and all(isinstance(p, str) and p.strip() and _is_ident(p.strip()) for p in export_path)
+    ):
+        merged["export_path"] = [str(p).strip() for p in export_path]
+        used = True
+
+    spellings = _filter_enums(overlay.get("spellings"), _ALLOWED_SPELL)
+    if spellings:
+        merged["spellings"] = _uniq(list(merged.get("spellings") or []) + spellings)
+        used = True
+
+    use_kinds = _filter_enums(overlay.get("use_kinds"), _ALLOWED_USE)
+    if use_kinds:
+        merged["use_kinds"] = _uniq(list(merged.get("use_kinds") or []) + use_kinds)
+        used = True
+
+    sid = overlay.get("surface_id")
+    if isinstance(sid, str) and sid.strip():
+        merged["surface_id"] = sid.strip()
+        used = True
+
+    # Proof filter must still hold after merge.
+    if not ({_SPELLING_IMPORTED, _SPELLING_RECEIVER} & set(merged.get("spellings") or [])):
+        return dict(floor), False
+    return merged, used
+
+
+def enrich_minted_rules(rules: list[Any] | Any) -> list[Any]:
+    """Attach floor ``surface`` to AST_CALL_REWRITE, merging any LLM overlay.
+
+    Floor always wins as the minimum set. Overlay may only add or refine.
+    Invalid overlay does not remove the floor.
     """
     if not isinstance(rules, list):
         return []
@@ -65,12 +113,41 @@ def enrich_minted_rules(rules: list[Any] | Any) -> list[Any]:
         if floor is None:
             out.append(updated)
             continue
-        existing = updated.get("surface")
-        if _valid_surface(existing):
-            out.append(updated)
-            continue
-        updated["surface"] = floor
+        overlay = updated.get("surface")
+        # Fully authored valid surface that already clears the proof filter:
+        # still union with floor so mint never narrows below binder defaults.
+        merged, _used = merge_surface_overlay(floor, overlay)
+        if _valid_surface(merged):
+            # Drop unknown keys; keep only schema fields (+ optional surface_id).
+            clean: dict[str, Any] = {
+                "export_path": list(merged["export_path"]),
+                "spellings": list(merged["spellings"]),
+                "use_kinds": list(merged["use_kinds"]),
+            }
+            if isinstance(merged.get("surface_id"), str) and merged["surface_id"]:
+                clean["surface_id"] = merged["surface_id"]
+            updated["surface"] = clean
+        else:
+            updated["surface"] = dict(floor)
         out.append(updated)
+    return out
+
+
+def _filter_enums(raw: Any, allowed: frozenset[str]) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item in allowed and item not in out:
+            out.append(item)
+    return out
+
+
+def _uniq(items: list[str]) -> list[str]:
+    out: list[str] = []
+    for item in items:
+        if item not in out:
+            out.append(item)
     return out
 
 
@@ -88,13 +165,10 @@ def _valid_surface(value: Any) -> bool:
         return False
     if not isinstance(use_kinds, list) or not use_kinds:
         return False
-    allowed_spell = {_SPELLING_QUALIFIED, _SPELLING_IMPORTED, _SPELLING_RECEIVER}
-    allowed_use = {_USE_CALL, _USE_DECORATOR}
-    if not all(isinstance(s, str) and s in allowed_spell for s in spellings):
+    if not all(isinstance(s, str) and s in _ALLOWED_SPELL for s in spellings):
         return False
-    if not all(isinstance(u, str) and u in allowed_use for u in use_kinds):
+    if not all(isinstance(u, str) and u in _ALLOWED_USE for u in use_kinds):
         return False
-    # Must clear binder proof filter.
     if not ({_SPELLING_IMPORTED, _SPELLING_RECEIVER} & set(spellings)):
         return False
     return True
