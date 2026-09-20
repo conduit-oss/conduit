@@ -18,7 +18,7 @@ from conduit.packet.synthesize import (
     synthesize_from_docs,
     synthesize_from_evidence,
 )
-from conduit.packet.cook import cook_import_member_companions
+from conduit.packet.cook import cook_packet_rules
 from conduit.packet.validate import validate_packet
 
 LogFn = Callable[[str], None]
@@ -340,9 +340,10 @@ def create_packet_new(
 
     def _normalize_and_ensure_bump(p: dict[str, Any]) -> dict[str, Any]:
         p = dict(p)
-        cooked = cook_import_member_companions(
+        cooked = cook_packet_rules(
             normalize_llm_rules(list(p.get("rules") or []), package=package),
             package=package,
+            side_effects=p.get("side_effects"),
         )
         p["rules"] = collapse_dependency_bumps(
             cooked,
@@ -442,8 +443,10 @@ def create_packet_new(
                 ),
                 (
                     f"{package} avoid AST_PARAM_RENAME for Config class body; "
-                    "use AST_DECLARATION_REWRITE inner_class_to_assignment; "
-                    "cover validator/dict/Config as rules or side_effects"
+                    "use AST_DECLARATION_REWRITE inner_class_to_assignment with "
+                    "keys orm_mode→from_attributes; "
+                    "cover validator/dict/Config as mechanical rules "
+                    "(AST_CALL_REWRITE + import_member + inner_class_to_assignment)"
                 ),
             ]
             if emit:
