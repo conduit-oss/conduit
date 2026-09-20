@@ -10,6 +10,13 @@ broader BaseModel rename rules from the migration guide. After the surface-floor
 typed `self.dict()` is rewritten via definite surface apply; `@validator` / `class Config`
 remain outside this packet's declared surfaces.
 
+**Hand enrichment (not a remint):** sibling
+`examples/sample-packet/pydantic-llm-mint-live-hand-enriched.json` adds the P5
+validator hop plus schema `EXACT_STRING_REPLACE` for the fixture `class Config` /
+`orm_mode` block so those families are in-scope without mutating this LIVE
+receipt. Amin remints with keys separately. See
+[2026-09-20-pydantic-hand-enriched.md](./2026-09-20-pydantic-hand-enriched.md).
+
 ## LIVE section
 
 ### Inputs
