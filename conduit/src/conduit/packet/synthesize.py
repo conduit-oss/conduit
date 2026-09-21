@@ -134,8 +134,40 @@ def normalize_packet_sources(sources: Any) -> list[dict[str, Any]]:
     return out
 
 
+_SIDE_EFFECT_GAP_KINDS = frozenset(
+    {"multi_step", "uncodable", "external", "signature", "other"}
+)
+_SIDE_EFFECT_GAP_ALIASES = {
+    "multi-step": "multi_step",
+    "multistep": "multi_step",
+    "multi_edit": "multi_step",
+    "reshape": "multi_step",
+    "cannot_code": "uncodable",
+    "uncodeable": "uncodable",
+    "non_code": "external",
+    "webhook": "external",
+    "ops": "external",
+    "sig": "signature",
+    "signature_change": "signature",
+}
+
+
+def normalize_side_effect_gap_kind(kind: str | None) -> str | None:
+    """Map optional gap_kind synonyms onto the schema enum; None if absent."""
+    if kind is None:
+        return None
+    raw = str(kind).strip().lower().replace("-", "_").replace(" ", "_")
+    if not raw:
+        return None
+    if raw in _SIDE_EFFECT_GAP_KINDS:
+        return raw
+    if raw in _SIDE_EFFECT_GAP_ALIASES:
+        return _SIDE_EFFECT_GAP_ALIASES[raw]
+    return "other"
+
+
 def normalize_packet_side_effects(side_effects: Any) -> list[dict[str, Any]]:
-    """Rewrite ``side_effects[].kind`` to schema-valid values; drop malformed rows."""
+    """Rewrite ``side_effects[].kind`` to schema-valid values; keep structured gap fields."""
     out: list[dict[str, Any]] = []
     if not isinstance(side_effects, list):
         return out
@@ -150,12 +182,21 @@ def normalize_packet_side_effects(side_effects: Any) -> list[dict[str, Any]]:
         detail = str(effect.get("detail") or "").strip()
         if not detail:
             continue
-        out.append(
-            {
-                "kind": normalize_side_effect_kind(effect.get("kind")),
-                "detail": detail,
-            }
-        )
+        row: dict[str, Any] = {
+            "kind": normalize_side_effect_kind(effect.get("kind")),
+            "detail": detail,
+        }
+        gap = normalize_side_effect_gap_kind(effect.get("gap_kind"))
+        if gap is not None:
+            row["gap_kind"] = gap
+        for key in ("old_shape", "new_shape", "blocker", "evidence_url"):
+            val = effect.get(key)
+            if val is None:
+                continue
+            text = str(val).strip()
+            if text:
+                row[key] = text
+        out.append(row)
     return out
 
 
@@ -875,6 +916,9 @@ def synthesize_from_docs(
             "openapi, other. Never use synonyms (documentation, repository, repo, "
             "guide, release, webpage). "
             "side_effects[].kind MUST be exactly one of: webhook, database, config, other. "
+            "For multi-step or uncodable gaps prefer structured fields: gap_kind "
+            "(multi_step|uncodable|external|signature|other), old_shape, new_shape, "
+            "blocker, evidence_url — detail stays the human summary. "
             "Never use synonyms (db, env, configuration). "
             "Only propose replacements grounded in the provided changelog/docs. "
             "If a successor is unknown, put it in notes — do not invent paths or callees. "
@@ -966,8 +1010,9 @@ _EVIDENCE_SYSTEM = (
     "openapi, other. Never use synonyms (documentation, repository, repo, guide, "
     "release, webpage). "
     "side_effects[].kind MUST be exactly one of: webhook, database, config, other. "
-    "Use side_effects ONLY for multi-step or uncodable gaps. One-step renames belong "
-    "in rules. Never use synonyms (db, env, configuration). "
+    "Use side_effects ONLY for multi-step or uncodable gaps; prefer structured rows "
+    "with gap_kind, old_shape, new_shape, blocker, evidence_url when known. "
+    "One-step renames belong in rules. Never use synonyms (db, env, configuration). "
     "Every path replace, param rename, and call rewrite MUST be supported by the evidence "
     "excerpts (cite URLs in notes). "
     "For AST_PARAM_RENAME include explicit function_target(s) taken from evidence — "
