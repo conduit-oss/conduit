@@ -1,0 +1,72 @@
+{
+  "role": "root-swarm-verifier",
+  "verdict": "CLEAN",
+  "pr": 52,
+  "repo": "conduit-oss/conduit",
+  "url": "https://github.com/conduit-oss/conduit/pull/52",
+  "branch": "stack/live-llm-mint-proof",
+  "verified_sha": "311f55f4170dfc71a54f2cd6f1f1c04fdd873e3a",
+  "expected_sha": "311f55f4170dfc71a54f2cd6f1f1c04fdd873e3a",
+  "base_sha": "d91199f934089f35b7453b5a779bfc53278c2d81",
+  "base_ref": "main",
+  "worktree": "D:\\bye\\conduit_repo\\conduit-live-llm-mint",
+  "head_match": true,
+  "patch_id_stable": "671f38875b4676e7d846d3aa53d27883d843a1b7",
+  "forge": "github",
+  "owners_must_not_merge": true,
+  "distrusted_pr_body": true,
+  "verified_at": "2026-09-19T23:11:00Z",
+  "must_pass": [
+    {
+      "id": 1,
+      "name": "diff_scoped",
+      "result": "PASS",
+      "evidence": "7 files vs main@d91199f: author.py, synthesize.py, test_packet_author_cli.py, 2026-09-19-llm-mint-proof.md, replay-llm-mint-proof.py, pydantic-llm-mint-live.json (A), pydantic-llm-mint-stub-blocked.json. No apply/Watch vendor paths."
+    },
+    {
+      "id": 2,
+      "name": "frozen_packet_ast_rules",
+      "result": "PASS",
+      "evidence": "examples/sample-packet/pydantic-llm-mint-live.json: AST_*=17 (CALL_REWRITE 10, ATTR_RENAME 3, PARAM_RENAME 3, IMPORT_REWRITE 1); DEPENDENCY_BUMP=1"
+    },
+    {
+      "id": 3,
+      "name": "receipt_live_section",
+      "result": "PASS",
+      "evidence": "docs/smoke-tests/2026-09-19-llm-mint-proof.md LIVE: provider openai, model gpt-5.4-mini; gate PASS / completeness FAIL; Packet SHA-256 e5ab11b54ff4927ccf9d3e818a2bf1a3bd31c8ba736250f7bf0b493025e32a8d matches Get-FileHash of committed bytes; no API key/secret patterns in receipt or packet"
+    },
+    {
+      "id": 4,
+      "name": "replay_smoke",
+      "result": "PASS",
+      "evidence": "python docs/smoke-tests/replay-llm-mint-proof.py via worktree .venv (no conduit/ Scripts venv present) exit 0; checksum ok; apply+watch 31.662s; Watch status=clean leftover_count=0"
+    },
+    {
+      "id": 5,
+      "name": "pytest_targeted",
+      "result": "PASS",
+      "evidence": "python -m pytest -q conduit/tests/test_packet_author_cli.py conduit/tests/test_pydantic_validator_smoke.py → 23 passed in 1.32s"
+    },
+    {
+      "id": 6,
+      "name": "normalize_llm_rules",
+      "result": "PASS",
+      "evidence": "test_normalize_llm_rule_aliases_match_schema covered by suite; direct import: old/new→old_callee/new_callee, old→old_attr, scope→function_target"
+    },
+    {
+      "id": 7,
+      "name": "ci_on_head",
+      "result": "PASS",
+      "evidence": "GitHub check_runs on head 311f55f: test success; watch-clean-pass, watch-dirty-fail, watch-pin-past-dirty-fail, pydantic-watch-clean-pass, pydantic-watch-dirty-fail success (duplicate matrix from two workflow runs, all completed success). Legacy commit statuses empty (Actions-only)."
+    }
+  ],
+  "commits": [
+    "a391f7d fix(packet): normalize LLM rule aliases at mint",
+    "311f55f docs(smoke): record live LLM-mint pydantic proof"
+  ],
+  "notes": [
+    "PR body not used as evidence.",
+    "No merge/push performed.",
+    "Worktree hard-reset to expected SHA before checks."
+  ]
+}

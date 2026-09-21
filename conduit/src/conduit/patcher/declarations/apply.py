@@ -10,6 +10,7 @@ import libcst as cst
 
 from conduit.packet.declaration_rules import (
     DeclarationRule,
+    EnsureClassmethodSpec,
     ImportMemberSpec,
     InnerClassToAssignmentSpec,
     Symbol,
@@ -21,7 +22,7 @@ from conduit.patcher.py.imports import ImportLedger, dotted_name, rewrite_import
 class StructuralResidual:
     rel: str
     line: int
-    kind: str  # import_member | inner_class
+    kind: str  # import_member | inner_class | ensure_classmethod
     old_shape: str
     reason: str
 
@@ -76,6 +77,9 @@ def rewrite_declarations(
     nested_ops = [
         r for r in matching if isinstance(r.operation, InnerClassToAssignmentSpec)
     ]
+    classmethod_ops = [
+        r for r in matching if isinstance(r.operation, EnsureClassmethodSpec)
+    ]
 
     for rule in import_ops:
         op = rule.operation
@@ -93,6 +97,12 @@ def rewrite_declarations(
             updated = new_content
             applied += n
         residuals.extend(nested_residuals)
+
+    if classmethod_ops:
+        new_content, n = _rewrite_ensure_classmethod(updated, classmethod_ops)
+        if n:
+            updated = new_content
+            applied += n
 
     return RewriteResult(
         content=updated, applied=applied, residuals=tuple(residuals)
@@ -146,6 +156,17 @@ def scan_declaration_residuals(
                         kind="inner_class",
                         old_shape=op.obligation_id(),
                         reason="inner class still present",
+                    )
+                )
+        elif isinstance(op, EnsureClassmethodSpec):
+            for line, shape in _missing_classmethod_sites(module, op):
+                hits.append(
+                    StructuralResidual(
+                        rel=rel,
+                        line=line,
+                        kind="ensure_classmethod",
+                        old_shape=shape,
+                        reason="decorator present without @classmethod",
                     )
                 )
     return tuple(hits)
@@ -379,3 +400,110 @@ def _rewrite_nested_assigns(
     if code == content:
         return content, 0, residuals
     return code, changes, residuals
+
+
+def _decorator_leaf(expr: cst.BaseExpression) -> str | None:
+    if isinstance(expr, cst.Call):
+        return _decorator_leaf(expr.func)
+    if isinstance(expr, cst.Name):
+        return expr.value
+    if isinstance(expr, cst.Attribute):
+        dotted = dotted_name(expr)
+        if dotted:
+            return dotted.split(".")[-1]
+    return None
+
+
+def _decorator_matches(expr: cst.BaseExpression, wanted: str) -> bool:
+    leaf_wanted = wanted.split(".")[-1]
+    if isinstance(expr, cst.Call):
+        return _decorator_matches(expr.func, wanted)
+    if isinstance(expr, cst.Name):
+        return expr.value == leaf_wanted or expr.value == wanted
+    if isinstance(expr, cst.Attribute):
+        dotted = dotted_name(expr) or ""
+        return dotted == wanted or dotted.endswith("." + leaf_wanted) or (
+            dotted.split(".")[-1] == leaf_wanted
+        )
+    return False
+
+
+def _has_classmethod_decorator(decorators: Sequence[cst.Decorator]) -> bool:
+    return any(_decorator_matches(d.decorator, "classmethod") for d in decorators)
+
+
+def _has_matching_decorator(
+    decorators: Sequence[cst.Decorator], wanted: str
+) -> bool:
+    return any(_decorator_matches(d.decorator, wanted) for d in decorators)
+
+
+def _missing_classmethod_sites(
+    module: cst.Module, op: EnsureClassmethodSpec
+) -> list[tuple[int, str]]:
+    hits: list[tuple[int, str]] = []
+
+    class _Walk(cst.CSTVisitor):
+        def visit_FunctionDef(self, node: cst.FunctionDef) -> bool:
+            if not _has_matching_decorator(node.decorators, op.decorator):
+                return True
+            if _has_classmethod_decorator(node.decorators):
+                return True
+            hits.append((0, f"@{op.decorator} {node.name.value}"))
+            return True
+
+    module.visit(_Walk())
+    return hits
+
+
+def _rewrite_ensure_classmethod(
+    content: str,
+    rules: Sequence[DeclarationRule],
+) -> tuple[str, int]:
+    ops = [
+        r.operation
+        for r in rules
+        if isinstance(r.operation, EnsureClassmethodSpec)
+    ]
+    if not ops:
+        return content, 0
+    try:
+        module = cst.parse_module(content)
+    except Exception:
+        return content, 0
+
+    changes = 0
+
+    class _Ensure(cst.CSTTransformer):
+        def leave_FunctionDef(
+            self, original: cst.FunctionDef, updated: cst.FunctionDef
+        ) -> cst.FunctionDef:
+            nonlocal changes
+            if _has_classmethod_decorator(updated.decorators):
+                return updated
+            matched: EnsureClassmethodSpec | None = None
+            for op in ops:
+                if _has_matching_decorator(updated.decorators, op.decorator):
+                    matched = op
+                    break
+            if matched is None:
+                return updated
+
+            new_decs: list[cst.Decorator] = []
+            inserted = False
+            for dec in updated.decorators:
+                new_decs.append(dec)
+                if not inserted and _decorator_matches(dec.decorator, matched.decorator):
+                    new_decs.append(
+                        cst.Decorator(decorator=cst.Name("classmethod"))
+                    )
+                    inserted = True
+            if not inserted:
+                return updated
+            changes += 1
+            return updated.with_changes(decorators=new_decs)
+
+    new_module = module.visit(_Ensure())
+    if changes == 0 or new_module.code == content:
+        return content, 0
+    return new_module.code, changes

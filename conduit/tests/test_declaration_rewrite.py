@@ -59,6 +59,58 @@ def _nested_rule() -> dict:
     }
 
 
+def _ensure_classmethod_rule(decorator: str = "field_validator") -> dict:
+    return {
+        "type": "AST_DECLARATION_REWRITE",
+        "target_files": ["*.py"],
+        "operation": {
+            "kind": "ensure_classmethod",
+            "decorator": decorator,
+        },
+    }
+
+
+def test_ensure_classmethod_on_field_validator(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class User(BaseModel):
+    name: str
+
+    @field_validator("name")
+    def check_name(cls, v):
+        return v
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_ensure_classmethod_rule()]})
+    pre = scan_declaration_residuals(path, src, rules, root=tmp_path)
+    assert any(r.kind == "ensure_classmethod" for r in pre)
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied >= 1
+    assert "@classmethod" in result.content
+    # decorator order: field_validator then classmethod
+    assert result.content.index("@field_validator") < result.content.index("@classmethod")
+    post = scan_declaration_residuals(path, result.content, rules, root=tmp_path)
+    assert post == ()
+    # idempotent
+    again = rewrite_declarations(path, result.content, rules, root=tmp_path)
+    assert again.applied == 0
+    assert again.content == result.content
+
+
+def test_schema_accepts_ensure_classmethod():
+    packet = {
+        "packet_id": "t",
+        "package": "pydantic",
+        "ecosystem": "pypi",
+        "from_version": "1.0",
+        "to_version": "2.0",
+        "rules": [_ensure_classmethod_rule()],
+    }
+    assert validate_packet(packet) == []
+
+
 def test_schema_accepts_declaration_rewrite():
     packet = {
         "packet_id": "t",
