@@ -16,16 +16,16 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 ### Arm the program
 
-- [ ] State this plan to the operator, then stop until explicit go.
-- [ ] On go, arm a `/goal` with path, PR order, verification rule, who merges, done condition.
-- [ ] Re-read execution playbook, swarm, control-cli, opening-a-pr from trunk each tick.
+- [x] State this plan to the operator, then stop until explicit go.
+- [x] On go, arm a `/goal` with path, PR order, verification rule, who merges, done condition.
+- [x] Re-read execution playbook, swarm, control-cli, opening-a-pr from trunk each tick.
 
 ### Spawn owners
 
-- [ ] PR-A structured side_effects (schema) after stage 1 merges.
-- [ ] PR-B reshape declaration kinds after PR-A (or parallel if files disjoint).
-- [ ] PR-C consumer-rooted remint after PR-B or independent if CLI-only.
-- [ ] PR-D live remint prove + fixture score after A–C land as needed.
+- [x] PR-A structured side_effects (schema) after stage 1 merges.
+- [x] PR-B reshape declaration kinds after PR-A (or parallel if files disjoint).
+- [x] PR-C consumer-rooted remint after PR-B or independent if CLI-only.
+- [x] PR-D live remint prove + fixture score after A–C land as needed.
 
 ### Dependency graph
 
