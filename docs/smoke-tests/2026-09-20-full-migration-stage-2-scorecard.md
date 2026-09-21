@@ -10,7 +10,7 @@ remint → prove. Plan: `conduit-docs/full-migration-stage-2-plan.md`.
 | A structured side_effects | `stack/structured-side-effects` | https://github.com/conduit-oss/conduit/pull/64 |
 | B ensure_classmethod | `stack/ensure-classmethod-reshape` | https://github.com/conduit-oss/conduit/pull/65 |
 | C packet new --path | `stack/consumer-path-remint` | https://github.com/conduit-oss/conduit/pull/66 |
-| D prove + scorecard | `stack/full-migration-prove` | (this branch) |
+| D prove + scorecard | `stack/full-migration-prove` | https://github.com/conduit-oss/conduit/pull/67 |
 
 ## Gate vs completeness
 
