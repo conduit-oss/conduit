@@ -10,6 +10,13 @@ fixture. P5 encodes the Watch-visible `validator` → `field_validator` hop. Thi
 live remint encodes broader BaseModel + validator renames from the migration
 guide so apply rewrites both `@validator` and `.dict()` on the fixture.
 
+**Hand enrichment (not a remint):** sibling
+`examples/sample-packet/pydantic-llm-mint-live-hand-enriched.json` adds the P5
+validator hop plus schema `EXACT_STRING_REPLACE` for the fixture `class Config` /
+`orm_mode` block so those families are in-scope without mutating this LIVE
+receipt. Amin remints with keys separately. See
+[2026-09-20-pydantic-hand-enriched.md](./2026-09-20-pydantic-hand-enriched.md).
+
 ## LIVE section
 
 ### Inputs
