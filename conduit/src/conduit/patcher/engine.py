@@ -438,12 +438,28 @@ def apply_packet(
             for r in sdk_rules
             if not (isinstance(r, dict) and r.get("type") == "AST_DECLARATION_REWRITE")
         ]
-        if decl_raw:
+        # ensure_classmethod must run after CALL/ATTR renames so it sees the
+        # post-hop decorator name (e.g. field_validator, not validator).
+        early_decl = [
+            r
+            for r in decl_raw
+            if not (
+                isinstance(r.get("operation"), dict)
+                and str(r["operation"].get("kind") or "") == "ensure_classmethod"
+            )
+        ]
+        late_decl = [
+            r
+            for r in decl_raw
+            if isinstance(r.get("operation"), dict)
+            and str(r["operation"].get("kind") or "") == "ensure_classmethod"
+        ]
+        if early_decl:
             report.merge(
                 _apply_declaration_rules(
                     root=root,
                     files=files,
-                    rules=decl_raw,
+                    rules=early_decl,
                     packet_id=packet_id,
                     vendor=vendor,
                     dry_run=dry_run,
@@ -463,6 +479,19 @@ def apply_packet(
             path_defer=path_defer,
         )
         report.merge(sdk_report)
+        if late_decl:
+            report.merge(
+                _apply_declaration_rules(
+                    root=root,
+                    files=files,
+                    rules=late_decl,
+                    packet_id=packet_id,
+                    vendor=vendor,
+                    dry_run=dry_run,
+                    require_context=require_context,
+                    path_defer=path_defer,
+                )
+            )
 
     if stages in {"all", "rest"}:
         rest_report = _apply_rules_to_files(

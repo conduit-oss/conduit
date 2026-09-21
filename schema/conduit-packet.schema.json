@@ -343,10 +343,24 @@
         "operation": {
           "oneOf": [
             { "$ref": "#/$defs/import_member_operation" },
-            { "$ref": "#/$defs/inner_class_to_assignment_operation" }
+            { "$ref": "#/$defs/inner_class_to_assignment_operation" },
+            { "$ref": "#/$defs/ensure_classmethod_operation" }
           ]
         },
         "reason": { "$ref": "#/$defs/rule_reason" }
+      }
+    },
+    "ensure_classmethod_operation": {
+      "type": "object",
+      "required": ["kind", "decorator"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "ensure_classmethod" },
+        "decorator": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Decorator name (leaf or dotted) whose defs must also carry @classmethod."
+        }
       }
     },
     "import_member_operation": {
