@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check a remint freeze receipt (family counts + typed gold obligations)."""
+"""Check a remint freeze receipt (surface families). Opt-in hop gold shapes."""
 
 from __future__ import annotations
 
@@ -29,30 +29,35 @@ def main() -> int:
         action="append",
         dest="tokens",
         default=None,
-        help="Deprecated: fixture tokens are ignored; obligations are shape-based",
+        help="Deprecated: ignored; receipt is surface-family based",
     )
     parser.add_argument(
-        "--config-manual-allowed",
+        "--hop-gold",
         action="store_true",
-        help="Allow Config obligation via side_effects (transitional freezes only)",
+        help="Also require dict/validator/Config mechanical shapes (hop proof)",
     )
     args = parser.parse_args()
     packet = json.loads(args.packet.read_text(encoding="utf-8"))
     tokens = tuple(args.tokens) if args.tokens else None
-    receipt = build_remint_receipt(
-        packet,
-        fixture_tokens=tokens,
-        config_manual_allowed=args.config_manual_allowed,
-    )
+    receipt = build_remint_receipt(packet, fixture_tokens=tokens)
+    if args.hop_gold:
+        from conduit.packet.obligations import evaluate_gold_obligations
+
+        gold = evaluate_gold_obligations(packet, config_manual_allowed=False)
+        receipt = dict(receipt)
+        receipt["obligations"] = gold["obligations"]
+        receipt["ok"] = bool(receipt["ok"]) and bool(gold["ok"])
     print(json.dumps(receipt, indent=2, sort_keys=True))
     try:
-        assert_remint_receipt_ok(
-            packet,
-            fixture_tokens=tokens,
-            config_manual_allowed=args.config_manual_allowed,
-        )
+        assert_remint_receipt_ok(packet, fixture_tokens=tokens)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+    if args.hop_gold and not receipt["ok"]:
+        print(
+            f"hop gold failed: obligations={receipt.get('obligations')}",
+            file=sys.stderr,
+        )
         return 1
     print("remint receipt ok")
     return 0

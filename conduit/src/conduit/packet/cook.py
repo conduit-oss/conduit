@@ -7,10 +7,6 @@ from typing import Any
 
 # Module path only: a.b.c — no spaces, commas, or import statement fragments.
 _MODULE_PATH = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
-_ORM_MODE_RENAME = re.compile(
-    r"orm_mode\s*(?:→|->|⇒|to|=)\s*from_attributes",
-    re.IGNORECASE,
-)
 
 
 def is_module_path_import(value: str) -> bool:
@@ -65,7 +61,7 @@ def _package_local_callable_rename(
     Map CALL callees to an importable (old_name, new_name) under ``package``.
 
     Accepts bare names (``validator``) and package-qualified leaves
-    (``pydantic.validator`` → ``pydantic.field_validator``).
+    (``pkg.validator`` → ``pkg.field_validator``).
     """
     pkg = (package or "").strip()
     old = (old_callee or "").strip()
@@ -151,69 +147,6 @@ def cook_import_member_companions(
     return list(rules) + extras
 
 
-def _has_config_inner_class_decl(rules: list[dict[str, Any]]) -> bool:
-    for rule in rules:
-        if str(rule.get("type") or "") != "AST_DECLARATION_REWRITE":
-            continue
-        op = rule.get("operation")
-        if not isinstance(op, dict) or op.get("kind") != "inner_class_to_assignment":
-            continue
-        selector = op.get("selector") if isinstance(op.get("selector"), dict) else {}
-        if str(selector.get("inner_name") or "") == "Config":
-            return True
-    return False
-
-
-def cook_config_from_side_effects(
-    rules: list[dict[str, Any]],
-    side_effects: Any,
-    *,
-    package: str,
-) -> list[dict[str, Any]]:
-    """
-    When side_effects name ``orm_mode → from_attributes`` and no Config
-    declaration exists, emit ``inner_class_to_assignment`` from that rename.
-    """
-    pkg = (package or "").strip()
-    if not pkg or _has_config_inner_class_decl(rules):
-        return list(rules)
-    parts: list[str] = []
-    if isinstance(side_effects, list):
-        for effect in side_effects:
-            if isinstance(effect, str):
-                parts.append(effect)
-            elif isinstance(effect, dict):
-                parts.append(str(effect.get("detail") or ""))
-    blob = " ".join(parts)
-    if not _ORM_MODE_RENAME.search(blob):
-        return list(rules)
-    if "config" not in blob.lower():
-        return list(rules)
-
-    emit: dict[str, Any] = {
-        "target": "model_config",
-        "constructor": "ConfigDict",
-        "ensure_import": {"module": pkg, "name": "ConfigDict"},
-    }
-    return list(rules) + [
-        {
-            "type": "AST_DECLARATION_REWRITE",
-            "target_files": ["*.py"],
-            "operation": {
-                "kind": "inner_class_to_assignment",
-                "selector": {"inner_name": "Config", "parent_bases_any": []},
-                "keys": {"orm_mode": "from_attributes"},
-                "emit": emit,
-                "unmapped_assignments": "refuse",
-                "unsupported_members": "refuse",
-            },
-            "reason": (
-                "Cooked Config declaration from side_effects orm_mode→from_attributes"
-            ),
-        }
-    ]
-
-
 def cook_demote_package_leaf_calls(
     rules: list[dict[str, Any]],
     *,
@@ -222,9 +155,9 @@ def cook_demote_package_leaf_calls(
     """
     Rewrite ``{package}.{name}`` CALL leaves to bare ``name``.
 
-    Decorators and combined-import sites observe the imported leaf (``validator``),
-    not the qualified ``pydantic.validator`` spelling. Demoting keeps CALL +
-    ``import_member`` aligned with Watch leftovers.
+    Decorators and combined-import sites observe the imported leaf, not the
+    qualified ``pkg.name`` spelling. Demoting keeps CALL + ``import_member``
+    aligned with Watch leftovers.
     """
     pkg = (package or "").strip()
     if not pkg or not rules:
@@ -247,8 +180,6 @@ def cook_demote_package_leaf_calls(
         updated = dict(rule)
         updated["old_callee"] = old_leaf
         updated["new_callee"] = new_leaf
-        # Stale surface export_path would keep the qualified form; drop and
-        # let mint floor re-attach on the next normalize pass when present.
         if "surface" in updated:
             updated.pop("surface", None)
         out.append(updated)
@@ -261,11 +192,10 @@ def cook_packet_rules(
     package: str,
     side_effects: Any = None,
 ) -> list[dict[str, Any]]:
-    """Run all remint cooks (leaf demote, import companions, Config)."""
+    """Run remint cooks (leaf demote, then import companions)."""
     from conduit.surface.mint_surface import enrich_minted_rules
 
+    _ = side_effects  # reserved; never invent vendor shapes from prose
     demoted = cook_demote_package_leaf_calls(rules, package=package)
-    # Re-attach surface floor after demoting qualified leaves to bare names.
     demoted = enrich_minted_rules(demoted)
-    with_imports = cook_import_member_companions(demoted, package=package)
-    return cook_config_from_side_effects(with_imports, side_effects, package=package)
+    return cook_import_member_companions(demoted, package=package)
