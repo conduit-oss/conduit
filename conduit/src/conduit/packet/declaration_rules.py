@@ -55,7 +55,19 @@ class InnerClassToAssignmentSpec:
         return f"inner_class:{self.selector.inner_name}@{bases}->{self.emit.target}"
 
 
-DeclarationOperation: TypeAlias = ImportMemberSpec | InnerClassToAssignmentSpec
+@dataclass(frozen=True)
+class EnsureClassmethodSpec:
+    """Require ``@classmethod`` on defs decorated with ``decorator`` (leaf name)."""
+
+    decorator: str
+
+    def obligation_id(self) -> str:
+        return f"ensure_classmethod:{self.decorator}"
+
+
+DeclarationOperation: TypeAlias = (
+    ImportMemberSpec | InnerClassToAssignmentSpec | EnsureClassmethodSpec
+)
 
 
 @dataclass(frozen=True)
@@ -171,6 +183,12 @@ def decode_declaration_rule(
             unmapped_assignments=unmapped,  # type: ignore[arg-type]
             unsupported_members="refuse",
         )
+    elif kind == "ensure_classmethod":
+        decorator = _require_str(op_raw.get("decorator"), "operation.decorator")
+        leaf = decorator.split(".")[-1]
+        if not leaf.isidentifier():
+            raise DeclarationRuleError("decorator leaf must be an identifier")
+        operation = EnsureClassmethodSpec(decorator=decorator)
     else:
         raise DeclarationRuleError(f"unknown operation.kind: {kind!r}")
 
@@ -219,4 +237,7 @@ def declaration_old_tokens(rule: DeclarationRule) -> tuple[str, ...]:
             return (source.module, source.name, f"{source.module}.{source.name}")
         case InnerClassToAssignmentSpec(selector=selector, key_renames=renames):
             return (selector.inner_name, *(old for old, _ in renames))
+        case EnsureClassmethodSpec(decorator=decorator):
+            leaf = decorator.split(".")[-1]
+            return (decorator, leaf) if decorator != leaf else (leaf,)
     raise AssertionError("closed operation union")

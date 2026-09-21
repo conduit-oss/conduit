@@ -10,11 +10,16 @@
       "kind": "docs"
     }
   ],
-  "notes": "Frozen harness smoke for Watch-visible validator hop + declaration rewrites + BaseModel.dict CALL. AST_DECLARATION_REWRITE renames import members and collapses inner Config; AST_CALL_REWRITE covers @validator and BaseModel.dict. Hand-authored; not LLM packet new.",
+  "notes": "Frozen harness smoke for Watch-visible validator hop + declaration rewrites + BaseModel.dict CALL. AST_DECLARATION_REWRITE renames import members, collapses inner Config, and ensures @classmethod on field_validator. AST_CALL_REWRITE covers @validator and BaseModel.dict. Hand-authored; not LLM packet new.",
   "side_effects": [
     {
       "kind": "other",
-      "detail": "field_validator often needs @classmethod and signature or mode= reshape; not expressed by AST_CALL_REWRITE."
+      "detail": "field_validator may still need signature or mode= reshape beyond @classmethod.",
+      "gap_kind": "signature",
+      "old_shape": "def check_name(cls, v)",
+      "new_shape": "def check_name(cls, v, info) or mode=",
+      "blocker": "no signature/mode declaration op yet",
+      "evidence_url": "https://docs.pydantic.dev/2.0/migration/"
     }
   ],
   "rules": [
@@ -58,6 +63,15 @@
         "unsupported_members": "refuse"
       },
       "reason": "Inner Config with mapped keys becomes model_config = ConfigDict(...)."
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": ["*.py"],
+      "operation": {
+        "kind": "ensure_classmethod",
+        "decorator": "field_validator"
+      },
+      "reason": "field_validator decorated methods must be classmethods."
     },
     {
       "type": "AST_CALL_REWRITE",
