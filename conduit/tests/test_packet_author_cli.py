@@ -211,6 +211,119 @@ def test_create_packet_new_enrich_merges_rules_and_side_effects(
     assert all("kind" in e and "detail" in e for e in effects)
 
 
+def test_create_packet_new_with_consumer_root_uses_run_agent(
+    tmp_path: Path, monkeypatch
+):
+    seen: dict[str, Any] = {"agent": 0, "json": 0}
+
+    class FakeClient:
+        def complete_json(self, *args, **kwargs):
+            seen["json"] += 1
+            return {
+                "notes": "link-only",
+                "sources": [],
+                "side_effects": [],
+                "rules": [
+                    {
+                        "type": "AST_CALL_REWRITE",
+                        "target_files": ["*.py"],
+                        "old_callee": "old.f",
+                        "new_callee": "new.f",
+                    }
+                ],
+            }
+
+        def run_agent(self, *args, **kwargs):
+            seen["agent"] += 1
+            return {
+                "notes": "path remint saw fixture",
+                "sources": [],
+                "side_effects": [],
+                "rules": [
+                    {
+                        "type": "AST_CALL_REWRITE",
+                        "target_files": ["*.py"],
+                        "old_callee": "BaseModel.dict",
+                        "new_callee": "BaseModel.model_dump",
+                        "reason": "observed in consumer tree",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(
+        "conduit.packet.author.get_llm_client", lambda **kwargs: FakeClient()
+    )
+    monkeypatch.setattr("conduit.llm.get_llm_client", lambda **kwargs: FakeClient())
+    monkeypatch.setattr(
+        "conduit.packet.author.fetch_url",
+        lambda url, **kwargs: "migration guide body",
+    )
+
+    fixture = tmp_path / "consumer"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("from pydantic import BaseModel\n", encoding="utf-8")
+
+    out = tmp_path / "out.json"
+    _path, packet, _warnings = create_packet_new(
+        package="pydantic",
+        ecosystem="pypi",
+        version="2.0.0",
+        source_urls=["https://docs.example.com/migrate"],
+        out=out,
+        enrich=True,
+        consumer_root=fixture,
+    )
+    assert seen["agent"] >= 1
+    assert validate_packet(packet) == []
+    assert any(
+        r.get("type") == "AST_CALL_REWRITE" and "dict" in str(r.get("old_callee"))
+        for r in packet["rules"]
+        if isinstance(r, dict)
+    )
+
+
+def test_create_packet_new_bad_consumer_root_raises(tmp_path: Path, monkeypatch):
+    _disable_llm(monkeypatch)
+    try:
+        create_packet_new(
+            package="widgets",
+            ecosystem="pypi",
+            version="1.0.0",
+            source_urls=[],
+            out=tmp_path / "x.json",
+            enrich=False,
+            scaffold_only=True,
+            consumer_root=tmp_path / "missing",
+        )
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "consumer_root" in str(exc)
+
+
+def test_cli_packet_new_bad_path_exits(tmp_path: Path, monkeypatch):
+    _disable_llm(monkeypatch)
+    result = CliRunner().invoke(
+        app,
+        [
+            "packet",
+            "new",
+            "--package",
+            "widgets",
+            "--version",
+            "1.0.0",
+            "--scaffold-only",
+            "--path",
+            str(tmp_path / "nope"),
+            "--out",
+            str(tmp_path / "out.json"),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "not a directory" in (result.output or "").lower() or "not a directory" in (
+        result.stdout or ""
+    ).lower()
+
+
 def test_cli_packet_new_scaffold_only(tmp_path: Path, monkeypatch):
     _disable_llm(monkeypatch)
     monkeypatch.setattr(

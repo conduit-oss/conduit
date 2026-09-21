@@ -1529,6 +1529,14 @@ def packet_new_cmd(
             "(warns on stderr; records pin_only=allow in notes)"
         ),
     ),
+    path: Optional[Path] = typer.Option(
+        None,
+        "--path",
+        help=(
+            "Optional consumer repo root. When set, remint uses multi-turn "
+            "agent tools (read_file/grep) against that tree; omit for link-only."
+        ),
+    ),
 ) -> None:
     """Author a packet from source URLs (TTY prompts or flags)."""
     import sys
@@ -1559,6 +1567,10 @@ def packet_new_cmd(
         console.print("[red]--version / --to is required[/red]")
         raise typer.Exit(2)
 
+    if path is not None and not path.is_dir():
+        console.print(f"[red]--path is not a directory:[/red] {path}")
+        raise typer.Exit(2)
+
     urls = [u.strip() for u in (source_url or []) if u and str(u).strip()]
     if sys.stdin.isatty():
         console.print(
@@ -1583,6 +1595,7 @@ def packet_new_cmd(
             enrich=not (no_enrich or scaffold_only),
             scaffold_only=scaffold_only,
             allow_pin_only=allow_pin_only,
+            consumer_root=path,
             log=console.print,
         )
     except ThinEnrichError as exc:
