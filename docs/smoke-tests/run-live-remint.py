@@ -61,10 +61,17 @@ def main() -> int:
             print("no LLM API key in env", file=sys.stderr)
             return 2
 
-    conduit = Path(sys.executable).with_name("conduit.exe")
-    if not conduit.is_file():
-        conduit = Path(sys.executable).with_name("conduit")
-    bin_name = str(conduit) if conduit.is_file() else "conduit"
+    candidates = [
+        ROOT / ".venv" / "Scripts" / "conduit.exe",
+        ROOT / ".venv" / "bin" / "conduit",
+        Path(sys.executable).with_name("conduit.exe"),
+        Path(sys.executable).with_name("conduit"),
+    ]
+    bin_name = "conduit"
+    for conduit in candidates:
+        if conduit.is_file():
+            bin_name = str(conduit)
+            break
 
     # Backup previous freeze
     if OUT.is_file():
@@ -87,6 +94,10 @@ def main() -> int:
         "--out",
         str(OUT),
     ]
+    fixture = ROOT / "examples" / "pydantic-validator-fixture"
+    if fixture.is_dir():
+        cmd.extend(["--path", str(fixture)])
+        print("consumer_path", fixture.as_posix())
     print("mint_cmd", " ".join(cmd))
     t0 = time.perf_counter()
     proc = subprocess.run(

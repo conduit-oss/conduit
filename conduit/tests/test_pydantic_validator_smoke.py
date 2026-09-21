@@ -58,10 +58,12 @@ def test_pydantic_validator_hop_packet_validates():
     assert "AST_CALL_REWRITE" in types
     effects = data.get("side_effects") or []
     joined = " ".join(str(e.get("detail") or "") for e in effects)
-    assert "classmethod" in joined.lower() or "signature" in joined.lower()
+    assert "signature" in joined.lower() or any(
+        e.get("gap_kind") == "signature" for e in effects if isinstance(e, dict)
+    )
     assert any(
-        str(r.get("old_callee") or "").endswith(".dict")
-        or str(r.get("old_callee") or "") == "dict"
+        isinstance(r.get("operation"), dict)
+        and r["operation"].get("kind") == "ensure_classmethod"
         for r in data["rules"]
         if isinstance(r, dict)
     )
@@ -90,6 +92,7 @@ def test_pydantic_validator_smoke_cli_watch_apply_watch(tmp_path: Path, monkeypa
     assert applied.exit_code == 0, applied.output
     after = src.read_text(encoding="utf-8")
     assert '@field_validator("name")' in after
+    assert "@classmethod" in after
     assert "field_field_validator" not in after
     assert "from pydantic import BaseModel, field_validator" in after
     assert "pydantic==2.0.0" in (tree / "requirements.txt").read_text(encoding="utf-8")
