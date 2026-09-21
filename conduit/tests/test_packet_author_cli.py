@@ -19,6 +19,7 @@ from conduit.packet.author import (
 )
 from conduit.packet.synthesize import (
     empty_packet,
+    normalize_packet_side_effects,
     normalize_side_effect_kind,
     normalize_source_kind,
     synthesize_from_evidence,
@@ -1185,3 +1186,71 @@ def test_remint_receipt_requires_surface_families():
     ok_receipt = build_remint_receipt(surface)
     assert ok_receipt["surface_count"] >= 1
     assert "obligations" not in ok_receipt
+
+
+def test_normalize_side_effects_keeps_legacy_and_structured_rows():
+    rows = normalize_packet_side_effects(
+        [
+            "bare string gap",
+            {"kind": "db", "detail": "migrate column"},
+            {
+                "kind": "other",
+                "detail": "field_validator needs classmethod",
+                "gap_kind": "multi-step",
+                "old_shape": "@validator",
+                "new_shape": "@field_validator + @classmethod",
+                "blocker": "AST_CALL_REWRITE renames only",
+                "evidence_url": "https://docs.pydantic.dev/2.0/migration/",
+            },
+            {"kind": "other"},  # dropped: no detail
+        ]
+    )
+    assert rows[0] == {"kind": "other", "detail": "bare string gap"}
+    assert rows[1]["kind"] == "database"
+    assert rows[1]["detail"] == "migrate column"
+    structured = rows[2]
+    assert structured["gap_kind"] == "multi_step"
+    assert structured["old_shape"] == "@validator"
+    assert structured["new_shape"] == "@field_validator + @classmethod"
+    assert structured["blocker"] == "AST_CALL_REWRITE renames only"
+    assert structured["evidence_url"].endswith("/migration/")
+    assert len(rows) == 3
+
+
+def test_schema_accepts_structured_and_legacy_side_effects():
+    base = {
+        "packet_id": "t",
+        "package": "pydantic",
+        "ecosystem": "pypi",
+        "from_version": "1.0",
+        "to_version": "2.0",
+        "rules": [
+            {
+                "type": "DEPENDENCY_BUMP",
+                "package": "pydantic",
+                "from_version": "1.0",
+                "to_version": "2.0",
+                "ecosystems": ["pip"],
+            }
+        ],
+    }
+    legacy = {
+        **base,
+        "side_effects": [{"kind": "other", "detail": "ops note only"}],
+    }
+    structured = {
+        **base,
+        "side_effects": [
+            {
+                "kind": "other",
+                "detail": "signature reshape left",
+                "gap_kind": "signature",
+                "old_shape": "def f(cls, v)",
+                "new_shape": "def f(cls, info: ValidationInfo)",
+                "blocker": "no signature op yet",
+                "evidence_url": "https://example.com/mig",
+            }
+        ],
+    }
+    assert validate_packet(legacy) == []
+    assert validate_packet(structured) == []

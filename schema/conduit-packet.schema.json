@@ -39,7 +39,7 @@
     },
     "side_effects": {
       "type": "array",
-      "description": "Human checklist for webhooks, databases, and other non-code ripples.",
+      "description": "Gaps current rule ops cannot express (webhooks, multi-step hops, uncodable). Legacy rows are {kind, detail} only.",
       "items": {
         "type": "object",
         "required": ["kind", "detail"],
@@ -49,7 +49,28 @@
             "type": "string",
             "enum": ["webhook", "database", "config", "other"]
           },
-          "detail": { "type": "string", "minLength": 1 }
+          "detail": { "type": "string", "minLength": 1 },
+          "gap_kind": {
+            "type": "string",
+            "description": "Why this is not a rule.",
+            "enum": ["multi_step", "uncodable", "external", "signature", "other"]
+          },
+          "old_shape": {
+            "type": "string",
+            "description": "Source shape left after apply (prose or token)."
+          },
+          "new_shape": {
+            "type": "string",
+            "description": "Intended successor shape when known."
+          },
+          "blocker": {
+            "type": "string",
+            "description": "Why current declaration/call ops cannot encode this hop."
+          },
+          "evidence_url": {
+            "type": "string",
+            "description": "Migration guide or changelog URL grounding the gap."
+          }
         }
       }
     },
