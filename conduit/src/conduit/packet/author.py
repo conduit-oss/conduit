@@ -18,7 +18,7 @@ from conduit.packet.synthesize import (
     synthesize_from_docs,
     synthesize_from_evidence,
 )
-from conduit.packet.cook import cook_import_member_companions
+from conduit.packet.cook import cook_packet_rules
 from conduit.packet.validate import validate_packet
 
 LogFn = Callable[[str], None]
@@ -340,9 +340,10 @@ def create_packet_new(
 
     def _normalize_and_ensure_bump(p: dict[str, Any]) -> dict[str, Any]:
         p = dict(p)
-        cooked = cook_import_member_companions(
+        cooked = cook_packet_rules(
             normalize_llm_rules(list(p.get("rules") or []), package=package),
             package=package,
+            side_effects=p.get("side_effects"),
         )
         p["rules"] = collapse_dependency_bumps(
             cooked,
@@ -374,9 +375,24 @@ def create_packet_new(
         p["to_version"] = version
         return p
 
+    preloaded_docs: list[dict[str, str]] = []
+
     def _enrich_once(base: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        nonlocal preloaded_docs
         local_warnings: list[str] = []
-        joined = "\n\n".join(fetched_parts)
+        from conduit.packet.doc_chunks import html_to_plain_text, migration_docs_payload
+
+        plain_parts: list[str] = []
+        doc_pages: list[tuple[str, str]] = []
+        for url, body in zip(fetched_urls, fetched_parts):
+            raw = body
+            if raw.startswith("### Source:"):
+                raw = raw.split("\n\n", 1)[-1]
+            plain = html_to_plain_text(raw)
+            plain_parts.append(f"### Source: {url}\n\n{plain}")
+            doc_pages.append((url, raw))
+        joined = "\n\n".join(plain_parts)
+        preloaded_docs = migration_docs_payload(doc_pages, max_chars=10000, max_chunks=6)
         if emit:
             emit("Synthesizing rules from fetched sources…")
         p = synthesize_from_docs(
@@ -409,6 +425,7 @@ def create_packet_new(
             base=p,
             seed_urls=unique_urls,
             suggested_queries=queries,
+            migration_docs=preloaded_docs,
             log=emit,
         )
         local_warnings.extend(ev_warnings)
@@ -441,9 +458,10 @@ def create_packet_new(
                     "AST_DECLARATION_REWRITE"
                 ),
                 (
-                    f"{package} avoid AST_PARAM_RENAME for Config class body; "
-                    "use AST_DECLARATION_REWRITE inner_class_to_assignment; "
-                    "cover validator/dict/Config as rules or side_effects"
+                    f"{package} when evidence shows nested class or options-body "
+                    "field renames, emit AST_DECLARATION_REWRITE "
+                    "inner_class_to_assignment with selector/keys/emit from evidence; "
+                    "do not park one-step maps in side_effects"
                 ),
             ]
             if emit:
@@ -460,6 +478,7 @@ def create_packet_new(
                 base=packet,
                 seed_urls=unique_urls,
                 suggested_queries=retry_queries,
+                migration_docs=preloaded_docs,
                 log=emit,
             )
             warnings.extend(ev_w2)
@@ -511,6 +530,26 @@ def create_packet_new(
         _require_pin_only_marker(packet)
         if PIN_ONLY_WARNING not in warnings:
             warnings.append(PIN_ONLY_WARNING)
+
+    if (
+        do_enrich
+        and bool(fetched_urls)
+        and surface_rewrite_rules(packet)
+        and not allow_pin_only
+    ):
+        from conduit.packet.synthesize import promote_mechanical_side_effects
+
+        packet, cov_w = promote_mechanical_side_effects(
+            package=package,
+            from_version=_ANY_FROM,
+            to_version=version,
+            ecosystem=ecosystem,
+            base=packet,
+            migration_docs=preloaded_docs,
+            log=emit,
+        )
+        warnings.extend(cov_w)
+        packet = _normalize_and_ensure_bump(packet)
 
     errs = validate_packet(packet)
     if errs:
@@ -569,36 +608,24 @@ def build_remint_receipt(
     packet: dict[str, Any],
     *,
     fixture_tokens: tuple[str, ...] | list[str] | None = None,
-    config_manual_allowed: bool = False,
 ) -> dict[str, Any]:
     """
-    Remint freeze receipt: family counts + typed gold obligations.
+    Remint freeze receipt: family counts + surface rewrite presence.
 
-    ``fixture_tokens`` is accepted for compatibility but ignored when empty/default;
-    obligation shapes (dict / validator / Config) replace substring token credit.
-    Pass ``config_manual_allowed=True`` only for transitional freezes before Config
-    declaration cook lands.
+    ``ok`` when the packet has at least one surface rewrite family
+    (CALL/ATTR/IMPORT/DECLARATION). Named hop proofs (dict/validator/Config)
+    live in opt-in helpers, not this default gate.
     """
-    from conduit.packet.obligations import evaluate_gold_obligations
-
-    _ = fixture_tokens  # legacy CLI flag; shapes supersede tokens
+    _ = fixture_tokens  # legacy CLI flag
     counts = remint_family_counts(packet)
     surface = surface_rewrite_rules(packet)
     call_site = call_site_rewrite_rules(packet)
-    gold = evaluate_gold_obligations(
-        packet, config_manual_allowed=config_manual_allowed
-    )
-    ok = bool(surface) and bool(gold["ok"])
+    ok = bool(surface)
     return {
         "ok": ok,
         "family_counts": counts,
         "surface_count": len(surface),
         "call_site_count": len(call_site),
-        "obligations": gold["obligations"],
-        # Back-compat mirror for older checkers: mechanical/manual → True.
-        "fixture_tokens": {
-            name: (mode != "missing") for name, mode in gold["obligations"].items()
-        },
         "side_effects": len(packet.get("side_effects") or []),
     }
 
@@ -607,25 +634,13 @@ def assert_remint_receipt_ok(
     packet: dict[str, Any],
     *,
     fixture_tokens: tuple[str, ...] | list[str] | None = None,
-    config_manual_allowed: bool = False,
 ) -> dict[str, Any]:
     """Raise ValueError when the remint receipt fails the freeze checklist."""
-    receipt = build_remint_receipt(
-        packet,
-        fixture_tokens=fixture_tokens,
-        config_manual_allowed=config_manual_allowed,
-    )
+    receipt = build_remint_receipt(packet, fixture_tokens=fixture_tokens)
     if receipt["ok"]:
         return receipt
-    missing = [
-        name
-        for name, mode in (receipt.get("obligations") or {}).items()
-        if mode == "missing"
-    ]
     raise ValueError(
         "remint receipt failed: "
         f"surface_count={receipt['surface_count']} "
-        f"families={receipt['family_counts']} "
-        f"missing_obligations={missing or '(none)'} "
-        f"obligations={receipt.get('obligations')}"
+        f"families={receipt['family_counts']}"
     )

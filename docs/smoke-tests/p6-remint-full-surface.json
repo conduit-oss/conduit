@@ -1,69 +1,41 @@
 {
-  "sha256": "a37c6dcff5fcd1621ce50bfeecbffda70ab64b78b6920cf768603126e70aca32",
+  "sha256": "e752f45d4426ee29e38d6c8d2e98c158b0c273f4e2742812f61cd4cd5e7d2ed7",
   "mint_exit": 0,
-  "mint_wall_s": 223.534,
+  "mint_wall_s": 199.921,
   "rule_types": {
     "DEPENDENCY_BUMP": 1,
-    "AST_IMPORT_REWRITE": 4,
-    "AST_CALL_REWRITE": 9,
-    "AST_ATTR_RENAME": 2
+    "AST_CALL_REWRITE": 12,
+    "AST_ATTR_RENAME": 2,
+    "AST_PARAM_RENAME": 6
   },
-  "call_site_rules": 15,
-  "ast_call_with_surface": 9,
+  "call_site_rules": 20,
+  "ast_call_with_surface": 12,
   "old_callees": [
-    "dict",
-    "json",
-    "copy",
-    "construct",
-    "parse_obj",
-    "update_forward_refs",
-    "validator",
-    "root_validator",
-    "validate_arguments"
+    "pydantic.BaseModel.dict",
+    "pydantic.BaseModel.json",
+    "pydantic.BaseModel.copy",
+    "pydantic.BaseModel.parse_obj",
+    "pydantic.BaseModel.parse_raw",
+    "pydantic.BaseModel.from_orm",
+    "pydantic.BaseModel.construct",
+    "pydantic.BaseModel.schema",
+    "pydantic.BaseModel.update_forward_refs",
+    "pydantic.validator",
+    "pydantic.root_validator",
+    "pydantic.validate_arguments"
   ],
   "interesting_callees": [
-    "dict",
-    "parse_obj",
-    "validator",
-    "root_validator"
+    "pydantic.BaseModel.dict",
+    "pydantic.BaseModel.parse_obj",
+    "pydantic.BaseModel.parse_raw",
+    "pydantic.BaseModel.from_orm",
+    "pydantic.BaseModel.schema",
+    "pydantic.validator",
+    "pydantic.root_validator"
   ],
-  "side_effect_count": 3,
+  "side_effect_count": 4,
   "side_effects_mention_config": true,
   "side_effects_mention_validator": false,
   "provider": "openai",
-  "model": "gpt-5.4-mini",
-  "packet_test_exit": 0,
-  "pre_apply_watch": {
-    "status": "pre_bump",
-    "leftover_count": 1,
-    "leftovers": [
-      "validator"
-    ],
-    "completeness": "incomplete",
-    "observation_count": 2
-  },
-  "apply": {
-    "exit": 0,
-    "rewrites": [
-      "AST_CALL_REWRITE dict -> model_dump",
-      "AST_CALL_REWRITE validator -> field_validator"
-    ],
-    "surface_rewrite": false
-  },
-  "post_apply_watch": {
-    "status": "clean",
-    "leftover_count": 0,
-    "completeness": "complete",
-    "elapsed_s": 48.634
-  },
-  "fixture_residue": {
-    "validator_decorator_pre": 1,
-    "validator_decorator_post": 0,
-    "field_validator_post": 1,
-    "import_still_validator": true,
-    "dict_pre": 1,
-    "dict_post": 0,
-    "model_dump_post": 1,
-    "class_Config_post": 1
-  }
+  "model": ""
 }

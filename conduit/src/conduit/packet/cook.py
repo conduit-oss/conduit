@@ -51,18 +51,56 @@ def _existing_import_member_sources(rules: list[dict[str, Any]]) -> set[str]:
     return out
 
 
+def _package_local_callable_rename(
+    old_callee: str,
+    new_callee: str,
+    *,
+    package: str,
+) -> tuple[str, str] | None:
+    """
+    Map CALL callees to an importable (old_name, new_name) under ``package``.
+
+    Accepts bare names (``validator``) and package-qualified leaves
+    (``pkg.validator`` → ``pkg.field_validator``).
+    """
+    pkg = (package or "").strip()
+    old = (old_callee or "").strip()
+    new = (new_callee or "").strip()
+    if not pkg or not old or not new:
+        return None
+
+    old_bare = _bare_ident(old)
+    new_bare = _bare_ident(new) or _bare_ident(new.rsplit(".", 1)[-1])
+    if old_bare and new_bare and old_bare != new_bare:
+        return old_bare, new_bare
+
+    prefix = f"{pkg}."
+    if not old.startswith(prefix):
+        return None
+    old_rest = old[len(prefix) :]
+    if not old_rest.isidentifier():
+        return None
+    if new.startswith(prefix):
+        new_rest = new[len(prefix) :]
+        if new_rest.isidentifier() and new_rest != old_rest:
+            return old_rest, new_rest
+    if new_bare and new_bare != old_rest:
+        return old_rest, new_bare
+    return None
+
+
 def cook_import_member_companions(
     rules: list[dict[str, Any]],
     *,
     package: str,
 ) -> list[dict[str, Any]]:
     """
-    Ensure bare CALL renames have a sibling ``import_member`` declaration.
+    Ensure package-local CALL renames have a sibling ``import_member`` declaration.
 
     ``from pkg import A, old`` stays combined-import safe via the existing
-    declaration engine. Module comes from ``package`` when the CALL is a bare
-    imported name (decorator / bare callee). Cross-module hops must already
-    include an explicit ``import_member`` (not invented here).
+    declaration engine. Module comes from ``package`` for bare or
+    ``{package}.{name}`` callees. Cross-module hops must already include an
+    explicit ``import_member`` (not invented here).
     """
     pkg = (package or "").strip()
     if not pkg or not rules:
@@ -73,11 +111,14 @@ def cook_import_member_companions(
     for rule in rules:
         if str(rule.get("type") or "") != "AST_CALL_REWRITE":
             continue
-        old = _bare_ident(str(rule.get("old_callee") or ""))
-        new_raw = str(rule.get("new_callee") or "").strip()
-        new = _bare_ident(new_raw) or _bare_ident(new_raw.rsplit(".", 1)[-1])
-        if not old or not new or old == new:
+        pair = _package_local_callable_rename(
+            str(rule.get("old_callee") or ""),
+            str(rule.get("new_callee") or ""),
+            package=pkg,
+        )
+        if pair is None:
             continue
+        old, new = pair
         key = _import_member_key(pkg, old)
         if key in existing:
             continue
@@ -97,10 +138,64 @@ def cook_import_member_companions(
                 },
                 "reason": (
                     rule.get("reason")
-                    or f"Companion import_member for bare CALL {old} -> {new}"
+                    or f"Companion import_member for CALL {old} -> {new}"
                 ),
             }
         )
     if not extras:
         return list(rules)
     return list(rules) + extras
+
+
+def cook_demote_package_leaf_calls(
+    rules: list[dict[str, Any]],
+    *,
+    package: str,
+) -> list[dict[str, Any]]:
+    """
+    Rewrite ``{package}.{name}`` CALL leaves to bare ``name``.
+
+    Decorators and combined-import sites observe the imported leaf, not the
+    qualified ``pkg.name`` spelling. Demoting keeps CALL + ``import_member``
+    aligned with Watch leftovers.
+    """
+    pkg = (package or "").strip()
+    if not pkg or not rules:
+        return list(rules)
+    out: list[dict[str, Any]] = []
+    for rule in rules:
+        if str(rule.get("type") or "") != "AST_CALL_REWRITE":
+            out.append(rule)
+            continue
+        pair = _package_local_callable_rename(
+            str(rule.get("old_callee") or ""),
+            str(rule.get("new_callee") or ""),
+            package=pkg,
+        )
+        old = str(rule.get("old_callee") or "").strip()
+        if pair is None or not old.startswith(f"{pkg}."):
+            out.append(rule)
+            continue
+        old_leaf, new_leaf = pair
+        updated = dict(rule)
+        updated["old_callee"] = old_leaf
+        updated["new_callee"] = new_leaf
+        if "surface" in updated:
+            updated.pop("surface", None)
+        out.append(updated)
+    return out
+
+
+def cook_packet_rules(
+    rules: list[dict[str, Any]],
+    *,
+    package: str,
+    side_effects: Any = None,
+) -> list[dict[str, Any]]:
+    """Run remint cooks (leaf demote, then import companions)."""
+    from conduit.surface.mint_surface import enrich_minted_rules
+
+    _ = side_effects  # reserved; never invent vendor shapes from prose
+    demoted = cook_demote_package_leaf_calls(rules, package=package)
+    demoted = enrich_minted_rules(demoted)
+    return cook_import_member_companions(demoted, package=package)
