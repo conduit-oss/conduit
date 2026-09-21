@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/conduit-oss/conduit/main/schema/conduit-surface-packet.schema.json",
+  "title": "ConduitSurfacePacket",
+  "description": "Frozen public client-facing surface for one producer package version. Not a migration hop.",
+  "type": "object",
+  "required": [
+    "packet_kind",
+    "packet_id",
+    "package",
+    "ecosystem",
+    "version",
+    "source",
+    "symbols",
+    "checksum"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "packet_kind": { "const": "surface" },
+    "packet_id": { "type": "string", "minLength": 1 },
+    "package": { "type": "string", "minLength": 1 },
+    "ecosystem": {
+      "type": "string",
+      "enum": ["pypi", "npm", "go", "maven", "other"]
+    },
+    "version": { "type": "string", "minLength": 1 },
+    "source": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["wheel", "tree", "git_tag"]
+        },
+        "locator": {
+          "type": "string",
+          "description": "Resolve hint such as package==version or an absolute tree path."
+        }
+      }
+    },
+    "symbols": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/surface_symbol" }
+    },
+    "checksum": {
+      "type": "string",
+      "minLength": 1,
+      "description": "sha256 hex of canonical JSON body without checksum."
+    },
+    "notes": { "type": ["string", "null"] }
+  },
+  "$defs": {
+    "surface_symbol": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable public export path (leaf or Class.member)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["export", "method", "module", "class", "function", "attr"]
+        }
+      }
+    }
+  }
+}

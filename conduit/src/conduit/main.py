@@ -1466,6 +1466,67 @@ def module_new_cmd(
     console.print("Next: fill profile.py / custom parsers, then `conduit module list`.")
 
 
+@packet_app.command("snapshot")
+def packet_snapshot_cmd(
+    package: str = typer.Option(..., "--package", help="Producer package name"),
+    version: str = typer.Option(..., "--version", help="Producer version to snapshot"),
+    ecosystem: str = typer.Option("pypi", "--ecosystem"),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Output JSON path (default examples/surface-packets/{pkg}-{eco}-{ver}.json)",
+    ),
+    from_tree: Optional[Path] = typer.Option(
+        None,
+        "--from-tree",
+        help="Optional unpacked package tree (skips PyPI download)",
+    ),
+    cache_root: Optional[Path] = typer.Option(
+        None,
+        "--cache-root",
+        help="Export cache root (default .conduit/exports)",
+    ),
+) -> None:
+    """Mint a surface packet from public exports of one producer version."""
+    from conduit.packet.surface_mint import (
+        SurfaceMintError,
+        mint_surface_packet_from_pypi,
+        mint_surface_packet_from_tree,
+        write_surface_packet,
+    )
+
+    dest = out or Path(
+        f"examples/surface-packets/{package}-{ecosystem}-{version}.json"
+    )
+    try:
+        if from_tree is not None:
+            packet = mint_surface_packet_from_tree(
+                from_tree,
+                package=package,
+                version=version,
+                ecosystem=ecosystem,
+                source_kind="tree",
+            )
+        else:
+            packet = mint_surface_packet_from_pypi(
+                package=package,
+                version=version,
+                ecosystem=ecosystem,
+                cache_root=cache_root,
+            )
+    except SurfaceMintError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    path = write_surface_packet(packet, dest)
+    console.print(
+        f"[green]Wrote[/green] {path}  "
+        f"({packet['package']}@{packet['version']}, "
+        f"{len(packet.get('symbols') or [])} symbol(s), "
+        f"checksum={str(packet.get('checksum') or '')[:12]}…)"
+    )
+
+
 @packet_app.command("init")
 def packet_init_cmd(
     package: str = typer.Option(..., "--package"),
