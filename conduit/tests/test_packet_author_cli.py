@@ -800,11 +800,10 @@ def test_normalize_maps_match_replace_and_strips_callish():
     assert types.count("AST_DECLARATION_REWRITE") == 1
 
 
-def test_normalize_promotes_class_shaped_param_rename():
+def test_normalize_drops_class_shaped_param_rename():
     from conduit.packet.synthesize import normalize_llm_rule, normalize_llm_rules
-    from conduit.packet.validate import validate_packet
 
-    promoted = normalize_llm_rule(
+    dropped = normalize_llm_rule(
         {
             "type": "AST_PARAM_RENAME",
             "function_target": "Config",
@@ -815,15 +814,7 @@ def test_normalize_promotes_class_shaped_param_rename():
         },
         package="pydantic",
     )
-    assert promoted is not None
-    assert promoted["type"] == "AST_DECLARATION_REWRITE"
-    assert promoted["operation"]["kind"] == "inner_class_to_assignment"
-    assert promoted["operation"]["selector"]["inner_name"] == "Config"
-    assert promoted["operation"]["keys"] == {"orm_mode": "from_attributes"}
-    assert promoted["operation"]["emit"]["ensure_import"] == {
-        "module": "pydantic",
-        "name": "ConfigDict",
-    }
+    assert dropped is None
     kept = normalize_llm_rule(
         {
             "type": "AST_PARAM_RENAME",
@@ -843,7 +834,7 @@ def test_normalize_promotes_class_shaped_param_rename():
                 "function_target": "Config",
                 "old_param": "orm_mode",
                 "new_param": "from_attributes",
-                "reason": "promote me",
+                "reason": "drop me",
             },
             {
                 "type": "AST_CALL_REWRITE",
@@ -857,16 +848,7 @@ def test_normalize_promotes_class_shaped_param_rename():
     types = [r["type"] for r in rules]
     assert "AST_PARAM_RENAME" not in types
     assert "AST_CALL_REWRITE" in types
-    assert "AST_DECLARATION_REWRITE" in types
-    packet = {
-        "packet_id": "pydantic-pypi-2.0.0",
-        "package": "pydantic",
-        "ecosystem": "pypi",
-        "from_version": "*",
-        "to_version": "2.0.0",
-        "rules": rules,
-    }
-    assert validate_packet(packet) == []
+    assert "AST_DECLARATION_REWRITE" not in types
 
 
 def test_normalize_drops_clause_fragment_import_rewrite():
@@ -946,7 +928,7 @@ def test_cook_import_member_companion_for_bare_call():
     assert validate_packet(packet) == []
 
 
-def test_cook_package_qualified_call_and_config_side_effect():
+def test_cook_package_qualified_call_gets_import_member():
     from conduit.packet.author import assert_remint_receipt_ok
     from conduit.packet.cook import cook_packet_rules
 
@@ -983,7 +965,8 @@ def test_cook_package_qualified_call_and_config_side_effect():
         r.get("type") == "AST_CALL_REWRITE" and r.get("old_callee") == "validator"
         for r in rules
     )
-    assert any(
+    # Cook must not invent Config from side_effects prose.
+    assert not any(
         (r.get("operation") or {}).get("kind") == "inner_class_to_assignment"
         for r in decls
     )
@@ -1163,7 +1146,7 @@ def test_create_packet_new_false_rich_retries_then_succeeds(
     assert calls["n"] >= 3
 
 
-def test_remint_receipt_requires_surface_and_gold_obligations():
+def test_remint_receipt_requires_surface_families():
     from conduit.packet.author import (
         assert_remint_receipt_ok,
         build_remint_receipt,
@@ -1184,10 +1167,8 @@ def test_remint_receipt_requires_surface_and_gold_obligations():
     }
     receipt = build_remint_receipt(poor)
     assert not receipt["ok"]
-    assert receipt["obligations"]["dict"] == "missing"
 
-    # Surface CALL alone is not gold: validator + Config still missing.
-    surface_only = {
+    surface = {
         "rules": [
             {
                 "type": "AST_CALL_REWRITE",
@@ -1200,63 +1181,7 @@ def test_remint_receipt_requires_surface_and_gold_obligations():
             {"kind": "config", "detail": "Migrate class Config to model_config"}
         ],
     }
-    partial = build_remint_receipt(surface_only)
-    assert not partial["ok"]
-    assert partial["obligations"]["dict"] == "mechanical"
-    assert partial["obligations"]["validator"] == "missing"
-    assert partial["obligations"]["Config"] == "missing"
-    # Manual Config side_effect only counts when explicitly allowed.
-    allowed = build_remint_receipt(surface_only, config_manual_allowed=True)
-    assert allowed["obligations"]["Config"] == "manual"
-    assert not allowed["ok"]  # validator still missing
-
-    gold = {
-        "rules": [
-            {
-                "type": "AST_CALL_REWRITE",
-                "old_callee": "BaseModel.dict",
-                "new_callee": "BaseModel.model_dump",
-                "target_files": ["*.py"],
-            },
-            {
-                "type": "AST_CALL_REWRITE",
-                "old_callee": "validator",
-                "new_callee": "field_validator",
-                "target_files": ["*.py"],
-            },
-            {
-                "type": "AST_DECLARATION_REWRITE",
-                "target_files": ["*.py"],
-                "operation": {
-                    "kind": "import_member",
-                    "source": {"module": "pydantic", "name": "validator"},
-                    "target": {"module": "pydantic", "name": "field_validator"},
-                    "local_binding": "preserve",
-                },
-            },
-            {
-                "type": "AST_DECLARATION_REWRITE",
-                "target_files": ["*.py"],
-                "operation": {
-                    "kind": "inner_class_to_assignment",
-                    "selector": {"inner_name": "Config", "parent_bases_any": []},
-                    "keys": {"orm_mode": "from_attributes"},
-                    "emit": {
-                        "target": "model_config",
-                        "constructor": "ConfigDict",
-                        "ensure_import": {"module": "pydantic", "name": "ConfigDict"},
-                    },
-                    "unmapped_assignments": "refuse",
-                    "unsupported_members": "refuse",
-                },
-            },
-        ],
-        "side_effects": [],
-    }
-    assert assert_remint_receipt_ok(gold)["ok"]
-    ok_receipt = build_remint_receipt(gold)
-    assert ok_receipt["obligations"] == {
-        "dict": "mechanical",
-        "validator": "mechanical",
-        "Config": "mechanical",
-    }
+    assert assert_remint_receipt_ok(surface)["ok"]
+    ok_receipt = build_remint_receipt(surface)
+    assert ok_receipt["surface_count"] >= 1
+    assert "obligations" not in ok_receipt

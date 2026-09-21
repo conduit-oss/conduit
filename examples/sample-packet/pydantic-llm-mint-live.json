@@ -428,33 +428,6 @@
         "local_binding": "preserve"
       },
       "reason": "Companion import_member for CALL validate_arguments -> validate_call"
-    },
-    {
-      "type": "AST_DECLARATION_REWRITE",
-      "target_files": [
-        "*.py"
-      ],
-      "operation": {
-        "kind": "inner_class_to_assignment",
-        "selector": {
-          "inner_name": "Config",
-          "parent_bases_any": []
-        },
-        "keys": {
-          "orm_mode": "from_attributes"
-        },
-        "emit": {
-          "target": "model_config",
-          "constructor": "ConfigDict",
-          "ensure_import": {
-            "module": "pydantic",
-            "name": "ConfigDict"
-          }
-        },
-        "unmapped_assignments": "refuse",
-        "unsupported_members": "refuse"
-      },
-      "reason": "Cooked Config declaration from side_effects orm_mode\u2192from_attributes"
     }
   ],
   "side_effects": [

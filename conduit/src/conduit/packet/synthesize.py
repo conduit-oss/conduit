@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -285,8 +286,8 @@ def normalize_llm_rule(
     """Map common LLM aliases onto schema field names; strip unknown keys.
 
     Returns ``None`` when the rule should be dropped (e.g. invalid import
-    fragments). Class-shaped ``AST_PARAM_RENAME`` is promoted to
-    ``AST_DECLARATION_REWRITE`` ``inner_class_to_assignment`` when possible.
+    fragments or class-shaped ``AST_PARAM_RENAME`` that belongs in a
+    declaration rule emitted by the author, not invent here).
     """
     if not isinstance(rule, dict):
         return rule
@@ -340,7 +341,9 @@ def normalize_llm_rule(
     if rtype == "AST_PARAM_RENAME" and _is_class_shaped_param_target(
         str(out.get("function_target") or "")
     ):
-        return _promote_class_param_to_declaration(out, package=package)
+        # Nested class / options-body renames need a full declaration operation
+        # from the author. Do not invent emit shapes here.
+        return None
 
     if rtype == "AST_DECLARATION_REWRITE":
         op = out.get("operation")
@@ -377,43 +380,6 @@ def normalize_llm_rule(
     if allowed is not None:
         out = {k: v for k, v in out.items() if k in allowed}
     return out
-
-
-def _promote_class_param_to_declaration(
-    rule: dict[str, Any],
-    *,
-    package: str | None,
-) -> dict[str, Any] | None:
-    """Turn Config/orm_mode-style PARAM into inner_class_to_assignment."""
-    inner = str(rule.get("function_target") or "").strip()
-    old_param = str(rule.get("old_param") or "").strip()
-    new_param = str(rule.get("new_param") or "").strip()
-    if not inner or not old_param.isidentifier() or not new_param.isidentifier():
-        return None
-    targets = rule.get("target_files")
-    if not isinstance(targets, list) or not targets:
-        targets = list(_DEFAULT_TARGET_FILES)
-    emit: dict[str, Any] = {
-        "target": "model_config",
-        "constructor": "ConfigDict",
-    }
-    pkg = (package or "").strip()
-    if pkg:
-        emit["ensure_import"] = {"module": pkg, "name": "ConfigDict"}
-    return {
-        "type": "AST_DECLARATION_REWRITE",
-        "target_files": list(targets),
-        "operation": {
-            "kind": "inner_class_to_assignment",
-            "selector": {"inner_name": inner, "parent_bases_any": []},
-            "keys": {old_param: new_param},
-            "emit": emit,
-            "unmapped_assignments": "refuse",
-            "unsupported_members": "refuse",
-        },
-        "reason": rule.get("reason")
-        or f"Promoted class-shaped PARAM {inner}.{old_param} -> {new_param}",
-    }
 
 
 _CLASS_SHAPED_PARAM_TARGETS = frozenset(
@@ -896,7 +862,7 @@ def synthesize_from_docs(
             "AST_PARAM_RENAME requires target_files, function_target (a call chain like "
             "client.chat.completions.create — never bare Config/Meta), old_param, "
             "new_param. Class/nested-config renames use AST_DECLARATION_REWRITE "
-            "inner_class_to_assignment (cook also promotes bare Config PARAM). "
+            "inner_class_to_assignment with selector/keys/emit from evidence. "
             "AST_IMPORT_REWRITE is module-path only (old_import/new_import dotted modules). "
             "AST_DECLARATION_REWRITE operation.kind import_member "
             "(source/target {module,name}) renames a name inside from-imports; "
@@ -988,8 +954,10 @@ _EVIDENCE_SYSTEM = (
     "Omit surface when unsure. "
     "AST_ATTR_RENAME fields: target_files, old_attr, new_attr. "
     "AST_PARAM_RENAME fields: target_files, function_target (call chain from evidence — "
-    "never bare Config/Meta/ModelConfig), old_param, new_param. Nested class / config "
-    "field renames belong in AST_DECLARATION_REWRITE or side_effects. "
+    "never bare Config/Meta/ModelConfig), old_param, new_param. Nested class / options "
+    "body field renames MUST be AST_DECLARATION_REWRITE inner_class_to_assignment with "
+    "full operation (selector, keys, emit, ensure_import) taken from evidence — never "
+    "PARAM and never side_effects when the guide gives a one-step map. "
     "AST_IMPORT_REWRITE fields: target_files, old_import, new_import (module paths only). "
     "AST_DECLARATION_REWRITE: operation import_member {source,target:{module,name}} "
     "or inner_class_to_assignment {selector,keys,emit,...}. Never clause fragments. "
@@ -998,7 +966,8 @@ _EVIDENCE_SYSTEM = (
     "openapi, other. Never use synonyms (documentation, repository, repo, guide, "
     "release, webpage). "
     "side_effects[].kind MUST be exactly one of: webhook, database, config, other. "
-    "Never use synonyms (db, env, configuration). "
+    "Use side_effects ONLY for multi-step or uncodable gaps. One-step renames belong "
+    "in rules. Never use synonyms (db, env, configuration). "
     "Every path replace, param rename, and call rewrite MUST be supported by the evidence "
     "excerpts (cite URLs in notes). "
     "For AST_PARAM_RENAME include explicit function_target(s) taken from evidence — "
@@ -1187,6 +1156,7 @@ def synthesize_from_evidence(
     log: Any | None = None,
     seed_urls: list[str] | None = None,
     suggested_queries: list[str] | None = None,
+    migration_docs: list[dict[str, str]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     LLM-author rules via Responses agent tools (web_search / fetch_url / read_file).
@@ -1286,6 +1256,18 @@ def synthesize_from_evidence(
                 f"[packet-enrich] prefetched {len(evidence.docs)} doc(s), "
                 f"{len(evidence.code_examples)} example(s), "
                 f"{len(evidence.openapi_structs)} openapi path(s)"
+            )
+
+    if migration_docs:
+        existing_docs = list(migration_payload.get("migration_docs") or [])
+        existing_docs.extend(
+            d for d in migration_docs if isinstance(d, dict) and d.get("text")
+        )
+        migration_payload["migration_docs"] = existing_docs
+        if emit is not None:
+            emit(
+                f"[packet-enrich] loaded {len(migration_docs)} fetched doc chunk(s) "
+                "into migration_docs"
             )
 
     research_prefix = (
@@ -1454,6 +1436,119 @@ def synthesize_from_evidence(
         f"({len(seeds)} seed URL(s), {len(queries)} quer(ies))"
     )
     return probe, warnings
+
+
+_ARROW = re.compile(r"(→|->|⇒)")
+
+
+def mechanical_side_effect_candidates(
+    side_effects: Any,
+) -> list[dict[str, Any]]:
+    """Side effects whose detail looks like a one-step old→new map."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(side_effects, list):
+        return out
+    for effect in side_effects:
+        if not isinstance(effect, dict):
+            continue
+        detail = str(effect.get("detail") or "")
+        if _ARROW.search(detail) or " becomes " in detail.lower():
+            out.append(effect)
+    return out
+
+
+def promote_mechanical_side_effects(
+    *,
+    package: str,
+    from_version: str,
+    to_version: str,
+    ecosystem: str,
+    base: dict[str, Any],
+    migration_docs: list[dict[str, str]] | None = None,
+    log: Any | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """
+    One coverage pass: ask the LLM to turn mechanical-looking side_effects
+    into schema rules when evidence supports a one-step rewrite.
+    """
+    from conduit.llm import attach_llm_log, get_llm_client
+
+    warnings: list[str] = []
+    candidates = mechanical_side_effect_candidates(base.get("side_effects"))
+    if not candidates:
+        return base, warnings
+    client = attach_llm_log(get_llm_client(), log if callable(log) else None)
+    if client is None:
+        warnings.append("coverage pass skipped (no LLM)")
+        return base, warnings
+    emit = log if callable(log) else None
+    if emit is not None:
+        emit(
+            f"Coverage pass: promoting up to {len(candidates)} mechanical "
+            "side_effect(s) into rules…"
+        )
+    user = {
+        "instructions": (
+            "Promote side_effects_candidates into Conduit rules when each row is a "
+            "one-step rename expressible as AST_CALL_REWRITE, AST_ATTR_RENAME, "
+            "AST_PARAM_RENAME/DROP, AST_IMPORT_REWRITE, AST_DECLARATION_REWRITE "
+            "(import_member or inner_class_to_assignment with full operation from "
+            "evidence), DEPENDENCY_ADD, or KEY_RENAME. Leave multi-step or unknown "
+            "successors in side_effects. Return JSON with keys rules and side_effects "
+            "(the residual list). Use schema field names only."
+        ),
+        "package": package,
+        "from_version": from_version,
+        "to_version": to_version,
+        "ecosystem": ecosystem,
+        "existing_rules": list(base.get("rules") or []),
+        "side_effects_candidates": candidates,
+        "migration_docs": migration_docs or [],
+    }
+    try:
+        data = client.complete_json(system=_EVIDENCE_SYSTEM, user=json.dumps(user))
+    except Exception as exc:
+        warnings.append(f"coverage pass failed: {exc}")
+        return base, warnings
+    if not isinstance(data, dict):
+        warnings.append("coverage pass returned non-object JSON")
+        return base, warnings
+    new_rules = data.get("rules")
+    if not isinstance(new_rules, list):
+        warnings.append("coverage pass missing rules list")
+        return base, warnings
+    merged = merge_packet_rules(
+        list(base.get("rules") or []),
+        normalize_llm_rules(new_rules, package=package),
+    )
+    residual = data.get("side_effects")
+    if isinstance(residual, list):
+        side = normalize_packet_side_effects(residual)
+    else:
+        # Keep non-candidate side_effects; drop only promoted candidates.
+        kept = []
+        cand_ids = {id(c) for c in candidates}
+        for effect in base.get("side_effects") or []:
+            if isinstance(effect, dict) and effect in candidates:
+                continue
+            kept.append(effect)
+        side = normalize_packet_side_effects(kept)
+        _ = cand_ids
+    out = dict(base)
+    out["rules"] = merged
+    out["side_effects"] = side
+    if data.get("notes"):
+        note = normalize_packet_notes(data.get("notes")) or ""
+        prev = str(out.get("notes") or "")
+        out["notes"] = f"{prev}\n{note}".strip() if prev else note
+    errs = validate_packet(out)
+    if errs:
+        warnings.append(f"coverage pass failed validation: {errs[:3]}")
+        return base, warnings
+    warnings.append(
+        f"coverage pass merged rules (candidates={len(candidates)})"
+    )
+    return out, warnings
 
 
 def load_fixture_openai_packet() -> dict[str, Any]:
