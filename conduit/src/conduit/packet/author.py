@@ -246,6 +246,7 @@ def create_packet_new(
     enrich: bool = True,
     scaffold_only: bool = False,
     allow_pin_only: bool = False,
+    consumer_root: Path | None = None,
     log: LogFn | None = None,
 ) -> tuple[Path, dict[str, Any], list[str]]:
     """
@@ -254,6 +255,9 @@ def create_packet_new(
     Always writes a schema-valid packet with a DEPENDENCY_BUMP hop and recorded
     sources. When ``enrich`` and an LLM is configured, fills rules from fetched
     docs / evidence seeds. Never invents AST rules without an LLM.
+
+    When ``consumer_root`` is set, enrichment uses the multi-turn agent against
+    that tree (read_file/grep). Link-only remint (no root) stays one-shot JSON.
 
     After enrich with at least one fetched source, refuses to write when the
     packet has no *surface* rewrite rules (AST_CALL_REWRITE, AST_ATTR_RENAME,
@@ -272,6 +276,12 @@ def create_packet_new(
         raise ValueError("package is required")
     if not version:
         raise ValueError("version is required")
+
+    root: Path | None = None
+    if consumer_root is not None:
+        root = Path(consumer_root).expanduser().resolve()
+        if not root.is_dir():
+            raise ValueError(f"consumer_root is not a directory: {root}")
 
     urls = [u.strip() for u in (source_urls or []) if u and str(u).strip()]
     seen_u: set[str] = set()
@@ -423,6 +433,7 @@ def create_packet_new(
             ecosystem=ecosystem,
             signals=[],
             base=p,
+            root=root,
             seed_urls=unique_urls,
             suggested_queries=queries,
             migration_docs=preloaded_docs,
@@ -476,6 +487,7 @@ def create_packet_new(
                 ecosystem=ecosystem,
                 signals=[],
                 base=packet,
+                root=root,
                 seed_urls=unique_urls,
                 suggested_queries=retry_queries,
                 migration_docs=preloaded_docs,
