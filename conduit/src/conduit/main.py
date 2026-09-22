@@ -1483,6 +1483,11 @@ def packet_diff_surface_cmd(
         "--out",
         help="Migration packet output path",
     ),
+    recipe: Optional[Path] = typer.Option(
+        None,
+        "--recipe",
+        help="Optional reshape recipe JSON (declaration ops not derivable from exports)",
+    ),
 ) -> None:
     """Diff two surface packets into a migration hop draft."""
     from conduit.packet.surface_diff import SurfaceDiffError, diff_surface_packets
@@ -1490,7 +1495,7 @@ def packet_diff_surface_cmd(
     left = json.loads(from_surface.read_text(encoding="utf-8"))
     right = json.loads(to_surface.read_text(encoding="utf-8"))
     try:
-        packet = diff_surface_packets(left, right)
+        packet = diff_surface_packets(left, right, recipe_path=recipe)
     except SurfaceDiffError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
