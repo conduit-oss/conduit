@@ -14,7 +14,7 @@
       "kind": "other"
     }
   ],
-  "notes": "Draft hop from surface_packet diff. renamed=6 removed=1 added=269. Includes supersession rewrites when legacy and successor both export on the new version.",
+  "notes": "Draft hop from surface_packet diff. renamed=6 removed=1 added=269. Includes supersession rewrites, import_member companions, and ensure_classmethod for decorator successors.",
   "side_effects": [
     {
       "kind": "other",
@@ -90,6 +90,66 @@
       "old_callee": "validator",
       "new_callee": "field_validator",
       "reason": "surface rename validator \u2192 field_validator"
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "operation": {
+        "kind": "import_member",
+        "source": {
+          "module": "pydantic",
+          "name": "root_validator"
+        },
+        "target": {
+          "module": "pydantic",
+          "name": "model_validator"
+        },
+        "local_binding": "preserve"
+      },
+      "reason": "surface rename root_validator \u2192 model_validator"
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "operation": {
+        "kind": "import_member",
+        "source": {
+          "module": "pydantic",
+          "name": "validator"
+        },
+        "target": {
+          "module": "pydantic",
+          "name": "field_validator"
+        },
+        "local_binding": "preserve"
+      },
+      "reason": "surface rename validator \u2192 field_validator"
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "operation": {
+        "kind": "ensure_classmethod",
+        "decorator": "model_validator"
+      },
+      "reason": "Companion ensure_classmethod for decorator model_validator"
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "operation": {
+        "kind": "ensure_classmethod",
+        "decorator": "field_validator"
+      },
+      "reason": "Companion ensure_classmethod for decorator field_validator"
     }
   ]
 }
