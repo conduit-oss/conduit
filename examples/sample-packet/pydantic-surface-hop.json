@@ -1,0 +1,193 @@
+{
+  "packet_id": "pydantic-1.10.13-2.0.0",
+  "package": "pydantic",
+  "ecosystem": "pypi",
+  "from_version": "1.10.13",
+  "to_version": "2.0.0",
+  "sources": [
+    {
+      "url": "conduit://surface/pypi/pydantic/1.10.13",
+      "kind": "other"
+    },
+    {
+      "url": "conduit://surface/pypi/pydantic/2.0.0",
+      "kind": "other"
+    }
+  ],
+  "notes": "Draft hop from surface_packet diff. renamed=6 removed=1 added=269. Includes supersession rewrites, import_member companions, and ensure_classmethod for decorator successors.\nProducer reshape recipe: nested Config is a consumer convention, not an export rename. Authored for the surface-diff hop.",
+  "side_effects": [
+    {
+      "kind": "other",
+      "detail": "Public export removed with no rename match: MAX_EMAIL_LENGTH",
+      "gap_kind": "uncodable",
+      "old_shape": "MAX_EMAIL_LENGTH",
+      "blocker": "surface diff found no successor id",
+      "evidence_url": "surface:pypi:pydantic:1.10.13\u21922.0.0"
+    },
+    {
+      "kind": "other",
+      "detail": "field_validator may still need signature or mode= reshape beyond @classmethod.",
+      "gap_kind": "signature",
+      "old_shape": "def check_name(cls, v)",
+      "new_shape": "def check_name(cls, v, info) or mode=",
+      "blocker": "no signature/mode declaration op yet",
+      "evidence_url": "https://docs.pydantic.dev/2.0/migration/"
+    }
+  ],
+  "rules": [
+    {
+      "type": "DEPENDENCY_BUMP",
+      "package": "pydantic",
+      "from_version": "1.10.13",
+      "to_version": "2.0.0",
+      "ecosystems": [
+        "pip",
+        "pyproject"
+      ],
+      "reason": "Pin pydantic to 2.0.0 from surface diff"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.dict",
+      "new_callee": "BaseModel.model_dump",
+      "reason": "surface rename BaseModel.dict \u2192 BaseModel.model_dump"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.json",
+      "new_callee": "BaseModel.model_dump_json",
+      "reason": "surface rename BaseModel.json \u2192 BaseModel.model_dump_json"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.parse_obj",
+      "new_callee": "BaseModel.model_validate",
+      "reason": "surface rename BaseModel.parse_obj \u2192 BaseModel.model_validate"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.parse_raw",
+      "new_callee": "BaseModel.model_validate_json",
+      "reason": "surface rename BaseModel.parse_raw \u2192 BaseModel.model_validate_json"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "root_validator",
+      "new_callee": "model_validator",
+      "reason": "surface rename root_validator \u2192 model_validator"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "validator",
+      "new_callee": "field_validator",
+      "reason": "surface rename validator \u2192 field_validator"
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "operation": {
+        "kind": "import_member",
+        "source": {
+          "module": "pydantic",
+          "name": "root_validator"
+        },
+        "target": {
+          "module": "pydantic",
+          "name": "model_validator"
+        },
+        "local_binding": "preserve"
+      },
+      "reason": "surface rename root_validator \u2192 model_validator"
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "operation": {
+        "kind": "import_member",
+        "source": {
+          "module": "pydantic",
+          "name": "validator"
+        },
+        "target": {
+          "module": "pydantic",
+          "name": "field_validator"
+        },
+        "local_binding": "preserve"
+      },
+      "reason": "surface rename validator \u2192 field_validator"
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "operation": {
+        "kind": "ensure_classmethod",
+        "decorator": "model_validator"
+      },
+      "reason": "Companion ensure_classmethod for decorator model_validator"
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "operation": {
+        "kind": "ensure_classmethod",
+        "decorator": "field_validator"
+      },
+      "reason": "Companion ensure_classmethod for decorator field_validator"
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "operation": {
+        "kind": "inner_class_to_assignment",
+        "selector": {
+          "inner_name": "Config",
+          "parent_bases_any": [
+            "BaseModel"
+          ]
+        },
+        "keys": {
+          "orm_mode": "from_attributes"
+        },
+        "emit": {
+          "target": "model_config",
+          "constructor": "ConfigDict",
+          "ensure_import": {
+            "module": "pydantic",
+            "name": "ConfigDict"
+          }
+        },
+        "unmapped_assignments": "refuse",
+        "unsupported_members": "refuse"
+      },
+      "reason": "Nested Config with mapped keys becomes model_config = ConfigDict(...)."
+    }
+  ]
+}
