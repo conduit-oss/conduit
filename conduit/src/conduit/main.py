@@ -1875,7 +1875,7 @@ def packet_publish_cmd(
     packet: Path = typer.Option(
         ...,
         "--packet",
-        help="Path to conduit-packet.json",
+        help="Path to conduit-packet.json or surface packet JSON",
         exists=True,
         dir_okay=False,
         readable=True,
@@ -1884,6 +1884,14 @@ def packet_publish_cmd(
         ...,
         "--catalog",
         help="Local catalog git checkout path, or git URL to clone",
+    ),
+    recipe: Optional[Path] = typer.Option(
+        None,
+        "--recipe",
+        help="Optional reshape recipe JSON copied beside a migration hop",
+        exists=True,
+        dir_okay=False,
+        readable=True,
     ),
     notice_url: Optional[str] = typer.Option(
         None,
@@ -1896,7 +1904,10 @@ def packet_publish_cmd(
         help="Write files only; print git commands instead of committing",
     ),
 ) -> None:
-    """Publish a packet into a catalog repo (by-package layout). Catalog only; no consumer PRs."""
+    """Publish a packet into a catalog repo (by-package layout). Catalog only; no consumer PRs.
+
+    Detects packet_kind=surface and writes under by-package/.../surfaces/<version>.json.
+    """
     from conduit.packet.publish import PacketPublishError, publish_packet
 
     try:
@@ -1905,6 +1916,7 @@ def packet_publish_cmd(
             catalog,
             notice_url=notice_url,
             commit=not no_commit,
+            recipe=recipe,
         )
     except PacketPublishError as exc:
         console.print(f"[red]{exc}[/red]")
