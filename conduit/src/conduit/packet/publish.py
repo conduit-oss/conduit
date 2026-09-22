@@ -1,10 +1,6 @@
-"""Publish migration or surface packets into a catalog git checkout.
+"""Publish a migration packet into a catalog git checkout (by-package layout).
 
 Does not open consumer PRs. Catalog write + optional commit/notice only.
-
-Layouts:
-  migration  ``by-package/<pkg>/<eco>/<packet_id>.json``
-  surface    ``by-package/<pkg>/<eco>/surfaces/<version>.json``
 """
 
 from __future__ import annotations
@@ -20,7 +16,6 @@ from urllib.parse import urlparse
 import httpx
 
 from conduit.packet.cache import save_packet
-from conduit.packet.surface_validate import validate_surface_packet
 from conduit.packet.validate import validate_packet
 
 KNOWN_ECOSYSTEMS = ("pypi", "npm", "go", "maven", "other")
@@ -32,7 +27,7 @@ class PacketPublishError(Exception):
 
 @dataclass(frozen=True)
 class CatalogPaths:
-    """Relative paths written for one packet."""
+    """Relative paths written for one hop."""
 
     by_package: Path
     flat_root: Path | None = None
@@ -40,7 +35,7 @@ class CatalogPaths:
 
 @dataclass
 class PublishResult:
-    """Outcome of writing one packet into a catalog tree."""
+    """Outcome of writing one hop into a catalog tree."""
 
     packet_id: str
     catalog_root: Path
@@ -61,7 +56,7 @@ def _safe_path_token(value: str, *, label: str) -> str:
 
 def catalog_paths_for_packet(packet: dict[str, Any]) -> CatalogPaths:
     """
-    Canonical migration layout plus optional root mirror.
+    Canonical layout plus optional root mirror.
 
     Prefer ``by-package/<pkg>/<eco>/<packet_id>.json``. When ``packet_id``
     omits ``-<ecosystem>-`` (e.g. ``openai-0.28.1-1.0.0``), also mirror at
@@ -84,30 +79,6 @@ def catalog_paths_for_packet(packet: dict[str, Any]) -> CatalogPaths:
     else:
         flat_root = Path(filename)
     return CatalogPaths(by_package=by_package, flat_root=flat_root)
-
-
-def catalog_paths_for_surface_packet(packet: dict[str, Any]) -> CatalogPaths:
-    """
-    Surface freeze layout under the package tree.
-
-    ``by-package/<pkg>/<eco>/surfaces/<version>.json`` (no flat root mirror).
-    """
-    package = _safe_path_token(str(packet.get("package") or ""), label="package")
-    ecosystem = _safe_path_token(
-        str(packet.get("ecosystem") or "").strip().lower(), label="ecosystem"
-    )
-    version = _safe_path_token(str(packet.get("version") or ""), label="version")
-    if ecosystem not in KNOWN_ECOSYSTEMS:
-        raise PacketPublishError(f"unsupported ecosystem {ecosystem!r}")
-    by_package = (
-        Path("by-package") / package / ecosystem / "surfaces" / f"{version}.json"
-    )
-    return CatalogPaths(by_package=by_package, flat_root=None)
-
-
-def recipe_sibling_path(hop_by_package: Path) -> Path:
-    """Path for an optional reshape recipe next to a published migration hop."""
-    return hop_by_package.with_name(hop_by_package.stem + ".recipe.json")
 
 
 def _load_packet(packet: Path | dict[str, Any]) -> dict[str, Any]:
@@ -238,20 +209,16 @@ def post_notice(
     relpath: str,
     timeout: float = 15.0,
 ) -> dict[str, Any]:
-    """POST a small webhook body announcing the published packet (no consumer PRs)."""
-    body: dict[str, Any] = {
+    """POST a small webhook body announcing the published hop (no consumer PRs)."""
+    body = {
         "event": "conduit.packet.published",
         "packet_id": str(packet.get("packet_id") or ""),
-        "packet_kind": str(packet.get("packet_kind") or "migration"),
         "package": str(packet.get("package") or ""),
         "ecosystem": str(packet.get("ecosystem") or ""),
+        "from_version": str(packet.get("from_version") or ""),
+        "to_version": str(packet.get("to_version") or ""),
         "path": relpath,
     }
-    if str(packet.get("packet_kind") or "") == "surface":
-        body["version"] = str(packet.get("version") or "")
-    else:
-        body["from_version"] = str(packet.get("from_version") or "")
-        body["to_version"] = str(packet.get("to_version") or "")
     url = notice_url.strip()
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -268,11 +235,32 @@ def post_notice(
     return body
 
 
-def _write_json_targets(
-    root: Path,
-    data: dict[str, Any],
-    targets: list[tuple[str, Path]],
-) -> tuple[list[str], list[str]]:
+def publish_packet(
+    packet: Path | dict[str, Any] | str,
+    catalog: str,
+    *,
+    notice_url: str | None = None,
+    commit: bool = True,
+) -> PublishResult:
+    """
+    Validate and write ``packet`` under the catalog ``by-package`` layout.
+
+    Does not open consumer PRs. Second publish of the same hop is idempotent.
+    """
+    data = _load_packet(packet if not isinstance(packet, str) else Path(packet))
+    errors = validate_packet(data)
+    if errors:
+        raise PacketPublishError("invalid packet:\n" + "\n".join(errors))
+
+    root = resolve_catalog_root(catalog)
+    paths = catalog_paths_for_packet(data)
+    packet_id = str(data.get("packet_id") or "")
+    targets: list[tuple[str, Path]] = [
+        (paths.by_package.as_posix(), root / paths.by_package)
+    ]
+    if paths.flat_root is not None:
+        targets.append((paths.flat_root.as_posix(), root / paths.flat_root))
+
     written: list[str] = []
     unchanged: list[str] = []
     for rel, dest in targets:
@@ -286,26 +274,15 @@ def _write_json_targets(
                 continue
         save_packet(dest, data)
         written.append(rel)
-    return written, unchanged
 
-
-def _finalize_publish(
-    *,
-    root: Path,
-    packet_id: str,
-    data: dict[str, Any],
-    paths: CatalogPaths,
-    written: list[str],
-    unchanged: list[str],
-    relpaths: list[str],
-    notice_url: str | None,
-    commit: bool,
-) -> PublishResult:
+    relpaths = [rel for rel, _ in targets]
     git_cmds = _git_commands_for(relpaths, packet_id)
     committed = False
     commit_sha: str | None = None
     if commit and written and _is_git_repo(root):
         committed, commit_sha = _try_commit(root, relpaths, packet_id)
+    elif not commit:
+        git_cmds = _git_commands_for(relpaths, packet_id)
 
     notice_posted = False
     if notice_url:
@@ -325,116 +302,4 @@ def _finalize_publish(
         commit_sha=commit_sha,
         git_commands=[] if committed else git_cmds,
         notice_posted=notice_posted,
-    )
-
-
-def publish_surface_packet(
-    packet: Path | dict[str, Any] | str,
-    catalog: str,
-    *,
-    notice_url: str | None = None,
-    commit: bool = True,
-) -> PublishResult:
-    """
-    Validate and write a surface freeze under
-    ``by-package/<pkg>/<eco>/surfaces/<version>.json``.
-
-    Does not open consumer PRs. Second publish of the same freeze is idempotent.
-    """
-    data = _load_packet(packet if not isinstance(packet, str) else Path(packet))
-    if str(data.get("packet_kind") or "").strip() != "surface":
-        raise PacketPublishError("expected packet_kind=surface")
-    errors = validate_surface_packet(data)
-    if errors:
-        raise PacketPublishError("invalid surface packet:\n" + "\n".join(errors))
-
-    root = resolve_catalog_root(catalog)
-    paths = catalog_paths_for_surface_packet(data)
-    packet_id = str(data.get("packet_id") or "")
-    targets: list[tuple[str, Path]] = [
-        (paths.by_package.as_posix(), root / paths.by_package)
-    ]
-    written, unchanged = _write_json_targets(root, data, targets)
-    return _finalize_publish(
-        root=root,
-        packet_id=packet_id,
-        data=data,
-        paths=paths,
-        written=written,
-        unchanged=unchanged,
-        relpaths=[rel for rel, _ in targets],
-        notice_url=notice_url,
-        commit=commit,
-    )
-
-
-def publish_packet(
-    packet: Path | dict[str, Any] | str,
-    catalog: str,
-    *,
-    notice_url: str | None = None,
-    commit: bool = True,
-    recipe: Path | dict[str, Any] | str | None = None,
-) -> PublishResult:
-    """
-    Validate and write ``packet`` under the catalog ``by-package`` layout.
-
-    Surface packets (``packet_kind=surface``) dispatch to
-    ``publish_surface_packet``. Migration hops may optionally copy a reshape
-    recipe as ``<packet_id>.recipe.json`` beside the hop.
-
-    Does not open consumer PRs. Second publish of the same hop is idempotent.
-    """
-    data = _load_packet(packet if not isinstance(packet, str) else Path(packet))
-    if str(data.get("packet_kind") or "").strip() == "surface":
-        if recipe is not None:
-            raise PacketPublishError(
-                "--recipe applies to migration hops only; surface packets publish alone"
-            )
-        return publish_surface_packet(
-            data,
-            catalog,
-            notice_url=notice_url,
-            commit=commit,
-        )
-
-    errors = validate_packet(data)
-    if errors:
-        raise PacketPublishError("invalid packet:\n" + "\n".join(errors))
-
-    root = resolve_catalog_root(catalog)
-    paths = catalog_paths_for_packet(data)
-    packet_id = str(data.get("packet_id") or "")
-    targets: list[tuple[str, Path]] = [
-        (paths.by_package.as_posix(), root / paths.by_package)
-    ]
-    if paths.flat_root is not None:
-        targets.append((paths.flat_root.as_posix(), root / paths.flat_root))
-
-    written, unchanged = _write_json_targets(root, data, targets)
-
-    if recipe is not None:
-        recipe_data = _load_packet(
-            recipe if not isinstance(recipe, str) else Path(recipe)
-        )
-        recipe_rel = recipe_sibling_path(paths.by_package)
-        recipe_dest = root / recipe_rel
-        recipe_targets = [(recipe_rel.as_posix(), recipe_dest)]
-        r_written, r_unchanged = _write_json_targets(
-            root, recipe_data, recipe_targets
-        )
-        written.extend(r_written)
-        unchanged.extend(r_unchanged)
-        targets.extend(recipe_targets)
-
-    return _finalize_publish(
-        root=root,
-        packet_id=packet_id,
-        data=data,
-        paths=paths,
-        written=written,
-        unchanged=unchanged,
-        relpaths=[rel for rel, _ in targets],
-        notice_url=notice_url,
-        commit=commit,
     )
