@@ -14,11 +14,11 @@
   "side_effects": [
     {
       "kind": "other",
-      "detail": "field_validator may still need signature or mode= reshape beyond @classmethod.",
-      "gap_kind": "signature",
-      "old_shape": "def check_name(cls, v)",
-      "new_shape": "def check_name(cls, v, info) or mode=",
-      "blocker": "no signature/mode declaration op yet",
+      "detail": "v1 validator kwargs (pre/always/each_item) have no evidence-backed map onto field_validator mode=.",
+      "gap_kind": "multi_step",
+      "old_shape": "@validator(..., pre=True|always=True|each_item=True)",
+      "new_shape": "@field_validator(..., mode='before'|'after'|'wrap'|'plain')",
+      "blocker": "mode= mapping is not derived from surface {id,kind}; detector refuses unknown kwargs until a recipe mapping lands",
       "evidence_url": "https://docs.pydantic.dev/2.0/migration/"
     }
   ],
@@ -72,6 +72,34 @@
         "decorator": "field_validator"
       },
       "reason": "field_validator decorated methods must be classmethods."
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": ["*.py"],
+      "operation": {
+        "kind": "decorated_def_convention",
+        "decorator": "field_validator",
+        "context": null,
+        "options": [],
+        "unmappable_params": [],
+        "unknown_params": "refuse",
+        "unknown_options": "refuse"
+      },
+      "reason": "v2 field_validator takes (cls, value). Anything else is a located gap."
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": ["*.py"],
+      "operation": {
+        "kind": "decorated_def_convention",
+        "decorator": "model_validator",
+        "context": null,
+        "options": [],
+        "unmappable_params": [],
+        "unknown_params": "refuse",
+        "unknown_options": "refuse"
+      },
+      "reason": "v2 model_validator takes (cls, value). Anything else is a located gap."
     },
     {
       "type": "AST_CALL_REWRITE",

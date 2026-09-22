@@ -5,22 +5,27 @@ from __future__ import annotations
 import fnmatch
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Sequence
 
 from conduit.context_filter import file_has_vendor_context
+from conduit.packet.declaration_rules import (
+    DeclarationRule,
+    DeclarationRuleError,
+    declaration_rules,
+    declaration_stage,
+)
 from conduit.packet.rule_safety import ast_call_rewrite_is_safe
 from conduit.patcher.ast_attr_call import apply_attr_rename, apply_call_rewrite
 from conduit.patcher.ast_import_rewrite import apply_import_rewrite
 from conduit.patcher.ast_param_drop import apply_param_drop
 from conduit.patcher.ast_param_rename import apply_param_rename
+from conduit.patcher.declarations import rewrite_declarations
 from conduit.patcher.dependency_update import apply_dependency_rule
 from conduit.patcher.key_rename import apply_key_rename, is_env_file, iter_config_files
 from conduit.patcher.rule_stages import partition_rules
 from conduit.patcher.string_replace import exact_replace, regex_replace, write_if_changed
 from conduit.prune.grep_imports import SKIP_DIRS
 from conduit.test_gen import is_conduit_generated_rel
-from conduit.packet.declaration_rules import DeclarationRuleError, declaration_rules
-from conduit.patcher.declarations import rewrite_declarations
 
 ApplyStages = Literal["all", "sdk", "rest"]
 
@@ -328,7 +333,7 @@ def _apply_declaration_rules(
     *,
     root: Path,
     files: list[Path],
-    rules: list[dict[str, Any]],
+    rules: Sequence[DeclarationRule],
     packet_id: str,
     vendor: str,
     dry_run: bool,
@@ -338,12 +343,7 @@ def _apply_declaration_rules(
     """Batch AST_DECLARATION_REWRITE once per file (shared import table)."""
     report = PatchReport()
     deferred = path_defer or set()
-    try:
-        decoded = declaration_rules({"rules": rules})
-    except DeclarationRuleError as exc:
-        report.skips.append(f"[sdk] invalid AST_DECLARATION_REWRITE: {exc}")
-        return report
-    if not decoded:
+    if not rules:
         return report
 
     for path in files:
@@ -366,7 +366,7 @@ def _apply_declaration_rules(
             continue
         if require_context and not file_has_vendor_context(path, original, vendor):
             continue
-        result = rewrite_declarations(path, original, decoded, root=root)
+        result = rewrite_declarations(path, original, rules, root=root)
         if result.applied and write_if_changed(
             path, original, result.content, dry_run=dry_run
         ):
@@ -438,21 +438,21 @@ def apply_packet(
             for r in sdk_rules
             if not (isinstance(r, dict) and r.get("type") == "AST_DECLARATION_REWRITE")
         ]
-        # ensure_classmethod must run after CALL/ATTR renames so it sees the
-        # post-hop decorator name (e.g. field_validator, not validator).
+        # Late kinds observe the post-CALL decorator stack (classmethod, then
+        # decorated_def_convention). Stage comes from the decoded union.
+        decoded_decl: tuple[DeclarationRule, ...] = ()
+        if decl_raw:
+            try:
+                decoded_decl = declaration_rules({"rules": decl_raw})
+            except DeclarationRuleError as exc:
+                skip = f"[sdk] invalid AST_DECLARATION_REWRITE: {exc}"
+                if skip not in report.skips:
+                    report.skips.append(skip)
         early_decl = [
-            r
-            for r in decl_raw
-            if not (
-                isinstance(r.get("operation"), dict)
-                and str(r["operation"].get("kind") or "") == "ensure_classmethod"
-            )
+            r for r in decoded_decl if declaration_stage(r.operation) == "early"
         ]
         late_decl = [
-            r
-            for r in decl_raw
-            if isinstance(r.get("operation"), dict)
-            and str(r["operation"].get("kind") or "") == "ensure_classmethod"
+            r for r in decoded_decl if declaration_stage(r.operation) == "late"
         ]
         if early_decl:
             report.merge(

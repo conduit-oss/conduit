@@ -7,13 +7,23 @@ from pathlib import Path
 from typing import Sequence
 
 import libcst as cst
+from libcst.metadata import MetadataWrapper, PositionProvider
 
 from conduit.packet.declaration_rules import (
     DeclarationRule,
+    DecoratedDefConventionSpec,
     EnsureClassmethodSpec,
     ImportMemberSpec,
     InnerClassToAssignmentSpec,
     Symbol,
+)
+from conduit.patcher.declarations.convention import (
+    Conforms,
+    Refuse,
+    Reshape,
+    SiteGap,
+    build_view,
+    classify_site,
 )
 from conduit.patcher.py.imports import ImportLedger, dotted_name, rewrite_import_member
 
@@ -22,7 +32,7 @@ from conduit.patcher.py.imports import ImportLedger, dotted_name, rewrite_import
 class StructuralResidual:
     rel: str
     line: int
-    kind: str  # import_member | inner_class | ensure_classmethod
+    kind: str  # import_member | inner_class | ensure_classmethod | decorated_def_*
     old_shape: str
     reason: str
 
@@ -80,6 +90,9 @@ def rewrite_declarations(
     classmethod_ops = [
         r for r in matching if isinstance(r.operation, EnsureClassmethodSpec)
     ]
+    convention_ops = [
+        r for r in matching if isinstance(r.operation, DecoratedDefConventionSpec)
+    ]
 
     for rule in import_ops:
         op = rule.operation
@@ -103,6 +116,15 @@ def rewrite_declarations(
         if n:
             updated = new_content
             applied += n
+
+    if convention_ops:
+        new_content, n, convention_residuals = _rewrite_convention(
+            updated, convention_ops, rel=rel
+        )
+        if n:
+            updated = new_content
+            applied += n
+        residuals.extend(convention_residuals)
 
     return RewriteResult(
         content=updated, applied=applied, residuals=tuple(residuals)
@@ -129,9 +151,12 @@ def scan_declaration_residuals(
         pass
 
     try:
-        module = cst.parse_module(content)
+        raw = cst.parse_module(content)
     except Exception:
         return ()
+    wrapper = MetadataWrapper(raw)
+    positions = wrapper.resolve(PositionProvider)
+    module = wrapper.module
 
     hits: list[StructuralResidual] = []
     for rule in matching:
@@ -169,6 +194,8 @@ def scan_declaration_residuals(
                         reason="decorator present without @classmethod",
                     )
                 )
+        elif isinstance(op, DecoratedDefConventionSpec):
+            hits.extend(_scan_convention(module, positions, op, rel=rel))
     return tuple(hits)
 
 
@@ -507,3 +534,112 @@ def _rewrite_ensure_classmethod(
     if changes == 0 or new_module.code == content:
         return content, 0
     return new_module.code, changes
+
+
+def _gap_to_residual(rel: str, gap: SiteGap) -> StructuralResidual:
+    return StructuralResidual(
+        rel=rel,
+        line=gap.line,
+        kind=gap.kind,
+        old_shape=gap.old_shape,
+        reason=gap.reason,
+    )
+
+
+def _matching_decorator(
+    func: cst.FunctionDef, wanted: str
+) -> cst.Decorator | None:
+    for dec in func.decorators:
+        if _decorator_matches(dec.decorator, wanted):
+            return dec
+    return None
+
+
+def _iter_function_defs(module: cst.Module) -> list[cst.FunctionDef]:
+    found: list[cst.FunctionDef] = []
+
+    class _Walk(cst.CSTVisitor):
+        def visit_FunctionDef(self, node: cst.FunctionDef) -> bool:
+            found.append(node)
+            return True
+
+    module.visit(_Walk())
+    return found
+
+
+def _disposition_residuals(
+    func: cst.FunctionDef,
+    decorator: cst.Decorator,
+    spec: DecoratedDefConventionSpec,
+    positions: object,
+    *,
+    rel: str,
+) -> list[StructuralResidual]:
+    verdict = classify_site(build_view(func, decorator, positions), spec)  # type: ignore[arg-type]
+    match verdict:
+        case Conforms():
+            return []
+        case Refuse(gaps):
+            return [_gap_to_residual(rel, gap) for gap in gaps]
+        case Reshape():
+            line = 0
+            try:
+                line = int(positions[func].start.line)  # type: ignore[index]
+            except Exception:
+                line = 0
+            return [
+                StructuralResidual(
+                    rel=rel,
+                    line=line,
+                    kind="decorated_def_params",
+                    old_shape=f"@{spec.decorator} {func.name.value}",
+                    reason="declared reshape not yet applied",
+                )
+            ]
+
+
+def _rewrite_convention(
+    content: str,
+    rules: Sequence[DeclarationRule],
+    *,
+    rel: str,
+) -> tuple[str, int, list[StructuralResidual]]:
+    specs = [
+        r.operation
+        for r in rules
+        if isinstance(r.operation, DecoratedDefConventionSpec)
+    ]
+    if not specs:
+        return content, 0, []
+    try:
+        raw = cst.parse_module(content)
+    except Exception:
+        return content, 0, []
+    wrapper = MetadataWrapper(raw)
+    positions = wrapper.resolve(PositionProvider)
+    residuals: list[StructuralResidual] = []
+    for func in _iter_function_defs(wrapper.module):
+        for spec in specs:
+            dec = _matching_decorator(func, spec.decorator)
+            if dec is None:
+                continue
+            residuals.extend(
+                _disposition_residuals(func, dec, spec, positions, rel=rel)
+            )
+    return content, 0, residuals
+
+
+def _scan_convention(
+    module: cst.Module,
+    positions: object,
+    spec: DecoratedDefConventionSpec,
+    *,
+    rel: str,
+) -> list[StructuralResidual]:
+    hits: list[StructuralResidual] = []
+    for func in _iter_function_defs(module):
+        dec = _matching_decorator(func, spec.decorator)
+        if dec is None:
+            continue
+        hits.extend(_disposition_residuals(func, dec, spec, positions, rel=rel))
+    return hits

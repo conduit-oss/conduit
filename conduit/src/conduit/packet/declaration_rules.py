@@ -65,9 +65,106 @@ class EnsureClassmethodSpec:
         return f"ensure_classmethod:{self.decorator}"
 
 
+@dataclass(frozen=True)
+class NoSuccessor:
+    """A declared dead end. Presence at a site is a permanent, reasoned gap."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class ContextParam:
+    """Single v2-style context parameter that absorbs extra old params.
+
+    ``absorbs`` maps an old parameter name to an attribute path on this
+    parameter. Body substitution strings are derived from that pair so the
+    signature edit cannot disagree with the body edit.
+    """
+
+    name: str
+    annotation: str | None
+    ensure_import: Symbol | None
+    absorbs: tuple[tuple[str, str], ...]
+
+    def substitution(self, old_param: str) -> str | None:
+        for name, attr in self.absorbs:
+            if name == old_param:
+                return f"{self.name}.{attr}"
+        return None
+
+
+@dataclass(frozen=True)
+class OptionRename:
+    """Rename a decorator kwarg, optionally remapping its literal value."""
+
+    new_kwarg: str
+    values: tuple[tuple[str, str], ...] = ()
+
+
+OptionMapping: TypeAlias = OptionRename | NoSuccessor
+
+
+@dataclass(frozen=True)
+class DecoratorOption:
+    kwarg: str
+    mapping: OptionMapping
+
+
+@dataclass(frozen=True)
+class DecoratedDefConventionSpec:
+    """Calling convention of one decorator: kwargs and the def's params.
+
+    Ships with an empty vocabulary as a detector. Mappings are recipe data.
+    """
+
+    decorator: str
+    context: ContextParam | None = None
+    options: tuple[DecoratorOption, ...] = ()
+    unmappable_params: tuple[tuple[str, str], ...] = ()
+    unknown_params: Literal["refuse"] = "refuse"
+    unknown_options: Literal["refuse"] = "refuse"
+
+    def obligation_id(self) -> str:
+        leaf = self.decorator.split(".")[-1]
+        return f"decorated_def:{leaf}"
+
+    def known_params(self) -> frozenset[str]:
+        names = {old for old, _ in (self.context.absorbs if self.context else ())}
+        if self.context is not None:
+            names.add(self.context.name)
+        return frozenset(names)
+
+    def known_options(self) -> frozenset[str]:
+        names: set[str] = set()
+        for opt in self.options:
+            names.add(opt.kwarg)
+            if isinstance(opt.mapping, OptionRename):
+                names.add(opt.mapping.new_kwarg)
+        return frozenset(names)
+
+
 DeclarationOperation: TypeAlias = (
-    ImportMemberSpec | InnerClassToAssignmentSpec | EnsureClassmethodSpec
+    ImportMemberSpec
+    | InnerClassToAssignmentSpec
+    | EnsureClassmethodSpec
+    | DecoratedDefConventionSpec
 )
+
+DeclStage: TypeAlias = Literal["early", "late"]
+
+
+def declaration_stage(op: DeclarationOperation) -> DeclStage:
+    """Early runs before CALL/ATTR. Late observes the finished decorator stack."""
+    match op:
+        case ImportMemberSpec():
+            return "early"
+        case InnerClassToAssignmentSpec():
+            return "early"
+        case EnsureClassmethodSpec():
+            return "late"
+        case DecoratedDefConventionSpec():
+            return "late"
+    raise AssertionError("closed operation union")
 
 
 @dataclass(frozen=True)
@@ -189,6 +286,8 @@ def decode_declaration_rule(
         if not leaf.isidentifier():
             raise DeclarationRuleError("decorator leaf must be an identifier")
         operation = EnsureClassmethodSpec(decorator=decorator)
+    elif kind == "decorated_def_convention":
+        operation = _decode_decorated_def_convention(op_raw)
     else:
         raise DeclarationRuleError(f"unknown operation.kind: {kind!r}")
 
@@ -240,4 +339,141 @@ def declaration_old_tokens(rule: DeclarationRule) -> tuple[str, ...]:
         case EnsureClassmethodSpec(decorator=decorator):
             leaf = decorator.split(".")[-1]
             return (decorator, leaf) if decorator != leaf else (leaf,)
+        case DecoratedDefConventionSpec() as op:
+            leaf = op.decorator.split(".")[-1]
+            names = (op.decorator, leaf) if op.decorator != leaf else (leaf,)
+            if op.context is not None:
+                names += tuple(old for old, _ in op.context.absorbs)
+            names += tuple(opt.kwarg for opt in op.options)
+            return names
     raise AssertionError("closed operation union")
+
+
+def _require_identifier(value: object, field: str) -> str:
+    text = _require_str(value, field)
+    if not text.isidentifier():
+        raise DeclarationRuleError(f"{field} must be an identifier")
+    return text
+
+
+def _decode_refuse_slot(value: object, field: str) -> Literal["refuse"]:
+    slot = str(value or "refuse").strip()
+    if slot != "refuse":
+        raise DeclarationRuleError(f"{field} must be 'refuse'")
+    return "refuse"
+
+
+def _decode_context_param(raw: object) -> ContextParam:
+    if not isinstance(raw, Mapping):
+        raise DeclarationRuleError("operation.context must be an object")
+    name = _require_identifier(raw.get("name"), "context.name")
+    annotation_raw = raw.get("annotation")
+    annotation: str | None
+    if annotation_raw is None or annotation_raw == "":
+        annotation = None
+    else:
+        annotation = _require_str(annotation_raw, "context.annotation")
+    ensure: Symbol | None = None
+    if raw.get("ensure_import") is not None:
+        ensure = _parse_symbol(raw.get("ensure_import"), "context.ensure_import")
+    absorbs_raw = raw.get("absorbs") or {}
+    if not isinstance(absorbs_raw, Mapping):
+        raise DeclarationRuleError("context.absorbs must be an object")
+    absorbs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for old, attr in absorbs_raw.items():
+        old_s = _require_identifier(old, "context.absorbs key")
+        attr_s = _require_str(attr, f"context.absorbs.{old_s}")
+        if old_s in seen:
+            raise DeclarationRuleError("context.absorbs keys must be unique")
+        seen.add(old_s)
+        absorbs.append((old_s, attr_s))
+    return ContextParam(
+        name=name,
+        annotation=annotation,
+        ensure_import=ensure,
+        absorbs=tuple(absorbs),
+    )
+
+
+def _decode_decorator_option(raw: object, index: int) -> DecoratorOption:
+    if not isinstance(raw, Mapping):
+        raise DeclarationRuleError(f"options[{index}] must be an object")
+    kwarg = _require_identifier(raw.get("kwarg"), f"options[{index}].kwarg")
+    no_successor = raw.get("no_successor")
+    rename_to = raw.get("rename_to")
+    if no_successor is not None and rename_to is not None:
+        raise DeclarationRuleError(
+            f"options[{index}] cannot set both rename_to and no_successor"
+        )
+    if no_successor is not None:
+        reason = _require_str(no_successor, f"options[{index}].no_successor")
+        return DecoratorOption(kwarg=kwarg, mapping=NoSuccessor(reason=reason))
+    if rename_to is None:
+        raise DeclarationRuleError(
+            f"options[{index}] requires rename_to or no_successor"
+        )
+    new_kwarg = _require_identifier(rename_to, f"options[{index}].rename_to")
+    values_raw = raw.get("values") or {}
+    if not isinstance(values_raw, Mapping):
+        raise DeclarationRuleError(f"options[{index}].values must be an object")
+    values = tuple(
+        (str(old), str(new))
+        for old, new in values_raw.items()
+        if str(old) and str(new)
+    )
+    return DecoratorOption(
+        kwarg=kwarg, mapping=OptionRename(new_kwarg=new_kwarg, values=values)
+    )
+
+
+def _decode_unmappable_params(raw: object) -> tuple[tuple[str, str], ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise DeclarationRuleError("unmappable_params must be an array")
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for idx, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            raise DeclarationRuleError(f"unmappable_params[{idx}] must be an object")
+        param = _require_identifier(item.get("param"), f"unmappable_params[{idx}].param")
+        reason = _require_str(item.get("reason"), f"unmappable_params[{idx}].reason")
+        if param in seen:
+            raise DeclarationRuleError("unmappable_params names must be unique")
+        seen.add(param)
+        out.append((param, reason))
+    return tuple(out)
+
+
+def _decode_decorated_def_convention(op_raw: Mapping[str, Any]) -> DecoratedDefConventionSpec:
+    decorator = _require_str(op_raw.get("decorator"), "operation.decorator")
+    leaf = decorator.split(".")[-1]
+    if not leaf.isidentifier():
+        raise DeclarationRuleError("decorator leaf must be an identifier")
+    if op_raw.get("absorbs"):
+        raise DeclarationRuleError("absorbs requires context")
+    context_raw = op_raw.get("context")
+    context: ContextParam | None
+    if context_raw is None:
+        context = None
+    else:
+        context = _decode_context_param(context_raw)
+    options_raw = op_raw.get("options") or []
+    if not isinstance(options_raw, list):
+        raise DeclarationRuleError("options must be an array")
+    options = tuple(
+        _decode_decorator_option(item, idx) for idx, item in enumerate(options_raw)
+    )
+    return DecoratedDefConventionSpec(
+        decorator=decorator,
+        context=context,
+        options=options,
+        unmappable_params=_decode_unmappable_params(op_raw.get("unmappable_params")),
+        unknown_params=_decode_refuse_slot(
+            op_raw.get("unknown_params"), "unknown_params"
+        ),
+        unknown_options=_decode_refuse_slot(
+            op_raw.get("unknown_options"), "unknown_options"
+        ),
+    )

@@ -56,17 +56,27 @@ def test_pydantic_validator_hop_packet_validates():
     assert "DEPENDENCY_BUMP" in types
     assert "AST_DECLARATION_REWRITE" in types
     assert "AST_CALL_REWRITE" in types
-    effects = data.get("side_effects") or []
-    joined = " ".join(str(e.get("detail") or "") for e in effects)
-    assert "signature" in joined.lower() or any(
-        e.get("gap_kind") == "signature" for e in effects if isinstance(e, dict)
+    effects = [e for e in (data.get("side_effects") or []) if isinstance(e, dict)]
+    assert not any(
+        "no signature/mode declaration op yet" in str(e.get("blocker") or "")
+        or e.get("old_shape") == "def check_name(cls, v)"
+        for e in effects
     )
     assert any(
-        isinstance(r.get("operation"), dict)
-        and r["operation"].get("kind") == "ensure_classmethod"
-        for r in data["rules"]
-        if isinstance(r, dict)
+        e.get("gap_kind") == "multi_step" and "mode=" in str(e.get("new_shape") or "")
+        for e in effects
     )
+    ops = [
+        r.get("operation") or {}
+        for r in data["rules"]
+        if isinstance(r, dict) and r.get("type") == "AST_DECLARATION_REWRITE"
+    ]
+    assert any(op.get("kind") == "ensure_classmethod" for op in ops)
+    detector = [op for op in ops if op.get("kind") == "decorated_def_convention"]
+    assert {op.get("decorator") for op in detector} >= {
+        "field_validator",
+        "model_validator",
+    }
 
 
 def test_pydantic_validator_smoke_cli_watch_apply_watch(tmp_path: Path, monkeypatch):
@@ -124,3 +134,5 @@ def test_pydantic_validator_smoke_cli_watch_apply_watch(tmp_path: Path, monkeypa
     assert "model_config = ConfigDict(from_attributes=True)" in body.replace(
         " ", ""
     ) or "from_attributes=True" in body
+    assert "def check_name(cls, v):" in body
+    assert "info" not in body

@@ -344,7 +344,8 @@
           "oneOf": [
             { "$ref": "#/$defs/import_member_operation" },
             { "$ref": "#/$defs/inner_class_to_assignment_operation" },
-            { "$ref": "#/$defs/ensure_classmethod_operation" }
+            { "$ref": "#/$defs/ensure_classmethod_operation" },
+            { "$ref": "#/$defs/decorated_def_convention_operation" }
           ]
         },
         "reason": { "$ref": "#/$defs/rule_reason" }
@@ -361,6 +362,79 @@
           "minLength": 1,
           "description": "Decorator name (leaf or dotted) whose defs must also carry @classmethod."
         }
+      }
+    },
+    "decorated_def_context": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_]\\w*$"
+        },
+        "annotation": { "type": ["string", "null"] },
+        "ensure_import": { "$ref": "#/$defs/symbol_ref" },
+        "absorbs": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "decorated_def_option": {
+      "type": "object",
+      "required": ["kwarg"],
+      "additionalProperties": false,
+      "properties": {
+        "kwarg": {
+          "type": "string",
+          "pattern": "^[A-Za-z_]\\w*$"
+        },
+        "rename_to": {
+          "type": "string",
+          "pattern": "^[A-Za-z_]\\w*$"
+        },
+        "values": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "no_successor": { "type": "string", "minLength": 1 }
+      }
+    },
+    "decorated_def_convention_operation": {
+      "type": "object",
+      "required": ["kind", "decorator", "unknown_params", "unknown_options"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "decorated_def_convention" },
+        "decorator": { "type": "string", "minLength": 1 },
+        "context": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/decorated_def_context" }
+          ]
+        },
+        "options": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/decorated_def_option" }
+        },
+        "unmappable_params": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["param", "reason"],
+            "additionalProperties": false,
+            "properties": {
+              "param": {
+                "type": "string",
+                "pattern": "^[A-Za-z_]\\w*$"
+              },
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "unknown_params": { "const": "refuse" },
+        "unknown_options": { "const": "refuse" }
       }
     },
     "import_member_operation": {

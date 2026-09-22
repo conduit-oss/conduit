@@ -11,7 +11,7 @@ from conduit.packet.validate import validate_packet
 REPO = Path(__file__).resolve().parents[2]
 HOP = REPO / "examples" / "sample-packet" / "pydantic-surface-hop.json"
 DRAFT_ALIAS = REPO / "examples" / "sample-packet" / "pydantic-surface-diff-draft.json"
-EXPECTED_SHA256 = "c2fdb7a78a84042dc6af9ca9ac924631c78dbb0a1b41817887b0b801487271f5"
+EXPECTED_SHA256 = "186e85cb30978e39c14b3f43e5de3c5d240f5f8bfc33426a58892cb51dbb6ef7"
 
 
 def test_pydantic_surface_hop_freeze_validates_and_matches_sha():
@@ -29,9 +29,29 @@ def test_pydantic_surface_hop_freeze_validates_and_matches_sha():
     assert "DEPENDENCY_BUMP" in types
     assert "AST_CALL_REWRITE" in types
     assert "AST_DECLARATION_REWRITE" in types
+    ops = [
+        r.get("operation") or {}
+        for r in data["rules"]
+        if r.get("type") == "AST_DECLARATION_REWRITE"
+    ]
+    detector = [op for op in ops if op.get("kind") == "decorated_def_convention"]
+    assert {op.get("decorator") for op in detector} >= {
+        "field_validator",
+        "model_validator",
+    }
+    assert all(op.get("unknown_params") == "refuse" for op in detector)
+    assert all(op.get("unknown_options") == "refuse" for op in detector)
+    effects = [e for e in (data.get("side_effects") or []) if isinstance(e, dict)]
+    overclaim = "no signature/mode declaration op yet"
+    assert not any(
+        overclaim in str(e.get("blocker") or "")
+        or e.get("old_shape") == "def check_name(cls, v)"
+        for e in effects
+    )
     assert any(
-        isinstance(e, dict) and e.get("gap_kind") == "signature"
-        for e in (data.get("side_effects") or [])
+        e.get("gap_kind") == "multi_step"
+        and "mode=" in str(e.get("new_shape") or "")
+        for e in effects
     )
 
 
