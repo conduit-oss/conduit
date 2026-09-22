@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from conduit.export_delta.diff import diff_exports
 from conduit.packet.cook import cook_import_member_companions
+from conduit.packet.reshape_recipes import (
+    ReshapeRecipeError,
+    load_reshape_recipe,
+    merge_recipe_into_packet,
+)
 from conduit.packet.validate import validate_packet
 
 
@@ -211,12 +218,16 @@ def diff_surface_packets(
     surface_to: dict[str, Any],
     *,
     target_files: list[str] | None = None,
+    recipe: dict[str, Any] | None = None,
+    recipe_path: Path | None = None,
 ) -> dict[str, Any]:
     """
     Build a migration packet from two surface packets.
 
     Mechanical only: DEPENDENCY_BUMP, AST_CALL_REWRITE for heuristic renames,
     structured side_effects for removals without a successor.
+    Optional reshape recipes add declaration ops that export ids cannot prove
+    (e.g. nested Config → model_config).
     """
     _require_surface(surface_from, "from")
     _require_surface(surface_to, "to")
@@ -287,6 +298,19 @@ def diff_surface_packets(
         "side_effects": effects,
         "rules": rules,
     }
+
+    recipe_data = recipe
+    if recipe_data is None and recipe_path is not None:
+        try:
+            recipe_data = load_reshape_recipe(Path(recipe_path))
+        except (OSError, json.JSONDecodeError, ReshapeRecipeError) as exc:
+            raise SurfaceDiffError(f"recipe load failed: {exc}") from exc
+    if recipe_data is not None:
+        try:
+            packet = merge_recipe_into_packet(packet, recipe_data)
+        except ReshapeRecipeError as exc:
+            raise SurfaceDiffError(str(exc)) from exc
+
     errors = validate_packet(packet)
     if errors:
         raise SurfaceDiffError("; ".join(errors))

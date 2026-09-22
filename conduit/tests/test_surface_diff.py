@@ -168,7 +168,7 @@ def test_cli_diff_surface(tmp_path: Path):
 
 
 def test_pydantic_surface_diff_apply_fixture(tmp_path: Path, monkeypatch):
-    """Surface-authored hop rewrites dict+validator+classmethod; Config stays gap."""
+    """Surface hop + reshape recipe: dict/validator/classmethod/Config all mechanical."""
     import json
     import shutil
 
@@ -189,16 +189,12 @@ def test_pydantic_surface_diff_apply_fixture(tmp_path: Path, monkeypatch):
             encoding="utf-8"
         )
     )
-    hop = diff_surface_packets(s1, s2)
+    recipe = repo / "examples/reshape-recipes/pydantic-1.10.13-2.0.0.json"
+    hop = diff_surface_packets(s1, s2, recipe_path=recipe)
     assert validate_packet(hop) == []
     assert any(
         r.get("type") == "AST_DECLARATION_REWRITE"
-        and (r.get("operation") or {}).get("kind") == "import_member"
-        for r in hop["rules"]
-    )
-    assert any(
-        r.get("type") == "AST_DECLARATION_REWRITE"
-        and (r.get("operation") or {}).get("kind") == "ensure_classmethod"
+        and (r.get("operation") or {}).get("kind") == "inner_class_to_assignment"
         for r in hop["rules"]
     )
 
@@ -225,13 +221,12 @@ def test_pydantic_surface_diff_apply_fixture(tmp_path: Path, monkeypatch):
     assert '@field_validator("name")' in body or "@field_validator(" in body
     assert "@classmethod" in body
     assert "model_dump" in body
-    # Config reshape is not surface-exportable yet
-    assert "class Config" in body
+    assert "class Config" not in body
+    assert "ConfigDict" in body or "model_config" in body
 
     clean = runner.invoke(
         app, ["watch", "--path", str(tree), "--packet", str(hop_path), "--json"]
     )
-    # Watch scores packet claims only: Config is a side_effect, not an obligation
     assert clean.exit_code == 0, clean.output
     payload = json.loads(clean.stdout)
     assert payload.get("status") == "clean"

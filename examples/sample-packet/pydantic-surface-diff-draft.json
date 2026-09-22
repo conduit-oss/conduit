@@ -14,7 +14,7 @@
       "kind": "other"
     }
   ],
-  "notes": "Draft hop from surface_packet diff. renamed=6 removed=1 added=269. Includes supersession rewrites, import_member companions, and ensure_classmethod for decorator successors.",
+  "notes": "Draft hop from surface_packet diff. renamed=6 removed=1 added=269. Includes supersession rewrites, import_member companions, and ensure_classmethod for decorator successors.\nProducer reshape recipe: nested Config is a consumer convention, not an export rename. Authored for the surface-diff hop.",
   "side_effects": [
     {
       "kind": "other",
@@ -23,6 +23,15 @@
       "old_shape": "MAX_EMAIL_LENGTH",
       "blocker": "surface diff found no successor id",
       "evidence_url": "surface:pypi:pydantic:1.10.13\u21922.0.0"
+    },
+    {
+      "kind": "other",
+      "detail": "field_validator may still need signature or mode= reshape beyond @classmethod.",
+      "gap_kind": "signature",
+      "old_shape": "def check_name(cls, v)",
+      "new_shape": "def check_name(cls, v, info) or mode=",
+      "blocker": "no signature/mode declaration op yet",
+      "evidence_url": "https://docs.pydantic.dev/2.0/migration/"
     }
   ],
   "rules": [
@@ -150,6 +159,35 @@
         "decorator": "field_validator"
       },
       "reason": "Companion ensure_classmethod for decorator field_validator"
+    },
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "operation": {
+        "kind": "inner_class_to_assignment",
+        "selector": {
+          "inner_name": "Config",
+          "parent_bases_any": [
+            "BaseModel"
+          ]
+        },
+        "keys": {
+          "orm_mode": "from_attributes"
+        },
+        "emit": {
+          "target": "model_config",
+          "constructor": "ConfigDict",
+          "ensure_import": {
+            "module": "pydantic",
+            "name": "ConfigDict"
+          }
+        },
+        "unmapped_assignments": "refuse",
+        "unsupported_members": "refuse"
+      },
+      "reason": "Nested Config with mapped keys becomes model_config = ConfigDict(...)."
     }
   ]
 }

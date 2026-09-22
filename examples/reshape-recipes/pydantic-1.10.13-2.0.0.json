@@ -1,0 +1,41 @@
+{
+  "package": "pydantic",
+  "from_version": "1.10.13",
+  "to_version": "2.0.0",
+  "notes": "Producer reshape recipe: nested Config is a consumer convention, not an export rename. Authored for the surface-diff hop.",
+  "side_effects": [
+    {
+      "kind": "other",
+      "detail": "field_validator may still need signature or mode= reshape beyond @classmethod.",
+      "gap_kind": "signature",
+      "old_shape": "def check_name(cls, v)",
+      "new_shape": "def check_name(cls, v, info) or mode=",
+      "blocker": "no signature/mode declaration op yet",
+      "evidence_url": "https://docs.pydantic.dev/2.0/migration/"
+    }
+  ],
+  "rules": [
+    {
+      "type": "AST_DECLARATION_REWRITE",
+      "target_files": ["*.py"],
+      "operation": {
+        "kind": "inner_class_to_assignment",
+        "selector": {
+          "inner_name": "Config",
+          "parent_bases_any": ["BaseModel"]
+        },
+        "keys": {
+          "orm_mode": "from_attributes"
+        },
+        "emit": {
+          "target": "model_config",
+          "constructor": "ConfigDict",
+          "ensure_import": {"module": "pydantic", "name": "ConfigDict"}
+        },
+        "unmapped_assignments": "refuse",
+        "unsupported_members": "refuse"
+      },
+      "reason": "Nested Config with mapped keys becomes model_config = ConfigDict(...)."
+    }
+  ]
+}
