@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from conduit.export_delta.diff import diff_exports
+from conduit.packet.cook import cook_import_member_companions
 from conduit.packet.validate import validate_packet
 
 
@@ -21,6 +22,9 @@ _SUCCESSOR_LEAF_PAIRS: tuple[tuple[str, str], ...] = (
     ("validator", "field_validator"),
     ("root_validator", "model_validator"),
 )
+
+# Decorator successors that need @classmethod on the rewritten defs.
+_CLASSMETHOD_DECORATORS = frozenset({"field_validator", "model_validator"})
 
 
 def _infer_supersessions(
@@ -147,6 +151,36 @@ def migration_rules_from_renames(
     return rules
 
 
+def _ensure_classmethod_companions(
+    rules: list[dict[str, Any]],
+    *,
+    target_files: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Add ensure_classmethod when CALL rewrites land on known decorator successors."""
+    targets = target_files or ["*.py"]
+    seen: set[str] = set()
+    extras: list[dict[str, Any]] = []
+    for rule in rules:
+        if str(rule.get("type") or "") != "AST_CALL_REWRITE":
+            continue
+        new = str(rule.get("new_callee") or "").strip()
+        leaf = new.split(".")[-1] if new else ""
+        if leaf not in _CLASSMETHOD_DECORATORS or leaf in seen:
+            continue
+        seen.add(leaf)
+        extras.append(
+            {
+                "type": "AST_DECLARATION_REWRITE",
+                "target_files": list(targets),
+                "operation": {"kind": "ensure_classmethod", "decorator": leaf},
+                "reason": f"Companion ensure_classmethod for decorator {leaf}",
+            }
+        )
+    if not extras:
+        return list(rules)
+    return list(rules) + extras
+
+
 def side_effects_for_removed(
     removed: set[str],
     *,
@@ -216,6 +250,8 @@ def diff_surface_packets(
     rules.extend(
         migration_rules_from_renames(renamed, target_files=target_files)
     )
+    rules = cook_import_member_companions(rules, package=package)
+    rules = _ensure_classmethod_companions(rules, target_files=target_files)
 
     evidence = (
         f"surface:{ecosystem}:{package}:{from_version}"
@@ -245,7 +281,8 @@ def diff_surface_packets(
         "notes": (
             "Draft hop from surface_packet diff. "
             f"renamed={len(renamed)} removed={len(removed)} added={len(added)}. "
-            "Includes supersession rewrites when legacy and successor both export on the new version."
+            "Includes supersession rewrites, import_member companions, and "
+            "ensure_classmethod for decorator successors."
         ),
         "side_effects": effects,
         "rules": rules,

@@ -53,6 +53,24 @@ def test_supersession_when_legacy_and_successor_on_new():
     }
     assert ("BaseModel.dict", "BaseModel.model_dump") in callees
     assert ("validator", "field_validator") in callees
+    decl_kinds = {
+        (r.get("operation") or {}).get("kind")
+        for r in hop["rules"]
+        if r.get("type") == "AST_DECLARATION_REWRITE"
+    }
+    assert "import_member" in decl_kinds
+    assert "ensure_classmethod" in decl_kinds
+    import_ops = [
+        r["operation"]
+        for r in hop["rules"]
+        if r.get("type") == "AST_DECLARATION_REWRITE"
+        and (r.get("operation") or {}).get("kind") == "import_member"
+    ]
+    assert any(
+        op.get("source", {}).get("name") == "validator"
+        and op.get("target", {}).get("name") == "field_validator"
+        for op in import_ops
+    )
 
 
 def _write_toy_v1(root: Path) -> Path:
@@ -147,3 +165,74 @@ def test_cli_diff_surface(tmp_path: Path):
     assert result.exit_code == 0, result.output
     hop = json.loads(out.read_text(encoding="utf-8"))
     assert validate_packet(hop) == []
+
+
+def test_pydantic_surface_diff_apply_fixture(tmp_path: Path, monkeypatch):
+    """Surface-authored hop rewrites dict+validator+classmethod; Config stays gap."""
+    import json
+    import shutil
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "conduit.patcher.sync_env.sync_bumped_packages",
+        lambda *args, **kwargs: [],
+    )
+
+    repo = Path(__file__).resolve().parents[2]
+    s1 = json.loads(
+        (repo / "examples/surface-packets/pydantic-pypi-1.10.13.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    s2 = json.loads(
+        (repo / "examples/surface-packets/pydantic-pypi-2.0.0.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    hop = diff_surface_packets(s1, s2)
+    assert validate_packet(hop) == []
+    assert any(
+        r.get("type") == "AST_DECLARATION_REWRITE"
+        and (r.get("operation") or {}).get("kind") == "import_member"
+        for r in hop["rules"]
+    )
+    assert any(
+        r.get("type") == "AST_DECLARATION_REWRITE"
+        and (r.get("operation") or {}).get("kind") == "ensure_classmethod"
+        for r in hop["rules"]
+    )
+
+    fixture = repo / "examples" / "pydantic-validator-fixture"
+    tree = tmp_path / "fixture"
+    shutil.copytree(
+        fixture,
+        tree,
+        ignore=shutil.ignore_patterns(".pytest_cache", "__pycache__", ".conduit"),
+    )
+    (tree / "requirements.txt").write_text("pydantic==2.0.0\n", encoding="utf-8")
+    hop_path = tmp_path / "surface-hop.json"
+    hop_path.write_text(json.dumps(hop, indent=2) + "\n", encoding="utf-8")
+
+    runner = CliRunner()
+    dirty = runner.invoke(
+        app, ["watch", "--path", str(tree), "--packet", str(hop_path), "--json"]
+    )
+    assert dirty.exit_code == 1, dirty.output
+
+    applied = runner.invoke(app, ["apply", "--path", str(tree), "--packet", str(hop_path)])
+    assert applied.exit_code == 0, applied.output
+    body = (tree / "src" / "model.py").read_text(encoding="utf-8")
+    assert '@field_validator("name")' in body or "@field_validator(" in body
+    assert "@classmethod" in body
+    assert "model_dump" in body
+    # Config reshape is not surface-exportable yet
+    assert "class Config" in body
+
+    clean = runner.invoke(
+        app, ["watch", "--path", str(tree), "--packet", str(hop_path), "--json"]
+    )
+    # Watch scores packet claims only: Config is a side_effect, not an obligation
+    assert clean.exit_code == 0, clean.output
+    payload = json.loads(clean.stdout)
+    assert payload.get("status") == "clean"
+    assert payload.get("leftovers") == []
