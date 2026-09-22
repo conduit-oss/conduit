@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import libcst as cst
-from libcst.metadata import MetadataWrapper, PositionProvider
+from libcst.metadata import CodeRange, MetadataWrapper, PositionProvider
 
 from conduit.packet.declaration_rules import (
     DeclarationRule,
@@ -20,6 +20,7 @@ from conduit.packet.declaration_rules import (
 from conduit.patcher.declarations.convention import (
     Conforms,
     Refuse,
+    ResidualKind,
     Reshape,
     SiteGap,
     build_view,
@@ -32,7 +33,7 @@ from conduit.patcher.py.imports import ImportLedger, dotted_name, rewrite_import
 class StructuralResidual:
     rel: str
     line: int
-    kind: str  # import_member | inner_class | ensure_classmethod | decorated_def_*
+    kind: ResidualKind
     old_shape: str
     reason: str
 
@@ -571,11 +572,11 @@ def _disposition_residuals(
     func: cst.FunctionDef,
     decorator: cst.Decorator,
     spec: DecoratedDefConventionSpec,
-    positions: object,
+    positions: Mapping[cst.CSTNode, CodeRange],
     *,
     rel: str,
 ) -> list[StructuralResidual]:
-    verdict = classify_site(build_view(func, decorator, positions), spec)  # type: ignore[arg-type]
+    verdict = classify_site(build_view(func, decorator, positions), spec)
     match verdict:
         case Conforms():
             return []
@@ -584,7 +585,7 @@ def _disposition_residuals(
         case Reshape():
             line = 0
             try:
-                line = int(positions[func].start.line)  # type: ignore[index]
+                line = int(positions[func].start.line)
             except Exception:
                 line = 0
             return [
@@ -631,7 +632,7 @@ def _rewrite_convention(
 
 def _scan_convention(
     module: cst.Module,
-    positions: object,
+    positions: Mapping[cst.CSTNode, CodeRange],
     spec: DecoratedDefConventionSpec,
     *,
     rel: str,

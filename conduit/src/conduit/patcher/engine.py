@@ -438,8 +438,6 @@ def apply_packet(
             for r in sdk_rules
             if not (isinstance(r, dict) and r.get("type") == "AST_DECLARATION_REWRITE")
         ]
-        # Late kinds observe the post-CALL decorator stack (classmethod, then
-        # decorated_def_convention). Stage comes from the decoded union.
         decoded_decl: tuple[DeclarationRule, ...] = ()
         if decl_raw:
             try:
@@ -448,18 +446,22 @@ def apply_packet(
                 skip = f"[sdk] invalid AST_DECLARATION_REWRITE: {exc}"
                 if skip not in report.skips:
                     report.skips.append(skip)
-        early_decl = [
-            r for r in decoded_decl if declaration_stage(r.operation) == "early"
+        before_call = [
+            r
+            for r in decoded_decl
+            if declaration_stage(r.operation) == "before_call_rename"
         ]
-        late_decl = [
-            r for r in decoded_decl if declaration_stage(r.operation) == "late"
+        after_call = [
+            r
+            for r in decoded_decl
+            if declaration_stage(r.operation) == "after_call_rename"
         ]
-        if early_decl:
+        if before_call:
             report.merge(
                 _apply_declaration_rules(
                     root=root,
                     files=files,
-                    rules=early_decl,
+                    rules=before_call,
                     packet_id=packet_id,
                     vendor=vendor,
                     dry_run=dry_run,
@@ -479,12 +481,12 @@ def apply_packet(
             path_defer=path_defer,
         )
         report.merge(sdk_report)
-        if late_decl:
+        if after_call:
             report.merge(
                 _apply_declaration_rules(
                     root=root,
                     files=files,
-                    rules=late_decl,
+                    rules=after_call,
                     packet_id=packet_id,
                     vendor=vendor,
                     dry_run=dry_run,

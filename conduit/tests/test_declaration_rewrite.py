@@ -350,9 +350,9 @@ def test_classify_structural_opacity():
         assert any("opaque" in gap.reason for gap in verdict.gaps)
 
 
-def test_declaration_stage_convention_is_late():
-    assert declaration_stage(_empty_spec()) == "late"
-    assert declaration_stage(EnsureClassmethodSpec("field_validator")) == "late"
+def test_declaration_stage_convention_is_after_call_rename():
+    assert declaration_stage(_empty_spec()) == "after_call_rename"
+    assert declaration_stage(EnsureClassmethodSpec("field_validator")) == "after_call_rename"
     assert (
         declaration_stage(
             ImportMemberSpec(
@@ -360,7 +360,7 @@ def test_declaration_stage_convention_is_late():
                 target=Symbol("pydantic", "field_validator"),
             )
         )
-        == "early"
+        == "before_call_rename"
     )
 
 

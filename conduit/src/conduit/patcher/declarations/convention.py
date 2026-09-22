@@ -1,11 +1,10 @@
-"""Pure detector for a decorated def's calling convention."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping, TypeAlias
+from typing import Literal, Mapping, TypeAlias
 
 import libcst as cst
+from libcst.metadata import CodeRange
 
 from conduit.packet.declaration_rules import (
     ContextParam,
@@ -18,8 +17,6 @@ from conduit.packet.declaration_rules import (
 
 @dataclass(frozen=True)
 class DecoratedDefView:
-    """Framework-free view of one decorated def. The classifier's only input."""
-
     name: str
     line: int
     leading_param: str | None
@@ -65,7 +62,7 @@ class ReshapePlan:
 
 @dataclass(frozen=True)
 class Conforms:
-    """Already in the target convention. Apply writes nothing; scan reports nothing."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -88,11 +85,6 @@ SiteVerdict: TypeAlias = Conforms | Reshape | Refuse
 def classify_site(
     view: DecoratedDefView, spec: DecoratedDefConventionSpec
 ) -> SiteVerdict:
-    """Single predicate behind apply and residual scan.
-
-    Structural opacity is first-hit. Param and option gaps then accumulate so
-    one site never reshapes one half while refusing the other.
-    """
     shape = _site_shape(view, spec)
     opaque = _opacity_gaps(view, spec, shape)
     if opaque:
@@ -121,16 +113,10 @@ def classify_site(
     return Conforms()
 
 
-def apply_plan(func: cst.FunctionDef, plan: ReshapePlan) -> cst.FunctionDef:
-    raise NotImplementedError(
-        "decorated_def_convention apply_plan is a day-one detector stub"
-    )
-
-
 def build_view(
     func: cst.FunctionDef,
     decorator: cst.Decorator,
-    positions: Mapping[Any, Any],
+    positions: Mapping[cst.CSTNode, CodeRange],
 ) -> DecoratedDefView:
     line = _node_line(func, positions)
     params = _param_view(func)
@@ -191,7 +177,6 @@ def _site_shape(view: DecoratedDefView, spec: DecoratedDefConventionSpec) -> str
 def _opacity_gaps(
     view: DecoratedDefView, spec: DecoratedDefConventionSpec, shape: str
 ) -> list[SiteGap]:
-    # C2: *args / **kwargs / defaults / non-literal kwargs / bare decorator.
     gaps: list[SiteGap] = []
     if view.has_star_args:
         gaps.append(
@@ -350,7 +335,9 @@ def _reshape_plan(
     )
 
 
-def _node_line(node: cst.CSTNode, positions: Mapping[Any, Any]) -> int:
+def _node_line(
+    node: cst.CSTNode, positions: Mapping[cst.CSTNode, CodeRange]
+) -> int:
     try:
         rng = positions[node]
         return int(rng.start.line)
@@ -446,13 +433,13 @@ def _body_names(func: cst.FunctionDef) -> tuple[frozenset[str], frozenset[str]]:
     reads: set[str] = set()
     rebinds: set[str] = set()
 
-    def _target_names(target: cst.BaseAssignTargetExpression) -> None:
+    def _target_names(target: cst.BaseExpression) -> None:
         if isinstance(target, cst.Name):
             rebinds.add(target.value)
         elif isinstance(target, (cst.Tuple, cst.List)):
             for elt in target.elements:
                 if isinstance(elt, cst.Element):
-                    _target_names(elt.value)  # type: ignore[arg-type]
+                    _target_names(elt.value)
 
     class _Walk(cst.CSTVisitor):
         def visit_Name(self, node: cst.Name) -> bool:

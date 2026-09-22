@@ -74,13 +74,6 @@ class NoSuccessor:
 
 @dataclass(frozen=True)
 class ContextParam:
-    """Single v2-style context parameter that absorbs extra old params.
-
-    ``absorbs`` maps an old parameter name to an attribute path on this
-    parameter. Body substitution strings are derived from that pair so the
-    signature edit cannot disagree with the body edit.
-    """
-
     name: str
     annotation: str | None
     ensure_import: Symbol | None
@@ -95,8 +88,6 @@ class ContextParam:
 
 @dataclass(frozen=True)
 class OptionRename:
-    """Rename a decorator kwarg, optionally remapping its literal value."""
-
     new_kwarg: str
     values: tuple[tuple[str, str], ...] = ()
 
@@ -112,11 +103,6 @@ class DecoratorOption:
 
 @dataclass(frozen=True)
 class DecoratedDefConventionSpec:
-    """Calling convention of one decorator: kwargs and the def's params.
-
-    Ships with an empty vocabulary as a detector. Mappings are recipe data.
-    """
-
     decorator: str
     context: ContextParam | None = None
     options: tuple[DecoratorOption, ...] = ()
@@ -150,20 +136,19 @@ DeclarationOperation: TypeAlias = (
     | DecoratedDefConventionSpec
 )
 
-DeclStage: TypeAlias = Literal["early", "late"]
+DeclStage: TypeAlias = Literal["before_call_rename", "after_call_rename"]
 
 
 def declaration_stage(op: DeclarationOperation) -> DeclStage:
-    """Early runs before CALL/ATTR. Late observes the finished decorator stack."""
     match op:
         case ImportMemberSpec():
-            return "early"
+            return "before_call_rename"
         case InnerClassToAssignmentSpec():
-            return "early"
+            return "before_call_rename"
         case EnsureClassmethodSpec():
-            return "late"
+            return "after_call_rename"
         case DecoratedDefConventionSpec():
-            return "late"
+            return "after_call_rename"
     raise AssertionError("closed operation union")
 
 
