@@ -1,0 +1,26 @@
+openapi: 3.0.3
+info:
+  title: Demo API (latest)
+  version: "2.0.0"
+paths:
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: List models
+      responses:
+        "200":
+          description: OK
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      summary: Create a chat completion (renamed from /v1/completions)
+      responses:
+        "200":
+          description: OK
+  /v1/files:
+    get:
+      operationId: listFiles
+      summary: List files (added)
+      responses:
+        "200":
+          description: OK

@@ -1,0 +1,27 @@
+{
+  "checksum": "2471ccd9596be01ad191c79426a3a1188b2b4e5cf094695ea02ed9154db50566",
+  "ecosystem": "other",
+  "notes": "OpenAPI surface from previous.openapi.yaml",
+  "package": "demo-api",
+  "packet_id": "surface:other:demo-api:1.0.0",
+  "packet_kind": "surface",
+  "source": {
+    "kind": "tree",
+    "locator": "examples/openapi-fixture/previous.openapi.yaml"
+  },
+  "symbols": [
+    {
+      "id": "DELETE /v1/engines/{engine_id}",
+      "kind": "export"
+    },
+    {
+      "id": "GET /v1/models",
+      "kind": "export"
+    },
+    {
+      "id": "POST /v1/completions",
+      "kind": "export"
+    }
+  ],
+  "version": "1.0.0"
+}

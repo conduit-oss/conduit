@@ -1,0 +1,27 @@
+{
+  "checksum": "9cc2d198ae034ba1e9cb2884ea3b5d461883602d6b601c595c1ae5df49388392",
+  "ecosystem": "other",
+  "notes": "OpenAPI surface from latest.openapi.yaml",
+  "package": "demo-api",
+  "packet_id": "surface:other:demo-api:2.0.0",
+  "packet_kind": "surface",
+  "source": {
+    "kind": "tree",
+    "locator": "examples/openapi-fixture/latest.openapi.yaml"
+  },
+  "symbols": [
+    {
+      "id": "GET /v1/files",
+      "kind": "export"
+    },
+    {
+      "id": "GET /v1/models",
+      "kind": "export"
+    },
+    {
+      "id": "POST /v1/chat/completions",
+      "kind": "export"
+    }
+  ],
+  "version": "2.0.0"
+}

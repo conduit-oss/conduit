@@ -125,8 +125,8 @@ def _pair_unique_class_methods(
         removed.discard(old)
         added.discard(new)
 
-    rem_leaves = sorted(n for n in removed if "." not in n)
-    add_leaves = sorted(n for n in added if "." not in n)
+    rem_leaves = sorted(n for n in removed if "." not in n and "/" not in n)
+    add_leaves = sorted(n for n in added if "." not in n and "/" not in n)
     if len(rem_leaves) == 1 and len(add_leaves) == 1:
         old, new = rem_leaves[0], add_leaves[0]
         if old not in renamed:
@@ -248,16 +248,23 @@ def diff_surface_packets(
     _infer_supersessions(old_ids, new_ids, renamed)
     _pair_unique_class_methods(added, removed, renamed)
 
-    rules: list[dict[str, Any]] = [
-        {
-            "type": "DEPENDENCY_BUMP",
-            "package": package,
-            "from_version": from_version,
-            "to_version": to_version,
-            "ecosystems": ["pip", "pyproject"] if ecosystem == "pypi" else [ecosystem],
-            "reason": f"Pin {package} to {to_version} from surface diff",
-        }
-    ]
+    dep_bump: dict[str, Any] = {
+        "type": "DEPENDENCY_BUMP",
+        "package": package,
+        "from_version": from_version,
+        "to_version": to_version,
+        "reason": f"Pin {package} to {to_version} from surface diff",
+    }
+    # dep_ecosystems schema has no "other"; omit when surface ecosystem is not a lockfile kind.
+    _ECO_TO_DEP = {
+        "pypi": ["pip", "pyproject"],
+        "npm": ["npm"],
+        "go": ["go"],
+        "maven": ["maven", "gradle"],
+    }
+    if ecosystem in _ECO_TO_DEP:
+        dep_bump["ecosystems"] = list(_ECO_TO_DEP[ecosystem])
+    rules: list[dict[str, Any]] = [dep_bump]
     rules.extend(
         migration_rules_from_renames(renamed, target_files=target_files)
     )

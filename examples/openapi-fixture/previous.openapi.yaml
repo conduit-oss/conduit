@@ -1,0 +1,32 @@
+openapi: 3.0.3
+info:
+  title: Demo API (previous)
+  version: "1.0.0"
+paths:
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: List models
+      responses:
+        "200":
+          description: OK
+  /v1/completions:
+    post:
+      operationId: createCompletion
+      summary: Create a completion
+      responses:
+        "200":
+          description: OK
+  /v1/engines/{engine_id}:
+    delete:
+      operationId: deleteEngine
+      summary: Delete an engine
+      parameters:
+        - name: engine_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
