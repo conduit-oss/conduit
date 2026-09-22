@@ -31,7 +31,7 @@ PYTHONPATH=conduit/src python -m conduit.main packet diff-surface \
 ```
 
 Freeze SHA-256 (UTF-8, LF, trailing newline):
-`c2fdb7a78a84042dc6af9ca9ac924631c78dbb0a1b41817887b0b801487271f5`
+`186e85cb30978e39c14b3f43e5de3c5d240f5f8bfc33426a58892cb51dbb6ef7`
 
 `validate_packet` returns `[]` on the freeze
 (`conduit/tests/test_surface_hop_freeze.py`).
@@ -52,8 +52,8 @@ Freeze SHA-256 (UTF-8, LF, trailing newline):
 |--------|------:|
 | DEPENDENCY_BUMP | 1 |
 | AST_CALL_REWRITE | 6 |
-| AST_DECLARATION_REWRITE | 5 |
-| rules total | 12 |
+| AST_DECLARATION_REWRITE | 7 |
+| rules total | 14 |
 | side_effects | 2 |
 
 Declaration op breakdown inside `AST_DECLARATION_REWRITE`:
@@ -63,6 +63,7 @@ Declaration op breakdown inside `AST_DECLARATION_REWRITE`:
 | import_member | 2 |
 | ensure_classmethod | 2 |
 | inner_class_to_assignment | 1 |
+| decorated_def_convention | 2 |
 
 Call rewrites cover `BaseModel.dict` / `json` / `parse_obj` / `parse_raw`,
 `root_validator`, and `validator`.
@@ -72,7 +73,7 @@ Structured gaps on the freeze:
 | gap_kind | Detail |
 |----------|--------|
 | uncodable | Public export removed with no rename match: `MAX_EMAIL_LENGTH` |
-| signature | `field_validator` may still need signature or `mode=` reshape beyond `@classmethod` |
+| multi_step | v1 validator kwargs (`pre` / `always` / `each_item`) have no evidence-backed `mode=` map |
 
 ## Gate vs completeness (validator fixture)
 
@@ -85,7 +86,18 @@ That test runs surface hop + recipe through watch → apply → watch on
 | Packet receipt (`validate_packet`) | PASS | freeze SHA above; pytest freeze check |
 | Watch dirty → apply → Watch clean | PASS | fixture leftovers cleared for declared rules |
 | Expressible hops mechanical (dict, validator+classmethod, Config) | PASS | call + declaration ops on freeze |
-| Completeness for full pydantic v2 / mergeable consumer | FAIL | signature/`mode=` gap remains; OpenAPI and catalog publish not done |
+| Completeness for full pydantic v2 / mergeable consumer | FAIL | `mode=` / extra-param rewrite is still unbound; OpenAPI and catalog publish not done |
+
+### Completeness vs Watch (per consumer shape)
+
+The detector is honest about what apply can do. Watch stays clean on the fixture without claiming `(cls, v)` is unfinished.
+
+| Consumer shape | Apply | Watch | Packet side_effect |
+|----------------|-------|-------|--------------------|
+| `(cls, v)` no extra kwargs (fixture) | no-op | clean | none for this shape |
+| `pre=True` literal | leave (day-one detector) | dirty | `multi_step` row remains |
+| `always=` / `each_item=` | leave | dirty | `multi_step` row remains |
+| trailing `values` / `config` / `field` | leave | dirty | located `decorated_def_params` residual |
 
 ### Dual verdict (operator)
 
@@ -96,7 +108,7 @@ That test runs surface hop + recipe through watch → apply → watch on
 
 ## Remaining gaps
 
-1. **signature / `mode=`** — structured `side_effects` gap; no declaration op yet for validator signature reshape.
+1. **`mode=` / extra params** — detector locates unknown kwargs and trailing params. Body rewrite and `pre→mode` stay out of day-one scope.
 2. **OpenAPI producer path** — REST surface mint/diff not landed as a catalog hop.
 3. **Catalog publish** — hop freeze is in-repo only; not yet published as a catalog entry.
 

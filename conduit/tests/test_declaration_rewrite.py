@@ -6,8 +6,19 @@ from pathlib import Path
 
 from conduit.packet.declaration_rules import (
     DeclarationRuleError,
+    DecoratedDefConventionSpec,
+    EnsureClassmethodSpec,
+    ImportMemberSpec,
+    Symbol,
     decode_declaration_rule,
     declaration_rules,
+    declaration_stage,
+)
+from conduit.patcher.declarations.convention import (
+    Conforms,
+    DecoratedDefView,
+    Refuse,
+    classify_site,
 )
 from conduit.packet.validate import validate_packet
 from conduit.patcher.ast_import_rewrite import rewrite_python_imports
@@ -17,7 +28,6 @@ from conduit.patcher.declarations import (
 )
 from conduit.patcher.engine import apply_packet
 from conduit.patcher.py.imports import rewrite_import_member
-from conduit.packet.declaration_rules import Symbol
 
 
 def _import_member_rule(
@@ -57,6 +67,60 @@ def _nested_rule() -> dict:
             "unsupported_members": "refuse",
         },
     }
+
+
+def _convention_rule(decorator: str = "field_validator") -> dict:
+    return {
+        "type": "AST_DECLARATION_REWRITE",
+        "target_files": ["*.py"],
+        "operation": {
+            "kind": "decorated_def_convention",
+            "decorator": decorator,
+            "context": None,
+            "options": [],
+            "unmappable_params": [],
+            "unknown_params": "refuse",
+            "unknown_options": "refuse",
+        },
+        "reason": f"v2 {decorator} takes (cls, value). Anything else is a located gap.",
+    }
+
+
+def _empty_spec(decorator: str = "field_validator") -> DecoratedDefConventionSpec:
+    return DecoratedDefConventionSpec(decorator=decorator)
+
+
+def _view(
+    *,
+    extra: tuple[str, ...] = (),
+    leading: str | None = "cls",
+    value: str | None = "v",
+    name: str = "check_name",
+    line: int = 7,
+    has_star_args: bool = False,
+    has_star_kwargs: bool = False,
+    has_param_defaults: bool = False,
+    is_bare_decorator: bool = False,
+    decorator_kwargs: tuple[tuple[str, str], ...] = (),
+    decorator_nonliteral_kwargs: tuple[str, ...] = (),
+) -> DecoratedDefView:
+    return DecoratedDefView(
+        name=name,
+        line=line,
+        leading_param=leading,
+        value_param=value,
+        extra_params=extra,
+        annotated_params=frozenset(),
+        has_star_args=has_star_args,
+        has_star_kwargs=has_star_kwargs,
+        has_param_defaults=has_param_defaults,
+        is_bare_decorator=is_bare_decorator,
+        decorator_positional=1,
+        decorator_kwargs=decorator_kwargs,
+        decorator_nonliteral_kwargs=decorator_nonliteral_kwargs,
+        body_reads=frozenset(),
+        body_rebinds=frozenset(),
+    )
 
 
 def _ensure_classmethod_rule(decorator: str = "field_validator") -> dict:
@@ -257,3 +321,160 @@ def test_apply_packet_declaration_and_residual(tmp_path: Path):
         tmp_path / "m.py", text, decl, root=tmp_path
     )
     assert post == ()
+
+
+def test_classify_cls_v_conforms():
+    verdict = classify_site(_view(), _empty_spec())
+    assert isinstance(verdict, Conforms)
+
+
+def test_classify_values_refuses_params():
+    verdict = classify_site(_view(extra=("values",)), _empty_spec())
+    assert isinstance(verdict, Refuse)
+    assert verdict.gaps[0].kind == "decorated_def_params"
+    assert "values" in verdict.gaps[0].old_shape
+    assert "values" in verdict.gaps[0].reason
+
+
+def test_classify_structural_opacity():
+    cases = [
+        _view(has_star_args=True),
+        _view(has_star_kwargs=True),
+        _view(has_param_defaults=True),
+        _view(decorator_nonliteral_kwargs=("pre",)),
+        _view(is_bare_decorator=True),
+    ]
+    for view in cases:
+        verdict = classify_site(view, _empty_spec())
+        assert isinstance(verdict, Refuse)
+        assert any("opaque" in gap.reason for gap in verdict.gaps)
+
+
+def test_declaration_stage_convention_is_after_call_rename():
+    assert declaration_stage(_empty_spec()) == "after_call_rename"
+    assert declaration_stage(EnsureClassmethodSpec("field_validator")) == "after_call_rename"
+    assert (
+        declaration_stage(
+            ImportMemberSpec(
+                source=Symbol("pydantic", "validator"),
+                target=Symbol("pydantic", "field_validator"),
+            )
+        )
+        == "before_call_rename"
+    )
+
+
+def test_decode_rejects_absorbs_without_context():
+    raw = _convention_rule()
+    raw["operation"]["absorbs"] = {"values": "data"}
+    try:
+        decode_declaration_rule(raw)
+        assert False, "expected absorbs-without-context to fail"
+    except DeclarationRuleError as exc:
+        assert "absorbs" in str(exc)
+
+
+def test_schema_accepts_decorated_def_convention():
+    packet = {
+        "packet_id": "t",
+        "package": "pydantic",
+        "ecosystem": "pypi",
+        "from_version": "1.0",
+        "to_version": "2.0",
+        "rules": [_convention_rule(), _convention_rule("model_validator")],
+    }
+    assert validate_packet(packet) == []
+
+
+def test_cls_v_scan_clean_and_no_info_insert(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class User(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v):
+        return v
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule()]})
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied == 0
+    assert result.residuals == ()
+    assert "def check_name(cls, v):" in result.content
+    assert "info" not in result.content
+    assert scan_declaration_residuals(path, result.content, rules, root=tmp_path) == ()
+
+
+def test_values_residual_has_line_and_kind(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class Order(BaseModel):
+    total: int
+
+    @field_validator("total")
+    @classmethod
+    def check_total(cls, v, values):
+        return v
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule()]})
+    pre = scan_declaration_residuals(path, src, rules, root=tmp_path)
+    assert len(pre) == 1
+    hit = pre[0]
+    assert hit.kind == "decorated_def_params"
+    assert "values" in hit.old_shape
+    assert "values" in hit.reason
+    assert hit.line >= 1
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied == 0
+    assert "def check_total(cls, v, values):" in result.content
+    assert any(r.kind == "decorated_def_params" for r in result.residuals)
+
+
+def test_convention_runs_late_after_classmethod(tmp_path: Path):
+    (tmp_path / "requirements.txt").write_text("pydantic==2.0.0\n", encoding="utf-8")
+    src = '''\
+from pydantic import BaseModel, validator
+
+class Order(BaseModel):
+    total: int
+
+    @validator("total")
+    def check_total(cls, v, values):
+        return v
+'''
+    path = tmp_path / "m.py"
+    path.write_text(src, encoding="utf-8")
+    packet = {
+        "packet_id": "t",
+        "package": "pydantic",
+        "ecosystem": "pypi",
+        "from_version": "1.10.13",
+        "to_version": "2.0.0",
+        "rules": [
+            {
+                "type": "AST_CALL_REWRITE",
+                "target_files": ["*.py"],
+                "old_callee": "validator",
+                "new_callee": "field_validator",
+            },
+            _ensure_classmethod_rule(),
+            _convention_rule(),
+        ],
+    }
+    apply_packet(tmp_path, packet, require_context=False)
+    text = path.read_text(encoding="utf-8")
+    assert "@field_validator" in text
+    assert "@classmethod" in text
+    assert text.index("@field_validator") < text.index("@classmethod")
+    assert "def check_total(cls, v, values):" in text
+    assert "info" not in text
+    decl = declaration_rules(packet)
+    hits = scan_declaration_residuals(path, text, decl, root=tmp_path)
+    assert any(r.kind == "decorated_def_params" and "values" in r.reason for r in hits)
