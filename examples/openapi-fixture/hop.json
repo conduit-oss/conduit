@@ -1,0 +1,46 @@
+{
+  "ecosystem": "other",
+  "from_version": "1.0.0",
+  "notes": "Draft hop from surface_packet diff. renamed=1 removed=1 added=1. Includes supersession rewrites, import_member companions, and ensure_classmethod for decorator successors.",
+  "package": "demo-api",
+  "packet_id": "demo-api-1.0.0-2.0.0",
+  "rules": [
+    {
+      "from_version": "1.0.0",
+      "package": "demo-api",
+      "reason": "Pin demo-api to 2.0.0 from surface diff",
+      "to_version": "2.0.0",
+      "type": "DEPENDENCY_BUMP"
+    },
+    {
+      "new_callee": "POST /v1/chat/completions",
+      "old_callee": "POST /v1/completions",
+      "reason": "surface rename POST /v1/completions \u2192 POST /v1/chat/completions",
+      "target_files": [
+        "*.py"
+      ],
+      "type": "AST_CALL_REWRITE"
+    }
+  ],
+  "side_effects": [
+    {
+      "blocker": "surface diff found no successor id",
+      "detail": "Public export removed with no rename match: DELETE /v1/engines/{engine_id}",
+      "evidence_url": "surface:other:demo-api:1.0.0\u21922.0.0",
+      "gap_kind": "uncodable",
+      "kind": "other",
+      "old_shape": "DELETE /v1/engines/{engine_id}"
+    }
+  ],
+  "sources": [
+    {
+      "kind": "other",
+      "url": "conduit://surface/other/demo-api/1.0.0"
+    },
+    {
+      "kind": "other",
+      "url": "conduit://surface/other/demo-api/2.0.0"
+    }
+  ],
+  "to_version": "2.0.0"
+}

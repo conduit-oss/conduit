@@ -1525,6 +1525,11 @@ def packet_snapshot_cmd(
         "--from-tree",
         help="Optional unpacked package tree (skips PyPI download)",
     ),
+    openapi: Optional[Path] = typer.Option(
+        None,
+        "--openapi",
+        help="OpenAPI 3.x YAML/JSON file (mints path+method surface symbols)",
+    ),
     cache_root: Optional[Path] = typer.Option(
         None,
         "--cache-root",
@@ -1532,6 +1537,7 @@ def packet_snapshot_cmd(
     ),
 ) -> None:
     """Mint a surface packet from public exports of one producer version."""
+    from conduit.packet.openapi_surface import mint_surface_from_openapi
     from conduit.packet.surface_mint import (
         SurfaceMintError,
         mint_surface_packet_from_pypi,
@@ -1539,11 +1545,26 @@ def packet_snapshot_cmd(
         write_surface_packet,
     )
 
+    if openapi is not None and from_tree is not None:
+        console.print("[red]Use only one of --openapi or --from-tree[/red]")
+        raise typer.Exit(1)
+
+    eco = ecosystem
+    if openapi is not None and eco == "pypi":
+        eco = "other"
+
     dest = out or Path(
-        f"examples/surface-packets/{package}-{ecosystem}-{version}.json"
+        f"examples/surface-packets/{package}-{eco}-{version}.json"
     )
     try:
-        if from_tree is not None:
+        if openapi is not None:
+            packet = mint_surface_from_openapi(
+                openapi,
+                package=package,
+                version=version,
+                ecosystem=eco,
+            )
+        elif from_tree is not None:
             packet = mint_surface_packet_from_tree(
                 from_tree,
                 package=package,

@@ -13,11 +13,17 @@ from conduit.main import app
 from conduit.packet.publish import (
     PacketPublishError,
     catalog_paths_for_packet,
+    catalog_paths_for_surface_packet,
     publish_packet,
+    publish_surface_packet,
+    recipe_sibling_path,
 )
 
 REPO = Path(__file__).resolve().parents[2]
 SAMPLE_PACKET = REPO / "examples" / "sample-packet" / "conduit-packet.json"
+SURFACE_PACKET = (
+    REPO / "examples" / "surface-packets" / "pydantic-pypi-2.0.0.json"
+)
 
 
 def _init_git_catalog(root: Path) -> Path:
@@ -84,6 +90,22 @@ def test_catalog_paths_reject_path_traversal():
         assert "unsafe package" in str(exc).lower()
 
 
+def test_catalog_paths_for_surface():
+    paths = catalog_paths_for_surface_packet(
+        {
+            "packet_id": "surface:pypi:pydantic:2.0.0",
+            "packet_kind": "surface",
+            "package": "pydantic",
+            "ecosystem": "pypi",
+            "version": "2.0.0",
+        }
+    )
+    assert paths.by_package == Path(
+        "by-package/pydantic/pypi/surfaces/2.0.0.json"
+    )
+    assert paths.flat_root is None
+
+
 def test_publish_writes_by_package_layout(tmp_path: Path):
     catalog = _init_git_catalog(tmp_path / "catalog")
     result = publish_packet(SAMPLE_PACKET, str(catalog))
@@ -121,12 +143,85 @@ def test_publish_idempotent_second_run(tmp_path: Path):
     assert second.committed is False
 
 
+def test_publish_surface_writes_surfaces_layout(tmp_path: Path):
+    catalog = _init_git_catalog(tmp_path / "catalog")
+    result = publish_surface_packet(SURFACE_PACKET, str(catalog), commit=False)
+    dest = catalog / "by-package" / "pydantic" / "pypi" / "surfaces" / "2.0.0.json"
+    assert dest.is_file()
+    assert "by-package/pydantic/pypi/surfaces/2.0.0.json" in result.written
+    data = json.loads(dest.read_text(encoding="utf-8"))
+    assert data["packet_kind"] == "surface"
+    assert data["version"] == "2.0.0"
+    assert data["package"] == "pydantic"
+    # migration hop path must remain unused
+    assert not (catalog / "by-package" / "pydantic" / "pypi" / "2.0.0.json").exists()
+
+
+def test_publish_packet_detects_surface_kind(tmp_path: Path):
+    catalog = _init_git_catalog(tmp_path / "catalog")
+    result = publish_packet(SURFACE_PACKET, str(catalog), commit=False)
+    dest = catalog / "by-package" / "pydantic" / "pypi" / "surfaces" / "2.0.0.json"
+    assert dest.is_file()
+    assert result.packet_id == "surface:pypi:pydantic:2.0.0"
+    second = publish_packet(SURFACE_PACKET, str(catalog), commit=False)
+    assert not second.written
+    assert second.unchanged
+
+
+def test_publish_surface_rejects_invalid_before_write(tmp_path: Path):
+    catalog = _init_git_catalog(tmp_path / "catalog")
+    bad = tmp_path / "bad-surface.json"
+    bad.write_text(
+        json.dumps({"packet_kind": "surface", "packet_id": "x"}),
+        encoding="utf-8",
+    )
+    try:
+        publish_surface_packet(bad, str(catalog))
+        assert False, "expected PacketPublishError"
+    except PacketPublishError as exc:
+        assert "invalid surface packet" in str(exc).lower()
+    assert not (catalog / "by-package").exists()
+
+
+def test_publish_migration_with_recipe_sibling(tmp_path: Path):
+    catalog = _init_git_catalog(tmp_path / "catalog")
+    recipe = tmp_path / "reshape.json"
+    recipe.write_text(
+        json.dumps(
+            {
+                "package": "openai",
+                "from_version": "0.28.1",
+                "to_version": "1.0.0",
+                "rules": [],
+                "side_effects": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = publish_packet(
+        SAMPLE_PACKET, str(catalog), recipe=recipe, commit=False
+    )
+    hop = catalog / "by-package" / "openai" / "pypi" / "openai-0.28.1-1.0.0.json"
+    sibling = (
+        catalog / "by-package" / "openai" / "pypi" / "openai-0.28.1-1.0.0.recipe.json"
+    )
+    assert hop.is_file()
+    assert sibling.is_file()
+    assert recipe_sibling_path(
+        Path("by-package/openai/pypi/openai-0.28.1-1.0.0.json")
+    ) == Path("by-package/openai/pypi/openai-0.28.1-1.0.0.recipe.json")
+    assert any(p.endswith(".recipe.json") for p in result.written)
+    copied = json.loads(sibling.read_text(encoding="utf-8"))
+    assert copied["package"] == "openai"
+
+
 def test_publish_cli_no_consumer_fanout_help():
     result = CliRunner().invoke(app, ["packet", "publish", "--help"])
     assert result.exit_code == 0
     text = (result.stdout or "") + (result.stderr or "")
     assert "catalog" in text.lower()
     assert "consumer" in text.lower()
+    assert "recipe" in text.lower()
 
 
 def test_publish_cli_success_and_fail(tmp_path: Path):
@@ -144,7 +239,9 @@ def test_publish_cli_success_and_fail(tmp_path: Path):
         ],
     )
     assert ok.exit_code == 0, ok.stdout + (ok.stderr or "")
-    assert (catalog / "by-package" / "openai" / "pypi" / "openai-0.28.1-1.0.0.json").is_file()
+    assert (
+        catalog / "by-package" / "openai" / "pypi" / "openai-0.28.1-1.0.0.json"
+    ).is_file()
     out = (ok.stdout or "").lower()
     assert "consumer" in out
 
@@ -155,6 +252,26 @@ def test_publish_cli_success_and_fail(tmp_path: Path):
         ["packet", "publish", "--packet", str(bad), "--catalog", str(catalog)],
     )
     assert fail.exit_code != 0
+
+
+def test_publish_cli_surface_packet(tmp_path: Path):
+    catalog = _init_git_catalog(tmp_path / "catalog")
+    runner = CliRunner()
+    ok = runner.invoke(
+        app,
+        [
+            "packet",
+            "publish",
+            "--packet",
+            str(SURFACE_PACKET),
+            "--catalog",
+            str(catalog),
+            "--no-commit",
+        ],
+    )
+    assert ok.exit_code == 0, ok.stdout + (ok.stderr or "")
+    dest = catalog / "by-package" / "pydantic" / "pypi" / "surfaces" / "2.0.0.json"
+    assert dest.is_file()
 
 
 def test_publish_notice_url(tmp_path: Path, monkeypatch):
