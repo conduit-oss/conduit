@@ -14,7 +14,7 @@
       "kind": "other"
     }
   ],
-  "notes": "Draft hop from surface_packet diff. renamed=0 removed=1 added=269. Aliases kept in both versions are not rewritten.",
+  "notes": "Draft hop from surface_packet diff. renamed=6 removed=1 added=269. Includes supersession rewrites when legacy and successor both export on the new version.",
   "side_effects": [
     {
       "kind": "other",
@@ -36,6 +36,60 @@
         "pyproject"
       ],
       "reason": "Pin pydantic to 2.0.0 from surface diff"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.dict",
+      "new_callee": "BaseModel.model_dump",
+      "reason": "surface rename BaseModel.dict \u2192 BaseModel.model_dump"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.json",
+      "new_callee": "BaseModel.model_dump_json",
+      "reason": "surface rename BaseModel.json \u2192 BaseModel.model_dump_json"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.parse_obj",
+      "new_callee": "BaseModel.model_validate",
+      "reason": "surface rename BaseModel.parse_obj \u2192 BaseModel.model_validate"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.parse_raw",
+      "new_callee": "BaseModel.model_validate_json",
+      "reason": "surface rename BaseModel.parse_raw \u2192 BaseModel.model_validate_json"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "root_validator",
+      "new_callee": "model_validator",
+      "reason": "surface rename root_validator \u2192 model_validator"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "validator",
+      "new_callee": "field_validator",
+      "reason": "surface rename validator \u2192 field_validator"
     }
   ]
 }

@@ -12,6 +12,52 @@ class SurfaceDiffError(ValueError):
     """Surface packets cannot be diffed into a migration hop."""
 
 
+# Generic leaf successor pairs when both legacy and successor appear on the new surface.
+_SUCCESSOR_LEAF_PAIRS: tuple[tuple[str, str], ...] = (
+    ("dict", "model_dump"),
+    ("parse_obj", "model_validate"),
+    ("parse_raw", "model_validate_json"),
+    ("json", "model_dump_json"),
+    ("validator", "field_validator"),
+    ("root_validator", "model_validator"),
+)
+
+
+def _infer_supersessions(
+    old_ids: set[str],
+    new_ids: set[str],
+    renamed: dict[str, str],
+) -> None:
+    """
+    Emit rewrites when the new version keeps a legacy export and adds a successor.
+
+    Example: BaseModel.dict and BaseModel.model_dump both on v2 → hop dict→model_dump.
+    """
+    for old_leaf, new_leaf in _SUCCESSOR_LEAF_PAIRS:
+        new_leaf_present = new_leaf in new_ids or any(
+            s.endswith("." + new_leaf) for s in new_ids
+        )
+        if not new_leaf_present:
+            continue
+
+        candidates: list[str] = []
+        if old_leaf in old_ids:
+            candidates.append(old_leaf)
+        candidates.extend(
+            s for s in old_ids if "." in s and s.endswith("." + old_leaf)
+        )
+        for old_path in candidates:
+            if old_path in renamed:
+                continue
+            if "." in old_path:
+                prefix = old_path[: -(len(old_leaf) + 1)]
+                new_path = f"{prefix}.{new_leaf}"
+            else:
+                new_path = new_leaf
+            if new_path not in new_ids:
+                continue
+            renamed[old_path] = new_path
+
 def _ids(packet: dict[str, Any]) -> set[str]:
     symbols = packet.get("symbols") or []
     out: set[str] = set()
@@ -154,6 +200,7 @@ def diff_surface_packets(
     old_ids = _ids(surface_from)
     new_ids = _ids(surface_to)
     added, removed, renamed = diff_exports(old_ids, new_ids)
+    _infer_supersessions(old_ids, new_ids, renamed)
     _pair_unique_class_methods(added, removed, renamed)
 
     rules: list[dict[str, Any]] = [
@@ -198,7 +245,7 @@ def diff_surface_packets(
         "notes": (
             "Draft hop from surface_packet diff. "
             f"renamed={len(renamed)} removed={len(removed)} added={len(added)}. "
-            "Aliases kept in both versions are not rewritten."
+            "Includes supersession rewrites when legacy and successor both export on the new version."
         ),
         "side_effects": effects,
         "rules": rules,

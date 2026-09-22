@@ -10,8 +10,49 @@ from typer.testing import CliRunner
 from conduit.main import app
 from conduit.packet.surface_diff import diff_surface_packets
 from conduit.packet.surface_mint import mint_surface_packet_from_tree, write_surface_packet
+from conduit.packet.surface_validate import validate_surface_packet
 from conduit.packet.validate import validate_packet
 from conduit.patcher.engine import apply_packet
+
+
+def _surface(package: str, version: str, ids: list[str]) -> dict:
+    return {
+        "packet_kind": "surface",
+        "packet_id": f"surface:pypi:{package}:{version}",
+        "package": package,
+        "ecosystem": "pypi",
+        "version": version,
+        "source": {"kind": "wheel", "locator": f"{package}=={version}"},
+        "symbols": [{"id": i, "kind": "export"} for i in ids],
+        "checksum": "0",
+    }
+
+
+def test_supersession_when_legacy_and_successor_on_new():
+    s1 = _surface(
+        "demo",
+        "1.0.0",
+        ["BaseModel.dict", "validator"],
+    )
+    s2 = _surface(
+        "demo",
+        "2.0.0",
+        [
+            "BaseModel.dict",
+            "BaseModel.model_dump",
+            "validator",
+            "field_validator",
+        ],
+    )
+    hop = diff_surface_packets(s1, s2)
+    assert validate_packet(hop) == []
+    callees = {
+        (r.get("old_callee"), r.get("new_callee"))
+        for r in hop["rules"]
+        if r.get("type") == "AST_CALL_REWRITE"
+    }
+    assert ("BaseModel.dict", "BaseModel.model_dump") in callees
+    assert ("validator", "field_validator") in callees
 
 
 def _write_toy_v1(root: Path) -> Path:
