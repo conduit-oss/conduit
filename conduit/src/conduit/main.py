@@ -1466,6 +1466,45 @@ def module_new_cmd(
     console.print("Next: fill profile.py / custom parsers, then `conduit module list`.")
 
 
+@packet_app.command("diff-surface")
+def packet_diff_surface_cmd(
+    from_surface: Path = typer.Option(
+        ...,
+        "--from",
+        help="Surface packet JSON (from version)",
+    ),
+    to_surface: Path = typer.Option(
+        ...,
+        "--to",
+        help="Surface packet JSON (to version)",
+    ),
+    out: Path = typer.Option(
+        Path("conduit-packet.json"),
+        "--out",
+        help="Migration packet output path",
+    ),
+) -> None:
+    """Diff two surface packets into a migration hop draft."""
+    from conduit.packet.surface_diff import SurfaceDiffError, diff_surface_packets
+
+    left = json.loads(from_surface.read_text(encoding="utf-8"))
+    right = json.loads(to_surface.read_text(encoding="utf-8"))
+    try:
+        packet = diff_surface_packets(left, right)
+    except SurfaceDiffError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8")
+    n_rules = len(packet.get("rules") or [])
+    n_effects = len(packet.get("side_effects") or [])
+    console.print(
+        f"[green]Wrote[/green] {out}  "
+        f"({packet.get('package')} {packet.get('from_version')}→"
+        f"{packet.get('to_version')}, {n_rules} rule(s), {n_effects} side_effect(s))"
+    )
+
+
 @packet_app.command("snapshot")
 def packet_snapshot_cmd(
     package: str = typer.Option(..., "--package", help="Producer package name"),

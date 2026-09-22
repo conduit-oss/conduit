@@ -1,0 +1,41 @@
+{
+  "packet_id": "pydantic-1.10.13-2.0.0",
+  "package": "pydantic",
+  "ecosystem": "pypi",
+  "from_version": "1.10.13",
+  "to_version": "2.0.0",
+  "sources": [
+    {
+      "url": "conduit://surface/pypi/pydantic/1.10.13",
+      "kind": "other"
+    },
+    {
+      "url": "conduit://surface/pypi/pydantic/2.0.0",
+      "kind": "other"
+    }
+  ],
+  "notes": "Draft hop from surface_packet diff. renamed=0 removed=1 added=269. Aliases kept in both versions are not rewritten.",
+  "side_effects": [
+    {
+      "kind": "other",
+      "detail": "Public export removed with no rename match: MAX_EMAIL_LENGTH",
+      "gap_kind": "uncodable",
+      "old_shape": "MAX_EMAIL_LENGTH",
+      "blocker": "surface diff found no successor id",
+      "evidence_url": "surface:pypi:pydantic:1.10.13\u21922.0.0"
+    }
+  ],
+  "rules": [
+    {
+      "type": "DEPENDENCY_BUMP",
+      "package": "pydantic",
+      "from_version": "1.10.13",
+      "to_version": "2.0.0",
+      "ecosystems": [
+        "pip",
+        "pyproject"
+      ],
+      "reason": "Pin pydantic to 2.0.0 from surface diff"
+    }
+  ]
+}
