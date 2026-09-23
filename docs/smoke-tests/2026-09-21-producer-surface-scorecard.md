@@ -9,7 +9,7 @@ plus a reshape recipe. This is not a guide/LLM remint.
 snapshot (surface packets)
   → diff (packet diff-surface + recipe)
   → migration hop freeze
-  → apply / Watch on validator fixture
+  → apply / Watch on validator fixture + declared synthetics
 ```
 
 | Stage | Artifact |
@@ -19,6 +19,7 @@ snapshot (surface packets)
 | Recipe | `examples/reshape-recipes/pydantic-1.10.13-2.0.0.json` |
 | Hop freeze (catalog name) | `examples/sample-packet/pydantic-surface-hop.json` |
 | Draft alias | `examples/sample-packet/pydantic-surface-diff-draft.json` (identical bytes) |
+| Declared synthetics | `examples/pydantic-convention-fixture/` |
 
 Regenerate the hop:
 
@@ -45,6 +46,9 @@ Freeze SHA-256 (UTF-8, LF, trailing newline):
 | #71 surface diff onto main | `stack/surface-diff-onto-main` | https://github.com/conduit-oss/conduit/pull/71 |
 | #72 declaration companions | `stack/surface-decl-companions` | https://github.com/conduit-oss/conduit/pull/72 |
 | #73 reshape recipes | `stack/surface-reshape-recipes` | https://github.com/conduit-oss/conduit/pull/73 |
+| #77 decorated_def detector | `stack/decorated-def-convention` | https://github.com/conduit-oss/conduit/pull/77 |
+| #78 literal `pre→mode` | `stack/pre-to-mode` | https://github.com/conduit-oss/conduit/pull/78 |
+| #79 `values→info` | `stack/values-to-info` | https://github.com/conduit-oss/conduit/pull/79 |
 
 ## Rule family counts (freeze)
 
@@ -73,44 +77,46 @@ Structured gaps on the freeze:
 | gap_kind | Detail |
 |----------|--------|
 | uncodable | Public export removed with no rename match: `MAX_EMAIL_LENGTH` |
-| multi_step | v1 validator kwargs (`pre` / `always` / `each_item`) have no evidence-backed `mode=` map |
+| multi_step | `always=True` / `each_item=True` have no 1:1 `field_validator` kwarg map |
 
-## Gate vs completeness (validator fixture)
+## Gate vs completeness
 
-Evidence lives in `conduit/tests/test_surface_diff.py::test_pydantic_surface_diff_apply_fixture`.
-That test runs surface hop + recipe through watch → apply → watch on
-`examples/pydantic-validator-fixture`.
+Evidence:
+- Validator fixture: `conduit/tests/test_surface_diff.py::test_pydantic_surface_diff_apply_fixture`
+- Declared synthetics: `conduit/tests/test_convention_fixture.py`
 
 | Gate | Verdict | Evidence |
 |------|---------|----------|
 | Packet receipt (`validate_packet`) | PASS | freeze SHA above; pytest freeze check |
-| Watch dirty → apply → Watch clean | PASS | fixture leftovers cleared for declared rules |
-| Expressible hops mechanical (dict, validator+classmethod, Config) | PASS | call + declaration ops on freeze |
-| Completeness for full pydantic v2 / mergeable consumer | FAIL | `mode=` / extra-param rewrite is still unbound; OpenAPI and catalog publish not done |
+| Watch dirty → apply → Watch clean | PASS | validator fixture leftovers cleared for declared rules |
+| Expressible hops mechanical (dict, validator+classmethod, Config, pre, values) | PASS | call + declaration ops on freeze |
+| Completeness for **declared synthetic set** | PASS | bare / `pre=True` / trailing `values` apply clean; `each_item` honest dirty |
+| Completeness for full pydantic v2 / unbounded consumer | FAIL | `MAX_EMAIL_LENGTH` uncodable; `always=` / `each_item=` refuse; OpenAPI/catalog publish separate |
 
 ### Completeness vs Watch (per consumer shape)
 
-The detector is honest about what apply can do. Watch stays clean on the fixture without claiming `(cls, v)` is unfinished.
-
 | Consumer shape | Apply | Watch | Packet side_effect |
 |----------------|-------|-------|--------------------|
-| `(cls, v)` no extra kwargs (fixture) | no-op | clean | none for this shape |
-| `pre=True` literal | leave (day-one detector) | dirty | `multi_step` row remains |
-| `always=` / `each_item=` | leave | dirty | `multi_step` row remains |
-| trailing `values` / `config` / `field` | leave | dirty | located `decorated_def_params` residual |
+| `(cls, v)` no extra kwargs (fixture + `bare_cls_v.py`) | no-op | clean | none for this shape |
+| `pre=True` literal (`pre_true.py`) | rewrite → `mode='before'` | clean | none |
+| trailing `values` (`trailing_values.py`) | drop + `info: ValidationInfo`; body → `info.data` | clean | none |
+| `always=` / `each_item=` (`each_item.py`) | leave | dirty | `multi_step` row remains |
+| `config` / `field` trailing params | leave | dirty | located `decorated_def_params` residual |
 
 ### Dual verdict (operator)
 
 | Gate | Verdict |
 |------|---------|
 | Gate validity (declared surfaces; fixture red → green) | PASS |
-| Migration completeness (full producer surface / catalog) | FAIL |
+| Migration completeness (**declared synthetic set**) | PASS |
+| Migration completeness (full producer surface / unbounded consumer) | FAIL (`MAX_EMAIL_LENGTH`, `always`/`each_item`) |
 
 ## Remaining gaps
 
-1. **`mode=` / extra params** — detector locates unknown kwargs and trailing params. Body rewrite and `pre→mode` stay out of day-one scope.
-2. **OpenAPI producer path** — REST surface mint/diff not landed as a catalog hop.
-3. **Catalog publish** — hop freeze is in-repo only; not yet published as a catalog entry.
+1. **`always=` / `each_item=`** — permanent refuse; no evidence-backed rewrite.
+2. **`MAX_EMAIL_LENGTH`** — uncodable (no successor).
+3. **OpenAPI producer path** — REST surface mint/diff not landed as a catalog hop.
+4. **Catalog publish** — hop freeze is in-repo only; not yet published as a catalog entry.
 
 Hand-authored sibling for the same fixture story:
 `examples/sample-packet/pydantic-validator-hop.json` (narrower rule set). Prefer
