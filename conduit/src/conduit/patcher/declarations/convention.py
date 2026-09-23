@@ -182,8 +182,79 @@ def _apply_option_edits(
 
 
 def _apply_param_plan(func: cst.FunctionDef, plan: ReshapePlan) -> cst.FunctionDef:
-    raise NotImplementedError(
-        "decorated_def_convention param/body reshape is not implemented yet"
+    updated = func
+    if plan.body_substitutions:
+        updated = _substitute_body_names(updated, dict(plan.body_substitutions))
+    if plan.drop_params or plan.add_param is not None:
+        updated = _rewrite_signature_params(
+            updated, set(plan.drop_params), plan.add_param
+        )
+    return updated
+
+
+def _substitute_body_names(
+    func: cst.FunctionDef, mapping: dict[str, str]
+) -> cst.FunctionDef:
+    if not mapping:
+        return func
+
+    class _Sub(cst.CSTTransformer):
+        def visit_Attribute_attr(self, node: cst.Name) -> bool:
+            return False
+
+        def leave_Name(
+            self, original: cst.Name, updated: cst.Name
+        ) -> cst.BaseExpression:
+            repl = mapping.get(original.value)
+            if repl is None:
+                return updated
+            return cst.parse_expression(repl)
+
+    return func.with_changes(body=func.body.visit(_Sub()))
+
+
+def _rewrite_signature_params(
+    func: cst.FunctionDef,
+    drop: set[str],
+    add: ContextParam | None,
+) -> cst.FunctionDef:
+    params = func.params
+
+    def _keep(param: cst.Param) -> bool:
+        name = _param_name(param)
+        return name is None or name not in drop
+
+    new_posonly = [p for p in params.posonly_params if _keep(p)]
+    new_params = [p for p in params.params if _keep(p)]
+    new_kwonly = [p for p in params.kwonly_params if _keep(p)]
+
+    if add is not None:
+        existing = {
+            n
+            for n in (
+                *(_param_name(p) for p in new_posonly),
+                *(_param_name(p) for p in new_params),
+                *(_param_name(p) for p in new_kwonly),
+            )
+            if n
+        }
+        if add.name not in existing:
+            annotation = None
+            if add.annotation:
+                annotation = cst.Annotation(
+                    annotation=cst.parse_expression(add.annotation)
+                )
+            new_params = [
+                *new_params,
+                cst.Param(name=cst.Name(add.name), annotation=annotation),
+            ]
+
+    return func.with_changes(
+        params=params.with_changes(
+            posonly_params=new_posonly,
+            params=new_params,
+            kwonly_params=new_kwonly,
+        )
     )
 
 
