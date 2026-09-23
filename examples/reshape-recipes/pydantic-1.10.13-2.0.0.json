@@ -6,11 +6,11 @@
   "side_effects": [
     {
       "kind": "other",
-      "detail": "v1 validator kwargs (pre/always/each_item) have no evidence-backed map onto field_validator mode=.",
+      "detail": "v1 always=True and each_item=True have no 1:1 field_validator kwarg map.",
       "gap_kind": "multi_step",
-      "old_shape": "@validator(..., pre=True|always=True|each_item=True)",
-      "new_shape": "@field_validator(..., mode='before'|'after'|'wrap'|'plain')",
-      "blocker": "mode= mapping is not derived from surface {id,kind}; detector refuses unknown kwargs until a recipe mapping lands",
+      "old_shape": "@validator(..., always=True, each_item=True)",
+      "new_shape": "always is not mode=; each_item needs item-level validators",
+      "blocker": "detector refuses unmapped kwargs; no evidence-backed mechanical rewrite",
       "evidence_url": "https://docs.pydantic.dev/2.0/migration/"
     }
   ],
@@ -22,12 +22,29 @@
         "kind": "decorated_def_convention",
         "decorator": "field_validator",
         "context": null,
-        "options": [],
+        "options": [
+          {
+            "kwarg": "pre",
+            "rename_to": "mode",
+            "values": {
+              "True": "'before'",
+              "False": ""
+            }
+          },
+          {
+            "kwarg": "always",
+            "no_successor": "v2 has no always= on field_validator; keep as located gap"
+          },
+          {
+            "kwarg": "each_item",
+            "no_successor": "v2 has no each_item; annotate the item type instead"
+          }
+        ],
         "unmappable_params": [],
         "unknown_params": "refuse",
         "unknown_options": "refuse"
       },
-      "reason": "v2 field_validator takes (cls, value). Anything else is a located gap."
+      "reason": "v2 field_validator takes (cls, value); pre=True becomes mode='before'."
     },
     {
       "type": "AST_DECLARATION_REWRITE",
@@ -36,12 +53,25 @@
         "kind": "decorated_def_convention",
         "decorator": "model_validator",
         "context": null,
-        "options": [],
+        "options": [
+          {
+            "kwarg": "pre",
+            "rename_to": "mode",
+            "values": {
+              "True": "'before'",
+              "False": ""
+            }
+          },
+          {
+            "kwarg": "always",
+            "no_successor": "v2 has no always= on model_validator; keep as located gap"
+          }
+        ],
         "unmappable_params": [],
         "unknown_params": "refuse",
         "unknown_options": "refuse"
       },
-      "reason": "v2 model_validator takes (cls, value). Anything else is a located gap."
+      "reason": "v2 model_validator takes (cls, value); pre=True becomes mode='before'."
     },
     {
       "type": "AST_DECLARATION_REWRITE",

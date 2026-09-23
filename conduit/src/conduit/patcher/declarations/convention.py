@@ -113,6 +113,80 @@ def classify_site(
     return Conforms()
 
 
+def apply_plan(func: cst.FunctionDef, plan: ReshapePlan) -> cst.FunctionDef:
+    updated = func
+    if plan.option_edits:
+        updated = _apply_option_edits(updated, plan.option_edits)
+    if plan.drop_params or plan.add_param is not None or plan.body_substitutions:
+        updated = _apply_param_plan(updated, plan)
+    return updated
+
+
+def _parse_literal_source(text: str) -> cst.BaseExpression:
+    if text in {"True", "False", "None"}:
+        return cst.Name(text)
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return cst.SimpleString(text)
+    try:
+        return cst.parse_expression(text)
+    except Exception as exc:
+        raise ValueError(f"cannot parse literal source {text!r}") from exc
+
+
+def _apply_option_edits(
+    func: cst.FunctionDef,
+    edits: tuple[tuple[str, str, str | None], ...],
+) -> cst.FunctionDef:
+    by_old = {old: (new_kw, new_lit) for old, new_kw, new_lit in edits}
+    new_decs: list[cst.Decorator] = []
+    changed = False
+    for dec in func.decorators:
+        expr = dec.decorator
+        if not isinstance(expr, cst.Call):
+            new_decs.append(dec)
+            continue
+        new_args: list[cst.Arg] = []
+        pending_add: list[cst.Arg] = []
+        seen_new: set[str] = set()
+        for arg in expr.args:
+            if arg.keyword is None:
+                new_args.append(arg)
+                continue
+            name = arg.keyword.value
+            edit = by_old.get(name)
+            if edit is None:
+                new_args.append(arg)
+                continue
+            new_kw, new_lit = edit
+            changed = True
+            if new_lit == "":
+                continue
+            if new_kw in seen_new or any(
+                a.keyword is not None and a.keyword.value == new_kw for a in new_args
+            ):
+                continue
+            value = (
+                arg.value
+                if new_lit is None
+                else _parse_literal_source(new_lit)
+            )
+            pending_add.append(
+                cst.Arg(value=value, keyword=cst.Name(new_kw), equal=cst.AssignEqual())
+            )
+            seen_new.add(new_kw)
+        new_args.extend(pending_add)
+        new_decs.append(dec.with_changes(decorator=expr.with_changes(args=new_args)))
+    if not changed:
+        return func
+    return func.with_changes(decorators=new_decs)
+
+
+def _apply_param_plan(func: cst.FunctionDef, plan: ReshapePlan) -> cst.FunctionDef:
+    raise NotImplementedError(
+        "decorated_def_convention param/body reshape is not implemented yet"
+    )
+
+
 def build_view(
     func: cst.FunctionDef,
     decorator: cst.Decorator,
@@ -282,6 +356,7 @@ def _option_gaps(
 ) -> tuple[list[SiteGap], tuple[tuple[str, str, str | None], ...]]:
     by_kwarg = {opt.kwarg: opt.mapping for opt in spec.options}
     known = spec.known_options()
+    present = dict(view.decorator_kwargs)
     gaps: list[SiteGap] = []
     renameable: list[tuple[str, str, str | None]] = []
     for kwarg, literal in view.decorator_kwargs:
@@ -309,7 +384,45 @@ def _option_gaps(
             continue
         if isinstance(mapping, OptionRename):
             remap = dict(mapping.values)
-            new_literal = remap.get(literal)
+            if remap:
+                if literal not in remap:
+                    gaps.append(
+                        SiteGap(
+                            kind="decorated_def_options",
+                            old_shape=f"@{spec.decorator} {kwarg}={literal}",
+                            reason=(
+                                f"decorator kwarg {kwarg!r} literal {literal!r} "
+                                "has no declared successor"
+                            ),
+                            line=view.line,
+                        )
+                    )
+                    continue
+                new_literal: str | None = remap[literal]
+            else:
+                new_literal = literal
+            if new_literal != "":
+                existing = present.get(mapping.new_kwarg)
+                if (
+                    existing is not None
+                    and existing != new_literal
+                    and mapping.new_kwarg != kwarg
+                ):
+                    gaps.append(
+                        SiteGap(
+                            kind="decorated_def_options",
+                            old_shape=(
+                                f"@{spec.decorator} {mapping.new_kwarg}={existing}"
+                            ),
+                            reason=(
+                                f"decorator kwarg conflict: {kwarg!r} would set "
+                                f"{mapping.new_kwarg!r}={new_literal} but "
+                                f"{mapping.new_kwarg}={existing} is already present"
+                            ),
+                            line=view.line,
+                        )
+                    )
+                    continue
             renameable.append((kwarg, mapping.new_kwarg, new_literal))
     return gaps, tuple(renameable)
 

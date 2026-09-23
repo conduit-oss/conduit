@@ -402,13 +402,14 @@ def _decode_decorator_option(raw: object, index: int) -> DecoratorOption:
     values_raw = raw.get("values") or {}
     if not isinstance(values_raw, Mapping):
         raise DeclarationRuleError(f"options[{index}].values must be an object")
-    values = tuple(
-        (str(old), str(new))
-        for old, new in values_raw.items()
-        if str(old) and str(new)
-    )
+    values: list[tuple[str, str]] = []
+    for old, new in values_raw.items():
+        old_s = str(old)
+        if not old_s:
+            raise DeclarationRuleError(f"options[{index}].values keys must be non-empty")
+        values.append((old_s, str(new)))
     return DecoratorOption(
-        kwarg=kwarg, mapping=OptionRename(new_kwarg=new_kwarg, values=values)
+        kwarg=kwarg, mapping=OptionRename(new_kwarg=new_kwarg, values=tuple(values))
     )
 
 

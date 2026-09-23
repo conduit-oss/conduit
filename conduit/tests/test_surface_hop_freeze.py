@@ -11,7 +11,7 @@ from conduit.packet.validate import validate_packet
 REPO = Path(__file__).resolve().parents[2]
 HOP = REPO / "examples" / "sample-packet" / "pydantic-surface-hop.json"
 DRAFT_ALIAS = REPO / "examples" / "sample-packet" / "pydantic-surface-diff-draft.json"
-EXPECTED_SHA256 = "186e85cb30978e39c14b3f43e5de3c5d240f5f8bfc33426a58892cb51dbb6ef7"
+EXPECTED_SHA256 = "7e32f656a85d2135699968d4b44bd122d28e67f240a487e432feffebcf48a5c1"
 
 
 def test_pydantic_surface_hop_freeze_validates_and_matches_sha():

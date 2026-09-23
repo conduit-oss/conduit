@@ -478,3 +478,118 @@ class Order(BaseModel):
     decl = declaration_rules(packet)
     hits = scan_declaration_residuals(path, text, decl, root=tmp_path)
     assert any(r.kind == "decorated_def_params" and "values" in r.reason for r in hits)
+
+
+def _pre_mode_options() -> list[dict]:
+    return [
+        {
+            "kwarg": "pre",
+            "rename_to": "mode",
+            "values": {"True": "'before'", "False": ""},
+        },
+        {
+            "kwarg": "always",
+            "no_successor": "v2 has no always= on field_validator; keep as located gap",
+        },
+        {
+            "kwarg": "each_item",
+            "no_successor": "v2 has no each_item; annotate the item type instead",
+        },
+    ]
+
+
+def _convention_rule_with_pre(decorator: str = "field_validator") -> dict:
+    rule = _convention_rule(decorator)
+    rule["operation"]["options"] = _pre_mode_options()
+    return rule
+
+
+def test_pre_true_rewrites_to_mode_before(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class User(BaseModel):
+    name: str
+
+    @field_validator("name", pre=True)
+    @classmethod
+    def check_name(cls, v):
+        return v
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule_with_pre()]})
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied == 1
+    assert result.residuals == ()
+    assert "pre=True" not in result.content
+    assert "mode" in result.content and "before" in result.content
+    second = rewrite_declarations(path, result.content, rules, root=tmp_path)
+    assert second.applied == 0
+    assert second.content == result.content
+    assert scan_declaration_residuals(path, result.content, rules, root=tmp_path) == ()
+
+
+def test_pre_false_drops_kwarg(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class User(BaseModel):
+    name: str
+
+    @field_validator("name", pre=False)
+    @classmethod
+    def check_name(cls, v):
+        return v
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule_with_pre()]})
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied == 1
+    assert "pre=" not in result.content
+    assert "mode=" not in result.content
+
+
+def test_each_item_refuses(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class User(BaseModel):
+    tags: list[str]
+
+    @field_validator("tags", each_item=True)
+    @classmethod
+    def check_tags(cls, v):
+        return v
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule_with_pre()]})
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied == 0
+    assert "each_item=True" in result.content
+    assert any(r.kind == "decorated_def_options" for r in result.residuals)
+
+
+def test_nonliteral_pre_refuses(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+FLAG = True
+
+class User(BaseModel):
+    name: str
+
+    @field_validator("name", pre=FLAG)
+    @classmethod
+    def check_name(cls, v):
+        return v
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule_with_pre()]})
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied == 0
+    assert "pre=FLAG" in result.content
+    assert any(r.kind == "decorated_def_options" for r in result.residuals)
