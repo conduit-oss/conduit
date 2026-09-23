@@ -631,6 +631,14 @@ def apply_cmd(
     path: Path = typer.Option(Path("."), "--path"),
     packet: str = typer.Option(..., "--packet", help="Path or http(s) URL to conduit-packet.json"),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    assist_redesign: bool = typer.Option(
+        False,
+        "--assist-redesign",
+        help=(
+            "Opt-in: after mechanical apply, LLM-propose redesigns for "
+            "multi_step refuse leftovers (each_item/always). Not default."
+        ),
+    ),
 ) -> None:
     """Apply a Migration Packet without opening a PR."""
     root = _resolve_root(path)
@@ -722,6 +730,37 @@ def apply_cmd(
     if leftover_verdict.status == "pin_only":
         console.print(f"[yellow]{leftover_verdict.message}[/yellow]")
         return
+    if leftover_verdict.exit_code != 0 and assist_redesign and not dry_run:
+        from conduit.patcher.redesign_assist import (
+            default_llm_proposer,
+            run_redesign_assist,
+        )
+
+        proposer = None
+        try:
+            from conduit.llm.client import get_llm_client, resolve_provider
+
+            if resolve_provider() not in {None, "none", "off", "disabled"}:
+                client = get_llm_client()
+                if client is not None:
+                    proposer = default_llm_proposer(client=client)
+        except Exception as exc:
+            console.print(f"[yellow]assist-redesign LLM unavailable: {exc}[/yellow]")
+        if proposer is None:
+            console.print(
+                "[yellow]--assist-redesign set but no LLM configured; "
+                "leaving redesign leftovers for human checklist.[/yellow]"
+            )
+        else:
+            console.print("[cyan]assist-redesign: proposing multi_step redesigns…[/cyan]")
+            assist = run_redesign_assist(
+                root, data, leftover_verdict.leftovers, propose=proposer
+            )
+            console.print(assist.message)
+            for err in assist.errors[:8]:
+                console.print(f"  [yellow]{err}[/yellow]")
+            leftover_verdict = evaluate_apply_leftovers(root=root, packet=data)
+
     if leftover_verdict.exit_code != 0:
         console.print(f"[red]{leftover_verdict.message}[/red]")
         for item in leftover_verdict.leftovers:
@@ -830,6 +869,14 @@ def run_cmd(
         "--allow-partial",
         help="Allow PASSED when high-severity call sites were found but not rewritten",
     ),
+    assist_redesign: bool = typer.Option(
+        False,
+        "--assist-redesign",
+        help=(
+            "Opt-in: LLM-propose redesigns for multi_step refuse leftovers "
+            "(each_item/always) after mechanical apply"
+        ),
+    ),
 ) -> None:
     """Full pipeline: detect → prune → packet → apply → verify → PR."""
     global _VERBOSE
@@ -874,6 +921,7 @@ def run_cmd(
             demo=demo,
             refresh_packet=refresh_packet,
             allow_partial=allow_partial,
+            assist_redesign=assist_redesign,
         )
     finally:
         stop_pulse()
@@ -897,6 +945,7 @@ def _run_pipeline(
     demo: bool,
     refresh_packet: bool,
     allow_partial: bool = False,
+    assist_redesign: bool = False,
 ) -> None:
     from conduit.gitignore import ensure_conduit_gitignore
 
@@ -1215,6 +1264,51 @@ def _run_pipeline(
         packet=pkt,
         files=files,
     )
+    # Include declaration residuals for assist / checklist honesty
+    from conduit.patcher.leftovers import scan_packet_leftovers
+
+    packet_leftovers = scan_packet_leftovers(root, pkt)
+    if packet_leftovers:
+        seen = {(x.rel, x.callee, x.reason, x.lineno) for x in leftover_items}
+        for item in packet_leftovers:
+            key = (item.rel, item.callee, item.reason, item.lineno)
+            if key not in seen:
+                leftover_items.append(item)
+                seen.add(key)
+
+    if leftover_items and assist_redesign:
+        from conduit.patcher.redesign_assist import (
+            collect_redesign_leftovers,
+            default_llm_proposer,
+            run_redesign_assist,
+        )
+
+        if collect_redesign_leftovers(leftover_items):
+            proposer = None
+            try:
+                from conduit.llm.client import get_llm_client, resolve_provider
+
+                if resolve_provider() not in {None, "none", "off", "disabled"}:
+                    client = get_llm_client()
+                    if client is not None:
+                        proposer = default_llm_proposer(client=client)
+            except Exception as exc:
+                console.print(f"[yellow]assist-redesign LLM unavailable: {exc}[/yellow]")
+            if proposer is None:
+                console.print(
+                    "[yellow]--assist-redesign set but no LLM configured; "
+                    "leaving redesign leftovers for human checklist.[/yellow]"
+                )
+            else:
+                console.print(
+                    "[cyan]assist-redesign: proposing multi_step redesigns…[/cyan]"
+                )
+                assist = run_redesign_assist(
+                    root, pkt, leftover_items, propose=proposer
+                )
+                console.print(assist.message)
+                leftover_items = list(assist.leftovers_after)
+
     leftover_lines = [item.display() for item in leftover_items]
     if leftover_items:
         handoff = leftover_handoff_paths(leftover_items)
