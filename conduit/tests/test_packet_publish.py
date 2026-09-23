@@ -215,6 +215,86 @@ def test_publish_migration_with_recipe_sibling(tmp_path: Path):
     assert copied["package"] == "openai"
 
 
+PYDANTIC_SURFACE_HOP = REPO / "examples" / "sample-packet" / "pydantic-surface-hop.json"
+PYDANTIC_RECIPE = REPO / "examples" / "reshape-recipes" / "pydantic-1.10.13-2.0.0.json"
+PYDANTIC_SURFACE_V1 = REPO / "examples" / "surface-packets" / "pydantic-pypi-1.10.13.json"
+
+
+def test_publish_pydantic_surface_hop_and_recipe_smoke(tmp_path: Path):
+    """Catalog receipt: by-package/pydantic/pypi hop + .recipe.json sibling."""
+    catalog = _init_git_catalog(tmp_path / "catalog")
+    result = publish_packet(
+        PYDANTIC_SURFACE_HOP,
+        str(catalog),
+        recipe=PYDANTIC_RECIPE,
+        commit=False,
+    )
+    hop = catalog / "by-package" / "pydantic" / "pypi" / "pydantic-1.10.13-2.0.0.json"
+    sibling = (
+        catalog
+        / "by-package"
+        / "pydantic"
+        / "pypi"
+        / "pydantic-1.10.13-2.0.0.recipe.json"
+    )
+    assert hop.is_file()
+    assert sibling.is_file()
+    assert hop.as_posix().endswith("by-package/pydantic/pypi/pydantic-1.10.13-2.0.0.json")
+    assert "by-package/pydantic/pypi/pydantic-1.10.13-2.0.0.json" in result.written
+    assert any(p.endswith("pydantic-1.10.13-2.0.0.recipe.json") for p in result.written)
+    hop_data = json.loads(hop.read_text(encoding="utf-8"))
+    assert hop_data["packet_id"] == "pydantic-1.10.13-2.0.0"
+    assert hop_data["package"] == "pydantic"
+    recipe_data = json.loads(sibling.read_text(encoding="utf-8"))
+    assert recipe_data["package"] == "pydantic"
+    assert recipe_data["from_version"] == "1.10.13"
+    assert recipe_data["to_version"] == "2.0.0"
+    # flat mirror (packet_id has no -<eco>- token)
+    assert (catalog / "pydantic-1.10.13-2.0.0.json").is_file()
+
+
+def test_publish_pydantic_surface_packet_under_surfaces(tmp_path: Path):
+    catalog = _init_git_catalog(tmp_path / "catalog")
+    result = publish_surface_packet(SURFACE_PACKET, str(catalog), commit=False)
+    dest = catalog / "by-package" / "pydantic" / "pypi" / "surfaces" / "2.0.0.json"
+    assert dest.is_file()
+    assert "by-package/pydantic/pypi/surfaces/2.0.0.json" in result.written
+    v1 = publish_surface_packet(PYDANTIC_SURFACE_V1, str(catalog), commit=False)
+    dest_v1 = catalog / "by-package" / "pydantic" / "pypi" / "surfaces" / "1.10.13.json"
+    assert dest_v1.is_file()
+    assert any("surfaces/1.10.13.json" in p for p in v1.written)
+
+
+def test_publish_cli_pydantic_hop_recipe_no_commit(tmp_path: Path):
+    catalog = _init_git_catalog(tmp_path / "catalog")
+    runner = CliRunner()
+    ok = runner.invoke(
+        app,
+        [
+            "packet",
+            "publish",
+            "--packet",
+            str(PYDANTIC_SURFACE_HOP),
+            "--catalog",
+            str(catalog),
+            "--recipe",
+            str(PYDANTIC_RECIPE),
+            "--no-commit",
+        ],
+    )
+    assert ok.exit_code == 0, ok.stdout + (ok.stderr or "")
+    assert (
+        catalog / "by-package" / "pydantic" / "pypi" / "pydantic-1.10.13-2.0.0.json"
+    ).is_file()
+    assert (
+        catalog
+        / "by-package"
+        / "pydantic"
+        / "pypi"
+        / "pydantic-1.10.13-2.0.0.recipe.json"
+    ).is_file()
+
+
 def test_publish_cli_no_consumer_fanout_help():
     result = CliRunner().invoke(app, ["packet", "publish", "--help"])
     assert result.exit_code == 0

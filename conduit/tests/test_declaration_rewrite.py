@@ -593,3 +593,142 @@ class User(BaseModel):
     assert result.applied == 0
     assert "pre=FLAG" in result.content
     assert any(r.kind == "decorated_def_options" for r in result.residuals)
+
+
+def _values_info_context() -> dict:
+    return {
+        "name": "info",
+        "annotation": "ValidationInfo",
+        "ensure_import": {"module": "pydantic", "name": "ValidationInfo"},
+        "absorbs": {"values": "data"},
+    }
+
+
+def _convention_rule_with_values_info(decorator: str = "field_validator") -> dict:
+    rule = _convention_rule_with_pre(decorator)
+    rule["operation"]["context"] = _values_info_context()
+    rule["operation"]["unmappable_params"] = [
+        {
+            "param": "config",
+            "reason": "v1 config= has no evidence-backed map onto ValidationInfo",
+        },
+        {
+            "param": "field",
+            "reason": "v1 field= has no evidence-backed map onto ValidationInfo",
+        },
+    ]
+    return rule
+
+
+def test_values_absorbs_to_info_data(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class Order(BaseModel):
+    total: int
+    currency: str = "USD"
+
+    @field_validator("total")
+    @classmethod
+    def check_total(cls, v, values):
+        return values["currency"]
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule_with_values_info()]})
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied >= 1
+    assert result.residuals == ()
+    assert "values" not in result.content.split("def check_total")[1]
+    assert "info: ValidationInfo" in result.content or "info:ValidationInfo" in result.content.replace(" ", "")
+    assert "info.data" in result.content
+    assert "ValidationInfo" in result.content
+    assert "from pydantic import" in result.content
+    second = rewrite_declarations(path, result.content, rules, root=tmp_path)
+    assert second.applied == 0
+    assert second.residuals == ()
+    assert second.content == result.content
+    assert scan_declaration_residuals(path, result.content, rules, root=tmp_path) == ()
+
+
+def test_cls_v_with_context_still_no_info_insert(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class User(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v):
+        return v
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule_with_values_info()]})
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied == 0
+    assert "def check_name(cls, v):" in result.content
+    assert "info" not in result.content
+
+
+def test_values_rebind_refuses(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class Order(BaseModel):
+    total: int
+
+    @field_validator("total")
+    @classmethod
+    def check_total(cls, v, values):
+        values = {}
+        return values.get("x", v)
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule_with_values_info()]})
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied == 0
+    assert "def check_total(cls, v, values):" in result.content
+    assert any(r.kind == "decorated_def_params" and "rebound" in r.reason for r in result.residuals)
+
+
+def test_config_param_refuses(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class User(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v, config):
+        return v
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule_with_values_info()]})
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied == 0
+    assert any(r.kind == "decorated_def_params" and "config" in r.reason for r in result.residuals)
+
+
+def test_star_kwargs_opacity_refuses(tmp_path: Path):
+    src = '''\
+from pydantic import BaseModel, field_validator
+
+class User(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v, **kwargs):
+        return v
+'''
+    path = tmp_path / "model.py"
+    path.write_text(src, encoding="utf-8")
+    rules = declaration_rules({"rules": [_convention_rule_with_values_info()]})
+    result = rewrite_declarations(path, src, rules, root=tmp_path)
+    assert result.applied == 0
+    assert any("opaque" in r.reason for r in result.residuals)

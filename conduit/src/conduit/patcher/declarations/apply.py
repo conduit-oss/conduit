@@ -622,6 +622,7 @@ def _rewrite_convention(
     module = wrapper.module
     applied = 0
     residuals: list[StructuralResidual] = []
+    ensure_syms: list[Symbol] = []
 
     class _Apply(cst.CSTTransformer):
         def leave_FunctionDef(
@@ -644,44 +645,27 @@ def _rewrite_convention(
                         )
                     case Reshape(plan):
                         if (
-                            plan.drop_params
-                            or plan.add_param is not None
-                            or plan.body_substitutions
-                            or plan.ensure_import is not None
+                            not plan.option_edits
+                            and not plan.drop_params
+                            and plan.add_param is None
+                            and not plan.body_substitutions
                         ):
-                            residuals.append(
-                                StructuralResidual(
-                                    rel=rel,
-                                    line=view.line,
-                                    kind="decorated_def_params",
-                                    old_shape=f"@{spec.decorator} {current.name.value}",
-                                    reason="declared reshape not yet applied",
-                                )
-                            )
                             continue
-                        if not plan.option_edits:
-                            continue
-                        try:
-                            rewritten = apply_plan(current, plan)
-                        except NotImplementedError:
-                            residuals.append(
-                                StructuralResidual(
-                                    rel=rel,
-                                    line=view.line,
-                                    kind="decorated_def_params",
-                                    old_shape=(
-                                        f"@{spec.decorator} {current.name.value}"
-                                    ),
-                                    reason="declared reshape not yet applied",
-                                )
-                            )
-                            continue
+                        rewritten = apply_plan(current, plan)
+                        if plan.ensure_import is not None:
+                            ensure_syms.append(plan.ensure_import)
                         if rewritten is not current:
                             applied += 1
                             current = rewritten
             return current
 
     new_module = module.visit(_Apply())
+    if ensure_syms:
+        ledger = ImportLedger(module=new_module)
+        for sym in ensure_syms:
+            ledger.ensure(sym)
+        new_module = ledger.commit()
+        applied += ledger.changes
     if applied == 0:
         return content, 0, residuals
     return new_module.code, applied, residuals
