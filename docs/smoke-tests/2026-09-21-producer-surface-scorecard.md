@@ -31,7 +31,7 @@ PYTHONPATH=conduit/src python -m conduit.main packet diff-surface \
 ```
 
 Freeze SHA-256 (UTF-8, LF, trailing newline):
-`186e85cb30978e39c14b3f43e5de3c5d240f5f8bfc33426a58892cb51dbb6ef7`
+`7e32f656a85d2135699968d4b44bd122d28e67f240a487e432feffebcf48a5c1`
 
 `validate_packet` returns `[]` on the freeze
 (`conduit/tests/test_surface_hop_freeze.py`).

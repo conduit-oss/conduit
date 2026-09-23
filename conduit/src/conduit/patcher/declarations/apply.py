@@ -23,6 +23,7 @@ from conduit.patcher.declarations.convention import (
     ResidualKind,
     Reshape,
     SiteGap,
+    apply_plan,
     build_view,
     classify_site,
 )
@@ -618,16 +619,72 @@ def _rewrite_convention(
         return content, 0, []
     wrapper = MetadataWrapper(raw)
     positions = wrapper.resolve(PositionProvider)
+    module = wrapper.module
+    applied = 0
     residuals: list[StructuralResidual] = []
-    for func in _iter_function_defs(wrapper.module):
-        for spec in specs:
-            dec = _matching_decorator(func, spec.decorator)
-            if dec is None:
-                continue
-            residuals.extend(
-                _disposition_residuals(func, dec, spec, positions, rel=rel)
-            )
-    return content, 0, residuals
+
+    class _Apply(cst.CSTTransformer):
+        def leave_FunctionDef(
+            self, original: cst.FunctionDef, updated: cst.FunctionDef
+        ) -> cst.FunctionDef:
+            nonlocal applied
+            current = updated
+            for spec in specs:
+                dec = _matching_decorator(current, spec.decorator)
+                if dec is None:
+                    continue
+                view = build_view(current, dec, positions)
+                verdict = classify_site(view, spec)
+                match verdict:
+                    case Conforms():
+                        continue
+                    case Refuse(gaps):
+                        residuals.extend(
+                            _gap_to_residual(rel, gap) for gap in gaps
+                        )
+                    case Reshape(plan):
+                        if (
+                            plan.drop_params
+                            or plan.add_param is not None
+                            or plan.body_substitutions
+                            or plan.ensure_import is not None
+                        ):
+                            residuals.append(
+                                StructuralResidual(
+                                    rel=rel,
+                                    line=view.line,
+                                    kind="decorated_def_params",
+                                    old_shape=f"@{spec.decorator} {current.name.value}",
+                                    reason="declared reshape not yet applied",
+                                )
+                            )
+                            continue
+                        if not plan.option_edits:
+                            continue
+                        try:
+                            rewritten = apply_plan(current, plan)
+                        except NotImplementedError:
+                            residuals.append(
+                                StructuralResidual(
+                                    rel=rel,
+                                    line=view.line,
+                                    kind="decorated_def_params",
+                                    old_shape=(
+                                        f"@{spec.decorator} {current.name.value}"
+                                    ),
+                                    reason="declared reshape not yet applied",
+                                )
+                            )
+                            continue
+                        if rewritten is not current:
+                            applied += 1
+                            current = rewritten
+            return current
+
+    new_module = module.visit(_Apply())
+    if applied == 0:
+        return content, 0, residuals
+    return new_module.code, applied, residuals
 
 
 def _scan_convention(
