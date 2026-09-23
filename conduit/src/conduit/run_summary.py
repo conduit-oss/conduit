@@ -36,6 +36,7 @@ class RunSummary:
     anticheat_lines: list[str] = field(default_factory=list)
     gap_lines: list[str] = field(default_factory=list)
     leftover_lines: list[str] = field(default_factory=list)
+    human_checklist_lines: list[str] = field(default_factory=list)
     changed_extra: list[str] = field(default_factory=list)
     next_lines: list[str] = field(default_factory=list)
     # Back-compat for older callers / PR body
@@ -224,11 +225,11 @@ def _gap_lines(
     for effect in packet.get("side_effects") or []:
         if not isinstance(effect, dict):
             continue
-        detail = str(effect.get("detail") or "").strip()
-        if not detail:
-            continue
-        kind = str(effect.get("kind") or "other").strip() or "other"
-        items.append(f"Side effect ({kind}): {detail}")
+        from conduit.human_checklist import format_side_effect_row
+
+        row = format_side_effect_row(effect).strip()
+        if row:
+            items.append(row)
     if any(
         isinstance(rule, dict) and str(rule.get("type") or "") in DEP_RULE_TYPES
         for rule in packet.get("rules") or []
@@ -341,6 +342,7 @@ def build_run_summary(
     docs_synced: list[str] | None = None,
     attempts: int | None = None,
     leftover_lines: list[str] | None = None,
+    leftover_items: list[Any] | None = None,
 ) -> RunSummary:
     package = str(packet.get("package") or "package")
     changes = [_change_line(c) for c in report.changes]
@@ -368,6 +370,10 @@ def build_run_summary(
         pr_message=pr_message,
         generated=generated_l,
     )
+
+    from conduit.human_checklist import build_human_checklist
+
+    checklist = build_human_checklist(packet, leftovers=leftover_items or ())
 
     changed_extra: list[str] = []
     if type_counts:
@@ -428,6 +434,7 @@ def build_run_summary(
         impact_lines=impact_section,
         anticheat_lines=anticheat_section,
         leftover_lines=list(leftover_lines or []),
+        human_checklist_lines=checklist,
         gap_lines=gaps,
         changed_extra=changed_extra,
         next_lines=next_section,
@@ -473,6 +480,12 @@ def format_run_summary(summary: RunSummary) -> str:
         for item in summary.leftover_lines:
             lines.append(f"- {item}")
 
+    if summary.human_checklist_lines:
+        lines.extend(["", "Human checks (copy into PR)"])
+        lines.append("- Mechanical merge bar: leftover-clean only.")
+        for item in summary.human_checklist_lines:
+            lines.append(f"- {item}")
+
     lines.extend(["", "Gaps (coverage)"])
     for item in summary.gap_lines:
         lines.append(f"- {item}")
@@ -513,6 +526,10 @@ def format_run_summary_markdown(summary: RunSummary) -> str:
     lines.extend(f"- {item}" for item in summary.anticheat_lines)
     lines.extend(["", "#### Gaps"])
     lines.extend(f"- {item}" for item in summary.gap_lines)
+    if summary.human_checklist_lines:
+        lines.extend(["", "#### Double-check (human)"])
+        lines.append("- Mechanical merge bar is leftover-clean. Review or redesign:")
+        lines.extend(f"- {item}" for item in summary.human_checklist_lines)
     lines.extend(["", "#### Next"])
     lines.extend(f"- {item}" for item in summary.next_lines)
     if summary.package_review:

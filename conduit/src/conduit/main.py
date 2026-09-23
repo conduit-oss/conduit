@@ -205,6 +205,7 @@ def _make_run_summary(
     docs_synced: list[str] | None = None,
     attempts: int | None = None,
     leftover_lines: list[str] | None = None,
+    leftover_items=None,
 ):
     package = str(packet.get("package") or "")
     state = None
@@ -229,6 +230,7 @@ def _make_run_summary(
         docs_synced=docs_synced,
         attempts=attempts,
         leftover_lines=leftover_lines,
+        leftover_items=leftover_items,
     )
 
 
@@ -249,6 +251,7 @@ def _print_run_summary(
     docs_synced: list[str] | None = None,
     attempts: int | None = None,
     leftover_lines: list[str] | None = None,
+    leftover_items=None,
 ) -> str:
     """Print the decision-ready run summary. Returns markdown for the PR body."""
     summary = _make_run_summary(
@@ -267,6 +270,7 @@ def _print_run_summary(
         docs_synced=docs_synced,
         attempts=attempts,
         leftover_lines=leftover_lines,
+        leftover_items=leftover_items,
     )
     console.print(format_run_summary(summary))
     return format_run_summary_markdown(summary)
@@ -613,6 +617,12 @@ def watch_cmd(
                     f"  surface: {obs.span.path}:{obs.span.line}  "
                     f"{obs.chain}  ({obs.evidence.name}/{obs.spelling.value})"
                 )
+        if verdict.leftovers or (data.get("side_effects") or []):
+            from conduit.human_checklist import format_human_checklist
+
+            checklist = format_human_checklist(data, leftovers=verdict.leftovers)
+            if checklist and not json_out:
+                console.print(checklist)
     raise typer.Exit(verdict.exit_code)
 
 
@@ -723,8 +733,20 @@ def apply_cmd(
                     f"  surface: {obs.span.path}:{obs.span.line}  "
                     f"{obs.chain}  ({obs.evidence.name}/{obs.spelling.value})"
                 )
+        from conduit.human_checklist import format_human_checklist
+
+        checklist = format_human_checklist(
+            data, leftovers=leftover_verdict.leftovers
+        )
+        if checklist:
+            console.print(checklist)
         raise typer.Exit(leftover_verdict.exit_code)
     console.print(f"[green]{leftover_verdict.message}[/green]")
+    from conduit.human_checklist import format_human_checklist
+
+    warn_only = format_human_checklist(data, leftovers=())
+    if warn_only:
+        console.print(warn_only)
 
 
 @app.command("verify")
@@ -1221,6 +1243,7 @@ def _run_pipeline(
                 audit_log=audit_log,
                 impact=impact,
                 leftover_lines=leftover_lines,
+                leftover_items=leftover_items,
             )
             raise typer.Exit(2)
         console.print("[yellow]Continuing with --allow-partial despite leftovers.[/yellow]")
@@ -1301,6 +1324,7 @@ def _run_pipeline(
             audit_log=audit_log,
             impact=impact,
             leftover_lines=leftover_lines,
+            leftover_items=leftover_items,
         )
         raise typer.Exit(2)
 
@@ -1336,6 +1360,7 @@ def _run_pipeline(
             impact=impact,
             docs_synced=docs_synced,
             leftover_lines=leftover_lines,
+            leftover_items=leftover_items,
         )
         raise typer.Exit(0)
 
@@ -1365,6 +1390,7 @@ def _run_pipeline(
             impact=impact,
             docs_synced=docs_synced,
             leftover_lines=leftover_lines,
+            leftover_items=leftover_items,
         )
     )
     beat("pr")
@@ -1394,6 +1420,7 @@ def _run_pipeline(
         impact=impact,
         docs_synced=docs_synced,
         leftover_lines=leftover_lines,
+        leftover_items=leftover_items,
     )
     raise typer.Exit(0 if pr.created or skip_pr else 3)
 
