@@ -1,0 +1,19 @@
+{
+  "status": "clean",
+  "pin": "2.0.0",
+  "from_version": "1.10.13",
+  "to_version": "2.0.0",
+  "leftover_count": 0,
+  "leftovers": [],
+  "exit_code": 0,
+  "message": "pin 2.0.0 at or past to_version 2.0.0; no leftover packet calls",
+  "completeness": {
+    "status": "unverified",
+    "observation_count": 0,
+    "observations": [],
+    "reasons": [
+      "no proof-eligible surface contracts"
+    ],
+    "explain": "no proof-eligible surface contracts"
+  }
+}

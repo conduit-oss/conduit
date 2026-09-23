@@ -1,0 +1,21 @@
+{
+  "status": "bump_dirty",
+  "pin": "2.0.0",
+  "from_version": "1.10.13",
+  "to_version": "2.0.0",
+  "leftover_count": 1,
+  "leftovers": [
+    "src/each_item.py:13  @field_validator each_item=True  (decorated_def_options: v2 has no each_item; annotate the item type instead)"
+  ],
+  "exit_code": 1,
+  "message": "pin 2.0.0 at or past to_version 2.0.0 with 1 leftover call(s)",
+  "completeness": {
+    "status": "unverified",
+    "observation_count": 0,
+    "observations": [],
+    "reasons": [
+      "no proof-eligible surface contracts"
+    ],
+    "explain": "no proof-eligible surface contracts"
+  }
+}

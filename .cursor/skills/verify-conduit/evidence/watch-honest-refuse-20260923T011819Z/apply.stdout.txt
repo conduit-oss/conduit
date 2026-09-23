@@ -1,0 +1,27 @@
+Added .conduit/ to .gitignore (exports, verify-venv, packets)
+Pruned to 14/14 packet rules from client usage
+Applying SDK rules (14)ΓÇª
+Applying REST rules (0)ΓÇª
+ LLM additive reviewΓÇª
+ baseline snapshot: 1 file(s) ΓåÆ .conduit\anticheat_baseline.json
+[DEPENDENCY_BUMP] requirements.txt:  Bumped pydantic 1.10.13 -> 2.0.0
+Creating consumer verify venv at 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+each-item-20260923T011819Z\.conduit\verify-venv
+Installing consumer requirements (requirements.txt): install --upgrade -r 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+each-item-20260923T011819Z\requirements.txt
+Into interpreter: 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+each-item-20260923T011819Z\.conduit\verify-venv\Scripts\python.exe
+Installing bumped packages (install): pydantic==2.0.0: install --upgrade 
+pydantic==2.0.0 pytest
+Into interpreter: 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+each-item-20260923T011819Z\.conduit\verify-venv\Scripts\python.exe
+Modified 2 file(s).
+apply incomplete: 1 leftover call(s) remain (src/each_item.py:13  
+@field_validator each_item=True  (decorated_def_options: v2 has no each_item; 
+annotate the item type instead))
+  leftover: src/each_item.py:13  @field_validator each_item=True  
+(decorated_def_options: v2 has no each_item; annotate the item type instead)

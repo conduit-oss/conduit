@@ -1,0 +1,17 @@
+wrote 
+C:\Users\xlor1\AppData\Local\Temp\conduit-verify-catalog-20260923T011747Z\by-pac
+kage\pydantic\pypi\pydantic-1.10.13-2.0.0.json
+wrote 
+C:\Users\xlor1\AppData\Local\Temp\conduit-verify-catalog-20260923T011747Z\pydant
+ic-1.10.13-2.0.0.json
+wrote 
+C:\Users\xlor1\AppData\Local\Temp\conduit-verify-catalog-20260923T011747Z\by-pac
+kage\pydantic\pypi\pydantic-1.10.13-2.0.0.recipe.json
+git commands (catalog only; no consumer PR fan-out):
+  git add by-package/pydantic/pypi/pydantic-1.10.13-2.0.0.json 
+pydantic-1.10.13-2.0.0.json 
+by-package/pydantic/pypi/pydantic-1.10.13-2.0.0.recipe.json
+  git commit -m "Publish packet pydantic-1.10.13-2.0.0"
+  git push
+Publish targets the packet catalog only. Consumers pull; this command does not 
+open consumer PRs.

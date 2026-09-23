@@ -1,0 +1,44 @@
+{
+  "status": "bump_dirty",
+  "pin": "2.0.0",
+  "from_version": "1.10.13",
+  "to_version": "2.0.0",
+  "leftover_count": 3,
+  "leftovers": [
+    "src/model.py:11  validator  (packet old_callee 'validator' still called)",
+    "src/model.py  pydantic::validator  (import_member: import_member still present)",
+    "src/model.py  inner_class:Config@BaseModel->model_config  (inner_class: inner class still present)"
+  ],
+  "exit_code": 1,
+  "message": "pin 2.0.0 at or past to_version 2.0.0 with 3 leftover call(s)",
+  "completeness": {
+    "status": "unverified",
+    "observation_count": 2,
+    "observations": [
+      {
+        "surface_id": "ast_call:BaseModel.dict->BaseModel.model_dump:1",
+        "path": "src/model.py",
+        "line": 19,
+        "chain": "self.dict",
+        "confidence": "definite",
+        "evidence": "RECEIVER_TYPED",
+        "spelling": "receiver_member",
+        "disposition": "still_old"
+      },
+      {
+        "surface_id": "ast_call:validator->field_validator:6",
+        "path": "src/model.py",
+        "line": 11,
+        "chain": "validator",
+        "confidence": "definite",
+        "evidence": "IMPORT_ALIAS",
+        "spelling": "imported",
+        "disposition": "still_old"
+      }
+    ],
+    "reasons": [
+      "no proof-eligible surface contracts"
+    ],
+    "explain": "no proof-eligible surface contracts"
+  }
+}
