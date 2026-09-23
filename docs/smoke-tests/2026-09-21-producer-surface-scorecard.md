@@ -116,7 +116,9 @@ Evidence:
 1. **`always=` / `each_item=`** — permanent refuse; no evidence-backed rewrite.
 2. **`MAX_EMAIL_LENGTH`** — uncodable (no successor).
 3. **OpenAPI producer path** — REST surface mint/diff not landed as a catalog hop.
-4. **Catalog publish** — hop freeze is in-repo only; not yet published as a catalog entry.
+4. **Catalog publish** — smoke receipt lands hop + recipe sibling under
+   `by-package/pydantic/pypi/` (`test_packet_publish.py`); live remote catalog
+   still optional.
 
 Hand-authored sibling for the same fixture story:
 `examples/sample-packet/pydantic-validator-hop.json` (narrower rule set). Prefer
