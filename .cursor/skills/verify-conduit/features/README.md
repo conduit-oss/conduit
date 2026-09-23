@@ -37,3 +37,4 @@ Each feature file: H1 + one paragraph, then exactly four H2s — `Sub-features`,
 - [Migrate openai demo consumer](./consumer-migrate-openai-demo.md) — offline demo `run` kill bar (`apply` alone is narrower).
 - [Publish hop then consume from catalog](./catalog-publish-then-consume.md) — local catalog write + apply from catalog hop path.
 - [Watch refuses unmapped shapes honestly](./watch-honest-refuse.md) — `each_item` → apply incomplete / Watch `bump_dirty` (human check list).
+- [Assist redesign on refuse leftovers](./assist-redesign.md) — opt-in `--assist-redesign` / stub prove helper; leftover rescan is the trust bar.

@@ -109,16 +109,19 @@ Evidence:
 |------|---------|
 | Gate validity (declared surfaces; fixture red → green) | PASS |
 | Migration completeness (**declared synthetic set**) | PASS |
-| Migration completeness (full producer surface / unbounded consumer) | FAIL (`MAX_EMAIL_LENGTH`, `always`/`each_item`) |
+| Migration completeness (full producer surface / unbounded consumer) | FAIL (`MAX_EMAIL_LENGTH`; `always`/`each_item` without assist) |
+| Mergeable PR review surfacing (Human checks / Double-check) | PASS |
+| Opt-in `--assist-redesign` (multi_step; leftover rescan) | PASS when cleared; else checklist |
 
 ## Remaining gaps
 
-1. **`always=` / `each_item=`** — permanent refuse; no evidence-backed rewrite.
-2. **`MAX_EMAIL_LENGTH`** — uncodable (no successor).
+1. **`always=` / `each_item=`** — packet keeps `no_successor`; mechanical apply refuses. Opt-in `--assist-redesign` may clear after leftover rescan; otherwise human checklist.
+2. **`MAX_EMAIL_LENGTH`** — uncodable (no successor); warn / checklist only; never assisted.
 3. **OpenAPI producer path** — REST surface mint/diff not landed as a catalog hop.
 4. **Catalog publish** — smoke receipt lands hop + recipe sibling under
    `by-package/pydantic/pypi/` (`test_packet_publish.py`); live remote catalog
    still optional.
+5. **Real third-party monorepo** — follow-on: inventory leftovers → apply → optional assist → PR checklist.
 
 Hand-authored sibling for the same fixture story:
 `examples/sample-packet/pydantic-validator-hop.json` (narrower rule set). Prefer
