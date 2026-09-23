@@ -1,0 +1,16 @@
+{
+  "watch_before_exit": 1,
+  "apply_exit": 0,
+  "watch_after_exit": 0,
+  "has_field_validator": true,
+  "has_classmethod": true,
+  "has_model_dump": true,
+  "has_model_config_or_configdict": true,
+  "no_class_config": true,
+  "no_bare_validator_decorator": true,
+  "watch_before_status": "bump_dirty",
+  "watch_before_leftover_count": 3,
+  "watch_after_status": "clean",
+  "watch_after_leftovers": [],
+  "watch_after_leftover_count": 0
+}

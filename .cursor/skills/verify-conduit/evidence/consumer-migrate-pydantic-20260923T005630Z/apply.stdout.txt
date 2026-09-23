@@ -1,0 +1,29 @@
+Added .conduit/ to .gitignore (exports, verify-venv, packets)
+Pruned to 14/14 packet rules from client usage
+Applying SDK rules (14)â€¦
+Applying REST rules (0)â€¦
+ LLM additive reviewâ€¦
+ baseline snapshot: 1 file(s) â†’ .conduit\anticheat_baseline.json
+[AST_DECLARATION_REWRITE] src/model.py:  Declaration rewrite (3x)
+[DEPENDENCY_BUMP] requirements.txt:  Bumped pydantic 1.10.13 -> 2.0.0
+[AST_CALL_REWRITE] src\model.py:  Rewrote call "validator" -> "field_validator" 
+(1x)
+[AST_DECLARATION_REWRITE] src/model.py:  Declaration rewrite (1x)
+[SURFACE_DEFINITE_REWRITE] src/model.py:  definite rewrite 
+'self.dict'->'self.model_dump' (1x)
+Creating consumer verify venv at 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+pydantic-fixture-20260923T005630Z\.conduit\verify-venv
+Installing consumer requirements (requirements.txt): install --upgrade -r 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+pydantic-fixture-20260923T005630Z\requirements.txt
+Into interpreter: 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+pydantic-fixture-20260923T005630Z\.conduit\verify-venv\Scripts\python.exe
+Installing bumped packages (install): pydantic==2.0.0: install --upgrade 
+pydantic==2.0.0 pytest
+Into interpreter: 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+pydantic-fixture-20260923T005630Z\.conduit\verify-venv\Scripts\python.exe
+Modified 4 file(s).
+apply complete: no leftover packet calls

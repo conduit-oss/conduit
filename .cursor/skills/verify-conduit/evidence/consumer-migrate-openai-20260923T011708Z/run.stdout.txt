@@ -1,0 +1,122 @@
+Warning: Demo mode (--demo): LLM client enrichment disabled; using offline 
+fixtures
+Warning: Using published packet; vendor detect scrape skipped (detect signals 
+will be empty)
+Warning: LLM packet synthesis skipped (explicit --packet file)
+Warning: Tests and self-correct skipped (--skip-tests); run the suite before 
+merging
+Warning: Pull request creation skipped (--skip-pr)
+detect signals: (none)
+Warning: Using published packet file; LLM packet synthesis/enrichment skipped
+Using packet openai-0.28.1-1.0.0 (5 rules)
+Pruned to 2 file(s) importing openai
+Export delta: 231 removed, 159 added, 41 renamed ΓåÆ 2 file(s) (was 2)
+Path-bridge: 2 AST_CALL_REWRITE rule(s) from export delta Γê⌐ 1 resource-path 
+call(s)
+Pruned to 6/6 packet rules from client usage
+=== Conduit source packet (client baseline) ===
+package: openai  source: demo
+installed_version: '0.28.1'
+model_ids (1): ['gpt-4-0613']
+api_patterns (4): ['ChatCompletion', 'ChatCompletion.create', 'chatcompletion', 
+'openai.ChatCompletion.create']
+import_files (2): ['src/ai_client.py', 'tests/test_ai_client.py']
+note: model discovery grounded on 12 known model ids
+
+=== Conduit migration packet (after OpenAI sources) ===
+packet_id: 'openai-0.28.1-1.0.0'  0.28.1 ΓåÆ 1.0.0
+signals: 0  by_type: {}
+rules: 6  types: ['AST_CALL_REWRITE', 'AST_PARAM_RENAME', 'DEPENDENCY_BUMP', 
+'EXACT_STRING_REPLACE']
+
+=== Coverage (what this repo uses vs packet rules) ===
+WILL MIGRATE  packet will change this
+KEEP          already the new id / no change needed
+NO RULE       used here; packet has no migrate-from rule
+UNMAPPED      helper/short path; not scored as a gap
+[WILL MIGRATE] 5  ΓÇö packet has a rule to change this
+  model gpt-4-0613  (will replace with gpt-4o)
+  api_pattern ChatCompletion  (path /v1/chat/completions ΓåÆ 
+openai.chat.completions.create)
+  api_pattern ChatCompletion.create  (path /v1/chat/completions ΓåÆ 
+openai.chat.completions.create)
+  api_pattern chatcompletion  (path /v1/chat/completions ΓåÆ 
+openai.chat.completions.create)
+  api_pattern openai.ChatCompletion.create  (path /v1/chat/completions ΓåÆ 
+openai.chat.completions.create)
+summary: will_migrate=5 keep=0 no_rule=0 unmapped=0 total=5
+Expanded apply allowlist to 5 file(s) (+3 for string-rule hits)
+Applying SDK rules (5)ΓÇª
+Applying REST rules (1)ΓÇª
+ LLM additive reviewΓÇª
+ baseline snapshot: 5 file(s) ΓåÆ .conduit\anticheat_baseline.json
+[AST_CALL_REWRITE] src\ai_client.py:  Rewrote call 
+"openai.ChatCompletion.create" -> "openai.chat.completions.create" (1x)
+[DEPENDENCY_BUMP] pyproject.toml:  Bumped openai 0.28.1 -> 1.0.0
+[DEPENDENCY_BUMP] requirements.txt:  Bumped openai 0.28.1 -> 1.0.0
+[AST_PARAM_RENAME] src\ai_client.py:  Renamed param max_tokens -> 
+max_completion_tokens (1x)
+[EXACT_STRING_REPLACE] src\ai_client.py:  Replaced "gpt-4-0613" -> "gpt-4o" (1x)
+[EXACT_STRING_REPLACE] tests\test_ai_client.py:  Replaced "gpt-4-0613" -> 
+"gpt-4o" (2x)
+ auto-updating deprecated ids: gpt-4-0613 ΓåÆ gpt-4o
+Creating consumer verify venv at 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+openai-20260923T011708Z\.conduit\verify-venv
+Installing consumer requirements (requirements.txt): install --upgrade -r 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+openai-20260923T011708Z\requirements.txt
+Into interpreter: 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+openai-20260923T011708Z\.conduit\verify-venv\Scripts\python.exe
+Installing bumped packages (install): openai==1.0.0: install --upgrade 
+openai==1.0.0 pytest
+Into interpreter: 
+D:\bye\conduit_repo\conduit-live-llm-mint\.cursor\skills\verify-conduit\scratch\
+openai-20260923T011708Z\.conduit\verify-venv\Scripts\python.exe
+[CLIENT_CHAIN] src/ai_client.py: rewrote 1 call(s) onto OpenAI client
+[CLIENT_CHAIN] src/ai_client.py: rewrote 1 response access(es)
+Passed via skipped (exit 0)
+ no leftover tokens in prose/ops surfaces
+Patches applied and tests passed (PR skipped).
+=== Run summary ===
+Result: PASSED | packet openai-0.28.1-1.0.0 (0.28.1 ΓåÆ 1.0.0) | Passed via 
+skipped (exit 0)
+
+Impact
+- (none)
+
+Anti-cheat
+- no block findings; no advisory notes
+
+Gaps (coverage)
+- Regenerate the lockfile (poetry lock / npm install / go mod tidy) after these 
+manifest edits
+
+Changed
+- Files (5): src\ai_client.py, pyproject.toml, requirements.txt, 
+tests\test_ai_client.py, src/ai_client.py
+- [AST_CALL_REWRITE] src\ai_client.py:  Rewrote call 
+"openai.ChatCompletion.create" -> "openai.chat.completions.create" (1x)
+- [DEPENDENCY_BUMP] pyproject.toml:  Bumped openai 0.28.1 -> 1.0.0
+- [DEPENDENCY_BUMP] requirements.txt:  Bumped openai 0.28.1 -> 1.0.0
+- [AST_PARAM_RENAME] src\ai_client.py:  Renamed param max_tokens -> 
+max_completion_tokens (1x)
+- [EXACT_STRING_REPLACE] src\ai_client.py:  Replaced "gpt-4-0613" -> "gpt-4o" 
+(1x)
+- [EXACT_STRING_REPLACE] tests\test_ai_client.py:  Replaced "gpt-4-0613" -> 
+"gpt-4o" (2x)
+- [CLIENT_CHAIN] src/ai_client.py: rewrote 1 call(s) onto OpenAI client
+- [CLIENT_CHAIN] src/ai_client.py: rewrote 1 response access(es)
+- by rule type: DEPENDENCY_BUMP├ù2, EXACT_STRING_REPLACE├ù2, CLIENT_CHAIN├ù2, 
+AST_CALL_REWRITE├ù1, AST_PARAM_RENAME├ù1
+- full detail: .conduit/migration_audit.jsonl (10 entries)
+
+Next
+- Tests were skipped (--skip-tests); run the suite before merging
+
+Package notes (openai)
+- Auto-updating deprecated models: gpt-4-0613 ΓåÆ gpt-4o
+- Models added (not in client baseline): gpt-4o ΓÇö confirm these are the models 
+you want
+

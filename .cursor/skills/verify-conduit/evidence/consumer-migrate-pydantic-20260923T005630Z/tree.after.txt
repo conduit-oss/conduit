@@ -1,0 +1,18 @@
+"""Tiny pydantic v1 fixture for the Watch-visible hop smoke."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, field_validator, ConfigDict
+
+
+class User(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v):
+        return v
+    model_config = ConfigDict(from_attributes=True)
+
+    def dump(self):
+        return self.model_dump()
