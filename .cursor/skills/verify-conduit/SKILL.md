@@ -135,6 +135,7 @@ Removes only `verify-conduit/scratch/`. **Never** deletes `evidence/`. Never kil
 | Doctor | `python .cursor/skills/verify-conduit/helpers/doctor.py` |
 | Isolate tree | `python .cursor/skills/verify-conduit/helpers/isolate_consumer.py --source <rel> --dest <abs>` |
 | Prove pydantic fixture migrate | `python .cursor/skills/verify-conduit/helpers/prove_watch_apply_watch.py` |
+| Prove assist redesign (stub) | `python .cursor/skills/verify-conduit/helpers/prove_assist_redesign.py` |
 | Cleanup scratch | `python .cursor/skills/verify-conduit/helpers/cleanup_scratch.py --all` |
 
 ## Claims this skill will and will not make

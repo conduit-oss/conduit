@@ -1,0 +1,3 @@
+[
+  "src/each_item.py:13  @field_validator each_item=True  (decorated_def_options: v2 has no each_item; annotate the item type instead)"
+]
