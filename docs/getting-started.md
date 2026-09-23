@@ -99,6 +99,8 @@ Exit `0` while the pin is still at `from_version` (warns if leftovers exist). Ex
 
 Wire the same gate in CI: [GitHub Actions](github-actions.md). CLI details: [CLI reference](cli-reference.md#conduit-watch).
 
+**Merge bar:** Watch/apply leftover-clean means the mechanical packet work is done. Packet `side_effects` and any remaining leftovers print as a **Human checks** block (also **Double-check** in the PR body) — copy that list into the PR when humans still need to redesign or accept permanent gaps (`uncodable` deletes, `multi_step` kwargs). Leftover-clean is not full unbounded v2 completeness.
+
 ## 3. Produce a packet (maintainers)
 
 Vendors and maintainers author a hop from migrate-guide URLs, dry-run it, then publish into a catalog. No LLM keys are required. Without enrichment, `packet new` writes a schema-valid dependency hop and recorded `sources`. Add `--scaffold-only` or omit a configured model for the keyless path.

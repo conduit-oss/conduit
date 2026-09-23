@@ -126,6 +126,7 @@ def build_pr_body(
     *,
     detect_summary: str = "",
     review_markdown: str = "",
+    leftovers: list[Any] | None = None,
 ) -> str:
     package = packet.get("package", "package")
     from_v = packet.get("from_version", "?")
@@ -157,6 +158,17 @@ def build_pr_body(
 
     review_block = f"\n{review_markdown}\n" if review_markdown.strip() else "\n"
 
+    from conduit.human_checklist import format_human_checklist_markdown
+
+    double_check = format_human_checklist_markdown(
+        packet, leftovers=leftovers or ()
+    )
+    # Avoid duplicating Double-check if review_markdown already has it
+    if double_check and "Double-check (human)" not in review_block:
+        double_check_block = f"\n{double_check}\n"
+    else:
+        double_check_block = "\n"
+
     return f"""## Conduit migration
 
 **Package:** `{package}` `{from_v}` → `{to_v}`
@@ -164,7 +176,7 @@ def build_pr_body(
 {detect_block}
 ### Changes applied
 {chr(10).join(change_lines)}
-{rationale_block}{notes_block}{sources_block}{review_block}
+{rationale_block}{notes_block}{sources_block}{review_block}{double_check_block}
 ### Verification
 - Tests: {status}
 - Command: `{' '.join(test_result.command) or 'n/a'}`
