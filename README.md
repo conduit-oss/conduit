@@ -6,6 +6,12 @@
   <strong>Self-hosted CLI that updates your code when dependencies make breaking API changes.</strong>
 </p>
 
+## Status (2026-09-26): Product hypothesis paused
+Conduit is parked as a **learning / OSS artifact**, not an active product push.
+Why: weeknight capacity is limited, and the hard bet (guaranteeing consumer SDK upgrades via apply + Watch) is not something I’m confident I can finish soon. Soft alternatives (MCP “give the agent more context,” repo telepathy) are explicitly out of scope for now.
+What still stands: packets, fixtures, and docs in this repo may be useful as reference. There is **no** claim that apply/Watch is production-ready or that hops will be correctly upgraded.
+If you found this useful or want a specific hop packet, open an issue. Otherwise treat this as paused until capacity and belief return.
+
 <p align="center">
   Deterministic AST engines for <strong>Python, JS/TS, Java, and Go</strong>.
   An LLM or a maintainer authors the packet. Apply and Watch run that frozen packet with no LLM.
