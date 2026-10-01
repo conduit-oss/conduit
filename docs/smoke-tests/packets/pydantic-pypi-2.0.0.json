@@ -1,0 +1,32 @@
+{
+  "packet_id": "pydantic-pypi-2.0.0",
+  "package": "pydantic",
+  "ecosystem": "pypi",
+  "from_version": "*",
+  "to_version": "2.0.0",
+  "sources": [
+    {
+      "url": "https://docs.pydantic.dev/latest/migration/",
+      "kind": "docs"
+    },
+    {
+      "url": "https://docs.pydantic.dev/2.0/migration/",
+      "kind": "docs"
+    }
+  ],
+  "notes": "Authored for target pydantic@2.0.0 (pypi). from_version=* means any consumer pin; resolved at apply/run.",
+  "rules": [
+    {
+      "type": "DEPENDENCY_BUMP",
+      "package": "pydantic",
+      "from_version": "*",
+      "to_version": "2.0.0",
+      "ecosystems": [
+        "pip",
+        "pyproject"
+      ],
+      "reason": "Pin pydantic to target version 2.0.0"
+    }
+  ],
+  "side_effects": []
+}
