@@ -144,10 +144,12 @@ def _apply_rules_to_files(
     require_context: bool,
     stage_label: str,
     path_defer: set[str] | None = None,
+    context_rels: set[str] | None = None,
 ) -> PatchReport:
     report = PatchReport()
     report.stage_counts[stage_label] = len(rules)
     deferred = {p.replace("\\", "/") for p in (path_defer or set())}
+    trusted = {p.replace("\\", "/") for p in (context_rels or set())}
 
     for rule in rules:
         rule_type = rule.get("type")
@@ -221,7 +223,11 @@ def _apply_rules_to_files(
                 original = path.read_text(encoding="utf-8-sig")
             except (UnicodeDecodeError, OSError):
                 continue
-            if require_context and not file_has_vendor_context(path, original, vendor):
+            if (
+                require_context
+                and rel not in trusted
+                and not file_has_vendor_context(path, original, vendor)
+            ):
                 continue
 
             updated = original
@@ -339,10 +345,12 @@ def _apply_declaration_rules(
     dry_run: bool,
     require_context: bool,
     path_defer: set[str] | None,
+    context_rels: set[str] | None = None,
 ) -> PatchReport:
     """Batch AST_DECLARATION_REWRITE once per file (shared import table)."""
     report = PatchReport()
     deferred = path_defer or set()
+    trusted = {p.replace("\\", "/") for p in (context_rels or set())}
     if not rules:
         return report
 
@@ -364,7 +372,11 @@ def _apply_declaration_rules(
             original = path.read_text(encoding="utf-8-sig")
         except (UnicodeDecodeError, OSError):
             continue
-        if require_context and not file_has_vendor_context(path, original, vendor):
+        if (
+            require_context
+            and rel not in trusted
+            and not file_has_vendor_context(path, original, vendor)
+        ):
             continue
         result = rewrite_declarations(path, original, rules, root=root)
         if result.applied and write_if_changed(
@@ -390,6 +402,7 @@ def apply_packet(
     file_allowlist: Iterable[Path] | None = None,
     stages: ApplyStages = "all",
     path_defer: set[str] | None = None,
+    context_rels: set[str] | None = None,
 ) -> PatchReport:
     """Apply a single conduit-packet.json in SDK then REST stages."""
     root = root.resolve()
@@ -467,6 +480,7 @@ def apply_packet(
                     dry_run=dry_run,
                     require_context=require_context,
                     path_defer=path_defer,
+                    context_rels=context_rels,
                 )
             )
         sdk_report = _apply_rules_to_files(
@@ -479,6 +493,7 @@ def apply_packet(
             require_context=require_context,
             stage_label="sdk",
             path_defer=path_defer,
+            context_rels=context_rels,
         )
         report.merge(sdk_report)
         if after_call:
@@ -492,6 +507,7 @@ def apply_packet(
                     dry_run=dry_run,
                     require_context=require_context,
                     path_defer=path_defer,
+                    context_rels=context_rels,
                 )
             )
 
@@ -506,6 +522,7 @@ def apply_packet(
             require_context=require_context,
             stage_label="rest",
             path_defer=path_defer,
+            context_rels=context_rels,
         )
         report.merge(rest_report)
 

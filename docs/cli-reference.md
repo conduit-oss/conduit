@@ -108,11 +108,38 @@ Exit codes:
 
 Does not rewrite files. Use after Dependabot bumps the pin so CI fails until call sites are migrated (or until `conduit apply` / `conduit run` clears them).
 
+Wrapped call sites are included for catalogued services (openai, anthropic, stripe, twilio, boto3). A function that calls `llm.complete` is a leftover while `complete` still reaches a packet `old_callee`. See [Outside-in mode](outside-in.md).
+
 ```bash
 conduit watch \
   --path ./examples/demo-consumer \
   --packet ./examples/sample-packet/conduit-packet.json
 ```
+
+---
+
+## `conduit map`
+
+Read-only outside-in trace. Inventory external SDK and REST entry points, follow user wrappers, and (with `--packet`) report the blast radius of that hop.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path` | `.` | Repo root |
+| `--service` | catalog | One service id or Python module (`openai`, `stripe`, …) |
+| `--packet` | none | Packet file or http(s) URL. Adds blast radius for `package` |
+| `--json` | false | Machine-readable map (`entries`, `chains`, `blast`) |
+| `--markdown` | false | Markdown report |
+
+Exit `2` when `--path` is not a directory or `--packet` is missing or invalid. Exit `1` when the packet fails schema validation. Exit `0` after a scan, including an empty map.
+
+```bash
+conduit map \
+  --path ./examples/wrapped-openai-fixture \
+  --service openai \
+  --packet ./examples/sample-packet/conduit-packet.json
+```
+
+Python only. `getattr`, dependency injection, and positional argument forwarding are not resolved. Details: [Outside-in mode](outside-in.md).
 
 ---
 
