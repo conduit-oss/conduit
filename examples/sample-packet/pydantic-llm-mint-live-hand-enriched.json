@@ -1,0 +1,374 @@
+{
+  "packet_id": "pydantic-pypi-2.0.0-hand-enriched",
+  "package": "pydantic",
+  "ecosystem": "pypi",
+  "from_version": "*",
+  "to_version": "2.0.0",
+  "sources": [
+    {
+      "url": "https://docs.pydantic.dev/2.0/migration/",
+      "kind": "docs"
+    }
+  ],
+  "notes": "HAND enrichment of the frozen LLM mint at pydantic-llm-mint-live.json. Adds missing rule families so the pydantic-validator-fixture @validator decorator and inner class Config / orm_mode are in-scope. Validator hop copies P5 (AST_IMPORT_REWRITE clause fragment BaseModel, validator plus AST_CALL_REWRITE validator -> field_validator with a proof-eligible surface floor). Config uses schema EXACT_STRING_REPLACE to model_config = ConfigDict(from_attributes=True); no apply/Watch vendor branches. Keep live BaseModel renames and surface metadata. Not LLM packet new; Amin remints with keys separately. Live mint checksum is unchanged.",
+  "side_effects": [
+    {
+      "kind": "config",
+      "detail": "Fixture-shaped inner `class Config: orm_mode = True` is rewritten by EXACT_STRING_REPLACE to `model_config = ConfigDict(from_attributes=True)` plus the import-clause ConfigDict add. Other Config layouts still need hand conversion."
+    },
+    {
+      "kind": "other",
+      "detail": "`parse_raw()` / `parse_file()` / `schema_json()` are not universally safe single-step rewrites because file IO, content-type handling, and JSON-string wrapping may need manual refactoring."
+    },
+    {
+      "kind": "other",
+      "detail": "`BaseSettings` moved to the separate `pydantic-settings` package; projects need to add that dependency when applying the import rewrite."
+    },
+    {
+      "kind": "other",
+      "detail": "field_validator often needs @classmethod and signature or mode= reshape; not expressed by AST_CALL_REWRITE."
+    }
+  ],
+  "rules": [
+    {
+      "type": "DEPENDENCY_BUMP",
+      "package": "pydantic",
+      "from_version": "*",
+      "to_version": "2.0.0",
+      "ecosystems": [
+        "pip",
+        "pyproject"
+      ],
+      "reason": "Pin pydantic to 2.0.0"
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.dict",
+      "new_callee": "BaseModel.model_dump",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "dict"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.json",
+      "new_callee": "BaseModel.model_dump_json",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "json"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.parse_obj",
+      "new_callee": "BaseModel.model_validate",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "parse_obj"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.parse_raw",
+      "new_callee": "BaseModel.model_validate_json",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "parse_raw"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.from_orm",
+      "new_callee": "BaseModel.model_validate",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "from_orm"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.construct",
+      "new_callee": "BaseModel.model_construct",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "construct"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.copy",
+      "new_callee": "BaseModel.model_copy",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "copy"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.schema",
+      "new_callee": "BaseModel.model_json_schema",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "schema"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.update_forward_refs",
+      "new_callee": "BaseModel.model_rebuild",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "update_forward_refs"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "BaseModel.validate",
+      "new_callee": "BaseModel.model_validate",
+      "surface": {
+        "export_path": [
+          "BaseModel",
+          "validate"
+        ],
+        "spellings": [
+          "qualified",
+          "imported",
+          "receiver_member"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "AST_ATTR_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "old_attr": "__fields__",
+      "new_attr": "model_fields"
+    },
+    {
+      "type": "AST_ATTR_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "old_attr": "__fields_set__",
+      "new_attr": "model_fields_set"
+    },
+    {
+      "type": "AST_ATTR_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "old_attr": "__config__",
+      "new_attr": "model_config"
+    },
+    {
+      "type": "AST_PARAM_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "function_target": "pydantic.Field",
+      "old_param": "regex",
+      "new_param": "pattern"
+    },
+    {
+      "type": "AST_PARAM_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "function_target": "pydantic.Field",
+      "old_param": "min_items",
+      "new_param": "min_length"
+    },
+    {
+      "type": "AST_PARAM_RENAME",
+      "target_files": [
+        "*.py"
+      ],
+      "function_target": "pydantic.Field",
+      "old_param": "max_items",
+      "new_param": "max_length"
+    },
+    {
+      "type": "AST_IMPORT_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_import": "from pydantic import BaseSettings",
+      "new_import": "from pydantic_settings import BaseSettings"
+    },
+    {
+      "type": "AST_IMPORT_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_import": "BaseModel, validator",
+      "new_import": "BaseModel, field_validator, ConfigDict",
+      "reason": "Rewrite the from-import clause only (P5 hop fragment). Avoid bare validator so a second apply cannot re-prefix field_validator. Pull ConfigDict in the same clause for the Config rewrite."
+    },
+    {
+      "type": "AST_CALL_REWRITE",
+      "target_files": [
+        "*.py"
+      ],
+      "old_callee": "validator",
+      "new_callee": "field_validator",
+      "reason": "@validator(...) becomes @field_validator(...). Watch leftovers key on this old_callee. Surface floor makes the decorator proof-eligible.",
+      "surface": {
+        "export_path": [
+          "validator"
+        ],
+        "spellings": [
+          "qualified",
+          "imported"
+        ],
+        "use_kinds": [
+          "call",
+          "decorator"
+        ]
+      }
+    },
+    {
+      "type": "EXACT_STRING_REPLACE",
+      "target_files": [
+        "*.py"
+      ],
+      "match": "    class Config:\n        orm_mode = True",
+      "replace": "    model_config = ConfigDict(from_attributes=True)",
+      "reason": "Inner class Config / orm_mode -> v2 model_config = ConfigDict(from_attributes=True). Schema EXACT_STRING_REPLACE; no apply engine branch."
+    }
+  ]
+}

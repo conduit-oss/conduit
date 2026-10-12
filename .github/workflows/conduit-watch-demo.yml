@@ -165,3 +165,34 @@ jobs:
           test "$dirty" -eq 1
           conduit apply --path "$FIXTURE" --packet "$PACKET"
           conduit watch --path "$FIXTURE" --packet "$PACKET"
+
+  pydantic-hand-enriched-apply-watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Conduit
+        run: pip install -e "./conduit[langs,dev]"
+      - name: Hand-enriched packet apply then Watch covers validator and Config
+        run: |
+          set -euo pipefail
+          FIXTURE="${{ runner.temp }}/pydantic-hand-enriched"
+          PACKET=./examples/sample-packet/pydantic-llm-mint-live-hand-enriched.json
+          cp -a ./examples/pydantic-validator-fixture "$FIXTURE"
+          conduit apply --path "$FIXTURE" --packet "$PACKET"
+          conduit watch --path "$FIXTURE" --packet "$PACKET" --json
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          text = (Path(os.environ["FIXTURE"]) / "src" / "model.py").read_text(encoding="utf-8")
+          assert '@field_validator("name")' in text
+          assert "field_field_validator" not in text
+          assert "class Config" not in text
+          assert "model_config = ConfigDict(from_attributes=True)" in text
+          assert "model_dump" in text
+          assert ".dict(" not in text
+          PY
+        env:
+          FIXTURE: ${{ runner.temp }}/pydantic-hand-enriched
