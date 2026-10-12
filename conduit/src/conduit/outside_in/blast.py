@@ -132,9 +132,16 @@ def _breaks_for(chain: Chain, rules: list[dict]) -> list[Break]:
 
 
 def _param_visible(chain: Chain, name: str) -> bool:
-    if not chain.via_wrapper:
-        return name in chain.params
-    return name in chain.site_keywords
+    """True when ``name`` is passed somewhere on this chain.
+
+    Direct calls pass it on the SDK call (``params``). A wrapper chain
+    inherits that same break: if an inner hop sets the keyword, every outer
+    call site on the chain is affected. A keyword only on this call site
+    still counts. Confidence stays ``chain.confidence``.
+    """
+    if name in chain.params:
+        return True
+    return chain.via_wrapper and name in chain.site_keywords
 
 
 def _target_matches_any(target: str, methods: set[str]) -> bool:
@@ -196,13 +203,45 @@ def _field_mentions(fields: tuple[str, ...], token: str) -> bool:
     return False
 
 
+_CONF_RANK = {"high": 3, "medium": 2, "low": 1}
+
+
 def _dedupe_breaks(items: list[Break]) -> list[Break]:
-    seen: set[tuple[str, str, str]] = set()
+    """One line per distinct change at this call site.
+
+    Packets often spell one callee twice (``openai.ChatCompletion.create`` and
+    ``ChatCompletion.create``, or the same pair matched to one REST path).
+    Same kind and same destination are one rename; keep the more specific
+    callee. A different destination stays its own line.
+    """
     out: list[Break] = []
     for item in items:
-        key = (item.kind, item.old, item.new)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(item)
+        for index, prev in enumerate(out):
+            if _same_change(prev, item):
+                out[index] = _prefer_break(prev, item)
+                break
+        else:
+            out.append(item)
     return out
+
+
+def _same_change(left: Break, right: Break) -> bool:
+    if left.kind != right.kind or left.new != right.new:
+        return False
+    if left.old == right.old:
+        return True
+    return _callee_equals(left.old, right.old) or _callee_equals(right.old, left.old)
+
+
+def _prefer_break(current: Break, incoming: Break) -> Break:
+    if _more_specific_callee(incoming.old, current.old):
+        return incoming
+    if _more_specific_callee(current.old, incoming.old):
+        return current
+    if _CONF_RANK.get(incoming.confidence, 1) > _CONF_RANK.get(current.confidence, 1):
+        return incoming
+    return current
+
+
+def _more_specific_callee(left: str, right: str) -> bool:
+    return bool(right) and left != right and _callee_equals(left, right)

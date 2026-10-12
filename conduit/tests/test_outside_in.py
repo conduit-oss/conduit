@@ -12,6 +12,8 @@ from conduit.main import app
 from conduit.outside_in.analyze import analyze_repo
 from conduit.outside_in.blast import blast_radius
 from conduit.outside_in.bridge import merge_wrapped_leftovers
+from conduit.outside_in.report import format_report, service_map_to_dict
+from conduit.patcher.ast_attr_call import rewrite_python_call
 from conduit.patcher.leftovers import scan_packet_leftovers
 from conduit.watch import evaluate_watch
 
@@ -26,6 +28,14 @@ def _packet() -> dict:
 
 def _map():
     return analyze_repo(FIXTURE, service="openai")
+
+
+def _import_openai_lines(text: str) -> int:
+    return sum(
+        1
+        for line in text.splitlines()
+        if line.strip() == "import openai" or line.strip().startswith("import openai ")
+    )
 
 
 def _by_symbol(chains, symbol: str, expr_contains: str | None = None):
@@ -169,7 +179,7 @@ def test_blast_names_method_and_forwarded_param():
     main = next(item for item in blast.affected if item.chain.call_symbol == "main")
     main_kinds = {issue.kind for issue in main.breaks}
     assert "method_renamed" in main_kinds
-    assert "param_renamed" not in main_kinds
+    assert "param_renamed" in main_kinds
 
     http = next(item for item in blast.affected if item.chain.call_symbol == "ask_http")
     assert any(issue.kind == "method_renamed" and issue.confidence == "medium" for issue in http.breaks)
@@ -295,6 +305,216 @@ def test_map_cli_prints_wrapped_blast_radius():
     assert text.exit_code == 0, text.output
     assert "app.py" in text.output
     assert "ChatCompletion.create" in text.output
+
+
+def test_each_call_site_lists_a_method_rename_once():
+    """Suffix-equivalent packet callees are one change in text, Markdown, and JSON."""
+    service_map = _map()
+    blast = blast_radius(service_map, _packet())
+    qualified = "method renamed: openai.ChatCompletion.create -> openai.chat.completions.create"
+    short = "method renamed: ChatCompletion.create -> openai.chat.completions.create"
+    rest_qualified = (
+        "REST call matches packet callee openai.ChatCompletion.create -> "
+        "openai.chat.completions.create"
+    )
+    rest_short = (
+        "REST call matches packet callee ChatCompletion.create -> "
+        "openai.chat.completions.create"
+    )
+
+    for item in blast.affected:
+        renames = [issue for issue in item.breaks if issue.kind == "method_renamed"]
+        by_new: dict[str, list] = {}
+        for issue in renames:
+            by_new.setdefault(issue.new, []).append(issue)
+        for group in by_new.values():
+            assert len(group) == 1, item.chain.call_site
+        olds = {issue.old for issue in renames}
+        assert "ChatCompletion.create" not in olds or "openai.ChatCompletion.create" not in olds
+
+    text = format_report(service_map, blast, markdown=False)
+    markdown = format_report(service_map, blast, markdown=True)
+    payload = service_map_to_dict(service_map, blast)
+    for rendered in (text, markdown):
+        assert rendered.count(qualified) == sum(
+            1
+            for item in blast.affected
+            if any(
+                issue.kind == "method_renamed" and issue.old == "openai.ChatCompletion.create"
+                for issue in item.breaks
+            )
+            and item.chain.kind != "http_call"
+        )
+        assert short not in rendered
+        assert rest_short not in rendered
+        assert rendered.count(rest_qualified) == sum(
+            1 for item in blast.affected if item.chain.kind == "http_call" and item.breaks
+        )
+    json_breaks = [
+        issue
+        for item in payload["blast"]["affected"]
+        for issue in item["breaks"]
+        if issue["kind"] == "method_renamed"
+    ]
+    assert json_breaks
+    assert all(issue["old"] != "ChatCompletion.create" for issue in json_breaks)
+    assert any(issue["old"] == "openai.ChatCompletion.create" for issue in json_breaks)
+    http = [
+        issue
+        for item in payload["blast"]["affected"]
+        if item["kind"] == "http_call"
+        for issue in item["breaks"]
+        if issue["kind"] == "method_renamed"
+    ]
+    assert http
+    assert {issue["old"] for issue in http} == {"openai.ChatCompletion.create"}
+    assert {issue["confidence"] for issue in http} == {"medium"}
+
+    # A different destination is a different change and stays visible.
+    packet = _packet()
+    rules = []
+    for rule in packet["rules"]:
+        if rule.get("type") == "AST_CALL_REWRITE" and rule.get("old_callee") == "ChatCompletion.create":
+            rule = {**rule, "new_callee": "client.chat.completions.create"}
+        rules.append(rule)
+    packet = {**packet, "rules": rules}
+    split = blast_radius(service_map, packet)
+    legacy = next(item for item in split.affected if item.chain.call_symbol == "legacy")
+    destinations = {issue.new for issue in legacy.breaks if issue.kind == "method_renamed"}
+    assert destinations == {
+        "openai.chat.completions.create",
+        "client.chat.completions.create",
+    }
+
+
+def test_inner_kwarg_breaks_every_outer_call_site():
+    """max_tokens set inside a wrapper is a break for every caller on that chain."""
+    service_map = _map()
+    blast = blast_radius(service_map, _packet())
+    expected = {
+        ("llm.py", "complete"),
+        ("gateway.py", "Gateway.complete"),
+        ("pkg/impl.py", "complete_chat"),
+        ("app.py", "ask"),
+        ("app.py", "main"),
+        ("app.py", "ask_via_class"),
+        ("gateway.py", "ask_gateway"),
+        ("consumer.py", "run"),
+        ("direct_alias.py", "legacy"),
+    }
+    seen: set[tuple[str, str]] = set()
+    for item in blast.affected:
+        if "ChatCompletion.create" not in item.chain.sdk_method:
+            continue
+        key = (item.chain.call_rel, item.chain.call_symbol)
+        seen.add(key)
+        params = [
+            issue
+            for issue in item.breaks
+            if issue.kind == "param_renamed" and issue.old == "max_tokens"
+        ]
+        assert len(params) == 1, key
+        assert params[0].confidence == item.chain.confidence
+        assert params[0].new == "max_completion_tokens"
+    assert expected <= seen
+
+    aliased = next(
+        item
+        for item in blast.affected
+        if item.chain.call_symbol == "ask_aliased"
+        and "chat.completions.create" in item.chain.sdk_method
+    )
+    aliased_param = next(issue for issue in aliased.breaks if issue.old == "max_tokens")
+    assert aliased.chain.confidence == "medium"
+    assert aliased_param.confidence == "medium"
+
+    http = next(item for item in blast.affected if item.chain.call_symbol == "ask_http")
+    assert http.chain.kind == "http_call"
+    assert not any(issue.kind == "param_renamed" for issue in http.breaks)
+
+    text = format_report(service_map, blast)
+    markdown = format_report(service_map, blast, markdown=True)
+    payload = service_map_to_dict(service_map, blast)
+    for rendered in (text, markdown):
+        assert "app.py:19  main" in rendered
+        main_block = rendered.split("app.py:19  main", 1)[1].split("\n- ", 1)[0]
+        assert "param renamed: max_tokens -> max_completion_tokens" in main_block
+        assert "consumer.py:9  run" in rendered
+    consumer = next(
+        item
+        for item in payload["blast"]["affected"]
+        if item["rel"] == "consumer.py" and item["symbol"] == "run"
+    )
+    assert any(issue["old"] == "max_tokens" for issue in consumer["breaks"])
+    assert consumer["confidence"] == "high"
+
+
+def test_apply_imports_qualified_callee_without_duplicating(tmp_path: Path, monkeypatch):
+    """A rewrite to openai.* gains import openai once, including through a re-export."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CONDUIT_LLM_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        "conduit.patcher.sync_env.sync_bumped_packages",
+        lambda *args, **kwargs: [],
+    )
+    tree = tmp_path / "wrapped"
+    shutil.copytree(FIXTURE, tree)
+    result = CliRunner().invoke(
+        app,
+        ["apply", "--path", str(tree), "--packet", str(PACKET_PATH)],
+    )
+    assert result.exit_code in {0, 1}, result.output
+
+    alias = (tree / "direct_alias.py").read_text(encoding="utf-8")
+    assert "openai.chat.completions.create" in alias
+    assert _import_openai_lines(alias) == 1
+    assert alias.index("from __future__ import annotations") < alias.index("import openai")
+    assert alias.index("import openai") < alias.index("from pkg import ChatCompletion")
+    compile(alias, "direct_alias.py", "exec")
+
+    for rel in ("llm.py", "gateway.py", "pkg/impl.py"):
+        text = (tree / rel).read_text(encoding="utf-8")
+        assert _import_openai_lines(text) == 1, rel
+    for rel in ("app.py", "consumer.py", "http_edge.py", "pkg/__init__.py"):
+        text = (tree / rel).read_text(encoding="utf-8")
+        assert _import_openai_lines(text) == 0, rel
+
+    wrapper = (
+        "import llm\n\n"
+        "def ask(prompt: str) -> str:\n"
+        "    return llm.complete(prompt)\n"
+    )
+    wrapped, n = rewrite_python_call(
+        wrapper, "llm.complete", "openai.chat.completions.create"
+    )
+    assert n == 1
+    assert wrapped.count("import openai") == 1
+    assert "import llm" in wrapped
+    assert "openai.chat.completions.create(prompt)" in wrapped
+    compile(wrapped, "app.py", "exec")
+
+    already = "import openai\n\ndef complete():\n    return openai.ChatCompletion.create()\n"
+    once, n_once = rewrite_python_call(
+        already, "openai.ChatCompletion.create", "openai.chat.completions.create"
+    )
+    assert n_once == 1
+    assert once.count("import openai") == 1
+
+    rebound = "from openai import ChatCompletion\n\nChatCompletion.create()\n"
+    added, n_added = rewrite_python_call(
+        rebound, "ChatCompletion.create", "openai.chat.completions.create"
+    )
+    assert n_added == 1
+    assert added.count("import openai") == 1
+    assert "from openai import ChatCompletion" in added
+
+    submodule = "import openai.chat\n\nopenai.ChatCompletion.create()\n"
+    kept, n_kept = rewrite_python_call(
+        submodule, "openai.ChatCompletion.create", "openai.chat.completions.create"
+    )
+    assert n_kept == 1
+    assert kept.count("import openai") == 1
 
 
 def test_merge_wrapped_skips_non_catalog_packages(tmp_path: Path):
