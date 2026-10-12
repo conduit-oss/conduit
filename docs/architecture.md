@@ -45,6 +45,10 @@ Conduit is a **self-hosted migration engine**. It does not rely on a central pac
 
 After packet apply, `conduit run` still calls `apply_openai_client_chain` for openai client-shape polish (`OpenAI()` + `client.*`, stale pre-1.0 guard strip). That step is openai-only. It is not a generic apply path for other packages. Packet rules alone are not the full openai kill bar. See [OpenAI client chain](migration-packets.md#openai-client-chain).
 
+## Outside-in
+
+Import pruning sees files that mention the SDK. A helper that wraps `openai.ChatCompletion.create` hides every caller that only imports the helper. `conduit map` inventories catalogued services (SDK imports, client constructors, HTTP calls to known hosts) and propagates “touches service X” up the static Python call graph. Watch and apply read that graph so a wrapped call site is a leftover of the packet `old_callee` until the SDK call at the end of the chain is rewritten. See [Outside-in mode](outside-in.md).
+
 Packet `from_version` prefers lockfile jump signals, else the version declared in manifests (`read_installed`). `to_version` comes from signals or `DEPENDENCY_BUMP` rules. See [Migration packets](migration-packets.md).
 
 ## Tiered scoping (why it stays fast)
@@ -63,6 +67,7 @@ AST work runs only on the surviving file set.
 | Path | Role |
 |------|------|
 | `conduit/detect/` | Orchestrator, lockfile diff, module plugins |
+| `conduit/outside_in/` | External-service inventory and Python call graph (outside-in) |
 | `conduit/prune/` | Import pre-filter |
 | `conduit/export_delta/` | Fetch + diff package exports |
 | `conduit/packet/` | Cache, validate, synthesize |

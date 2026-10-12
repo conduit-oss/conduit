@@ -150,6 +150,7 @@ Details: [LLM configuration](docs/llm.md)
 | Testing & self-correct | [docs/testing-and-self-correct.md](docs/testing-and-self-correct.md) |
 | Pull requests | [docs/pull-requests.md](docs/pull-requests.md) |
 | CLI reference | [docs/cli-reference.md](docs/cli-reference.md) |
+| Outside-in mode | [docs/outside-in.md](docs/outside-in.md) |
 | Advanced: detection | [docs/detection.md](docs/detection.md) |
 | Advanced: pruning & export delta | [docs/pruning-and-export-delta.md](docs/pruning-and-export-delta.md) |
 | Advanced: detect modules (factory) | [docs/detect-modules.md](docs/detect-modules.md) |

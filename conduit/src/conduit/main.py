@@ -626,6 +626,61 @@ def watch_cmd(
     raise typer.Exit(verdict.exit_code)
 
 
+@app.command("map")
+def map_cmd(
+    path: Path = typer.Option(Path("."), "--path", help="Repo root to trace"),
+    service: Optional[str] = typer.Option(
+        None,
+        "--service",
+        help="Limit to one service or module (openai, stripe, anthropic, twilio, boto3, or a module name)",
+    ),
+    packet: Optional[str] = typer.Option(
+        None,
+        "--packet",
+        help="Packet file or http(s) URL; adds blast radius for that hop",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable service map"),
+    markdown: bool = typer.Option(
+        False, "--markdown", help="Markdown report instead of the terminal report"
+    ),
+) -> None:
+    """Trace external services inward through wrappers to call sites.
+
+    Read-only. Python only. With --packet, each chain lists what that hop
+    would break (method rename, param drop, response field) and a confidence.
+    """
+    root = _resolve_root(path)
+    data: dict | None = None
+    if packet:
+        packet_file, _name = _resolve_packet_arg(
+            str(packet), root=root, allow_package_name=False
+        )
+        if packet_file is None or not packet_file.is_file():
+            console.print("[red]--packet must be a file path or http(s) URL.[/red]")
+            raise typer.Exit(2)
+        data = json.loads(packet_file.read_text(encoding="utf-8"))
+        errors = validate_packet(data)
+        if errors:
+            for err in errors:
+                console.print(f"[red]schema:[/red] {err}")
+            raise typer.Exit(1)
+
+    from conduit.outside_in.bridge import build_service_map
+    from conduit.outside_in.report import format_report, service_map_to_dict
+
+    service_map, blast = build_service_map(root, service=service, packet=data)
+    if json_out:
+        console.print_json(data=service_map_to_dict(service_map, blast))
+    else:
+        console.print(
+            format_report(service_map, blast, markdown=markdown),
+            markup=False,
+            highlight=False,
+            soft_wrap=True,
+            end="",
+        )
+
+
 @app.command("apply")
 def apply_cmd(
     path: Path = typer.Option(Path("."), "--path"),
@@ -650,7 +705,11 @@ def apply_cmd(
             console.print(f"[red]schema:[/red] {err}")
         raise typer.Exit(1)
     data, _src = _prepare_client_packet(root, data)
+    from conduit.outside_in.bridge import direct_entry_scope, merge_allowlist
+
     files = prune_by_imports(root, dependency_packages(data))
+    extra_files, context_rels = direct_entry_scope(root, dependency_packages(data))
+    files = merge_allowlist(files, extra_files)
     sdk_rules, rest_rules, _post, _unknown = partition_rules(list(data.get("rules") or []))
     console.print(f"Applying SDK rules ({len(sdk_rules)})…")
     console.print(f"Applying REST rules ({len(rest_rules)})…")
@@ -673,6 +732,7 @@ def apply_cmd(
         dry_run=dry_run,
         file_allowlist=files or None,
         path_defer=impact.defer_paths,
+        context_rels=context_rels,
     )
     if gitignore_rel and gitignore_rel not in report.files_modified:
         report.files_modified.append(gitignore_rel)
@@ -1116,10 +1176,14 @@ def _run_pipeline(
     before_expand = len(files)
     files = expand_allowlist_for_exact_rules(root, files, pkt)
     files = expand_apply_allowlist_oracle(root, files, pkt, changed_files=None)
+    from conduit.outside_in.bridge import direct_entry_scope, merge_allowlist
+
+    extra_files, context_rels = direct_entry_scope(root, pkgs)
+    files = merge_allowlist(files, extra_files)
     if len(files) != before_expand:
         console.print(
             f"Expanded apply allowlist to {len(files)} file(s) "
-            f"(+{len(files) - before_expand} for string-rule hits)"
+            f"(+{len(files) - before_expand} config, oracle, or outside-in files)"
         )
     sdk_rules, rest_rules, _post, _unknown = partition_rules(list(pkt.get("rules") or []))
     console.print(f"Applying SDK rules ({len(sdk_rules)})…")
@@ -1149,6 +1213,7 @@ def _run_pipeline(
         dry_run=False,
         file_allowlist=files or None,
         path_defer=impact.defer_paths,
+        context_rels=context_rels,
     )
     if gitignore_rel and gitignore_rel not in report.files_modified:
         report.files_modified.append(gitignore_rel)
@@ -1215,6 +1280,9 @@ def _run_pipeline(
         packet=pkt,
         files=files,
     )
+    from conduit.outside_in.bridge import merge_wrapped_leftovers
+
+    leftover_items = merge_wrapped_leftovers(root, pkt, leftover_items)
     leftover_lines = [item.display() for item in leftover_items]
     if leftover_items:
         handoff = leftover_handoff_paths(leftover_items)

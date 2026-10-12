@@ -105,7 +105,9 @@ def scan_packet_leftovers(root: Path, packet: dict) -> list[Leftover]:
                         lineno=residual.line,
                     )
                 )
-    return leftovers
+    from conduit.outside_in.bridge import merge_wrapped_leftovers
+
+    return merge_wrapped_leftovers(root, packet, leftovers)
 
 
 def evaluate_apply_leftovers(*, root: Path, packet: dict) -> ApplyLeftoverVerdict:
