@@ -1,0 +1,29 @@
+openapi: 3.0.3
+info:
+  title: Stripe webhooks
+  version: "2024-11-20"
+paths: {}
+components:
+  schemas:
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        data:
+          $ref: "#/components/schemas/EventData"
+    EventData:
+      type: object
+      properties:
+        object:
+          $ref: "#/components/schemas/Charge"
+    Charge:
+      type: object
+      properties:
+        id:
+          type: string
+        amount_minor:
+          type: integer
+          description: Renamed from amount

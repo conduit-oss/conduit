@@ -108,10 +108,11 @@ def format_report(
             f"({wrapper}, {chain.confidence})"
         )
         lines.append(f"  path: {chain_path(chain)}")
-        if chain.params:
+        if chain.params and chain.kind != "webhook":
             lines.append(f"  sdk params: {', '.join(chain.params)}")
         if chain.response_fields:
-            lines.append(f"  response fields: {', '.join(chain.response_fields)}")
+            label = "payload fields" if chain.kind == "webhook" else "response fields"
+            lines.append(f"  {label}: {', '.join(chain.response_fields)}")
         item = break_by_site.get(_site_key(chain))
         if item is not None:
             if item.breaks:

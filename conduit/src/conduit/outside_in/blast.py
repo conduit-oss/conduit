@@ -24,6 +24,9 @@ def blast_radius(service_map: ServiceMap, packet: dict) -> BlastReport:
     for chain in service_map.chains:
         if chain.package != package and chain.service != package:
             continue
+        # Subscript reads and exception references are impact sites, not packet calls.
+        if chain.kind.endswith("_response") or chain.kind.endswith("_ref"):
+            continue
         breaks = tuple(_breaks_for(chain, rules))
         affected.append(Affected(chain=chain, breaks=breaks))
     report = BlastReport(

@@ -26,6 +26,7 @@ class FeedWatch:
     warnings: list[str] = field(default_factory=list)
     hits: list[FeedHit] = field(default_factory=list)
     packets: list[dict] = field(default_factory=list)
+    impacts: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -34,6 +35,7 @@ class FeedWatch:
             "warnings": list(self.warnings),
             "packet_ids": [str(packet.get("packet_id") or "") for packet in self.packets],
             "packets": self.packets,
+            "impacts": self.impacts,
         }
 
 
@@ -61,13 +63,54 @@ def watch_outside(
             except Exception as exc:
                 client.warnings.append(f"{source.name} {target.service_id}: {exc}")
     packets, problems = packets_from_hits(hits)
+    impact_root = _impact_fixtures(client)
+    impacts: list[dict] = []
+    if impact_root is not None:
+        from conduit.impact.report import impacts_to_dicts
+        from conduit.impact.run import collect_impacts
+
+        found, diffed, _notes = collect_impacts(
+            root,
+            service_map,
+            fixtures=impact_root,
+            hits=hits,
+            allow_network=client.allow_network,
+        )
+        impacts = impacts_to_dicts(found)
+        # A version number alone is not a notice. Once the released surface
+        # was compared, drop a bump-only packet and keep the line-by-line impact.
+        packets = [
+            packet
+            for packet in packets
+            if not (_bump_only(packet) and str(packet.get("package") or "").lower() in diffed)
+        ]
     return FeedWatch(
         services=[target.service_id for target in targets],
         skipped=skipped,
         warnings=[*client.warnings, *problems],
         hits=hits,
         packets=packets,
+        impacts=impacts,
     )
+
+
+def _impact_fixtures(client: FeedClient) -> Path | None:
+    """Recorded wheels and schemas next to a feed fixture directory."""
+    if client.root is None:
+        return None
+    for candidate in (client.root.parent / "impact", client.root / "impact"):
+        if (candidate / "index.json").is_file():
+            return candidate
+    return None
+
+
+def _bump_only(packet: dict) -> bool:
+    rules = [rule for rule in (packet.get("rules") or []) if isinstance(rule, dict)]
+    if not rules:
+        return False
+    if any(str(rule.get("type") or "") != "DEPENDENCY_BUMP" for rule in rules):
+        return False
+    return not packet.get("side_effects")
 
 
 def targets_for_map(

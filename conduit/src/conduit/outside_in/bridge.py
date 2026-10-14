@@ -45,7 +45,7 @@ def merge_wrapped_leftovers(
     existing = {(item.rel, item.lineno) for item in leftovers}
     out = list(leftovers)
     for chain in service_map.chains:
-        if chain.kind not in {"sdk_call"}:
+        if chain.kind not in {"sdk_call", "db_call", "cloud_call"}:
             continue
         matched = _matching_old_callee(chain, packet)
         if matched is None:
@@ -85,7 +85,16 @@ def direct_entry_scope(
     for chain in service_map.chains:
         if chain.via_wrapper:
             continue
-        if chain.kind not in {"sdk_call", "sdk_constructor", "http_call"}:
+        if chain.kind not in {
+            "sdk_call",
+            "sdk_constructor",
+            "db_call",
+            "db_constructor",
+            "cloud_call",
+            "cloud_constructor",
+            "http_call",
+            "webhook",
+        }:
             continue
         rels.add(chain.call_rel)
     paths: list[Path] = []

@@ -44,12 +44,21 @@ Apply rewrites the SDK call in the wrapper, which already imports the package. I
 
 Local libraries such as pydantic are not in the service catalog. Their Watch behavior stays the import-and-call scanner.
 
+The same graph covers database drivers (SQLAlchemy, psycopg, psycopg2, pymongo, redis, asyncpg), cloud SDKs (boto3 calls as `s3.put_object`, `google-cloud-*`, `azure-*`), and incoming Stripe, GitHub, and Twilio webhook routes. `conduit impact --dep <name>` diffs the pinned client against a newer released surface and prints the lines that use the changed call, parameter, or payload field. It is not a dependency bumper.
+
+```bash
+conduit impact --dep sqlalchemy --path ./examples/service-clients --fixtures ./conduit/fixtures/impact
+```
+
 ## Limitations
 
 - JS/TS is a seam (`analyze_repo`) and is not implemented.
 - `getattr`, `globals()`, parameters that hold a callable, and dependency-injection containers are invisible. `examples/wrapped-openai-fixture/dynamic_gap.py` is the deliberate miss.
 - Binding inside a function is not flow-sensitive. Positional argument forwarding is not matched to SDK parameter names. Star-imports are inventoried and not bound.
 - Tests directories are skipped.
+- A cloud service name that is not a string literal is not attached to the operation.
+- Webhook payload fields are the ones read in the handler and a helper it calls in the same file.
+- Conduit is not a Dependabot replacement. Ordinary libraries are not version-tracked.
 - A re-exported call rewritten to a qualified `openai...` callee does not gain an `import openai` by itself.
 
 A real consumer to try next is [lm-sys/FastChat](https://github.com/lm-sys/FastChat) at the commit before PR 3032 (`98b8f642`), which wraps the OpenAI 0.28 client the same way this fixture does.

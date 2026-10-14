@@ -39,6 +39,8 @@ class Binding:
     target: str = ""
     qualname: str = ""
     confidence: str = "high"
+    #: AWS service from ``client("s3")`` / ``resource("s3")``, when it is a literal.
+    cloud_service: str = ""
 
 
 UNKNOWN = Binding("unknown")
@@ -180,17 +182,21 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
                     )
                 continue
             kind = _sdk_kind(spec, binding)
-            method = binding.target
-            directs.append(
-                _make_direct(
-                    unit,
-                    call,
-                    spec=spec,
-                    sdk_method=method,
-                    kind=kind,
-                    confidence=confidence,
-                )
+            method = _cloud_method(spec, binding, call, unit)
+            direct = _make_direct(
+                unit,
+                call,
+                spec=spec,
+                sdk_method=method,
+                kind=kind,
+                confidence=confidence,
             )
+            directs.append(direct)
+            directs.extend(_response_directs(unit, call, direct))
+    from conduit.outside_in.webhooks import webhook_directs
+
+    directs.extend(webhook_directs(units, specs))
+    directs.extend(_exception_refs(units, resolver, specs))
     chains = _propagate(directs, edges)
     entries.extend(_entries_from_directs(directs))
     entries = _dedupe_entries(entries)
@@ -381,15 +387,13 @@ class _Resolver:
         out: list[Entry] = []
         for raw in unit.imports:
             if raw.imported == "*":
-                spec = service_for_module(raw.module.split(".")[0], specs) if raw.module else None
-                if spec is None and raw.level == 0:
-                    spec = service_for_module(raw.module, specs)
+                spec = service_for_module(raw.module, specs) if raw.module else None
                 if spec is not None:
                     out.append(
                         Entry(
                             service=spec.service_id,
                             package=spec.package,
-                            kind="sdk_import",
+                            kind=f"{_kind_prefix(spec)}_import",
                             rel=rel,
                             lineno=raw.lineno,
                             symbol=f"from {raw.module} import *",
@@ -404,7 +408,8 @@ class _Resolver:
             spec = _service_of(binding, specs)
             if spec is None:
                 continue
-            kind = "sdk_import" if raw.imported is None else "sdk_alias"
+            base = _kind_prefix(spec)
+            kind = f"{base}_import" if raw.imported is None else f"{base}_alias"
             symbol = binding.target or raw.local
             detail = raw.local if raw.local == symbol else f"{raw.local} = {symbol}"
             out.append(
@@ -523,7 +528,8 @@ class _Resolver:
             return self._attribute(base, node.attr)
         if isinstance(node, ast.Call):
             func = self._resolve_expr(node.func, unit, enclosing, stack)
-            return self._call_result(func)
+            cloud = _factory_service(func, node, unit, enclosing) or func.cloud_service
+            return self._call_result(func, cloud_service=cloud)
         return UNKNOWN
 
     def _resolve_name(
@@ -569,6 +575,7 @@ class _Resolver:
                         instanced.target,
                         instanced.qualname,
                         confidence=min_confidence(instanced.confidence, "medium"),
+                        cloud_service=instanced.cloud_service,
                     )
             return UNKNOWN
         finally:
@@ -580,6 +587,7 @@ class _Resolver:
                 "external_attr",
                 f"{base.target}.{attr}",
                 confidence=base.confidence,
+                cloud_service=base.cloud_service,
             )
         if base.kind == "instance_local":
             method = f"{base.qualname}.{attr}"
@@ -606,7 +614,7 @@ class _Resolver:
             return UNKNOWN
         return UNKNOWN
 
-    def _call_result(self, func: Binding) -> Binding:
+    def _call_result(self, func: Binding, cloud_service: str = "") -> Binding:
         if func.kind == "symbol":
             key = _sym(func.target, func.qualname)
             returned = self._returns.get(key)
@@ -616,14 +624,26 @@ class _Resolver:
                     returned.target,
                     returned.qualname,
                     confidence=min_confidence(returned.confidence, "medium"),
+                    cloud_service=returned.cloud_service or cloud_service,
                 )
             unit = self.units.get(func.target)
             defn = unit.defs.get(func.qualname) if unit is not None else None
             if defn is not None and defn.kind == "class":
-                return Binding("instance_local", func.target, func.qualname, func.confidence)
+                return Binding(
+                    "instance_local",
+                    func.target,
+                    func.qualname,
+                    func.confidence,
+                    cloud_service=cloud_service,
+                )
             return UNKNOWN
         if func.kind in {"external_attr", "external_module"}:
-            return Binding("instance_external", func.target, confidence=func.confidence)
+            return Binding(
+                "instance_external",
+                func.target,
+                confidence=func.confidence,
+                cloud_service=cloud_service or func.cloud_service,
+            )
         return UNKNOWN
 
 
@@ -662,13 +682,19 @@ def _params_of(unit: ModUnit, enclosing: str) -> set[str]:
 
 def _as_instance(binding: Binding) -> Binding:
     if binding.kind == "external_attr":
-        return Binding("instance_external", binding.target, confidence=binding.confidence)
+        return Binding(
+            "instance_external",
+            binding.target,
+            confidence=binding.confidence,
+            cloud_service=binding.cloud_service,
+        )
     if binding.kind == "symbol":
         return Binding(
             "instance_local",
             binding.target,
             binding.qualname,
             confidence=binding.confidence,
+            cloud_service=binding.cloud_service,
         )
     if binding.kind in {"instance_external", "instance_local"}:
         return binding
@@ -678,8 +704,39 @@ def _as_instance(binding: Binding) -> Binding:
 def _service_of(binding: Binding, specs: tuple[ServiceSpec, ...]) -> ServiceSpec | None:
     if binding.kind not in {"external_attr", "external_module", "instance_external"}:
         return None
-    root = binding.target.split(".", 1)[0]
-    return service_for_module(root, specs)
+    return service_for_module(binding.target, specs)
+
+
+def _kind_prefix(spec: ServiceSpec) -> str:
+    if spec.kind == "database":
+        return "db"
+    if spec.kind == "cloud":
+        return "cloud"
+    return "sdk"
+
+
+_FACTORY_TAILS = frozenset({"client", "resource"})
+
+
+def _factory_service(
+    func: Binding,
+    node: ast.Call,
+    unit: ModUnit,
+    enclosing: str,
+) -> str:
+    """Literal AWS service passed to ``boto3.client`` / ``resource``."""
+    if func.kind not in {"external_attr", "external_module", "instance_external"}:
+        return ""
+    parts = func.target.split(".")
+    if not parts or parts[-1] not in _FACTORY_TAILS:
+        return ""
+    root = parts[0]
+    if root not in {"boto3", "botocore"} and "Session" not in func.target:
+        return ""
+    if not node.args:
+        return ""
+    found = _const_str(node.args[0], unit, enclosing)
+    return found.strip() if found else ""
 
 
 def _symbol_target(
@@ -698,9 +755,18 @@ def _symbol_target(
 
 def _sdk_kind(spec: ServiceSpec, binding: Binding) -> str:
     tail = binding.target.split(".")[-1]
+    prefix = _kind_prefix(spec)
     if tail in spec.constructor_tails and binding.target.count(".") <= 2:
-        return "sdk_constructor"
-    return "sdk_call"
+        return f"{prefix}_constructor"
+    return f"{prefix}_call"
+
+
+def _cloud_method(spec: ServiceSpec, binding: Binding, call: CallRec, unit: ModUnit) -> str:
+    cloud = binding.cloud_service or _factory_service(binding, call.node, unit, call.enclosing)
+    if spec.kind == "cloud" and cloud:
+        tail = binding.target.split(".")[-1]
+        return f"{cloud}.{tail}"
+    return binding.target
 
 
 def _http_service(
@@ -776,6 +842,262 @@ def _make_direct(
         returns_raw=returns_raw,
         confidence=confidence,
     )
+
+
+def _response_directs(unit: ModUnit, call: CallRec, direct: _Direct) -> list[_Direct]:
+    """Subscript reads of a call's return value, on their own lines."""
+    scope = _scope_node(unit, call.enclosing)
+    names = _assigned_names(scope, call.node)
+    sites = _subscript_sites(scope, names, call.node)
+    if not sites:
+        return []
+    kind = _response_kind(direct.kind)
+    found: list[_Direct] = []
+    for lineno, expr, path in sites:
+        found.append(
+            _Direct(
+                rel=direct.rel,
+                enclosing=direct.enclosing,
+                lineno=lineno,
+                expr=expr,
+                service=direct.service,
+                package=direct.package,
+                sdk_method=direct.sdk_method,
+                kind=kind,
+                params=(),
+                response_fields=(path,),
+                returns_raw=False,
+                confidence=direct.confidence,
+            )
+        )
+    return found
+
+
+def _response_kind(kind: str) -> str:
+    if kind.endswith("_call"):
+        return kind[: -len("_call")] + "_response"
+    if kind.endswith("_constructor"):
+        return kind[: -len("_constructor")] + "_response"
+    return kind + "_response"
+
+
+def _subscript_sites(
+    scope: ast.AST, names: tuple[str, ...], call: ast.Call
+) -> list[tuple[int, str, str]]:
+    wanted = set(names)
+    nodes = [node for node in _iter_scope(scope) if isinstance(node, ast.Subscript)]
+    inner = {id(node.value) for node in nodes if isinstance(node.value, ast.Subscript)}
+    found: list[tuple[int, str, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for node in nodes:
+        if id(node) in inner:
+            continue
+        path = ""
+        parsed = _use_path(node)
+        if parsed is not None:
+            root, candidate = parsed
+            if root in wanted and "[" in candidate:
+                path = candidate
+        if not path and _rooted_at_call(node, call):
+            path = _call_subscript_path(node, call)
+        if "[" not in path:
+            continue
+        expr = _unparse(node)
+        key = (node.lineno, expr)
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append((node.lineno or 0, expr, path))
+    return found
+
+
+def _rooted_at_call(node: ast.AST, call: ast.Call) -> bool:
+    cur: ast.AST | None = node
+    while isinstance(cur, (ast.Subscript, ast.Attribute)):
+        cur = cur.value
+    return cur is call
+
+
+def _call_subscript_path(node: ast.Subscript, call: ast.Call) -> str:
+    parts: list[str] = []
+    cur: ast.AST | None = node
+    while cur is not call and isinstance(cur, ast.Subscript):
+        parts.append(_slice_text(cur.slice))
+        cur = cur.value
+    if cur is not call:
+        return ""
+    parts.reverse()
+    return "".join(parts)
+
+
+def _unparse(node: ast.AST) -> str:
+    try:
+        return ast.unparse(node)
+    except (TypeError, ValueError):
+        return "<expr>"
+
+
+def _exception_refs(
+    units: dict[str, ModUnit],
+    resolver: _Resolver,
+    specs: tuple[ServiceSpec, ...],
+) -> list[_Direct]:
+    """References to exception classes: except, isinstance, retry lists, attributes."""
+    found: list[_Direct] = []
+    seen: set[tuple[str, int, str]] = set()
+    for rel, unit in units.items():
+        callee_ids = _callee_ids(unit.tree)
+        _RefScan(unit, resolver, specs, callee_ids, found, seen).visit(unit.tree)
+    return found
+
+
+def _callee_ids(tree: ast.AST) -> set[int]:
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        cur: ast.AST | None = node.func
+        while isinstance(cur, (ast.Attribute, ast.Subscript, ast.Call, ast.Name)):
+            found.add(id(cur))
+            if isinstance(cur, ast.Call):
+                cur = cur.func
+            elif isinstance(cur, ast.Name):
+                break
+            else:
+                cur = cur.value
+    return found
+
+
+def _exception_like(target: str) -> bool:
+    parts = [part for part in target.split(".") if part]
+    if not parts:
+        return False
+    tail = parts[-1]
+    if not tail[:1].isupper():
+        return False
+    if tail.endswith("Error") or tail.endswith("Exception"):
+        return True
+    return any(part in {"error", "errors", "exceptions", "_exceptions"} for part in parts[:-1])
+
+
+class _RefScan(ast.NodeVisitor):
+    def __init__(
+        self,
+        unit: ModUnit,
+        resolver: _Resolver,
+        specs: tuple[ServiceSpec, ...],
+        callee_ids: set[int],
+        found: list[_Direct],
+        seen: set[tuple[str, int, str]],
+    ) -> None:
+        self.unit = unit
+        self.resolver = resolver
+        self.specs = specs
+        self.callee_ids = callee_ids
+        self.found = found
+        self.seen = seen
+        self.enclosing = "<module>"
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        previous = self.enclosing
+        for deco in node.decorator_list:
+            self.visit(deco)
+        self.enclosing = node.name if previous == "<module>" else f"{previous}.{node.name}"
+        for stmt in node.body:
+            self.visit(stmt)
+        self.enclosing = previous
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._function(node)
+
+    def _function(self, node: ast.AST) -> None:
+        assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        previous = self.enclosing
+        for deco in node.decorator_list:
+            self.visit(deco)
+        for default in list(node.args.defaults) + [item for item in node.args.kw_defaults if item is not None]:
+            self.visit(default)
+        self.enclosing = node.name if previous == "<module>" else f"{previous}.{node.name}"
+        for stmt in node.body:
+            self.visit(stmt)
+        self.enclosing = previous
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.type is not None:
+            for expr in _atomic_exprs(node.type):
+                self._record(expr, force=True)
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = ""
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            name = node.func.attr
+        if name == "isinstance" and len(node.args) >= 2:
+            for expr in _atomic_exprs(node.args[1]):
+                self._record(expr, force=True)
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self._record(node, force=False)
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self._record(node, force=False)
+
+    def _record(self, expr: ast.AST, *, force: bool) -> None:
+        if id(expr) in self.callee_ids:
+            return
+        binding = self.resolver._resolve_expr(expr, self.unit, self.enclosing, set())
+        spec = _service_of(binding, self.specs)
+        if spec is None or not binding.target:
+            return
+        if not force and not _exception_like(binding.target):
+            return
+        if force and not _exception_like(binding.target) and binding.kind not in {
+            "external_attr",
+            "external_module",
+            "instance_external",
+        }:
+            return
+        key = (self.unit.rel, getattr(expr, "lineno", 0) or 0, binding.target)
+        if key in self.seen:
+            return
+        self.seen.add(key)
+        self.found.append(
+            _Direct(
+                rel=self.unit.rel,
+                enclosing=self.enclosing,
+                lineno=key[1],
+                expr=_unparse(expr),
+                service=spec.service_id,
+                package=spec.package,
+                sdk_method=binding.target,
+                kind=f"{_kind_prefix(spec)}_ref",
+                params=(),
+                response_fields=(),
+                returns_raw=False,
+                confidence=binding.confidence or "high",
+            )
+        )
+
+
+def _atomic_exprs(node: ast.AST) -> list[ast.AST]:
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        found: list[ast.AST] = []
+        for elt in node.elts:
+            found.extend(_atomic_exprs(elt))
+        return found
+    if isinstance(node, ast.Starred):
+        return _atomic_exprs(node.value)
+    return [node]
 
 
 def _make_edge(
@@ -967,6 +1289,8 @@ def _propagate(directs: list[_Direct], edges: list[_Edge]) -> list[Chain]:
             via_wrapper=False,
         )
         chains.append(initial)
+        if direct.kind.endswith("_response") or direct.kind.endswith("_ref"):
+            continue
         queue: list[tuple[Chain, str, tuple[str, ...], bool]] = [
             (initial, origin, (origin,), direct.returns_raw)
         ]

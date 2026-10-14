@@ -7,7 +7,7 @@ conduit --help
 conduit <command> --help
 ```
 
-Top-level `--help` keeps map, watch, apply, service, packet, verify, and run in **Commands**. `detect` and `module` appear under **Advanced**.
+Top-level `--help` keeps map, watch, impact, apply, service, packet, verify, and run in **Commands**. `detect` and `module` appear under **Advanced**.
 
 ## Global options
 
@@ -92,7 +92,7 @@ Exit `0` if any signals, else `1`.
 
 Two modes.
 
-**Feed watch** (no `--packet`). Read the map, keep catalogued outside services, and poll the feeds they already publish: GitHub releases Atom, PyPI, npm (only if this repo pins the npm package), a public OpenAPI pair, and a changelog or deprecation page. Each change becomes a migration packet (what changed, old name to new name, which version). Internal modules are skipped. `--feeds` points at recorded fixtures so tests and demos do not use the network. Omit it to fetch the public URLs.
+**Feed watch** (no `--packet`). Read the map, keep outside services (API clients, database drivers, cloud SDKs, incoming webhooks), and poll the feeds they already publish. When a newer release has a recorded or fetched API surface, `impacts` lists each broken call and payload field with `file:line` and a confidence. A version bump with no call-site hit is not reported. This is not a Dependabot notification. Internal modules are skipped. `--feeds` points at recorded fixtures so tests and demos do not use the network. Omit it to fetch the public URLs. Recorded wheels and schemas live next to that directory in `conduit/fixtures/impact`.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -100,7 +100,7 @@ Two modes.
 | `--feeds` | live HTTP | Fixture directory (`index.json` maps each URL to a file) |
 | `--out` | none | Write one JSON packet per file |
 | `--service` | every service on the map | One catalogued service |
-| `--json` | false | `{services, skipped, warnings, packets}` |
+| `--json` | false | `{services, skipped, warnings, packets, impacts}` |
 
 Exit `0` after a feed pass, including when nothing changed. Exit `2` when `--path` or `--feeds` is not a directory.
 
@@ -141,7 +141,7 @@ conduit watch \
 
 ## `conduit map`
 
-Read-only outside-in trace. Inventory external SDK and REST entry points, follow user wrappers, and (with `--packet`) report the blast radius of that hop.
+Read-only outside-in trace. Inventory API clients, database drivers, cloud calls (service + operation), and incoming webhook handlers. Follow user wrappers. With `--packet`, report the blast radius of that hop.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -152,6 +152,28 @@ Read-only outside-in trace. Inventory external SDK and REST entry points, follow
 | `--markdown` | false | Markdown report |
 
 Exit `2` when `--path` is not a directory or `--packet` is missing or invalid. Exit `1` when the packet fails schema validation. Exit `0` after a scan, including an empty map.
+
+## `conduit impact`
+
+On-demand line-by-line impact for one outside service. Compares the pinned client with `--to`, or with the newer surface in `--fixtures`. Diffs public API wheels, a botocore service model, a webhook payload schema, and changelog hints. Prints only call sites in this repo. Does not edit the lockfile.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path` | `.` | Repo root |
+| `--dep` | required | Service or client (`sqlalchemy`, `boto3`, `stripe`, `acme-sdk`) |
+| `--to` | recorded newer surface | Version to compare against the pin |
+| `--from` | the pin in this repo | Version to compare from when the repo does not pin one, or the pin does not match a recorded surface |
+| `--fixtures` | none (fetch small wheels from PyPI) | Offline wheels, models, and schemas |
+| `--json` | false | `{dependency, impacts, notes}` |
+
+Exit `2` when `--dep` is an ordinary library, or `--path` / `--fixtures` is missing. Exit `0` when the check finishes. If the repo does not pin the client and `--from` is omitted, the text is `not compared: no pinned version found` rather than an all-clear. A pin that does not match a recorded surface is the same kind of miss. An all-clear means the surfaces were compared and no call site was hit.
+
+```bash
+conduit impact \
+  --dep boto3 \
+  --path ./examples/service-clients \
+  --fixtures ./conduit/fixtures/impact
+```
 
 ## `conduit service`
 

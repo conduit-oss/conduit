@@ -1,0 +1,2 @@
+Client.complete is deprecated.
+max_tokens renamed to max_completion_tokens.
