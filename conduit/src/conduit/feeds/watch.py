@@ -69,7 +69,7 @@ def watch_outside(
         from conduit.impact.report import impacts_to_dicts
         from conduit.impact.run import collect_impacts
 
-        found, diffed = collect_impacts(
+        found, diffed, _notes = collect_impacts(
             root,
             service_map,
             fixtures=impact_root,

@@ -17,6 +17,9 @@ class ApiChange:
     confidence: str
     source: str
     service: str = ""
+    #: Public names from the old wheel, such as ``openai.ChatCompletion.create``
+    #: when ``symbol`` is the defining ``openai.api_resources...`` path.
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

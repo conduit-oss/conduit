@@ -183,19 +183,20 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
                 continue
             kind = _sdk_kind(spec, binding)
             method = _cloud_method(spec, binding, call, unit)
-            directs.append(
-                _make_direct(
-                    unit,
-                    call,
-                    spec=spec,
-                    sdk_method=method,
-                    kind=kind,
-                    confidence=confidence,
-                )
+            direct = _make_direct(
+                unit,
+                call,
+                spec=spec,
+                sdk_method=method,
+                kind=kind,
+                confidence=confidence,
             )
+            directs.append(direct)
+            directs.extend(_response_directs(unit, call, direct))
     from conduit.outside_in.webhooks import webhook_directs
 
     directs.extend(webhook_directs(units, specs))
+    directs.extend(_exception_refs(units, resolver, specs))
     chains = _propagate(directs, edges)
     entries.extend(_entries_from_directs(directs))
     entries = _dedupe_entries(entries)
@@ -843,6 +844,262 @@ def _make_direct(
     )
 
 
+def _response_directs(unit: ModUnit, call: CallRec, direct: _Direct) -> list[_Direct]:
+    """Subscript reads of a call's return value, on their own lines."""
+    scope = _scope_node(unit, call.enclosing)
+    names = _assigned_names(scope, call.node)
+    sites = _subscript_sites(scope, names, call.node)
+    if not sites:
+        return []
+    kind = _response_kind(direct.kind)
+    found: list[_Direct] = []
+    for lineno, expr, path in sites:
+        found.append(
+            _Direct(
+                rel=direct.rel,
+                enclosing=direct.enclosing,
+                lineno=lineno,
+                expr=expr,
+                service=direct.service,
+                package=direct.package,
+                sdk_method=direct.sdk_method,
+                kind=kind,
+                params=(),
+                response_fields=(path,),
+                returns_raw=False,
+                confidence=direct.confidence,
+            )
+        )
+    return found
+
+
+def _response_kind(kind: str) -> str:
+    if kind.endswith("_call"):
+        return kind[: -len("_call")] + "_response"
+    if kind.endswith("_constructor"):
+        return kind[: -len("_constructor")] + "_response"
+    return kind + "_response"
+
+
+def _subscript_sites(
+    scope: ast.AST, names: tuple[str, ...], call: ast.Call
+) -> list[tuple[int, str, str]]:
+    wanted = set(names)
+    nodes = [node for node in _iter_scope(scope) if isinstance(node, ast.Subscript)]
+    inner = {id(node.value) for node in nodes if isinstance(node.value, ast.Subscript)}
+    found: list[tuple[int, str, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for node in nodes:
+        if id(node) in inner:
+            continue
+        path = ""
+        parsed = _use_path(node)
+        if parsed is not None:
+            root, candidate = parsed
+            if root in wanted and "[" in candidate:
+                path = candidate
+        if not path and _rooted_at_call(node, call):
+            path = _call_subscript_path(node, call)
+        if "[" not in path:
+            continue
+        expr = _unparse(node)
+        key = (node.lineno, expr)
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append((node.lineno or 0, expr, path))
+    return found
+
+
+def _rooted_at_call(node: ast.AST, call: ast.Call) -> bool:
+    cur: ast.AST | None = node
+    while isinstance(cur, (ast.Subscript, ast.Attribute)):
+        cur = cur.value
+    return cur is call
+
+
+def _call_subscript_path(node: ast.Subscript, call: ast.Call) -> str:
+    parts: list[str] = []
+    cur: ast.AST | None = node
+    while cur is not call and isinstance(cur, ast.Subscript):
+        parts.append(_slice_text(cur.slice))
+        cur = cur.value
+    if cur is not call:
+        return ""
+    parts.reverse()
+    return "".join(parts)
+
+
+def _unparse(node: ast.AST) -> str:
+    try:
+        return ast.unparse(node)
+    except (TypeError, ValueError):
+        return "<expr>"
+
+
+def _exception_refs(
+    units: dict[str, ModUnit],
+    resolver: _Resolver,
+    specs: tuple[ServiceSpec, ...],
+) -> list[_Direct]:
+    """References to exception classes: except, isinstance, retry lists, attributes."""
+    found: list[_Direct] = []
+    seen: set[tuple[str, int, str]] = set()
+    for rel, unit in units.items():
+        callee_ids = _callee_ids(unit.tree)
+        _RefScan(unit, resolver, specs, callee_ids, found, seen).visit(unit.tree)
+    return found
+
+
+def _callee_ids(tree: ast.AST) -> set[int]:
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        cur: ast.AST | None = node.func
+        while isinstance(cur, (ast.Attribute, ast.Subscript, ast.Call, ast.Name)):
+            found.add(id(cur))
+            if isinstance(cur, ast.Call):
+                cur = cur.func
+            elif isinstance(cur, ast.Name):
+                break
+            else:
+                cur = cur.value
+    return found
+
+
+def _exception_like(target: str) -> bool:
+    parts = [part for part in target.split(".") if part]
+    if not parts:
+        return False
+    tail = parts[-1]
+    if not tail[:1].isupper():
+        return False
+    if tail.endswith("Error") or tail.endswith("Exception"):
+        return True
+    return any(part in {"error", "errors", "exceptions", "_exceptions"} for part in parts[:-1])
+
+
+class _RefScan(ast.NodeVisitor):
+    def __init__(
+        self,
+        unit: ModUnit,
+        resolver: _Resolver,
+        specs: tuple[ServiceSpec, ...],
+        callee_ids: set[int],
+        found: list[_Direct],
+        seen: set[tuple[str, int, str]],
+    ) -> None:
+        self.unit = unit
+        self.resolver = resolver
+        self.specs = specs
+        self.callee_ids = callee_ids
+        self.found = found
+        self.seen = seen
+        self.enclosing = "<module>"
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        previous = self.enclosing
+        for deco in node.decorator_list:
+            self.visit(deco)
+        self.enclosing = node.name if previous == "<module>" else f"{previous}.{node.name}"
+        for stmt in node.body:
+            self.visit(stmt)
+        self.enclosing = previous
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._function(node)
+
+    def _function(self, node: ast.AST) -> None:
+        assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        previous = self.enclosing
+        for deco in node.decorator_list:
+            self.visit(deco)
+        for default in list(node.args.defaults) + [item for item in node.args.kw_defaults if item is not None]:
+            self.visit(default)
+        self.enclosing = node.name if previous == "<module>" else f"{previous}.{node.name}"
+        for stmt in node.body:
+            self.visit(stmt)
+        self.enclosing = previous
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.type is not None:
+            for expr in _atomic_exprs(node.type):
+                self._record(expr, force=True)
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = ""
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            name = node.func.attr
+        if name == "isinstance" and len(node.args) >= 2:
+            for expr in _atomic_exprs(node.args[1]):
+                self._record(expr, force=True)
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self._record(node, force=False)
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self._record(node, force=False)
+
+    def _record(self, expr: ast.AST, *, force: bool) -> None:
+        if id(expr) in self.callee_ids:
+            return
+        binding = self.resolver._resolve_expr(expr, self.unit, self.enclosing, set())
+        spec = _service_of(binding, self.specs)
+        if spec is None or not binding.target:
+            return
+        if not force and not _exception_like(binding.target):
+            return
+        if force and not _exception_like(binding.target) and binding.kind not in {
+            "external_attr",
+            "external_module",
+            "instance_external",
+        }:
+            return
+        key = (self.unit.rel, getattr(expr, "lineno", 0) or 0, binding.target)
+        if key in self.seen:
+            return
+        self.seen.add(key)
+        self.found.append(
+            _Direct(
+                rel=self.unit.rel,
+                enclosing=self.enclosing,
+                lineno=key[1],
+                expr=_unparse(expr),
+                service=spec.service_id,
+                package=spec.package,
+                sdk_method=binding.target,
+                kind=f"{_kind_prefix(spec)}_ref",
+                params=(),
+                response_fields=(),
+                returns_raw=False,
+                confidence=binding.confidence or "high",
+            )
+        )
+
+
+def _atomic_exprs(node: ast.AST) -> list[ast.AST]:
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        found: list[ast.AST] = []
+        for elt in node.elts:
+            found.extend(_atomic_exprs(elt))
+        return found
+    if isinstance(node, ast.Starred):
+        return _atomic_exprs(node.value)
+    return [node]
+
+
 def _make_edge(
     unit: ModUnit,
     call: CallRec,
@@ -1032,6 +1289,8 @@ def _propagate(directs: list[_Direct], edges: list[_Edge]) -> list[Chain]:
             via_wrapper=False,
         )
         chains.append(initial)
+        if direct.kind.endswith("_response") or direct.kind.endswith("_ref"):
+            continue
         queue: list[tuple[Chain, str, tuple[str, ...], bool]] = [
             (initial, origin, (origin,), direct.returns_raw)
         ]

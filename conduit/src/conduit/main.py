@@ -809,6 +809,11 @@ def impact_cmd(
         "--to",
         help="Newer released version. Default is the recorded surface for this client.",
     ),
+    from_version: Optional[str] = typer.Option(
+        None,
+        "--from",
+        help="Version to compare from when the repo does not pin one, or the pin does not match.",
+    ),
     fixtures: Optional[Path] = typer.Option(
         None,
         "--fixtures",
@@ -843,19 +848,28 @@ def impact_cmd(
             console.print(f"[red]Fixtures directory not found:[/red] {fixture_root}")
             raise typer.Exit(2)
     service_map, _blast = build_service_map(root)
-    impacts, _diffed = collect_impacts(
+    impacts, _diffed, notes = collect_impacts(
         root,
         service_map,
         fixtures=fixture_root,
         dep=dep,
         to_version=to,
+        from_version=from_version,
         allow_network=fixture_root is None,
     )
     if json_out:
-        console.print_json(data={"dependency": dep, "impacts": impacts_to_dicts(impacts)})
+        console.print_json(
+            data={"dependency": dep, "impacts": impacts_to_dicts(impacts), "notes": notes}
+        )
     else:
+        if notes and not impacts:
+            text = "\n".join(notes) + "\n"
+        else:
+            text = format_impacts(impacts)
+            if notes:
+                text = "\n".join(notes) + "\n" + text
         console.print(
-            format_impacts(impacts),
+            text,
             markup=False,
             highlight=False,
             soft_wrap=True,

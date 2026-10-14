@@ -78,7 +78,7 @@ conduit impact --dep acme-sdk --path ./examples/service-clients --fixtures ./con
 conduit watch --path ./examples/service-clients --feeds ./conduit/fixtures/feeds
 ```
 
-`impact` prints the dependency, the version it moved from and to, the change, and each `file:line` in your code with a confidence. `watch` does that when the feed shows a newer release and a recorded surface is available. A version number on its own is not a report.
+`impact` prints the dependency, the version it moved from and to, the change, and each `file:line` in your code with a confidence. `watch` does that when the feed shows a newer release and a recorded surface is available. A version number on its own is not a report. If the repo does not pin the client, pass `--from <version>`; otherwise impact says `not compared: no pinned version found` instead of claiming nothing was hit.
 
 `--packet` is still the leftover gate for a hop you already have. It fails when the pin is at the new version but old call sites remain. That check belongs to apply. It does not watch internal contracts.
 

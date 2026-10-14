@@ -39,6 +39,9 @@ def service_pins(root: Path) -> dict[str, str]:
     return pins
 
 
+NO_PIN_NOTE = "not compared: no pinned version found"
+
+
 def collect_impacts(
     root: Path,
     service_map: ServiceMap,
@@ -46,14 +49,18 @@ def collect_impacts(
     fixtures: Path | None = None,
     dep: str | None = None,
     to_version: str | None = None,
+    from_version: str | None = None,
     hits: list[FeedHit] | None = None,
     allow_network: bool = False,
-) -> tuple[list[Impact], set[str]]:
-    """Return ``(impacts, diffed_packages)``.
+) -> tuple[list[Impact], set[str], list[str]]:
+    """Return ``(impacts, diffed_packages, notes)``.
 
     ``diffed_packages`` is every client whose two surfaces were actually
     compared, including a diff that hit no call sites. Watch uses that to
     avoid a bare "new version" notice when the lines did not change.
+
+    ``notes`` is set when the repo pin (or ``--from``) was not compared.
+    That is not the same as a diff that hit no call sites.
     """
     index = _load_index(fixtures)
     explicit = bool(dep)
@@ -61,42 +68,51 @@ def collect_impacts(
     pins = service_pins(root)
     impacts: list[Impact] = []
     diffed: set[str] = set()
+    notes: list[str] = []
     for package, service_id in targets:
         entry = index.get(package.lower()) or index.get(service_id.lower()) or {}
         if not _should_run(package, entry, hits or [], explicit=explicit):
             continue
-        from_version, resolved_to = _versions(
+        resolved_from, resolved_to, version_note = _versions(
             package,
             pins,
             entry,
             hits or [],
             to_version if explicit else None,
+            from_version if explicit else None,
+            explicit=explicit,
         )
-        changes, compared = _changes_for(
+        if version_note and version_note not in notes:
+            notes.append(version_note)
+        changes, compared, compare_note = _changes_for(
             package,
             service_id,
             entry,
             fixtures,
-            from_version=from_version,
+            from_version=resolved_from,
             to_version=resolved_to,
             service_map=service_map,
             allow_network=allow_network and explicit,
+            skip_versioned=bool(version_note),
+            explicit=explicit,
         )
+        if compare_note and compare_note not in notes:
+            notes.append(compare_note)
         if compared:
             diffed.add(package.lower())
-        if not changes or not resolved_to or resolved_to == from_version:
+        if not changes or not resolved_to or resolved_to == resolved_from:
             webhook_only = [item for item in changes if item.source == "webhook"]
             if not webhook_only:
                 continue
         version_changes = [item for item in changes if item.source != "webhook"]
         webhook_changes = [item for item in changes if item.source == "webhook"]
-        if version_changes and resolved_to and resolved_to != from_version:
+        if version_changes and resolved_to and resolved_to != resolved_from:
             impacts.extend(
                 intersect(
                     version_changes,
                     service_map.chains,
                     dependency=package,
-                    from_version=from_version,
+                    from_version=resolved_from,
                     to_version=resolved_to,
                 )
             )
@@ -111,7 +127,7 @@ def collect_impacts(
                     to_version=hook_to,
                 )
             )
-    return impacts, diffed
+    return impacts, diffed, notes
 
 
 def _targets(service_map: ServiceMap, dep: str | None) -> list[tuple[str, str]]:
@@ -152,18 +168,31 @@ def _versions(
     entry: dict,
     hits: list[FeedHit],
     to_override: str | None,
-) -> tuple[str, str]:
-    pin = pins.get(package.lower()) or str(entry.get("from") or "")
+    from_override: str | None,
+    *,
+    explicit: bool,
+) -> tuple[str, str, str]:
+    """Resolve versions. Never invent a from-version from the fixture index."""
+    chosen = (from_override or "").strip() or pins.get(package.lower(), "")
     if to_override:
-        return pin, to_override
-    hit_to = ""
-    for hit in hits:
-        if hit.package.lower() != package.lower() or hit.change != "version":
-            continue
-        if hit.to_version and _newer(hit.to_version, pin):
-            hit_to = hit.to_version
-    recorded = str(entry.get("to") or "")
-    return pin, hit_to or recorded
+        resolved_to = to_override
+    else:
+        hit_to = ""
+        for hit in hits:
+            if hit.package.lower() != package.lower() or hit.change != "version":
+                continue
+            if hit.to_version and _newer(hit.to_version, chosen):
+                hit_to = hit.to_version
+        resolved_to = hit_to or str(entry.get("to") or "")
+    note = ""
+    webhook_only = bool(entry.get("webhook")) and not _needs_library_version(entry)
+    if not chosen and not webhook_only and (explicit or _needs_library_version(entry)):
+        note = NO_PIN_NOTE
+    return chosen, resolved_to, note
+
+
+def _needs_library_version(entry: dict) -> bool:
+    return bool(entry.get("wheels") or entry.get("botocore") or entry.get("changelog"))
 
 
 def _newer(latest: str, current: str) -> bool:
@@ -188,28 +217,58 @@ def _changes_for(
     to_version: str,
     service_map: ServiceMap,
     allow_network: bool,
-) -> tuple[list[ApiChange], bool]:
+    skip_versioned: bool,
+    explicit: bool,
+) -> tuple[list[ApiChange], bool, str]:
     changes: list[ApiChange] = []
     compared = False
+    note = ""
+    wheel_compared = False
     if fixtures is None and not allow_network:
-        return changes, compared
+        if explicit and not skip_versioned and not _has_webhook(service_map, service_id, package):
+            note = _missing_surface_note(from_version, to_version)
+        return changes, compared, note
+    recorded_from = str(entry.get("from") or "")
     wheels = entry.get("wheels") if isinstance(entry.get("wheels"), dict) else {}
-    old_wheel = _artifact(fixtures, wheels.get(from_version))
-    new_wheel = _artifact(fixtures, wheels.get(to_version))
-    if old_wheel is None and allow_network:
-        old_wheel = _download_wheel(package, from_version)
-    if new_wheel is None and allow_network:
-        new_wheel = _download_wheel(package, to_version)
-    if old_wheel is not None and new_wheel is not None and from_version != to_version:
-        changes.extend(diff_wheels(old_wheel, new_wheel))
-        compared = True
-    botocore = entry.get("botocore") if isinstance(entry.get("botocore"), dict) else {}
-    old_model = _artifact(fixtures, botocore.get("from"))
-    new_model = _artifact(fixtures, botocore.get("to"))
-    if old_model is not None and new_model is not None:
-        service = str(botocore.get("service") or "s3")
-        changes.extend(diff_service_models(old_model, new_model, service=service))
-        compared = True
+    if not skip_versioned and from_version and to_version and from_version != to_version:
+        if wheels or allow_network:
+            old_wheel = _artifact(fixtures, wheels.get(from_version))
+            new_wheel = _artifact(fixtures, wheels.get(to_version))
+            if old_wheel is None and allow_network:
+                old_wheel = _download_wheel(package, from_version)
+            if new_wheel is None and allow_network:
+                new_wheel = _download_wheel(package, to_version)
+            if old_wheel is not None and new_wheel is not None:
+                changes.extend(diff_wheels(old_wheel, new_wheel))
+                compared = True
+                wheel_compared = True
+            elif wheels or (explicit and allow_network):
+                note = _missing_surface_note(from_version, to_version, old_missing=old_wheel is None)
+        botocore = entry.get("botocore") if isinstance(entry.get("botocore"), dict) else {}
+        old_model = _artifact(fixtures, botocore.get("from"))
+        new_model = _artifact(fixtures, botocore.get("to"))
+        if old_model is not None and new_model is not None:
+            if recorded_from and from_version != recorded_from:
+                note = note or _missing_surface_note(from_version, to_version, old_missing=True)
+            else:
+                service = str(botocore.get("service") or "s3")
+                changes.extend(diff_service_models(old_model, new_model, service=service))
+                compared = True
+        changelog = _artifact(fixtures, entry.get("changelog"))
+        if changelog is not None and not note:
+            version_ok = wheel_compared or (
+                not wheels and (not recorded_from or from_version == recorded_from)
+            )
+            if version_ok:
+                try:
+                    text = changelog.read_text(encoding="utf-8")
+                except OSError:
+                    text = ""
+                if text:
+                    changes.extend(changes_from_notes(text))
+                    compared = True
+    elif not skip_versioned and explicit and (wheels or entry.get("botocore") or entry.get("changelog")):
+        note = _missing_surface_note(from_version, to_version)
     if _has_webhook(service_map, service_id, package):
         hook = entry.get("webhook") if isinstance(entry.get("webhook"), dict) else {}
         old_schema = _artifact(fixtures, hook.get("from"))
@@ -217,16 +276,17 @@ def _changes_for(
         if old_schema is not None and new_schema is not None:
             changes.extend(diff_webhook_schemas(old_schema, new_schema, provider=service_id))
             compared = True
-    notes = _artifact(fixtures, entry.get("changelog"))
-    if notes is not None:
-        try:
-            text = notes.read_text(encoding="utf-8")
-        except OSError:
-            text = ""
-        if text:
-            changes.extend(changes_from_notes(text))
-            compared = True
-    return changes, compared
+    return changes, compared, note
+
+
+def _missing_surface_note(from_version: str, to_version: str, *, old_missing: bool = True) -> str:
+    if not from_version:
+        return NO_PIN_NOTE
+    if old_missing:
+        return f"not compared: pinned version {from_version} does not match a recorded surface"
+    if to_version:
+        return f"not compared: version {to_version} does not match a recorded surface"
+    return "not compared: no released surface to compare"
 
 
 def _has_webhook(service_map: ServiceMap, service_id: str, package: str) -> bool:

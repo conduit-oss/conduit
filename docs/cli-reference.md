@@ -162,10 +162,11 @@ On-demand line-by-line impact for one outside service. Compares the pinned clien
 | `--path` | `.` | Repo root |
 | `--dep` | required | Service or client (`sqlalchemy`, `boto3`, `stripe`, `acme-sdk`) |
 | `--to` | recorded newer surface | Version to compare against the pin |
+| `--from` | the pin in this repo | Version to compare from when the repo does not pin one, or the pin does not match a recorded surface |
 | `--fixtures` | none (fetch small wheels from PyPI) | Offline wheels, models, and schemas |
-| `--json` | false | `{dependency, impacts}` |
+| `--json` | false | `{dependency, impacts, notes}` |
 
-Exit `2` when `--dep` is an ordinary library, or `--path` / `--fixtures` is missing. Exit `0` when the check finishes, including when no call site is hit.
+Exit `2` when `--dep` is an ordinary library, or `--path` / `--fixtures` is missing. Exit `0` when the check finishes. If the repo does not pin the client and `--from` is omitted, the text is `not compared: no pinned version found` rather than an all-clear. A pin that does not match a recorded surface is the same kind of miss. An all-clear means the surfaces were compared and no call site was hit.
 
 ```bash
 conduit impact \

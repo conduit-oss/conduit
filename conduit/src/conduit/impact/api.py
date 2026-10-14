@@ -24,38 +24,69 @@ class Symbol:
 
 def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
     """Removed, renamed, and signature-changed public callables, plus deprecations."""
-    before = load_api(old)
-    after = load_api(new)
+    old_root = _materialize(old)
+    new_root = _materialize(new)
+    before = load_api(old_root)
+    after = load_api(new_root)
+    old_index = _index_tree(old_root)
+    new_index = _index_tree(new_root)
+    aliases = _public_aliases(old_index, set(before))
+    old_returns = _return_kinds(old_index)
+    new_returns = _return_kinds(new_index)
+    new_models = any(kind == "model" for kind in _class_kinds(new_index).values())
     changes: list[ApiChange] = []
     for name in sorted(before):
         sym = before[name]
         other = after.get(name)
         if other is None:
             changes.append(
-                ApiChange(
-                    kind="removed",
-                    symbol=name,
-                    old=name,
-                    new="",
-                    detail=f"{_short(name)} removed",
-                    confidence="high",
-                    source="wheel",
+                _alias(
+                    ApiChange(
+                        kind="removed",
+                        symbol=name,
+                        old=name,
+                        new="",
+                        detail=f"{_short(name)} removed",
+                        confidence="high",
+                        source="wheel",
+                    ),
+                    aliases,
                 )
             )
-            continue
-        if other.deprecated and not sym.deprecated:
+        else:
+            if other.deprecated and not sym.deprecated:
+                changes.append(
+                    _alias(
+                        ApiChange(
+                            kind="deprecated",
+                            symbol=name,
+                            old=name,
+                            new=name,
+                            detail=f"{_short(name)} deprecated",
+                            confidence="low",
+                            source="wheel",
+                        ),
+                        aliases,
+                    )
+                )
+            changes.extend(_alias(item, aliases) for item in _signature(sym, other))
+        if _response_shape_changed(name, old_returns, new_returns, other is None, new_models):
             changes.append(
-                ApiChange(
-                    kind="deprecated",
-                    symbol=name,
-                    old=name,
-                    new=name,
-                    detail=f"{_short(name)} deprecated",
-                    confidence="low",
-                    source="wheel",
+                _alias(
+                    ApiChange(
+                        kind="response_shape",
+                        symbol=name,
+                        old="dict",
+                        new="model",
+                        detail=(
+                            f"{_short(name)} return changed from a dict-like object to a typed object"
+                        ),
+                        confidence="medium",
+                        source="wheel",
+                    ),
+                    aliases,
                 )
             )
-        changes.extend(_signature(sym, other))
     return changes
 
 
@@ -242,6 +273,479 @@ def _skipped(path: Path, root: Path) -> bool:
     if any(part.endswith(".dist-info") or part.endswith(".egg-info") for part in parts):
         return True
     return any(part in _SKIP_DIRS or part.startswith("_") and part != "__init__.py" for part in parts[:-1])
+
+
+def _alias(change: ApiChange, aliases: dict[str, tuple[str, ...]]) -> ApiChange:
+    found = aliases.get(change.symbol, ())
+    if not found:
+        return change
+    return ApiChange(
+        kind=change.kind,
+        symbol=change.symbol,
+        old=change.old,
+        new=change.new,
+        detail=change.detail,
+        confidence=change.confidence,
+        source=change.source,
+        service=change.service,
+        aliases=found,
+    )
+
+
+def _response_shape_changed(
+    name: str,
+    old_returns: dict[str, str],
+    new_returns: dict[str, str],
+    removed: bool,
+    new_models: bool,
+) -> bool:
+    """Dict subclass (``OpenAIObject``) then pydantic ``BaseModel``."""
+    if old_returns.get(name) != "dict":
+        return False
+    if removed:
+        return new_models
+    return new_returns.get(name) == "model"
+
+
+@dataclass(frozen=True)
+class _Mod:
+    name: str
+    package: str
+    tree: ast.AST
+    bindings: dict[str, str]
+    stars: tuple[str, ...]
+    defined: dict[str, str]
+    classes: dict[str, ast.ClassDef]
+    functions: dict[str, ast.AST]
+    exported: tuple[str, ...]
+
+
+def _index_tree(root: Path) -> dict[str, _Mod]:
+    """Parse a wheel, including private modules, for re-exports and types."""
+    mods: dict[str, _Mod] = {}
+    for py in sorted(root.rglob("*.py")):
+        if not py.is_file() or _skipped(py, root):
+            continue
+        module = _module_name(py, root)
+        if not module:
+            continue
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        package = module if py.name == "__init__.py" else module.rsplit(".", 1)[0]
+        bindings, stars = _bind_imports(module, package, tree)
+        defined, classes, functions = _definitions(module, tree)
+        exported = _exported_names(tree)
+        mods[module] = _Mod(
+            name=module,
+            package=package,
+            tree=tree,
+            bindings=bindings,
+            stars=stars,
+            defined=defined,
+            classes=classes,
+            functions=functions,
+            exported=exported,
+        )
+    return mods
+
+
+def _bind_imports(module: str, package: str, tree: ast.AST) -> tuple[dict[str, str], tuple[str, ...]]:
+    bindings: dict[str, str] = {}
+    stars: list[str] = []
+    for node in _module_level(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.split(".")[0]
+                bindings[local] = alias.name if alias.asname else alias.name.split(".")[0]
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        base = _abs_module(package, node.level or 0, node.module or "")
+        for alias in node.names:
+            if alias.name == "*":
+                if base:
+                    stars.append(base)
+                continue
+            local = alias.asname or alias.name
+            bindings[local] = f"{base}.{alias.name}" if base else alias.name
+    return bindings, tuple(stars)
+
+
+def _definitions(
+    module: str, tree: ast.AST
+) -> tuple[dict[str, str], dict[str, ast.ClassDef], dict[str, ast.AST]]:
+    defined: dict[str, str] = {}
+    classes: dict[str, ast.ClassDef] = {}
+    functions: dict[str, ast.AST] = {}
+    for node in _module_level(tree):
+        if isinstance(node, ast.ClassDef) and _public(node.name):
+            qual = f"{module}.{node.name}"
+            defined[node.name] = qual
+            classes[qual] = node
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(child.name):
+                    method = f"{qual}.{child.name}"
+                    defined[f"{node.name}.{child.name}"] = method
+                    functions[method] = child
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(node.name):
+            qual = f"{module}.{node.name}"
+            defined[node.name] = qual
+            functions[qual] = node
+    return defined, classes, functions
+
+
+def _exported_names(tree: ast.AST) -> tuple[str, ...]:
+    for node in _module_level(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets):
+            continue
+        if not isinstance(node.value, (ast.List, ast.Tuple)):
+            continue
+        names = [
+            elt.value
+            for elt in node.value.elts
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+        ]
+        return tuple(names)
+    return ()
+
+
+def _module_level(tree: ast.AST):
+    """Module statements, including those nested in ``if`` but not in defs."""
+    stack = list(getattr(tree, "body", []) or [])
+    while stack:
+        node = stack.pop(0)
+        if isinstance(node, ast.If):
+            stack = list(node.body) + list(node.orelse) + stack
+            continue
+        yield node
+
+
+def _abs_module(package: str, level: int, module: str) -> str:
+    if level <= 0:
+        return module
+    parts = [part for part in package.split(".") if part]
+    drop = level - 1
+    if drop:
+        parts = parts[:-drop] if drop <= len(parts) else []
+    if module:
+        parts.extend(part for part in module.split(".") if part)
+    return ".".join(parts)
+
+
+def _public_aliases(mods: dict[str, _Mod], symbols: set[str]) -> dict[str, tuple[str, ...]]:
+    """Map a defining qualname to public names from package and submodule re-exports."""
+    found: dict[str, set[str]] = {}
+
+    def lookup(module: str, name: str, stack: set[tuple[str, str]]) -> str | None:
+        key = (module, name)
+        if key in stack or module not in mods:
+            return None
+        stack.add(key)
+        mod = mods[module]
+        if name in mod.defined:
+            return mod.defined[name]
+        target = mod.bindings.get(name)
+        if target and "." in target:
+            src_mod, _, src_name = target.rpartition(".")
+            resolved = lookup(src_mod, src_name, stack)
+            if resolved:
+                return resolved
+        for source in mod.stars:
+            resolved = lookup(source, name, stack)
+            if resolved:
+                return resolved
+        return None
+
+    for module, mod in mods.items():
+        names = set(mod.bindings) | set(mod.defined)
+        for source in mod.stars:
+            src = mods.get(source)
+            if src is None:
+                continue
+            names.update(src.exported or set(src.defined) | set(src.bindings))
+        for name in names:
+            if not name or name.startswith("_") or "." in name:
+                continue
+            target = lookup(module, name, set())
+            if not target:
+                continue
+            public = f"{module}.{name}"
+            if public != target:
+                found.setdefault(target, set()).add(public)
+            if target in mod.classes or any(item.startswith(target + ".") for item in symbols):
+                prefix = target + "."
+                for symbol in symbols:
+                    if not symbol.startswith(prefix):
+                        continue
+                    alias = public + "." + symbol[len(prefix) :]
+                    if alias != symbol:
+                        found.setdefault(symbol, set()).add(alias)
+    return {key: tuple(sorted(value)) for key, value in found.items()}
+
+
+def _class_kinds(mods: dict[str, _Mod]) -> dict[str, str]:
+    bases: dict[str, tuple[str, ...]] = {}
+    for mod in mods.values():
+        for qual, node in mod.classes.items():
+            bases[qual] = tuple(_base_name(mod, base) for base in node.bases)
+    kinds: dict[str, str] = {}
+    pending = set(bases)
+    while pending:
+        progressed = False
+        for qual in list(pending):
+            kind = ""
+            waiting = False
+            for base in bases[qual]:
+                if not base:
+                    continue
+                tail = base.split(".")[-1]
+                if tail == "dict":
+                    kind = "dict"
+                    continue
+                if _is_model_base(base):
+                    kind = "model"
+                    continue
+                if base in bases and base not in kinds and base != qual:
+                    waiting = True
+                    continue
+                parent = kinds.get(base, "")
+                if parent == "dict" and kind != "model":
+                    kind = "dict"
+                elif parent == "model":
+                    kind = "model"
+            if waiting and not kind:
+                continue
+            kinds[qual] = kind
+            pending.discard(qual)
+            progressed = True
+        if not progressed:
+            for qual in pending:
+                kinds[qual] = ""
+            break
+    return kinds
+
+
+def _is_model_base(base: str) -> bool:
+    tail = base.split(".")[-1]
+    if tail != "BaseModel":
+        return False
+    lowered = base.lower()
+    return "pydantic" in lowered or "_models" in lowered or lowered.endswith(".models.basemodel") or base == "pydantic.BaseModel"
+
+
+def _base_name(mod: _Mod, node: ast.AST) -> str:
+    return _dotted(mod, node)
+
+
+def _dotted(mod: _Mod, node: ast.AST | None) -> str:
+    if isinstance(node, ast.Name):
+        return mod.bindings.get(node.id) or (mod.defined.get(node.id) or node.id)
+    if isinstance(node, ast.Attribute):
+        base = _dotted(mod, node.value)
+        return f"{base}.{node.attr}" if base else node.attr
+    return ""
+
+
+def _return_kinds(mods: dict[str, _Mod]) -> dict[str, str]:
+    """``dict`` for an OpenAIObject-style return, ``model`` for a BaseModel."""
+    classes = _class_kinds(mods)
+    hints: dict[str, set[str]] = {}
+    supers: dict[str, tuple[str, str]] = {}
+    for mod in mods.values():
+        for qual, node in mod.functions.items():
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            hints[qual] = _return_hints(mod, node, classes)
+            owner, method = _owner_method(qual)
+            delegated = _super_method(node)
+            if owner and delegated:
+                supers[qual] = (owner, delegated)
+    kinds: dict[str, str] = {qual: "" for qual in hints}
+    bases = {
+        qual: tuple(_base_name(mod, base) for base in node.bases)
+        for mod in mods.values()
+        for qual, node in mod.classes.items()
+    }
+    for _ in range(len(hints) + 2):
+        changed = False
+        for qual, items in hints.items():
+            kind = kinds[qual]
+            for item in items:
+                if item in {"dict", "model"}:
+                    kind = _prefer_kind(kind, item)
+                elif item.startswith("fn:"):
+                    kind = _prefer_kind(kind, kinds.get(item[3:], ""))
+            owner_method = supers.get(qual)
+            if owner_method:
+                owner, method = owner_method
+                kind = _prefer_kind(kind, _base_method_kind(owner, method, bases, kinds))
+            if kind != kinds[qual]:
+                kinds[qual] = kind
+                changed = True
+        if not changed:
+            break
+    return {qual: kind for qual, kind in kinds.items() if kind}
+
+
+def _prefer_kind(current: str, new: str) -> str:
+    if not new:
+        return current
+    if new == "model" or current == "model":
+        return "model"
+    if new == "dict":
+        return "dict"
+    return current
+
+
+def _owner_method(qual: str) -> tuple[str, str]:
+    parts = qual.split(".")
+    if len(parts) < 3:
+        return "", ""
+    return ".".join(parts[:-1]), parts[-1]
+
+
+def _base_method_kind(
+    owner: str,
+    method: str,
+    bases: dict[str, tuple[str, ...]],
+    kinds: dict[str, str],
+) -> str:
+    seen: set[str] = set()
+    queue = list(bases.get(owner, ()))
+    while queue:
+        base = queue.pop(0)
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        kind = kinds.get(f"{base}.{method}", "")
+        if kind:
+            return kind
+        queue.extend(bases.get(base, ()))
+    return ""
+
+
+def _return_hints(mod: _Mod, node: ast.AST, classes: dict[str, str]) -> set[str]:
+    assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    _expr_kinds.seen = set()
+    found: set[str] = set()
+    if node.returns is not None:
+        found |= _expr_kinds(mod, node.returns, {}, classes)
+    assigns = _local_assigns(node)
+    for expr in _return_exprs(node):
+        found |= _expr_kinds(mod, expr, assigns, classes)
+    return found
+
+
+def _local_assigns(node: ast.AST) -> dict[str, list[ast.AST]]:
+    found: dict[str, list[ast.AST]] = {}
+    for child in _walk_function(node):
+        if isinstance(child, ast.Assign):
+            for target in child.targets:
+                if isinstance(target, ast.Name):
+                    found.setdefault(target.id, []).append(child.value)
+        elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name) and child.value is not None:
+            found.setdefault(child.target.id, []).append(child.value)
+    return found
+
+
+def _return_exprs(node: ast.AST) -> list[ast.expr]:
+    found: list[ast.expr] = []
+    for child in _walk_function(node):
+        if isinstance(child, ast.Return) and child.value is not None:
+            found.append(child.value)
+    return found
+
+
+def _walk_function(node: ast.AST):
+    """Statements in this function, not nested functions or classes."""
+    stack = list(getattr(node, "body", []) or [])
+    while stack:
+        child = stack.pop()
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        yield child
+        stack.extend(list(ast.iter_child_nodes(child)))
+
+
+def _expr_kinds(
+    mod: _Mod,
+    node: ast.AST | None,
+    assigns: dict[str, list[ast.AST]],
+    classes: dict[str, str],
+) -> set[str]:
+    if node is None:
+        return set()
+    if isinstance(node, ast.Await):
+        return _expr_kinds(mod, node.value, assigns, classes)
+    if isinstance(node, ast.Dict):
+        return {"dict"}
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        found: set[str] = set()
+        for elt in node.elts:
+            found |= _expr_kinds(mod, elt, assigns, classes)
+        return found
+    if isinstance(node, ast.IfExp):
+        return _expr_kinds(mod, node.body, assigns, classes) | _expr_kinds(mod, node.orelse, assigns, classes)
+    if isinstance(node, ast.Subscript):
+        return _expr_kinds(mod, node.value, assigns, classes)
+    if isinstance(node, ast.Name):
+        if node.id in assigns and node.id not in _expr_kinds.seen:
+            _expr_kinds.seen.add(node.id)
+            try:
+                found: set[str] = set()
+                for expr in assigns[node.id]:
+                    found |= _expr_kinds(mod, expr, assigns, classes)
+                return found
+            finally:
+                _expr_kinds.seen.discard(node.id)
+        return _named_kind(mod, _dotted(mod, node), classes)
+    if isinstance(node, ast.Attribute):
+        return _named_kind(mod, _dotted(mod, node), classes)
+    if isinstance(node, ast.Call):
+        found = _expr_kinds(mod, node.func, assigns, classes)
+        # ``klass = OpenAIObject; return klass.construct_from(...)``
+        if isinstance(node.func, ast.Attribute):
+            found |= _expr_kinds(mod, node.func.value, assigns, classes)
+        for arg in list(node.args) + [kw.value for kw in node.keywords]:
+            dotted = _dotted(mod, arg)
+            if dotted:
+                found |= _named_kind(mod, dotted, classes)
+        return found
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _expr_kinds(mod, node.left, assigns, classes) | _expr_kinds(mod, node.right, assigns, classes)
+    return set()
+
+
+def _named_kind(mod: _Mod, dotted: str, classes: dict[str, str]) -> set[str]:
+    if not dotted:
+        return set()
+    tail = dotted.split(".")[-1]
+    if tail in {"dict", "Dict", "OrderedDict", "defaultdict"}:
+        return {"dict"}
+    kind = classes.get(dotted, "")
+    if kind:
+        return {kind}
+    resolved = mod.defined.get(tail) if "." not in dotted else ""
+    if resolved and classes.get(resolved):
+        return {classes[resolved]}
+    if dotted.split(".")[-1][:1].isupper() or "." in dotted:
+        return {f"fn:{dotted}"}
+    return set()
+
+
+def _super_method(node: ast.AST) -> str:
+    for expr in _return_exprs(node):
+        inner = expr.value if isinstance(expr, ast.Await) else expr
+        if not isinstance(inner, ast.Call) or not isinstance(inner.func, ast.Attribute):
+            continue
+        receiver = inner.func.value
+        if isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Name) and receiver.func.id == "super":
+            return inner.func.attr
+    return ""
 
 
 def _module_name(path: Path, root: Path) -> str:

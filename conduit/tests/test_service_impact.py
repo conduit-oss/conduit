@@ -12,7 +12,9 @@ from conduit.feeds.client import FeedClient
 from conduit.feeds.watch import watch_outside
 from conduit.impact.api import diff_wheels, load_api
 from conduit.impact.botocore import diff_service_models
-from conduit.impact.run import collect_impacts, service_pins
+from conduit.impact.intersect import _method_match
+from conduit.impact.model import ApiChange
+from conduit.impact.run import NO_PIN_NOTE, collect_impacts, service_pins
 from conduit.impact.webhook_schema import diff_webhook_schemas
 from conduit.main import app
 from conduit.outside_in.analyze import analyze_repo
@@ -33,7 +35,7 @@ def _impacts():
     found = []
     diffed: set[str] = set()
     for dep in ("sqlalchemy", "boto3", "stripe", "acme-sdk"):
-        impacts, covered = collect_impacts(
+        impacts, covered, _notes = collect_impacts(
             FIXTURE,
             service_map,
             fixtures=IMPACT,
@@ -258,3 +260,286 @@ def test_recorded_wheels_parse_as_python():
     api = load_api(IMPACT / "wheels" / "acme_sdk-1.0.0-py3-none-any.whl")
     assert any(name.endswith("Client.complete") for name in api)
     ast.parse((FIXTURE / "webhooks.py").read_text(encoding="utf-8"))
+
+
+def test_pair_match_uses_class_and_method_not_the_bare_name():
+    symbol = "openai.api_resources.audio.Audio.transcribe"
+    change = ApiChange(
+        kind="removed",
+        symbol=symbol,
+        old=symbol,
+        new="",
+        detail="Audio.transcribe removed",
+        confidence="high",
+        source="wheel",
+    )
+    assert _method_match("openai.Audio.transcribe", symbol, change, [change]) == "pair"
+    assert _method_match("helper.transcribe", symbol, change, [change]) is None
+    other = ApiChange(
+        kind="removed",
+        symbol="openai.other.Audio.transcribe",
+        old="openai.other.Audio.transcribe",
+        new="",
+        detail="Audio.transcribe removed",
+        confidence="high",
+        source="wheel",
+    )
+    assert _method_match("openai.Audio.transcribe", symbol, change, [change, other]) is None
+
+
+def test_openai_public_names_unpinned_exceptions_and_dict_response(tmp_path: Path):
+    """Trimmed 0.28-shaped wheels: internal paths, no pin, retry, dict access."""
+    fixtures = tmp_path / "impact"
+    wheels = fixtures / "wheels"
+    wheels.mkdir(parents=True)
+    old = wheels / "openai-0.28.1-py3-none-any.whl"
+    new = wheels / "openai-1.0.0-py3-none-any.whl"
+    _write_wheel(old, "0.28.1", _OLD_OPENAI)
+    _write_wheel(new, "1.0.0", _NEW_OPENAI)
+    (fixtures / "index.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "openai": {
+                        "from": "0.28.1",
+                        "to": "1.0.0",
+                        "wheels": {
+                            "0.28.1": "wheels/openai-0.28.1-py3-none-any.whl",
+                            "1.0.0": "wheels/openai-1.0.0-py3-none-any.whl",
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    changes = diff_wheels(old, new)
+    removed = next(
+        item
+        for item in changes
+        if item.kind == "removed" and item.symbol.endswith("chat_completion.ChatCompletion.create")
+    )
+    assert "openai.ChatCompletion.create" in removed.aliases
+    legacy = next(
+        item
+        for item in changes
+        if item.kind == "removed" and item.symbol.endswith("legacy.ChatCompletion.create")
+    )
+    assert "openai.ChatCompletion.create" not in legacy.aliases
+    assert any(
+        item.kind == "response_shape"
+        and item.symbol.endswith("chat_completion.ChatCompletion.create")
+        and item.confidence == "medium"
+        for item in changes
+    )
+    assert any(item.kind == "removed" and item.symbol.endswith("error.RateLimitError") for item in changes)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text(
+        "\n".join(
+            [
+                "import openai",
+                "from tenacity import retry_if_exception_type",
+                "",
+                "@retry_if_exception_type(openai.error.RateLimitError)",
+                "def ask(prompt, exc):",
+                "    resp = openai.ChatCompletion.create(model='gpt-3.5-turbo', messages=[])",
+                "    text = resp['choices'][0]['message']['content']",
+                "    openai.Audio.transcribe('a.wav')",
+                "    if isinstance(exc, openai.error.APIError):",
+                "        return openai.error.Timeout",
+                "    try:",
+                "        return text",
+                "    except openai.error.ServiceUnavailableError:",
+                "        raise",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service_map = analyze_repo(repo)
+    impacts, _diffed, notes = collect_impacts(
+        repo,
+        service_map,
+        fixtures=fixtures,
+        dep="openai",
+        allow_network=False,
+    )
+    assert impacts == []
+    assert notes == [NO_PIN_NOTE]
+    bare = CliRunner().invoke(
+        app,
+        ["impact", "--path", str(repo), "--dep", "openai", "--fixtures", str(fixtures)],
+    )
+    assert bare.exit_code == 0, bare.stdout
+    assert NO_PIN_NOTE in bare.stdout
+    assert "No call sites" not in bare.stdout
+
+    (repo / "requirements.txt").write_text("openai==0.27.0\n", encoding="utf-8")
+    _impacts, _diffed, mismatched = collect_impacts(
+        repo,
+        service_map,
+        fixtures=fixtures,
+        dep="openai",
+        allow_network=False,
+    )
+    assert _impacts == []
+    assert any("0.27.0" in note and note.startswith("not compared:") for note in mismatched)
+    refused = CliRunner().invoke(
+        app,
+        ["impact", "--path", str(repo), "--dep", "openai", "--fixtures", str(fixtures)],
+    )
+    assert "No call sites" not in refused.stdout
+    assert "0.27.0" in refused.stdout
+
+    impacts, _diffed, notes = collect_impacts(
+        repo,
+        service_map,
+        fixtures=fixtures,
+        dep="openai",
+        from_version="0.28.1",
+        allow_network=False,
+    )
+    assert notes == []
+    create = next(item for item in impacts if item.change == "ChatCompletion.create removed")
+    assert create.confidence == "high"
+    assert create.from_version == "0.28.1"
+    assert create.to_version == "1.0.0"
+    assert any(site.expr == "openai.ChatCompletion.create" and site.confidence == "high" for site in create.sites)
+    audio = next(item for item in impacts if "Audio.transcribe removed" in item.change)
+    assert audio.confidence == "medium"
+    assert any("Audio.transcribe" in site.expr for site in audio.sites)
+    shape = next(item for item in impacts if item.change.startswith("ChatCompletion.create return changed"))
+    assert shape.confidence == "medium"
+    assert any("choices" in site.expr and site.confidence == "medium" for site in shape.sites)
+    assert any("RateLimitError" in site.expr for item in impacts for site in item.sites)
+    assert any("APIError" in site.expr for item in impacts for site in item.sites)
+    assert any("ServiceUnavailableError" in site.expr for item in impacts for site in item.sites)
+    assert any(site.expr == "openai.error.Timeout" for item in impacts for site in item.sites)
+
+    cli = CliRunner().invoke(
+        app,
+        [
+            "impact",
+            "--path",
+            str(repo),
+            "--dep",
+            "openai",
+            "--from",
+            "0.28.1",
+            "--fixtures",
+            str(fixtures),
+        ],
+    )
+    assert cli.exit_code == 0, cli.stdout
+    assert "ChatCompletion.create removed" in cli.stdout
+    assert "RateLimitError" in cli.stdout
+    assert "choices" in cli.stdout
+    assert "not compared" not in cli.stdout
+
+
+def _write_wheel(path: Path, version: str, files: dict[str, str]) -> None:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            f"openai-{version}.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: openai\nVersion: {version}\n",
+        )
+        archive.writestr(
+            f"openai-{version}.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: conduit-fixtures\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        for name, text in files.items():
+            archive.writestr(name, text)
+
+
+_OLD_OPENAI = {
+    "openai/__init__.py": (
+        "from openai.api_resources import ChatCompletion\n"
+        "from openai.error import APIError, RateLimitError\n"
+    ),
+    "openai/api_resources/__init__.py": (
+        "from openai.api_resources.chat_completion import ChatCompletion\n"
+    ),
+    "openai/api_resources/chat_completion.py": (
+        "from openai.api_resources.abstract.engine_api_resource import EngineAPIResource\n"
+        "\n"
+        "class ChatCompletion(EngineAPIResource):\n"
+        "    @classmethod\n"
+        "    def create(cls, *args, **kwargs):\n"
+        "        return super().create(*args, **kwargs)\n"
+    ),
+    "openai/api_resources/legacy.py": (
+        "class ChatCompletion:\n"
+        "    @classmethod\n"
+        "    def create(cls, *args, **kwargs):\n"
+        "        return {}\n"
+    ),
+    "openai/api_resources/audio.py": (
+        "from openai import util\n"
+        "\n"
+        "class Audio:\n"
+        "    @classmethod\n"
+        "    def transcribe(cls, *args, **kwargs):\n"
+        "        return util.convert_to_openai_object({})\n"
+    ),
+    "openai/api_resources/abstract/__init__.py": "",
+    "openai/api_resources/abstract/engine_api_resource.py": (
+        "from openai import util\n"
+        "\n"
+        "class EngineAPIResource:\n"
+        "    @classmethod\n"
+        "    def create(cls, *args, **kwargs):\n"
+        "        obj = util.convert_to_openai_object({})\n"
+        "        return obj\n"
+    ),
+    "openai/openai_object.py": (
+        "class OpenAIObject(dict):\n"
+        "    @classmethod\n"
+        "    def construct_from(cls, values):\n"
+        "        return cls(values)\n"
+    ),
+    "openai/util.py": (
+        "from openai.openai_object import OpenAIObject\n"
+        "\n"
+        "def convert_to_openai_object(resp, *args, **kwargs):\n"
+        "    klass = OpenAIObject\n"
+        "    return klass.construct_from(resp)\n"
+    ),
+    "openai/error.py": (
+        "class OpenAIError(Exception):\n"
+        "    pass\n"
+        "\n"
+        "class APIError(OpenAIError):\n"
+        "    pass\n"
+        "\n"
+        "class RateLimitError(OpenAIError):\n"
+        "    pass\n"
+        "\n"
+        "class Timeout(OpenAIError):\n"
+        "    pass\n"
+        "\n"
+        "class ServiceUnavailableError(OpenAIError):\n"
+        "    pass\n"
+    ),
+}
+
+_NEW_OPENAI = {
+    "openai/__init__.py": "class OpenAI:\n    pass\n",
+    "openai/_models.py": (
+        "import pydantic\n"
+        "\n"
+        "class BaseModel(pydantic.BaseModel):\n"
+        "    pass\n"
+    ),
+    "openai/types/__init__.py": "",
+    "openai/types/chat_completion.py": (
+        "from openai._models import BaseModel\n"
+        "\n"
+        "class ChatCompletion(BaseModel):\n"
+        "    choices: list\n"
+    ),
+}

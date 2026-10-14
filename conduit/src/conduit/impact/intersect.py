@@ -113,6 +113,16 @@ def _botocore_match(change: ApiChange, chain: Chain) -> str | None:
 def _python_match(change: ApiChange, chain: Chain, peers: list[ApiChange]) -> str | None:
     if chain.kind == "webhook":
         return None
+    if change.kind == "response_shape":
+        if not chain.kind.endswith("_response"):
+            return None
+        how = _method_match(chain.sdk_method, change.symbol, change, peers)
+        if how is None:
+            return None
+        base = change.confidence if how == "exact" else min_confidence(change.confidence, "medium")
+        return min_confidence(base, chain.confidence)
+    if chain.kind.endswith("_response"):
+        return None
     how = _method_match(chain.sdk_method, change.symbol, change, peers)
     if how is None and change.kind == "param_renamed" and "." not in change.symbol:
         if _param_used(chain, change.old):
@@ -129,23 +139,38 @@ def _python_match(change: ApiChange, chain: Chain, peers: list[ApiChange]) -> st
 
 
 def _method_match(sdk_method: str, symbol: str, change: ApiChange, peers: list[ApiChange]) -> str | None:
+    """Match a call to a diff symbol.
+
+    Exact means the call's resolved name is the defining path or a public
+    re-export. Otherwise the last two parts (``ChatCompletion.create``) match
+    when that pair is unique. The bare last part (``create``) is never enough:
+    too many methods share it.
+    """
     if not sdk_method or not symbol or sdk_method == "webhook":
         return None
-    if sdk_method == symbol or sdk_method.endswith("." + symbol):
-        return "exact"
-    tail = symbol.split(".")[-1]
-    if not tail or tail.startswith("_"):
+    for name in (symbol, *change.aliases):
+        if name and (sdk_method == name or sdk_method.endswith("." + name)):
+            return "exact"
+    pair = _last_two(symbol)
+    if not pair:
         return None
-    if sdk_method != tail and not sdk_method.endswith("." + tail):
+    if sdk_method != pair and not sdk_method.endswith("." + pair):
         return None
     same = [
         item
         for item in peers
-        if item.kind == change.kind and item.source == change.source and item.symbol.split(".")[-1] == tail
+        if item.kind == change.kind and item.source == change.source and _last_two(item.symbol) == pair
     ]
     if len(same) == 1:
-        return "tail"
+        return "pair"
     return None
+
+
+def _last_two(qualname: str) -> str:
+    parts = [part for part in (qualname or "").split(".") if part]
+    if len(parts) < 2:
+        return ""
+    return f"{parts[-2]}.{parts[-1]}"
 
 
 def _param_used(chain: Chain, name: str) -> bool:
