@@ -23,6 +23,11 @@ def test_sample_packet_is_structural_kill_bar():
     types = {r.get("type") for r in data["rules"]}
     assert "AST_CALL_REWRITE" in types
     assert "DEPENDENCY_BUMP" in types
+    assert "AST_PARAM_RENAME" not in types
+    assert "EXACT_STRING_REPLACE" not in types
+    blob = json.dumps(data)
+    assert "max_completion_tokens" not in blob
+    assert "gpt-4o" not in blob
     assert any(
         r.get("type") == "AST_CALL_REWRITE"
         and r.get("old_callee") == "openai.ChatCompletion.create"
@@ -56,8 +61,10 @@ def test_apply_plus_client_chain_clears_028_kill_bar(tmp_path: Path):
     after_apply = src.read_text(encoding="utf-8")
     assert "ChatCompletion.create" not in after_apply
     assert "openai.chat.completions.create" in after_apply
-    assert "gpt-4o" in after_apply
-    assert "max_completion_tokens" in after_apply
+    assert "gpt-4-0613" in after_apply
+    assert "max_tokens" in after_apply
+    assert "gpt-4o" not in after_apply
+    assert "max_completion_tokens" not in after_apply
     assert "openai==1.0.0" in (dest / "requirements.txt").read_text(encoding="utf-8")
 
     chain = apply_openai_client_chain(

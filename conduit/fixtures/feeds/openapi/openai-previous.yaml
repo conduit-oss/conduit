@@ -27,6 +27,23 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      summary: Create a chat completion
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                max_tokens:
+                  type: integer
+      responses:
+        "200":
+          description: OK
   /v1/engines/{engine_id}:
     delete:
       operationId: deleteEngine

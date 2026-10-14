@@ -10,10 +10,10 @@ paths:
       responses:
         "200":
           description: OK
-  /v1/chat/completions:
+  /v1/completions:
     post:
-      operationId: createChatCompletion
-      summary: Create a chat completion (renamed from /v1/completions)
+      operationId: createCompletion
+      summary: Create a completion
       requestBody:
         content:
           application/json:
@@ -22,7 +22,24 @@ paths:
               properties:
                 model:
                   type: string
-                max_completion_tokens:
+                max_tokens:
+                  type: integer
+      responses:
+        "200":
+          description: OK
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      summary: Create a chat completion
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                max_tokens:
                   type: integer
       responses:
         "200":
@@ -30,7 +47,7 @@ paths:
   /v1/files:
     get:
       operationId: listFiles
-      summary: List files (added)
+      summary: List files
       responses:
         "200":
           description: OK

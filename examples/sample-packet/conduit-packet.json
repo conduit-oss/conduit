@@ -8,27 +8,23 @@
     {
       "url": "https://github.com/openai/openai-python/discussions/742",
       "kind": "docs"
-    },
-    {
-      "url": "https://platform.openai.com/docs/deprecations",
-      "kind": "docs"
     }
   ],
-  "notes": "Structural openai 0.28 → 1.x kill-bar packet for demo-consumer.\n\nPrimary hop: ChatCompletion.create → openai.chat.completions.create (+ DEPENDENCY_BUMP). Secondary: model id + max_tokens rename after the callee lands on the modern surface. Client-chain polish (OpenAI() + client.*) runs in `conduit run`.",
+  "notes": "Structural openai 0.28 → 1.x kill-bar packet for demo-consumer.\n\nFrom the v1.0.0 migration (discussion 742): ChatCompletion.create → openai.chat.completions.create, the documented module-level client, plus DEPENDENCY_BUMP 0.28.1 → 1.0.0. Client-chain polish (OpenAI() + client.*) runs in `conduit run`.",
   "rules": [
     {
       "type": "AST_CALL_REWRITE",
       "target_files": ["*.py"],
       "old_callee": "openai.ChatCompletion.create",
       "new_callee": "openai.chat.completions.create",
-      "reason": "openai 1.x removes ChatCompletion.create; use openai.chat.completions.create (then client chain)."
+      "reason": "v1.0.0 migration (discussion 742): openai.ChatCompletion.create() becomes the module-level openai.chat.completions.create. Client-chain polish then installs OpenAI()."
     },
     {
       "type": "AST_CALL_REWRITE",
       "target_files": ["*.py"],
       "old_callee": "ChatCompletion.create",
       "new_callee": "openai.chat.completions.create",
-      "reason": "Bare ChatCompletion.create → openai.chat.completions.create for 1.x."
+      "reason": "Bare ChatCompletion.create follows the same v1.0.0 rename to openai.chat.completions.create."
     },
     {
       "type": "DEPENDENCY_BUMP",
@@ -37,21 +33,6 @@
       "to_version": "1.0.0",
       "ecosystems": ["pip", "pyproject"],
       "reason": "Major SDK bump required for the modern OpenAI Python client."
-    },
-    {
-      "type": "EXACT_STRING_REPLACE",
-      "target_files": ["*.py", "*.ts", "*.js", "*.yaml", "*.yml", "*.json", ".env*"],
-      "match": "gpt-4-0613",
-      "replace": "gpt-4o",
-      "reason": "Deprecated model gpt-4-0613; documented replacement gpt-4o supports v1/chat/completions. Source: https://platform.openai.com/docs/deprecations"
-    },
-    {
-      "type": "AST_PARAM_RENAME",
-      "target_files": ["*.py", "*.ts", "*.js"],
-      "function_target": "chat.completions.create",
-      "old_param": "max_tokens",
-      "new_param": "max_completion_tokens",
-      "reason": "OpenAI chat.completions.create renamed max_tokens to max_completion_tokens for newer models."
     }
   ]
 }

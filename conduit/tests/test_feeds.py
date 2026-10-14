@@ -60,6 +60,7 @@ def test_github_atom_skips_prerelease_and_reads_renames():
     assert call.old == "openai.ChatCompletion.create"
     assert call.new == "openai.chat.completions.create"
     assert call.confidence == "medium"
+    assert not any(hit.change == "param_rename" for hit in hits)
     assert not parse_github_atom(
         text,
         url="https://github.com/openai/openai-python/releases.atom",
@@ -89,7 +90,8 @@ def test_npm_version_check_when_a_pin_exists():
     assert hits[0].confidence == "high"
 
 
-def test_openapi_pairs_renamed_path_and_ignores_pure_additions():
+def test_openapi_028_to_1_keeps_completions_and_max_tokens():
+    """The 1.0 SDK hop drops Engine and leaves completions + max_tokens in place."""
     previous = (FEEDS_DIR / "openapi" / "openai-previous.yaml").read_text(encoding="utf-8")
     latest = (FEEDS_DIR / "openapi" / "openai-latest.yaml").read_text(encoding="utf-8")
     hits = diff_openapi(
@@ -99,13 +101,75 @@ def test_openapi_pairs_renamed_path_and_ignores_pure_additions():
         previous_url="prev",
         latest_url="latest",
     )
-    renamed = next(hit for hit in hits if hit.change == "path_rename")
-    assert renamed.old == "POST /v1/completions"
-    assert renamed.new == "POST /v1/chat/completions"
-    assert renamed.confidence == "medium"
     assert any(hit.change == "removed" and "engines" in hit.old for hit in hits)
-    assert not any("/v1/files" in hit.new or "/v1/files" in hit.old for hit in hits if hit.change != "removed")
-    assert any(hit.change == "param_rename" and hit.old == "max_tokens" for hit in hits)
+    assert not any(hit.change == "path_rename" for hit in hits)
+    assert not any(hit.change == "param_rename" for hit in hits)
+    assert not any("/v1/files" in hit.new or "/v1/files" in hit.old for hit in hits)
+
+
+def test_openapi_pairs_explicit_renamed_from_and_ignores_additions():
+    previous = """
+openapi: 3.0.3
+info:
+  version: "1"
+paths:
+  /v1/widgets:
+    post:
+      operationId: createWidget
+      summary: Create a widget
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                old_flag:
+                  type: boolean
+      responses:
+        "200":
+          description: OK
+"""
+    latest = """
+openapi: 3.0.3
+info:
+  version: "2"
+paths:
+  /v1/gadgets:
+    post:
+      operationId: createGadget
+      summary: Create a gadget (renamed from /v1/widgets)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                new_flag:
+                  type: boolean
+      responses:
+        "200":
+          description: OK
+  /v1/files:
+    get:
+      operationId: listFiles
+      summary: List files
+      responses:
+        "200":
+          description: OK
+"""
+    hits = diff_openapi(
+        previous,
+        latest,
+        package="widgets",
+        previous_url="prev",
+        latest_url="latest",
+    )
+    renamed = next(hit for hit in hits if hit.change == "path_rename")
+    assert renamed.old == "POST /v1/widgets"
+    assert renamed.new == "POST /v1/gadgets"
+    assert renamed.confidence == "medium"
+    assert any(hit.change == "param_rename" and hit.old == "old_flag" and hit.new == "new_flag" for hit in hits)
+    assert not any("/v1/files" in hit.new or "/v1/files" in hit.old for hit in hits)
 
 
 def test_changelog_is_lowest_confidence():
@@ -114,6 +178,7 @@ def test_changelog_is_lowest_confidence():
     assert hits
     assert {hit.confidence for hit in hits} == {"low"}
     assert any(hit.old == "openai.ChatCompletion.create" for hit in hits)
+    assert not any(hit.change == "param_rename" for hit in hits)
 
 
 def test_default_sources_are_replaceable():
@@ -174,7 +239,12 @@ def test_fixture_watch_merges_a_schema_valid_packet():
     assert "medium" in call["reason"]
     assert "low" in packet["notes"]
     assert "changelog" in packet["notes"]
-    assert any(effect["old_shape"] == "POST /v1/completions" for effect in packet["side_effects"])
+    assert not any(rule["type"] == "AST_PARAM_RENAME" for rule in packet["rules"])
+    blob = json.dumps(packet)
+    assert "max_completion_tokens" not in blob
+    assert "gpt-4o" not in blob
+    assert any("engines" in effect["old_shape"] for effect in packet["side_effects"])
+    assert not any(effect["old_shape"] == "POST /v1/completions" for effect in packet["side_effects"])
     bare = [
         rule
         for rule in packet["rules"]

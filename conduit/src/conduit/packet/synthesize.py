@@ -1607,7 +1607,12 @@ def promote_mechanical_side_effects(
 
 
 def load_fixture_openai_packet() -> dict[str, Any]:
-    """Offline demo packet derived from classic openai deprecation fixtures."""
+    """Offline demo packet for the openai 0.28.1 → 1.0.0 SDK hop.
+
+    Matches discussion 742: the chat-completions method moves to the
+    module-level client, and the package pin bumps. ``max_tokens`` stayed
+    on that method in 1.0.0.
+    """
     return {
         "packet_id": "openai-0.28.1-1.0.0",
         "package": "openai",
@@ -1616,45 +1621,35 @@ def load_fixture_openai_packet() -> dict[str, Any]:
         "to_version": "1.0.0",
         "sources": [
             {
-                "url": "https://platform.openai.com/docs/deprecations",
+                "url": "https://github.com/openai/openai-python/discussions/742",
                 "kind": "docs",
             }
         ],
         "notes": (
-            "Offline fixture packet for demo-consumer (model + param renames).\n\n"
-            "Decision rationale:\n"
-            "- gpt-4-0613 → gpt-4o from OpenAI deprecations; gpt-4o supports "
-            "v1/chat/completions."
+            "Offline fixture packet for the openai 0.28.1 → 1.0.0 hop.\n\n"
+            "From discussion 742: ChatCompletion.create → "
+            "openai.chat.completions.create, plus the dependency bump."
         ),
         "rules": [
             {
-                "type": "EXACT_STRING_REPLACE",
-                "target_files": [
-                    "*.py",
-                    "*.ts",
-                    "*.js",
-                    "*.yaml",
-                    "*.yml",
-                    "*.json",
-                    ".env*",
-                ],
-                "match": "gpt-4-0613",
-                "replace": "gpt-4o",
+                "type": "AST_CALL_REWRITE",
+                "target_files": ["*.py"],
+                "old_callee": "openai.ChatCompletion.create",
+                "new_callee": "openai.chat.completions.create",
                 "reason": (
-                    "Deprecated model gpt-4-0613; documented replacement gpt-4o "
-                    "supports v1/chat/completions. "
-                    "Source: https://platform.openai.com/docs/deprecations"
+                    "v1.0.0 migration (discussion 742): "
+                    "openai.ChatCompletion.create() becomes the module-level "
+                    "openai.chat.completions.create."
                 ),
             },
             {
-                "type": "AST_PARAM_RENAME",
-                "target_files": ["*.py", "*.ts", "*.js"],
-                "function_target": "chat.completions.create",
-                "old_param": "max_tokens",
-                "new_param": "max_completion_tokens",
+                "type": "AST_CALL_REWRITE",
+                "target_files": ["*.py"],
+                "old_callee": "ChatCompletion.create",
+                "new_callee": "openai.chat.completions.create",
                 "reason": (
-                    "OpenAI chat.completions.create renamed max_tokens to "
-                    "max_completion_tokens for newer models."
+                    "Bare ChatCompletion.create follows the same v1.0.0 rename "
+                    "to openai.chat.completions.create."
                 ),
             },
             {

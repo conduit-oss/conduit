@@ -8,7 +8,7 @@
     <updated>2023-11-06T00:00:00Z</updated>
     <title>v1.0.0</title>
     <link rel="alternate" type="text/html" href="https://github.com/openai/openai-python/releases/tag/v1.0.0"/>
-    <content type="html">openai.ChatCompletion.create has been renamed to openai.chat.completions.create. The max_tokens parameter has been renamed to max_completion_tokens.</content>
+    <content type="html">openai.ChatCompletion.create has been renamed to openai.chat.completions.create. openai.Engine has been removed.</content>
   </entry>
   <entry>
     <id>tag:github.com,2008:Repository/1/v0.28.1</id>
