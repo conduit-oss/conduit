@@ -39,10 +39,6 @@ def _parse_version(tag: str) -> Version | None:
     return parse_release_version(tag)
 
 
-def _is_prerelease(tag: str, version: Version) -> bool:
-    return bool(version.is_prerelease) or "-rc" in tag.lower() or ".rc" in tag.lower()
-
-
 def _github_release_tags(repo: str, *, per_page: int = 30, max_pages: int = 3) -> list[str]:
     """List recent release tags (newest first from GitHub)."""
     headers = {"Accept": "application/vnd.github+json"}

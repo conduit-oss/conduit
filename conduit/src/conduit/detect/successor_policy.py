@@ -145,26 +145,3 @@ def rank_successors(
 
     return ordered[:limit]
 
-
-def prefer_intermediate_reason(
-    *,
-    from_id: str,
-    chosen: str,
-    documented: Sequence[str] | None = None,
-) -> str:
-    """Short reason fragment explaining intermediate-step preference."""
-    doc = list(documented or [])
-    if doc and chosen.lower() == doc[0].lower():
-        return (
-            f"Preferred intermediate successor {chosen} (first documented step "
-            f"from {from_id}; chain={doc})."
-        )
-    if doc and chosen.lower() in {d.lower() for d in doc}:
-        return (
-            f"Preferred documented successor {chosen} for {from_id} "
-            f"(not jumping past intermediate steps; chain={doc})."
-        )
-    return (
-        f"Preferred nearest available step {chosen} from {from_id} "
-        f"(avoid jumping to newest tier when a closer successor exists)."
-    )

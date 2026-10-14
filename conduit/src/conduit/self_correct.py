@@ -445,37 +445,6 @@ def _file_window(
     }
 
 
-def _package_dirs(root: Path) -> list[Path]:
-    """Top-level Python package dirs (exclude tests/src special-casing)."""
-    skip = {
-        "tests",
-        "test",
-        "src",
-        "docs",
-        "examples",
-        "scripts",
-        "venv",
-        ".venv",
-        "node_modules",
-        "build",
-        "dist",
-        ".git",
-        ".conduit",
-        "__pycache__",
-    }
-    out: list[Path] = []
-    try:
-        children = sorted(root.iterdir())
-    except OSError:
-        return out
-    for child in children:
-        if not child.is_dir() or child.name in skip or child.name.startswith("."):
-            continue
-        if (child / "__init__.py").is_file():
-            out.append(child)
-    return out
-
-
 def _is_test_rel(rel: str) -> bool:
     posix = rel.replace("\\", "/").lower()
     name = Path(posix).name

@@ -572,11 +572,6 @@ def _is_soft_fail_literal(node: ast.AST | None) -> bool:
     return False
 
 
-def _is_literal_response(node: ast.AST | None) -> bool:
-    """True for synthetic success stubs or soft-fail literals."""
-    return _is_success_stub(node) or _is_soft_fail_literal(node)
-
-
 def _clear_lineno(node: ast.AST) -> None:
     for child in ast.walk(node):
         for attr in ("lineno", "end_lineno", "col_offset", "end_col_offset"):
@@ -846,16 +841,6 @@ def generated_skip_findings(rel: str, text: str) -> list[str]:
     if any(n in lowered for n in _SKIP_NEEDLES) or ".skip(" in lowered or ".xfail(" in lowered:
         return [f"{rel} weakens generated tests with skip/xfail"]
     return []
-
-
-def weak_assert_findings(rel: str, text: str) -> list[str]:
-    if not is_test_rel(rel):
-        return []
-    hits: list[str] = []
-    if "assert isinstance(" in text and "len(" in text and "strip()" in text:
-        if "assert " in text and text.count("assert ") <= 3:
-            hits.append(f"{rel} assertions are too weak to catch a dummy reply")
-    return hits
 
 
 def _attr_chain(node: ast.AST) -> str:

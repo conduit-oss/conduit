@@ -53,3 +53,25 @@ Local libraries such as pydantic are not in the service catalog. Their Watch beh
 - A re-exported call rewritten to a qualified `openai...` callee does not gain an `import openai` by itself.
 
 A real consumer to try next is [lm-sys/FastChat](https://github.com/lm-sys/FastChat) at the commit before PR 3032 (`98b8f642`), which wraps the OpenAI 0.28 client the same way this fixture does.
+
+## Watching the services on the map
+
+`conduit watch` without `--packet` polls feeds those services already publish. It does not clone anyone else's repo and it does not watch internal contracts.
+
+| Source | Feed | Confidence |
+|--------|------|------------|
+| GitHub releases | `https://github.com/<org>/<repo>/releases.atom` | high for the version, medium when a rename is only in the notes |
+| PyPI | `https://pypi.org/pypi/<package>/json` | high |
+| npm | `https://registry.npmjs.org/<package>` | high, and only when the repo pins that package |
+| OpenAPI | previous spec vs latest spec | medium |
+| Changelog or deprecation page | the service's public page | low |
+
+A change becomes a migration packet: package, old version, new version, and old name to new name when the feed says so. Pass `--feeds` with recorded fixtures to run offline. Omit it to fetch the public URLs.
+
+```bash
+conduit watch --path ./examples/wrapped-openai-fixture --feeds ./conduit/fixtures/feeds --json
+```
+
+`--packet` is still the leftover gate for a hop you already have. That path is part of apply. It is not a watcher for another repo's contract.
+
+`conduit service` stores one map per customer, runs the same watch on a schedule (`tick` or `run`), flags the call sites the packet would break, and writes a local fix PR by calling `conduit apply` (dry-run unless you pass `--apply`).

@@ -26,6 +26,23 @@ def _packet() -> dict:
     return json.loads(PACKET_PATH.read_text(encoding="utf-8"))
 
 
+def _packet_with_synthetic_param_rename() -> dict:
+    """Blast coverage for AST_PARAM_RENAME. The 0.28.1 → 1.0.0 packet has no such rule."""
+    packet = _packet()
+    packet["rules"] = [
+        *packet["rules"],
+        {
+            "type": "AST_PARAM_RENAME",
+            "target_files": ["*.py"],
+            "function_target": "chat.completions.create",
+            "old_param": "max_tokens",
+            "new_param": "max_completion_tokens",
+            "reason": "Synthetic rule for wrapper param propagation.",
+        },
+    ]
+    return packet
+
+
 def _map():
     return analyze_repo(FIXTURE, service="openai")
 
@@ -165,7 +182,7 @@ def test_getattr_and_unrelated_create_are_not_sdk_calls():
 
 def test_blast_names_method_and_forwarded_param():
     service_map = _map()
-    blast = blast_radius(service_map, _packet())
+    blast = blast_radius(service_map, _packet_with_synthetic_param_rename())
     ask = next(
         item
         for item in blast.affected
@@ -388,9 +405,9 @@ def test_each_call_site_lists_a_method_rename_once():
 
 
 def test_inner_kwarg_breaks_every_outer_call_site():
-    """max_tokens set inside a wrapper is a break for every caller on that chain."""
+    """A synthetic param rename inside a wrapper is a break for every caller on that chain."""
     service_map = _map()
-    blast = blast_radius(service_map, _packet())
+    blast = blast_radius(service_map, _packet_with_synthetic_param_rename())
     expected = {
         ("llm.py", "complete"),
         ("gateway.py", "Gateway.complete"),

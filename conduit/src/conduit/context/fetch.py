@@ -24,15 +24,3 @@ def fetch_url(url: str, *, timeout: float = 30.0) -> str:
         resp = client.get(url, headers=headers)
         resp.raise_for_status()
         return resp.text
-
-
-def fetch_github_release_notes(owner: str, repo: str, tag: str | None = None) -> str:
-    if tag:
-        url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"
-    else:
-        url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
-    try:
-        text = fetch_url(url)
-    except Exception:
-        return ""
-    return text

@@ -230,7 +230,7 @@ Full field docs: [Codemods](codemods.md).
 
 ## Example (shipped sample)
 
-See [`examples/sample-packet/conduit-packet.json`](../examples/sample-packet/conduit-packet.json). Model string replace + `max_tokens` → `max_completion_tokens` + dependency bump.
+See [`examples/sample-packet/conduit-packet.json`](../examples/sample-packet/conduit-packet.json). `ChatCompletion.create` → `openai.chat.completions.create` plus a dependency bump from 0.28.1 to 1.0.0 (discussion 742).
 
 ## Related docs
 

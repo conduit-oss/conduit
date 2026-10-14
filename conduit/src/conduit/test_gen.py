@@ -306,14 +306,6 @@ def oracle_required_appearances(
     return out
 
 
-def _packet_has_ast_rules(packet: dict[str, Any]) -> bool:
-    return any(
-        isinstance(r, dict)
-        and str(r.get("type") or "").startswith("AST_")
-        for r in (packet.get("rules") or [])
-    )
-
-
 def _has_consumer_tests(root: Path, *, include_oracle: bool = False) -> bool:
     """True if the repo already has tests (optionally counting Conduit oracles)."""
     hits: list[Path] = []

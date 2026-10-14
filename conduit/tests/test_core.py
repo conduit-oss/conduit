@@ -289,6 +289,11 @@ def test_load_modules_includes_openai():
 def test_fixture_packet_valid():
     packet = load_fixture_openai_packet()
     assert validate_packet(packet) == []
+    types = {rule["type"] for rule in packet["rules"]}
+    assert types == {"AST_CALL_REWRITE", "DEPENDENCY_BUMP"}
+    blob = json.dumps(packet)
+    assert "max_completion_tokens" not in blob
+    assert "gpt-4o" not in blob
 
 
 def test_sample_packet_valid():
@@ -355,8 +360,12 @@ def test_apply_packet_writes_demo(tmp_path: Path):
     files = prune_by_imports(dest, ["openai"])
     report = apply_packet(dest, packet, dry_run=False, file_allowlist=files or None)
     text = (dest / "src" / "ai_client.py").read_text(encoding="utf-8")
-    assert "gpt-4o" in text
-    assert "max_completion_tokens" in text
+    assert "openai.chat.completions.create" in text
+    assert "ChatCompletion.create" not in text
+    assert "gpt-4-0613" in text
+    assert "max_tokens" in text
+    assert "gpt-4o" not in text
+    assert "max_completion_tokens" not in text
     assert report.files_modified
 
 

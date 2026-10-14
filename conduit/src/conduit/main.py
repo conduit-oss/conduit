@@ -56,17 +56,19 @@ from conduit.run_summary import build_run_summary, format_run_summary, format_ru
 from conduit.scaffold.module_new import scaffold_module
 from conduit.scaffold.packet_init import scaffold_packet
 from conduit.self_correct import verify_with_self_correct
+from conduit.service.cli import install as install_service
 from conduit.test_gen import ensure_tests
 
 app = typer.Typer(
     name="conduit",
-    help="Autonomous breaking-API migration CLI",
+    help="Map outside services, watch their public feeds, and apply the fix",
     add_completion=False,
 )
 module_app = typer.Typer(help="Detect module tools")
 packet_app = typer.Typer(help="Migration packet tools")
 app.add_typer(module_app, name="module", rich_help_panel="Advanced")
 app.add_typer(packet_app, name="packet")
+install_service(app)
 console = Console()
 _VERBOSE = False
 
@@ -561,23 +563,101 @@ def detect_cmd(
     raise typer.Exit(0 if result.signals else 1)
 
 
+def _watch_feeds(
+    root: Path,
+    *,
+    json_out: bool,
+    feeds: Path | None,
+    out: Path | None,
+    service: str | None,
+) -> None:
+    """Poll public feeds for outside services on this repo's map."""
+    from conduit.feeds.client import FeedClient
+    from conduit.feeds.watch import watch_outside
+
+    if feeds is None:
+        client = FeedClient(allow_network=True)
+    else:
+        fixture_root = feeds.expanduser().resolve()
+        if not fixture_root.is_dir():
+            console.print(f"[red]Feeds directory not found:[/red] {fixture_root}")
+            raise typer.Exit(2)
+        client = FeedClient(root=fixture_root, allow_network=False)
+    result = watch_outside(root, client=client, service=service)
+    if out is not None:
+        dest = out.expanduser().resolve()
+        dest.mkdir(parents=True, exist_ok=True)
+        for packet in result.packets:
+            name = str(packet.get("packet_id") or "packet") + ".json"
+            (dest / name).write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8")
+    if json_out:
+        console.print_json(data=result.to_dict())
+    else:
+        if not result.packets:
+            console.print("No feed changes for outside services on this map.")
+        for packet in result.packets:
+            console.print(
+                f"{packet.get('package')} {packet.get('from_version')} -> "
+                f"{packet.get('to_version')}  ({packet.get('packet_id')})"
+            )
+            for rule in packet.get("rules") or []:
+                if not isinstance(rule, dict):
+                    continue
+                if rule.get("type") == "DEPENDENCY_BUMP":
+                    detail = f"{rule.get('from_version')} -> {rule.get('to_version')}"
+                elif rule.get("type") == "AST_CALL_REWRITE":
+                    detail = f"{rule.get('old_callee')} -> {rule.get('new_callee')}"
+                elif rule.get("type") == "AST_PARAM_RENAME":
+                    detail = f"{rule.get('old_param')} -> {rule.get('new_param')}"
+                else:
+                    detail = rule.get("type")
+                console.print(f"  {rule.get('type')}: {detail}")
+        for item in result.skipped:
+            console.print(f"[yellow]skipped:[/yellow] {item}")
+        for warning in result.warnings:
+            console.print(f"[yellow]Warning:[/yellow] {warning}")
+    raise typer.Exit(0)
+
+
 @app.command("watch")
 def watch_cmd(
     path: Path = typer.Option(Path("."), "--path"),
-    packet: str = typer.Option(
-        ...,
+    packet: Optional[str] = typer.Option(
+        None,
         "--packet",
-        help="Path or http(s) URL to conduit-packet.json",
+        help="Leftover gate: path or http(s) URL to conduit-packet.json. Omit to watch public feeds.",
     ),
-    json_out: bool = typer.Option(False, "--json", help="Machine-readable verdict"),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable verdict or packets"),
+    feeds: Optional[Path] = typer.Option(
+        None,
+        "--feeds",
+        help="Recorded feed fixtures (offline). Omit to fetch public feeds for services on the map.",
+    ),
+    out: Optional[Path] = typer.Option(
+        None,
+        "--out",
+        help="Write each feed packet as JSON into this directory.",
+    ),
+    service: Optional[str] = typer.Option(
+        None,
+        "--service",
+        help="Limit feed watch to one outside service (openai, stripe, …).",
+    ),
 ) -> None:
-    """Fail when pin is at or past to_version but packet old_callee leftovers remain.
+    """Watch outside services on the map, or gate leftovers for one packet.
 
-    Read-only. Exit 0 for pre_bump (warns if leftovers exist), clean, or
-    no_rules (pin-only packet at or past target; message includes
-    ``no call-site rules``). Exit 1 for bump_dirty. Exit 2 for no_pin.
+    Without ``--packet``, poll public feeds (GitHub releases Atom, PyPI, npm,
+    OpenAPI, changelog) for catalogued services on the map and print change
+    packets. Internal modules are skipped.
+
+    With ``--packet``, read-only leftover gate. Exit 0 for pre_bump (warns if
+    leftovers exist), clean, or no_rules. Exit 1 for bump_dirty. Exit 2 for
+    no_pin or a bad path.
     """
     root = _resolve_root(path)
+    if not packet:
+        _watch_feeds(root, json_out=json_out, feeds=feeds, out=out, service=service)
+        return
     packet_file, _ = _resolve_packet_arg(
         str(packet), root=root, allow_package_name=False
     )

@@ -7,7 +7,7 @@ conduit --help
 conduit <command> --help
 ```
 
-Top-level `--help` keeps packet, apply, Watch, verify, and run in **Commands**. `detect` and `module` appear under **Advanced**.
+Top-level `--help` keeps map, watch, apply, service, packet, verify, and run in **Commands**. `detect` and `module` appear under **Advanced**.
 
 ## Global options
 
@@ -90,15 +90,36 @@ Exit `0` if any signals, else `1`.
 
 ## `conduit watch`
 
-Read-only CI gate. Scans for packet `old_callee` leftovers and compares the consumer pin to the packet hop.
+Two modes.
+
+**Feed watch** (no `--packet`). Read the map, keep catalogued outside services, and poll the feeds they already publish: GitHub releases Atom, PyPI, npm (only if this repo pins the npm package), a public OpenAPI pair, and a changelog or deprecation page. Each change becomes a migration packet (what changed, old name to new name, which version). Internal modules are skipped. `--feeds` points at recorded fixtures so tests and demos do not use the network. Omit it to fetch the public URLs.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--path` | `.` | Repo root |
-| `--packet` | required | Packet **file** path or **http(s) URL** |
+| `--feeds` | live HTTP | Fixture directory (`index.json` maps each URL to a file) |
+| `--out` | none | Write one JSON packet per file |
+| `--service` | every service on the map | One catalogued service |
+| `--json` | false | `{services, skipped, warnings, packets}` |
+
+Exit `0` after a feed pass, including when nothing changed. Exit `2` when `--path` or `--feeds` is not a directory.
+
+```bash
+conduit watch \
+  --path ./examples/wrapped-openai-fixture \
+  --feeds ./conduit/fixtures/feeds \
+  --json
+```
+
+**Leftover gate** (`--packet`). Read-only. Scans for packet `old_callee` leftovers and compares the consumer pin to the packet hop. This is the apply check, not a watcher for another repo.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path` | `.` | Repo root |
+| `--packet` | none | Packet **file** path or **http(s) URL**. Presence selects this mode |
 | `--json` | false | Machine-readable verdict (`status`, `exit_code`, leftovers) |
 
-Exit codes:
+Exit codes for the leftover gate:
 
 | Exit | When |
 |------|------|
@@ -106,7 +127,7 @@ Exit codes:
 | `1` | Pin has reached `to_version` and leftover `old_callee` calls remain |
 | `2` | Missing path / packet / pin, or invalid packet path |
 
-Does not rewrite files. Use after Dependabot bumps the pin so CI fails until call sites are migrated (or until `conduit apply` / `conduit run` clears them).
+Does not rewrite files. Use after Dependabot bumps the pin so CI fails until call sites are migrated (or until `conduit apply` clears them).
 
 Wrapped call sites are included for catalogued services (openai, anthropic, stripe, twilio, boto3). A function that calls `llm.complete` is a leftover while `complete` still reaches a packet `old_callee`. See [Outside-in mode](outside-in.md).
 
@@ -131,6 +152,21 @@ Read-only outside-in trace. Inventory external SDK and REST entry points, follow
 | `--markdown` | false | Markdown report |
 
 Exit `2` when `--path` is not a directory or `--packet` is missing or invalid. Exit `1` when the packet fails schema validation. Exit `0` after a scan, including an empty map.
+
+## `conduit service`
+
+Small hosted loop. No GitHub App. Each customer gets a stored map. `tick` (one pass) or `run` (loop) watches the outside services on that map. A new packet flags affected call sites and runs `conduit apply`. The default is `--dry-run`; `--apply` writes the tree. The fix PR is a markdown file under the store.
+
+| Command | What it does |
+|---------|----------------|
+| `service add --customer ID --path REPO --store DIR` | Scan the repo and store the map |
+| `service tick --store DIR [--feeds DIR] [--customer ID] [--apply]` | One scheduled pass |
+| `service run --store DIR [--interval 3600] [--once] [--feeds DIR] [--apply]` | Repeat `tick` |
+
+```bash
+conduit service add --customer acme --path ./examples/wrapped-openai-fixture --store ./.conduit-service
+conduit service tick --store ./.conduit-service --feeds ./conduit/fixtures/feeds
+```
 
 ```bash
 conduit map \

@@ -109,12 +109,6 @@ def rewrite_python_imports(content: str, old_import: str, new_import: str) -> tu
     return content, 0
 
 
-def rewrite_js_imports(content: str, old_import: str, new_import: str) -> tuple[str, int]:
-    from conduit.patcher.languages.javascript import JsTsEngine
-
-    return JsTsEngine().rewrite_import(content, old_import, new_import)
-
-
 def apply_import_rewrite(
     path: Path,
     content: str,

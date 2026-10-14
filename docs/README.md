@@ -13,7 +13,7 @@ Load a packet, apply or run, then gate leftovers with Watch.
 | [Getting started](getting-started.md) | Install, packet apply, Watch gate, first real-repo run |
 | [GitHub Actions](github-actions.md) | Watch CI gate, Dependabot intercept, nightly, composite action |
 | [CLI reference](cli-reference.md) | Every command and flag |
-| [Outside-in mode](outside-in.md) | Service map from an SDK or REST host back through wrappers |
+| [Outside-in mode](outside-in.md) | Service map, public feeds, and the hosted watch loop |
 | [Codemods](codemods.md) | Rule types and pluggable language engines (Python, JS/TS, Java, Go) |
 | [LLM configuration](llm.md) | OpenAI, Anthropic, Ollama, custom local |
 | [Testing & self-correction](testing-and-self-correct.md) | Test runners, smoke-test gen, retry loop |

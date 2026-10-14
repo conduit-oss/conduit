@@ -96,13 +96,6 @@ def format_go_version(version: str) -> str:
     return f"v{v}"
 
 
-def _req_pattern(package: str) -> re.Pattern[str]:
-    """Match package pin on one line (legacy helper for simple lookups)."""
-    return re.compile(
-        rf"(?m)^(?P<lead>\s*){re.escape(package)}\s*(?:==|>=|~=|<=|>|<)?\s*[^\s#]*"
-    )
-
-
 def _req_entry_pattern(package: str) -> re.Pattern[str]:
     """Match a requirements entry including markers and ``--hash=`` continuations."""
     return re.compile(
@@ -452,14 +445,6 @@ def _edit_package_json(
     return True
 
 
-def bump_package_json(
-    path: Path, package: str, to_version: str, *, dry_run: bool
-) -> bool:
-    return _edit_package_json(
-        path, package, to_version, op="bump", scope="main", dry_run=dry_run
-    )
-
-
 def _edit_go_mod(
     path: Path,
     package: str,
@@ -692,15 +677,6 @@ def _edit_pyproject(
     if not dry_run:
         path.write_text(tomlkit.dumps(doc), encoding="utf-8")
     return True, None
-
-
-def bump_pyproject(
-    path: Path, package: str, to_version: str, *, dry_run: bool
-) -> bool:
-    ok, _skip = _edit_pyproject(
-        path, package, to_version, op="bump", scope="main", dry_run=dry_run
-    )
-    return ok
 
 
 def _path_skipped(path: Path, root: Path) -> bool:
@@ -964,12 +940,3 @@ def apply_dependency_rule(
         )
 
     return result
-
-
-def apply_dependency_bump(
-    root: Path,
-    rule: dict[str, Any],
-    *,
-    dry_run: bool = False,
-) -> list[str]:
-    return apply_dependency_rule(root, rule, dry_run=dry_run).changed

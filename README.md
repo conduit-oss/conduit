@@ -3,159 +3,105 @@
 </p>
 
 <p align="center">
-  <strong>Self-hosted CLI that updates your code when dependencies make breaking API changes.</strong>
+  <strong>When an outside service you depend on changes, show which lines break and help fix them.</strong>
 </p>
 
-## Status (2026-09-26): Product hypothesis paused
-Conduit is parked as a **learning / OSS artifact**, not an active product push.
-Why: weeknight capacity is limited, and the hard bet (guaranteeing consumer SDK upgrades via apply + Watch) is not something I’m confident I can finish soon. Soft alternatives (MCP “give the agent more context,” repo telepathy) are explicitly out of scope for now.
-What still stands: packets, fixtures, and docs in this repo may be useful as reference. There is **no** claim that apply/Watch is production-ready or that hops will be correctly upgraded.
-If you found this useful or want a specific hop packet, open an issue. Otherwise treat this as paused until capacity and belief return.
+OpenAI, Stripe, Twilio, and the rest. Internal repo-to-repo breaks are out of scope. Pact, Optic, and Backstage own that. Python only today.
 
-<p align="center">
-  Deterministic AST engines for <strong>Python, JS/TS, Java, and Go</strong>.
-  An LLM or a maintainer authors the packet. Apply and Watch run that frozen packet with no LLM.
-</p>
+## The loop
+
+Map your repo, watch the outside services on that map, and when a change lands, flag the affected lines and open a fix.
 
 ```text
-Consumer (client)                    Producer (vendor / maintainer)
-─────────────────                    ─────────────────────────────
-load a frozen packet                 conduit packet new (LLM or hand)
-conduit apply / conduit run          conduit packet test
-conduit watch                        conduit packet publish → catalog
+map your repo → watch its outside services → change lands → flag affected lines → PR with the fix
 ```
 
-<p align="center">
-  <a href="docs/README.md"><strong>Full documentation</strong></a>
-  · <a href="docs/migration-packets.md">Packets</a>
-  · <a href="docs/github-actions.md">Watch in CI</a>
-</p>
+| Command | What it does |
+|---------|----------------|
+| `conduit map` | Every place your code reaches an outside service: direct SDK calls, your own wrappers, renamed imports, raw HTTP |
+| `conduit watch` | Read feeds those services already publish and turn a change into a packet |
+| `conduit apply` | Apply that packet to your tree |
+| `conduit service` | Keep each customer's map, run watch on a schedule, flag call sites, and produce the fix PR |
 
----
+Nothing is installed in anyone else's repo.
 
-## Quick start
+## Install
 
 ```bash
 git clone https://github.com/conduit-oss/conduit.git
 cd conduit
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv/Scripts/activate
-python -m pip install -e "./conduit[llm,langs,dev]"
-
-conduit run \
-  --path ./examples/demo-consumer \
-  --packet ./examples/sample-packet/conduit-packet.json \
-  --demo \
-  --skip-tests \
-  --skip-pr
+python -m pip install -e "./conduit[dev]"
 ```
 
-The GitHub repo is **private** under `conduit-oss`. You need access to clone it.
+## Try it
 
-The openai sample packet is the offline harness proof for apply and Watch. `--demo` uses offline fixtures and does **not** require a consumer `OPENAI_API_KEY` for verify. `--skip-tests` proves the structural openai 0.28 `ChatCompletion.create` → 1.x kill-bar hop without running demo suite asserts that intentionally encode the legacy surface. Restore with `git -C examples/demo-consumer checkout -- .` when finished.
-
-This **really applies** the sample Migration Packet and skips only PR creation so you can inspect the diff:
+Map the wrapped OpenAI fixture (the app calls `llm.complete`, which calls the SDK):
 
 ```bash
-git -C examples/demo-consumer diff
+conduit map --path ./examples/wrapped-openai-fixture
 ```
 
-Gate the same hop with Watch (read-only; no rewrites):
+Watch that service from recorded feeds (no network). The packet names the version and, when the feed says so, the old name and the new name:
 
 ```bash
 conduit watch \
+  --path ./examples/wrapped-openai-fixture \
+  --feeds ./conduit/fixtures/feeds \
+  --json
+```
+
+Store the map and run one hosted pass. This writes a local fix PR (dry-run `conduit apply`, no GitHub App) under `.conduit-service/`:
+
+```bash
+conduit service add \
+  --customer acme \
+  --path ./examples/wrapped-openai-fixture \
+  --store ./.conduit-service
+conduit service tick \
+  --store ./.conduit-service \
+  --feeds ./conduit/fixtures/feeds
+```
+
+`--packet` is still the leftover gate for a hop you already have. It fails when the pin is at the new version but old call sites remain. That check belongs to apply. It does not watch internal contracts.
+
+```bash
+conduit apply \
   --path ./examples/demo-consumer \
-  --packet ./examples/sample-packet/conduit-packet.json
+  --packet ./examples/sample-packet/conduit-packet.json \
+  --dry-run
 ```
 
-On your own repo:
+## What watch reads
 
-```bash
-conduit run --path /path/to/your/repo --packet openai -v
-# or an explicit packet file
-conduit run --path /path/to/your/repo --packet ./my-packet/conduit-packet.json
-```
+| Feed | What it catches | Confidence |
+|------|-----------------|------------|
+| GitHub releases Atom, `github.com/<org>/<repo>/releases.atom` | SDK release | high for the version; medium when a rename is only in the notes |
+| PyPI and npm | a package version newer than your pin | high |
+| Public OpenAPI, previous file vs latest | path and parameter changes | medium |
+| Changelog or deprecation page | prose renames | low |
 
-`--packet` accepts a **package name** or a path to `conduit-packet.json`. Use `-v` for version-source and export-delta diagnostics.
+Sources are pluggable. Tests use the recorded fixtures under `conduit/fixtures/feeds` and do not open a socket. Omit `--feeds` to fetch the public URLs.
 
-More: [Getting started](docs/getting-started.md) · [CLI reference](docs/cli-reference.md) · [GitHub Actions / Watch](docs/github-actions.md)
+## Not doing
 
----
+- Watching internal repos or inter-service contracts
+- Installing agents in other companies' repos
+- More languages before one paying team uses Python
 
-## Produce a packet
+## Known gaps
 
-For vendors and maintainers who publish rules into a catalog. Hand-authored or scaffold-only packets need no LLM keys. Enrichment is optional when a model is configured.
+Python only. Misses functions looked up by name at runtime (`getattr`) and functions passed in as arguments. Packets from feeds are thin: a version, and an old name to a new name when the feed actually says so.
 
-```bash
-conduit packet new \
-  --package google-genai --ecosystem pypi --version 1.0.0 \
-  --source-url https://googleapis.github.io/python-genai/
-conduit packet test --packet ./packets/google-genai-pypi-1.0.0.json
-conduit packet publish \
-  --packet ./packets/google-genai-pypi-1.0.0.json \
-  --catalog /path/to/conduit-packets
-```
-
-Details: [Migration packets](docs/migration-packets.md)
-
----
-
-## How it works
-
-| Audience | Step | What happens |
-|----------|------|----------------|
-| Consumer | **Packet** | Load a frozen `conduit-packet.json` for one version hop |
-| Consumer | **Apply / Run** | Deterministic AST/string codemods (no LLM) |
-| Consumer | **Watch** | Fail CI when the pin reached `to_version` but `old_callee` leftovers remain |
-| Consumer | **Verify / PR** | Native tests, optional LLM self-correct, branch `conduit/upgrade-{package}-{version}` |
-| Producer | **packet new** | Author rules (LLM enrich, hand edit, or `--scaffold-only`); writes `packets/{pkg}-{eco}-{version}.json` |
-| Producer | **packet test** | Validate and optional dry-run apply |
-| Producer | **packet publish** | Place the hop in a catalog under `by-package/…` |
-
-Detect modules stay Advanced / private-factory adjacent. See [Detect modules](docs/detect-modules.md).
-
-Deep dive: [Architecture](docs/architecture.md)
-
----
-
-## LLM (optional)
-
-Apply and Watch never call an LLM. They execute a frozen packet. Configure a model only to author or enrich rules, repair failed tests, or generate smoke tests.
-
-| Provider | API key? |
-|----------|----------|
-| `openai` / `anthropic` | Yes |
-| `ollama` / `custom` (local server) | **No** |
-
-```bash
-export CONDUIT_LLM_PROVIDER=ollama
-export CONDUIT_LLM_MODEL=llama3.2
-```
-
-Details: [LLM configuration](docs/llm.md)
-
----
-
-## Docs index
+## Docs
 
 | Topic | Link |
 |-------|------|
-| Getting started (consumer) | [docs/getting-started.md](docs/getting-started.md) |
-| Produce a packet (producer) | [docs/migration-packets.md](docs/migration-packets.md#authoring-cli) |
-| Migration packets | [docs/migration-packets.md](docs/migration-packets.md) |
-| GitHub Actions / Watch | [docs/github-actions.md](docs/github-actions.md) |
-| Architecture | [docs/architecture.md](docs/architecture.md) |
-| Codemods | [docs/codemods.md](docs/codemods.md) |
-| LLM | [docs/llm.md](docs/llm.md) |
-| Testing & self-correct | [docs/testing-and-self-correct.md](docs/testing-and-self-correct.md) |
-| Pull requests | [docs/pull-requests.md](docs/pull-requests.md) |
+| Outside-in map and feeds | [docs/outside-in.md](docs/outside-in.md) |
 | CLI reference | [docs/cli-reference.md](docs/cli-reference.md) |
-| Outside-in mode | [docs/outside-in.md](docs/outside-in.md) |
-| Advanced: detection | [docs/detection.md](docs/detection.md) |
-| Advanced: pruning & export delta | [docs/pruning-and-export-delta.md](docs/pruning-and-export-delta.md) |
-| Advanced: detect modules (factory) | [docs/detect-modules.md](docs/detect-modules.md) |
-
----
+| Getting started | [docs/getting-started.md](docs/getting-started.md) |
+| Full index | [docs/README.md](docs/README.md) |
 
 ## License
 

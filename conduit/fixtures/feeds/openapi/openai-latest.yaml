@@ -1,0 +1,53 @@
+openapi: 3.0.3
+info:
+  title: Recorded OpenAI spec (latest)
+  version: "1.0.0"
+paths:
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: List models
+      responses:
+        "200":
+          description: OK
+  /v1/completions:
+    post:
+      operationId: createCompletion
+      summary: Create a completion
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                max_tokens:
+                  type: integer
+      responses:
+        "200":
+          description: OK
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      summary: Create a chat completion
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                max_tokens:
+                  type: integer
+      responses:
+        "200":
+          description: OK
+  /v1/files:
+    get:
+      operationId: listFiles
+      summary: List files
+      responses:
+        "200":
+          description: OK

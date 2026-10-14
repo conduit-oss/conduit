@@ -1,6 +1,6 @@
 # Getting started
 
-Consumers load a frozen packet, apply it, then gate leftovers with Watch. Apply and Watch use no LLM. Producers author packets (LLM enrich, hand edit, or scaffold) and publish them. Detect modules are Advanced. Skip them until you need vendor signals.
+Start with `conduit map`, `conduit watch`, and `conduit apply`. Watch without `--packet` reads public feeds for the outside services on the map. `conduit service` stores that map and runs the same loop. The `--packet` form of Watch is the leftover gate after a hop you already have. Apply and that gate use no LLM. Producers can still author packets. Detect modules are Advanced.
 
 ## Requirements
 

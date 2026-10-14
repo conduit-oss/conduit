@@ -32,16 +32,6 @@ def load_learned_impact_rules(root: Path) -> list[dict[str, Any]]:
         return []
     return [r for r in rules if isinstance(r, dict)]
 
-
-def save_learned_impact_rules(root: Path, rules: list[dict[str, Any]]) -> None:
-    path = impact_rules_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"rules": rules}, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
 def save_impact_report(root: Path, report: dict[str, Any]) -> None:
     path = impact_report_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
