@@ -10,7 +10,7 @@
       "kind": "docs"
     }
   ],
-  "notes": "SUPERSEDED by pydantic-llm-mint-live.json (LIVE section in docs/smoke-tests/2026-09-19-llm-mint-proof.md). Historical blocked stub: packet new with no LLM keys. DEPENDENCY_BUMP + sources only. Not a rich LLM packet. from_version=* means any consumer pin; resolved at apply/run.",
+  "notes": "Historical blocked stub: packet new with no LLM keys. DEPENDENCY_BUMP + sources only. Not a rich LLM packet. from_version=* means any consumer pin; resolved at apply/run.",
   "rules": [
     {
       "type": "DEPENDENCY_BUMP",

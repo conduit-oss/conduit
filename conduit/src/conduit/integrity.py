@@ -21,69 +21,6 @@ _MARKER_NAME_RE = re.compile(
 _DUMMY_CONST = {"", "ok", "OK", None, 0, False}
 
 
-def dotted_expr(node: ast.AST) -> str:
-    parts: list[str] = []
-    cur: ast.AST | None = node
-    while isinstance(cur, ast.Attribute):
-        parts.append(cur.attr)
-        cur = cur.value
-    if isinstance(cur, ast.Name):
-        parts.append(cur.id)
-    parts.reverse()
-    return ".".join(parts)
-
-
-def py_used_callees(text: str) -> set[str]:
-    """Dotted names that appear as Attribute or Call targets."""
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return set()
-    found: set[str] = set()
-
-    class _V(ast.NodeVisitor):
-        def visit_Call(self, node: ast.Call) -> None:
-            dotted = dotted_expr(node.func)
-            if dotted:
-                found.add(dotted)
-            self.generic_visit(node)
-
-        def visit_Attribute(self, node: ast.Attribute) -> None:
-            dotted = dotted_expr(node)
-            if dotted:
-                found.add(dotted)
-            self.generic_visit(node)
-
-    _V().visit(tree)
-    return found
-
-
-def callee_used_in_text(text: str, callee: str) -> bool:
-    callee = (callee or "").strip()
-    if not callee:
-        return False
-    used = py_used_callees(text)
-    if callee in used:
-        return True
-    for item in used:
-        if item.endswith("." + callee) or callee.endswith("." + item):
-            return True
-        if callee in item.split("."):
-            # too loose for "create" — require last segment match
-            pass
-    last = callee.split(".")[-1]
-    for item in used:
-        parts = item.split(".")
-        if parts and parts[-1] == last and callee.replace(" ", "") in item.replace(" ", ""):
-            return True
-        if item.endswith(callee):
-            return True
-    # JS/TS or unparsable Python: require non-string call-ish use
-    if f"{callee}(" in text or f"{callee} (" in text:
-        return True
-    return False
-
-
 def _name_referenced(tree: ast.AST, name: str, skip_assign: ast.AST | None) -> bool:
     class _V(ast.NodeVisitor):
         found = False
@@ -326,9 +263,3 @@ def integrity_findings(
 
     return run_anticheat_mechanical(root, packet, files).messages
 
-
-def integrity_failure_result(findings: list[str]):
-    """Build a TestResult-shaped failure for the self-correct loop."""
-    from conduit.anticheat.scan import anticheat_failure_result
-
-    return anticheat_failure_result(findings, source="mechanical")

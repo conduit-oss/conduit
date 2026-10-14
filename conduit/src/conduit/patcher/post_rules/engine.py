@@ -423,18 +423,3 @@ def apply_post_rules(
 
     report.stage_counts["post"] = len(rules)
     return report
-
-
-def apply_post_rules_to_paths(
-    root: Path,
-    packet: dict[str, Any],
-    paths: list[str],
-) -> list[str]:
-    """Re-apply post rules on specific paths; return rel paths updated."""
-    allow = [root / p.replace("/", "\\") for p in paths]
-    report = apply_post_rules(
-        root,
-        packet,
-        file_allowlist=allow,
-    )
-    return list(report.files_modified)

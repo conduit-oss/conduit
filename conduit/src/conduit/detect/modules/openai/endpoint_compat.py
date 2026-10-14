@@ -401,8 +401,3 @@ def _with_reason(
         hints={**signal.hints, "endpoint_compat_reason": reason},
         suggested_rules=rules,
     )
-
-
-def decision_notes_path() -> Path:
-    """Unused helper kept for tests discovering fixture root."""
-    return fixtures_dir() / "model_docs"

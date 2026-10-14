@@ -35,23 +35,6 @@ def catalog_base_url() -> str | None:
     return raw or None
 
 
-def catalog_url_for_packet(packet: dict[str, Any]) -> str | None:
-    """
-    Build ``{BASE}/by-package/{package}/{ecosystem}/{packet_id}.json`` from
-    packet fields when ``CONDUIT_PACKET_CATALOG_BASE`` is set.
-    """
-    base = catalog_base_url()
-    if not base:
-        return None
-    package = str(packet.get("package") or "").strip()
-    ecosystem = str(packet.get("ecosystem") or "").strip().lower()
-    packet_id = str(packet.get("packet_id") or "").strip()
-    if not package or not ecosystem or not packet_id:
-        return None
-    slug = packet_id if packet_id.endswith(".json") else f"{packet_id}.json"
-    return f"{base}/by-package/{package}/{ecosystem}/{slug}"
-
-
 def catalog_url_for_name(
     name: str,
     *,

@@ -1,0 +1,10 @@
+{
+  "files": {
+    "https://github.com/openai/openai-python/releases.atom": "github/openai-python-releases.atom",
+    "https://pypi.org/pypi/openai/json": "pypi/openai.json",
+    "https://registry.npmjs.org/openai": "npm/openai.json",
+    "https://platform.openai.com/docs/deprecations": "changelog/openai-deprecations.html",
+    "https://raw.githubusercontent.com/openai/openai-openapi/previous/openapi.yaml": "openapi/openai-previous.yaml",
+    "https://raw.githubusercontent.com/openai/openai-openapi/latest/openapi.yaml": "openapi/openai-latest.yaml"
+  }
+}

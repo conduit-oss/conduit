@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/openai/openai-python/releases</id>
+  <title>Release notes from openai-python</title>
+  <updated>2023-11-06T00:00:00Z</updated>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v1.0.0</id>
+    <updated>2023-11-06T00:00:00Z</updated>
+    <title>v1.0.0</title>
+    <link rel="alternate" type="text/html" href="https://github.com/openai/openai-python/releases/tag/v1.0.0"/>
+    <content type="html">openai.ChatCompletion.create has been renamed to openai.chat.completions.create. The max_tokens parameter has been renamed to max_completion_tokens.</content>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v0.28.1</id>
+    <updated>2023-09-01T00:00:00Z</updated>
+    <title>v0.28.1</title>
+    <link rel="alternate" type="text/html" href="https://github.com/openai/openai-python/releases/tag/v0.28.1"/>
+    <content type="html">Previous stable SDK.</content>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v1.0.0rc1</id>
+    <updated>2023-10-01T00:00:00Z</updated>
+    <title>v1.0.0rc1</title>
+    <link rel="alternate" type="text/html" href="https://github.com/openai/openai-python/releases/tag/v1.0.0rc1"/>
+    <content type="html">Release candidate. Not the stable line.</content>
+  </entry>
+</feed>

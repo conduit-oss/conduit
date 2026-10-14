@@ -42,22 +42,3 @@ def apply_edits(source: str | bytes, edits: list[SourceEdit]) -> tuple[str, int]
         applied += 1
         last_start = edit.start_byte
     return raw.decode("utf-8"), applied
-
-
-def replace_dotted_span(
-    source: bytes,
-    *,
-    start_byte: int,
-    end_byte: int,
-    old: str,
-    new: str,
-) -> SourceEdit | None:
-    """If ``source[start:end]`` equals ``old`` (as UTF-8), return a replace edit."""
-    span = source[start_byte:end_byte]
-    try:
-        text = span.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    if text != old:
-        return None
-    return SourceEdit(start_byte, end_byte, new)

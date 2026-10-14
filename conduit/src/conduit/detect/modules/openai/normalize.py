@@ -12,7 +12,6 @@ from typing import Any
 from conduit.detect.modules.openai.models_legacy import (
     ChangeType,
     RawSignal,
-    RegistryDocument,
     RegistryEvent,
     Severity,
 )
@@ -202,20 +201,4 @@ def signal_to_event(signal: RawSignal) -> RegistryEvent:
         source_url=signal.source_url,
         description=signal.description,
         rules=default_rules_for(signal),
-    )
-
-
-def merge_signals(
-    signals: list[RawSignal],
-    *,
-    generated_at: str,
-    version: str = "1.0.0",
-) -> RegistryDocument:
-    events: list[RegistryEvent] = []
-    for signal in signals:
-        events.append(signal_to_event(signal))
-    return RegistryDocument(
-        version=version,
-        generated_at=generated_at,
-        events=events,
     )

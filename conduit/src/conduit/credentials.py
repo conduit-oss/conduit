@@ -103,19 +103,6 @@ def llm_provider() -> str:
     return os.environ.get("CONDUIT_LLM_PROVIDER", "").strip().lower()
 
 
-def llm_needs_cloud_key() -> bool:
-    provider = llm_provider()
-    if provider in {"none", "off", "disabled"}:
-        return False
-    if provider in {"ollama", "custom"}:
-        return False
-    if provider in {"openai", "anthropic"}:
-        return True
-    # Auto-detect path (provider unset): a cloud key is only required when we
-    # actually intend to call a cloud LLM. Callers pass ``want_llm``.
-    return provider == ""
-
-
 def packet_is_openai(packet: dict[str, Any] | None) -> bool:
     pkg = str((packet or {}).get("package") or "").strip().lower()
     return pkg == "openai"

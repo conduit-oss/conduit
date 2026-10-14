@@ -1,0 +1,8 @@
+{
+  "info": {"name": "openai", "version": "1.0.0"},
+  "releases": {
+    "0.28.1": [{"yanked": false}],
+    "1.0.0rc1": [{"yanked": false}],
+    "1.0.0": [{"yanked": false}]
+  }
+}
