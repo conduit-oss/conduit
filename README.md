@@ -6,7 +6,9 @@
   <strong>When an outside service you depend on changes, show which lines break and help fix them.</strong>
 </p>
 
-OpenAI, Stripe, Twilio, and the rest. Internal repo-to-repo breaks are out of scope. Pact, Optic, and Backstage own that. Python only today.
+OpenAI, Stripe, Twilio, the database you talk to, S3, and an incoming webhook. Internal repo-to-repo breaks are out of scope. Pact, Optic, and Backstage own that. Python only today.
+
+This is not a Dependabot replacement. Conduit does not open dependency-update PRs, bump lockfiles, scan for CVEs, or tell you that an ordinary library has a new version. It shows the lines in your code when an outside service, or the client you use to reach it, actually changes.
 
 ## The loop
 
@@ -18,9 +20,10 @@ map your repo → watch its outside services → change lands → flag affected 
 
 | Command | What it does |
 |---------|----------------|
-| `conduit map` | Every place your code reaches an outside service: direct SDK calls, your own wrappers, renamed imports, raw HTTP |
-| `conduit watch` | Read feeds those services already publish and turn a change into a packet |
-| `conduit apply` | Apply that packet to your tree |
+| `conduit map` | Every place your code reaches an outside service: SDK calls, database drivers, cloud operations, webhook handlers, your own wrappers |
+| `conduit watch` | Read feeds those services already publish. When a release changes a call you make, print the lines |
+| `conduit impact` | Same line-by-line check for one service, on demand |
+| `conduit apply` | Apply a migration packet to your tree |
 | `conduit service` | Keep each customer's map, run watch on a schedule, flag call sites, and produce the fix PR |
 
 Nothing is installed in anyone else's repo.
@@ -64,6 +67,19 @@ conduit service tick \
   --feeds ./conduit/fixtures/feeds
 ```
 
+Line-by-line impact on a repo that uses SQLAlchemy, S3, a Stripe webhook, and a small recorded API client. The wheels, botocore models, and webhook schemas are files in the repo, so this does not use the network:
+
+```bash
+conduit map --path ./examples/service-clients
+conduit impact --dep sqlalchemy --path ./examples/service-clients --fixtures ./conduit/fixtures/impact
+conduit impact --dep boto3 --path ./examples/service-clients --fixtures ./conduit/fixtures/impact
+conduit impact --dep stripe --path ./examples/service-clients --fixtures ./conduit/fixtures/impact
+conduit impact --dep acme-sdk --path ./examples/service-clients --fixtures ./conduit/fixtures/impact
+conduit watch --path ./examples/service-clients --feeds ./conduit/fixtures/feeds
+```
+
+`impact` prints the dependency, the version it moved from and to, the change, and each `file:line` in your code with a confidence. `watch` does that when the feed shows a newer release and a recorded surface is available. A version number on its own is not a report.
+
 `--packet` is still the leftover gate for a hop you already have. It fails when the pin is at the new version but old call sites remain. That check belongs to apply. It does not watch internal contracts.
 
 ```bash
@@ -77,22 +93,34 @@ conduit apply \
 
 | Feed | What it catches | Confidence |
 |------|-----------------|------------|
-| GitHub releases Atom, `github.com/<org>/<repo>/releases.atom` | SDK release | high for the version; medium when a rename is only in the notes |
-| PyPI and npm | a package version newer than your pin | high |
+| Two wheels from PyPI (or a recorded pair) | removed or renamed calls, parameters, and deprecations on the client you import | high for a removed call or parameter; medium when a rename is inferred from the signature |
+| Botocore service model (`service-2.json`) | AWS operation and shape changes, by service and operation (`s3.PutObject`) | high when your call uses the member that changed |
+| Webhook schema (Stripe OpenAPI, trimmed in tests) | payload fields a handler reads | high when the field is removed; medium when the schema says it was renamed |
+| GitHub releases Atom, `github.com/<org>/<repo>/releases.atom` | SDK release, and a rename when the notes state one | high for the version; medium when a rename is only in the notes |
+| PyPI and npm | that a service client you already call published a newer version | high, and only as the trigger for the diff above |
 | Public OpenAPI, previous file vs latest | path and parameter changes | medium |
-| Changelog or deprecation page | prose renames | low |
+| Changelog or deprecation page | prose renames and deprecations | low |
 
 Sources are pluggable. Tests use the recorded fixtures under `conduit/fixtures/feeds` and do not open a socket. Omit `--feeds` to fetch the public URLs.
 
 ## Not doing
 
+- A Dependabot or Renovate replacement: no lockfile bumps, no "upgrade this library" PRs, no CVE alerts, no new-version mail for ordinary packages
+- Watching every dependency in a lockfile. Versions are read only to know which service client you have pinned
 - Watching internal repos or inter-service contracts
 - Installing agents in other companies' repos
 - More languages before one paying team uses Python
 
+## What the map includes
+
+- External API clients and REST hosts (OpenAI, Anthropic, Stripe, Twilio, and the same shape of client)
+- Databases, as the driver or ORM that talks to them: SQLAlchemy, psycopg, psycopg2, pymongo, redis-py, asyncpg
+- Cloud SDKs: boto3 and botocore by service and operation (`s3.put_object`), `google-cloud-*`, `azure-*`
+- Incoming webhooks: FastAPI, Flask, and Django routes that receive a Stripe, GitHub, or Twilio payload, and the fields that handler reads
+
 ## Known gaps
 
-Python only. Misses functions looked up by name at runtime (`getattr`) and functions passed in as arguments. Packets from feeds are thin: a version, and an old name to a new name when the feed actually says so.
+Python only. Misses functions looked up by name at runtime (`getattr`) and functions passed in as arguments. A cloud service stored in a variable (`client(name)`) is not tied to an operation. Positional arguments are not matched to parameter names. Webhook fields read in a helper in another file are missed. Tests live under `conduit/fixtures/impact` and do not download wheels.
 
 ## Docs
 

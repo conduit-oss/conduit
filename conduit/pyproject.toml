@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "conduit"
 version = "0.3.0"
-description = "Map outside services, watch their public feeds, and apply the fix"
+description = "Map outside services, watch what they publish, and show the lines that break"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

@@ -1,0 +1,91 @@
+{
+  "version": "2.0",
+  "metadata": {
+    "apiVersion": "2006-03-01",
+    "endpointPrefix": "s3",
+    "serviceId": "S3"
+  },
+  "operations": {
+    "PutObject": {
+      "name": "PutObject",
+      "input": {
+        "shape": "PutObjectRequest"
+      },
+      "output": {
+        "shape": "PutObjectOutput"
+      }
+    },
+    "GetObject": {
+      "name": "GetObject",
+      "input": {
+        "shape": "GetObjectRequest"
+      },
+      "output": {
+        "shape": "GetObjectOutput"
+      }
+    }
+  },
+  "shapes": {
+    "PutObjectRequest": {
+      "type": "structure",
+      "required": [
+        "Bucket",
+        "Key"
+      ],
+      "members": {
+        "Bucket": {
+          "shape": "BucketName"
+        },
+        "Key": {
+          "shape": "ObjectKey"
+        },
+        "Body": {
+          "shape": "Body"
+        },
+        "ACL": {
+          "shape": "ObjectCannedACL"
+        },
+        "ContentType": {
+          "shape": "ContentType"
+        }
+      }
+    },
+    "PutObjectOutput": {
+      "type": "structure",
+      "members": {
+        "ETag": {
+          "shape": "ETag"
+        },
+        "VersionId": {
+          "shape": "ObjectVersionId"
+        }
+      }
+    },
+    "GetObjectRequest": {
+      "type": "structure",
+      "required": [
+        "Bucket",
+        "Key"
+      ],
+      "members": {
+        "Bucket": {
+          "shape": "BucketName"
+        },
+        "Key": {
+          "shape": "ObjectKey"
+        }
+      }
+    },
+    "GetObjectOutput": {
+      "type": "structure",
+      "members": {
+        "Body": {
+          "shape": "Body"
+        },
+        "ETag": {
+          "shape": "ETag"
+        }
+      }
+    }
+  }
+}

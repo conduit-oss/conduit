@@ -61,7 +61,7 @@ from conduit.test_gen import ensure_tests
 
 app = typer.Typer(
     name="conduit",
-    help="Map outside services, watch their public feeds, and apply the fix",
+    help="Map outside services, watch what they publish, and show the lines that break",
     add_completion=False,
 )
 module_app = typer.Typer(help="Detect module tools")
@@ -593,8 +593,8 @@ def _watch_feeds(
     if json_out:
         console.print_json(data=result.to_dict())
     else:
-        if not result.packets:
-            console.print("No feed changes for outside services on this map.")
+        if not result.packets and not result.impacts:
+            console.print("No released changes hit call sites on this map.")
         for packet in result.packets:
             console.print(
                 f"{packet.get('package')} {packet.get('from_version')} -> "
@@ -612,6 +612,39 @@ def _watch_feeds(
                 else:
                     detail = rule.get("type")
                 console.print(f"  {rule.get('type')}: {detail}")
+        if result.impacts:
+            from conduit.impact.model import Impact, SiteHit
+            from conduit.impact.report import format_impacts
+
+            rendered = [
+                Impact(
+                    dependency=str(item.get("dependency") or ""),
+                    from_version=str(item.get("from_version") or ""),
+                    to_version=str(item.get("to_version") or ""),
+                    change=str(item.get("change") or ""),
+                    confidence=str(item.get("confidence") or ""),
+                    source=str(item.get("source") or ""),
+                    sites=tuple(
+                        SiteHit(
+                            path=str(site.get("path") or ""),
+                            line=int(site.get("line") or 0),
+                            expr=str(site.get("expr") or ""),
+                            confidence=str(site.get("confidence") or ""),
+                        )
+                        for site in (item.get("sites") or [])
+                        if isinstance(site, dict)
+                    ),
+                )
+                for item in result.impacts
+                if isinstance(item, dict)
+            ]
+            console.print(
+                format_impacts(rendered),
+                markup=False,
+                highlight=False,
+                soft_wrap=True,
+                end="",
+            )
         for item in result.skipped:
             console.print(f"[yellow]skipped:[/yellow] {item}")
         for warning in result.warnings:
@@ -647,8 +680,9 @@ def watch_cmd(
     """Watch outside services on the map, or gate leftovers for one packet.
 
     Without ``--packet``, poll public feeds (GitHub releases Atom, PyPI, npm,
-    OpenAPI, changelog) for catalogued services on the map and print change
-    packets. Internal modules are skipped.
+    OpenAPI, changelog) for outside services on the map. When a released
+    surface is newer than the pin, print the call sites it changes. This is
+    not a new-version notice for ordinary libraries. Internal modules are skipped.
 
     With ``--packet``, read-only leftover gate. Exit 0 for pre_bump (warns if
     leftovers exist), clean, or no_rules. Exit 1 for bump_dirty. Exit 2 for
@@ -724,10 +758,11 @@ def map_cmd(
         False, "--markdown", help="Markdown report instead of the terminal report"
     ),
 ) -> None:
-    """Trace external services inward through wrappers to call sites.
+    """Trace outside services inward through wrappers to call sites.
 
-    Read-only. Python only. With --packet, each chain lists what that hop
-    would break (method rename, param drop, response field) and a confidence.
+    API clients, database drivers, cloud calls (service + operation), and
+    incoming webhook handlers. Read-only. Python only. With --packet, each
+    chain lists what that hop would break and a confidence.
     """
     root = _resolve_root(path)
     data: dict | None = None
@@ -759,6 +794,74 @@ def map_cmd(
             soft_wrap=True,
             end="",
         )
+
+
+@app.command("impact")
+def impact_cmd(
+    path: Path = typer.Option(Path("."), "--path", help="Repo to check"),
+    dep: str = typer.Option(
+        ...,
+        "--dep",
+        help="Outside service or its client (sqlalchemy, boto3, stripe, acme-sdk)",
+    ),
+    to: Optional[str] = typer.Option(
+        None,
+        "--to",
+        help="Newer released version. Default is the recorded surface for this client.",
+    ),
+    fixtures: Optional[Path] = typer.Option(
+        None,
+        "--fixtures",
+        help="Recorded wheels, botocore models, and webhook schemas (offline).",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable impact"),
+) -> None:
+    """Show which lines break when an outside service or its client changes.
+
+    Diffs the pinned version against a newer released surface: public API of
+    the two wheels, botocore service models, a published webhook schema, and
+    changelog hints. Prints the dependency, the version hop, the change, and
+    each file:line in this repo. Does not bump locks or report ordinary libraries.
+    """
+    root = _resolve_root(path)
+    from conduit.impact.report import format_impacts, impacts_to_dicts
+    from conduit.impact.run import collect_impacts
+    from conduit.outside_in.bridge import build_service_map
+    from conduit.outside_in.catalog import catalog_spec
+
+    spec = catalog_spec(dep)
+    if spec is None or spec.family:
+        console.print(
+            f"[red]{dep} is not an outside service.[/red] "
+            "Impact covers API clients, database drivers, cloud SDKs, and incoming webhooks."
+        )
+        raise typer.Exit(2)
+    fixture_root: Path | None = None
+    if fixtures is not None:
+        fixture_root = fixtures.expanduser().resolve()
+        if not fixture_root.is_dir():
+            console.print(f"[red]Fixtures directory not found:[/red] {fixture_root}")
+            raise typer.Exit(2)
+    service_map, _blast = build_service_map(root)
+    impacts, _diffed = collect_impacts(
+        root,
+        service_map,
+        fixtures=fixture_root,
+        dep=dep,
+        to_version=to,
+        allow_network=fixture_root is None,
+    )
+    if json_out:
+        console.print_json(data={"dependency": dep, "impacts": impacts_to_dicts(impacts)})
+    else:
+        console.print(
+            format_impacts(impacts),
+            markup=False,
+            highlight=False,
+            soft_wrap=True,
+            end="",
+        )
+    raise typer.Exit(0)
 
 
 @app.command("apply")

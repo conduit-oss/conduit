@@ -39,6 +39,8 @@ class Binding:
     target: str = ""
     qualname: str = ""
     confidence: str = "high"
+    #: AWS service from ``client("s3")`` / ``resource("s3")``, when it is a literal.
+    cloud_service: str = ""
 
 
 UNKNOWN = Binding("unknown")
@@ -180,7 +182,7 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
                     )
                 continue
             kind = _sdk_kind(spec, binding)
-            method = binding.target
+            method = _cloud_method(spec, binding, call, unit)
             directs.append(
                 _make_direct(
                     unit,
@@ -191,6 +193,9 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
                     confidence=confidence,
                 )
             )
+    from conduit.outside_in.webhooks import webhook_directs
+
+    directs.extend(webhook_directs(units, specs))
     chains = _propagate(directs, edges)
     entries.extend(_entries_from_directs(directs))
     entries = _dedupe_entries(entries)
@@ -381,15 +386,13 @@ class _Resolver:
         out: list[Entry] = []
         for raw in unit.imports:
             if raw.imported == "*":
-                spec = service_for_module(raw.module.split(".")[0], specs) if raw.module else None
-                if spec is None and raw.level == 0:
-                    spec = service_for_module(raw.module, specs)
+                spec = service_for_module(raw.module, specs) if raw.module else None
                 if spec is not None:
                     out.append(
                         Entry(
                             service=spec.service_id,
                             package=spec.package,
-                            kind="sdk_import",
+                            kind=f"{_kind_prefix(spec)}_import",
                             rel=rel,
                             lineno=raw.lineno,
                             symbol=f"from {raw.module} import *",
@@ -404,7 +407,8 @@ class _Resolver:
             spec = _service_of(binding, specs)
             if spec is None:
                 continue
-            kind = "sdk_import" if raw.imported is None else "sdk_alias"
+            base = _kind_prefix(spec)
+            kind = f"{base}_import" if raw.imported is None else f"{base}_alias"
             symbol = binding.target or raw.local
             detail = raw.local if raw.local == symbol else f"{raw.local} = {symbol}"
             out.append(
@@ -523,7 +527,8 @@ class _Resolver:
             return self._attribute(base, node.attr)
         if isinstance(node, ast.Call):
             func = self._resolve_expr(node.func, unit, enclosing, stack)
-            return self._call_result(func)
+            cloud = _factory_service(func, node, unit, enclosing) or func.cloud_service
+            return self._call_result(func, cloud_service=cloud)
         return UNKNOWN
 
     def _resolve_name(
@@ -569,6 +574,7 @@ class _Resolver:
                         instanced.target,
                         instanced.qualname,
                         confidence=min_confidence(instanced.confidence, "medium"),
+                        cloud_service=instanced.cloud_service,
                     )
             return UNKNOWN
         finally:
@@ -580,6 +586,7 @@ class _Resolver:
                 "external_attr",
                 f"{base.target}.{attr}",
                 confidence=base.confidence,
+                cloud_service=base.cloud_service,
             )
         if base.kind == "instance_local":
             method = f"{base.qualname}.{attr}"
@@ -606,7 +613,7 @@ class _Resolver:
             return UNKNOWN
         return UNKNOWN
 
-    def _call_result(self, func: Binding) -> Binding:
+    def _call_result(self, func: Binding, cloud_service: str = "") -> Binding:
         if func.kind == "symbol":
             key = _sym(func.target, func.qualname)
             returned = self._returns.get(key)
@@ -616,14 +623,26 @@ class _Resolver:
                     returned.target,
                     returned.qualname,
                     confidence=min_confidence(returned.confidence, "medium"),
+                    cloud_service=returned.cloud_service or cloud_service,
                 )
             unit = self.units.get(func.target)
             defn = unit.defs.get(func.qualname) if unit is not None else None
             if defn is not None and defn.kind == "class":
-                return Binding("instance_local", func.target, func.qualname, func.confidence)
+                return Binding(
+                    "instance_local",
+                    func.target,
+                    func.qualname,
+                    func.confidence,
+                    cloud_service=cloud_service,
+                )
             return UNKNOWN
         if func.kind in {"external_attr", "external_module"}:
-            return Binding("instance_external", func.target, confidence=func.confidence)
+            return Binding(
+                "instance_external",
+                func.target,
+                confidence=func.confidence,
+                cloud_service=cloud_service or func.cloud_service,
+            )
         return UNKNOWN
 
 
@@ -662,13 +681,19 @@ def _params_of(unit: ModUnit, enclosing: str) -> set[str]:
 
 def _as_instance(binding: Binding) -> Binding:
     if binding.kind == "external_attr":
-        return Binding("instance_external", binding.target, confidence=binding.confidence)
+        return Binding(
+            "instance_external",
+            binding.target,
+            confidence=binding.confidence,
+            cloud_service=binding.cloud_service,
+        )
     if binding.kind == "symbol":
         return Binding(
             "instance_local",
             binding.target,
             binding.qualname,
             confidence=binding.confidence,
+            cloud_service=binding.cloud_service,
         )
     if binding.kind in {"instance_external", "instance_local"}:
         return binding
@@ -678,8 +703,39 @@ def _as_instance(binding: Binding) -> Binding:
 def _service_of(binding: Binding, specs: tuple[ServiceSpec, ...]) -> ServiceSpec | None:
     if binding.kind not in {"external_attr", "external_module", "instance_external"}:
         return None
-    root = binding.target.split(".", 1)[0]
-    return service_for_module(root, specs)
+    return service_for_module(binding.target, specs)
+
+
+def _kind_prefix(spec: ServiceSpec) -> str:
+    if spec.kind == "database":
+        return "db"
+    if spec.kind == "cloud":
+        return "cloud"
+    return "sdk"
+
+
+_FACTORY_TAILS = frozenset({"client", "resource"})
+
+
+def _factory_service(
+    func: Binding,
+    node: ast.Call,
+    unit: ModUnit,
+    enclosing: str,
+) -> str:
+    """Literal AWS service passed to ``boto3.client`` / ``resource``."""
+    if func.kind not in {"external_attr", "external_module", "instance_external"}:
+        return ""
+    parts = func.target.split(".")
+    if not parts or parts[-1] not in _FACTORY_TAILS:
+        return ""
+    root = parts[0]
+    if root not in {"boto3", "botocore"} and "Session" not in func.target:
+        return ""
+    if not node.args:
+        return ""
+    found = _const_str(node.args[0], unit, enclosing)
+    return found.strip() if found else ""
 
 
 def _symbol_target(
@@ -698,9 +754,18 @@ def _symbol_target(
 
 def _sdk_kind(spec: ServiceSpec, binding: Binding) -> str:
     tail = binding.target.split(".")[-1]
+    prefix = _kind_prefix(spec)
     if tail in spec.constructor_tails and binding.target.count(".") <= 2:
-        return "sdk_constructor"
-    return "sdk_call"
+        return f"{prefix}_constructor"
+    return f"{prefix}_call"
+
+
+def _cloud_method(spec: ServiceSpec, binding: Binding, call: CallRec, unit: ModUnit) -> str:
+    cloud = binding.cloud_service or _factory_service(binding, call.node, unit, call.enclosing)
+    if spec.kind == "cloud" and cloud:
+        tail = binding.target.split(".")[-1]
+        return f"{cloud}.{tail}"
+    return binding.target
 
 
 def _http_service(

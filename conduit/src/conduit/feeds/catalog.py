@@ -82,6 +82,45 @@ FEEDS: dict[str, ServiceFeeds] = {
         pypi="boto3",
         changelog_url="https://github.com/boto/boto3/blob/develop/CHANGELOG.rst",
     ),
+    "sqlalchemy": ServiceFeeds(
+        service_id="sqlalchemy",
+        package="sqlalchemy",
+        pypi="sqlalchemy",
+    ),
+    "psycopg": ServiceFeeds(
+        service_id="psycopg",
+        package="psycopg",
+        pypi="psycopg",
+    ),
+    "psycopg2": ServiceFeeds(
+        service_id="psycopg2",
+        package="psycopg2",
+        pypi="psycopg2",
+    ),
+    "pymongo": ServiceFeeds(
+        service_id="pymongo",
+        package="pymongo",
+        pypi="pymongo",
+    ),
+    "redis": ServiceFeeds(
+        service_id="redis",
+        package="redis",
+        pypi="redis",
+    ),
+    "asyncpg": ServiceFeeds(
+        service_id="asyncpg",
+        package="asyncpg",
+        pypi="asyncpg",
+    ),
+    "acme": ServiceFeeds(
+        service_id="acme",
+        package="acme-sdk",
+        pypi="acme-sdk",
+    ),
+    "github": ServiceFeeds(
+        service_id="github",
+        package="github",
+    ),
 }
 
 

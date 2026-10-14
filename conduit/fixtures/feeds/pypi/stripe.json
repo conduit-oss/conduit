@@ -1,0 +1,6 @@
+{
+  "info": {"name": "stripe", "version": "10.0.0"},
+  "releases": {
+    "10.0.0": [{"yanked": false}]
+  }
+}
