@@ -159,6 +159,8 @@ ADD/REMOVE default to `pip` + `pyproject` unless `ecosystems` is set. They do no
 
 ## Language engines
 
+`conduit map`, `conduit watch`, and `conduit impact` read Python only. Other languages are planned one at a time. TypeScript and JavaScript via tree-sitter are next. The engines below are what `conduit apply` uses for a frozen packet. Java and Go engines exist for those rules. They are not a supported outside-service language yet.
+
 Pluggable engines under `conduit.patcher.languages` dispatch AST rules by file suffix.
 Missing optional grammars fall back to regex/string transforms (apply never hard-fails).
 Optional formatters (`gofmt`, `prettier`, `google-java-format`) run after edits when present on `PATH`.

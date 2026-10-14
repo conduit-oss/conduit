@@ -61,7 +61,7 @@ from conduit.test_gen import ensure_tests
 
 app = typer.Typer(
     name="conduit",
-    help="Map outside services, watch what they publish, and show the lines that break",
+    help="Map outside services and show the lines that break when they change",
     add_completion=False,
 )
 module_app = typer.Typer(help="Detect module tools")
@@ -658,13 +658,13 @@ def watch_cmd(
     packet: Optional[str] = typer.Option(
         None,
         "--packet",
-        help="Leftover gate: path or http(s) URL to conduit-packet.json. Omit to watch public feeds.",
+        help="Leftover gate: path or http(s) URL to conduit-packet.json. Omit to watch outside services.",
     ),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable verdict or packets"),
     feeds: Optional[Path] = typer.Option(
         None,
         "--feeds",
-        help="Recorded feed fixtures (offline). Omit to fetch public feeds for services on the map.",
+        help="Recorded copies of public feeds (offline). Omit to fetch those URLs. Wheels and schemas live beside this directory.",
     ),
     out: Optional[Path] = typer.Option(
         None,
@@ -679,14 +679,16 @@ def watch_cmd(
 ) -> None:
     """Watch outside services on the map, or gate leftovers for one packet.
 
-    Without ``--packet``, poll public feeds (GitHub releases Atom, PyPI, npm,
-    OpenAPI, changelog) for outside services on the map. When a released
-    surface is newer than the pin, print the call sites it changes. This is
-    not a new-version notice for ordinary libraries. Internal modules are skipped.
+    Without ``--packet``, diff the pinned client against the newer surface:
+    old and new PyPI wheels (removed, renamed, and changed-signature functions,
+    and return types), botocore service models, and webhook schemas. GitHub
+    releases and changelogs are extra hints. There is no hand-written change
+    list. A version bump with no call-site hit is not a report. This is not a
+    Dependabot notice. Internal modules are skipped.
 
-    With ``--packet``, read-only leftover gate. Exit 0 for pre_bump (warns if
-    leftovers exist), clean, or no_rules. Exit 1 for bump_dirty. Exit 2 for
-    no_pin or a bad path.
+    With ``--packet``, read-only leftover gate for a hop you already have.
+    Exit 0 for pre_bump (warns if leftovers exist), clean, or no_rules. Exit 1
+    for bump_dirty. Exit 2 for no_pin or a bad path.
     """
     root = _resolve_root(path)
     if not packet:
@@ -758,11 +760,12 @@ def map_cmd(
         False, "--markdown", help="Markdown report instead of the terminal report"
     ),
 ) -> None:
-    """Trace outside services inward through wrappers to call sites.
+    """Trace outside services inward through wrappers, aliases, and re-exports.
 
-    API clients, database drivers, cloud calls (service + operation), and
-    incoming webhook handlers. Read-only. Python only. With --packet, each
-    chain lists what that hop would break and a confidence.
+    API clients and REST hosts, database drivers, cloud calls (service and
+    operation, such as S3 via botocore), and incoming webhook handlers.
+    Read-only. Python only. With --packet, each chain lists what that hop
+    would break and a confidence.
     """
     root = _resolve_root(path)
     data: dict | None = None
@@ -812,7 +815,7 @@ def impact_cmd(
     from_version: Optional[str] = typer.Option(
         None,
         "--from",
-        help="Version to compare from when the repo does not pin one, or the pin does not match.",
+        help="Version to compare from when the repo has no pin, or the pin does not match a recorded surface.",
     ),
     fixtures: Optional[Path] = typer.Option(
         None,
@@ -823,10 +826,12 @@ def impact_cmd(
 ) -> None:
     """Show which lines break when an outside service or its client changes.
 
-    Diffs the pinned version against a newer released surface: public API of
-    the two wheels, botocore service models, a published webhook schema, and
-    changelog hints. Prints the dependency, the version hop, the change, and
-    each file:line in this repo. Does not bump locks or report ordinary libraries.
+    Diffs the pin (or ``--from``) against ``--to`` or the newer recorded
+    surface: public API of the two wheels, including return types, botocore
+    service models, and a webhook schema. GitHub releases and changelogs are
+    hints. Prints each file:line. If the repo has no pin and ``--from`` is
+    omitted, prints ``not compared: no pinned version found`` instead of an
+    all-clear. Does not bump locks, scan CVEs, or report ordinary libraries.
     """
     root = _resolve_root(path)
     from conduit.impact.report import format_impacts, impacts_to_dicts
@@ -884,7 +889,11 @@ def apply_cmd(
     packet: str = typer.Option(..., "--packet", help="Path or http(s) URL to conduit-packet.json"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
-    """Apply a Migration Packet without opening a PR."""
+    """Apply a migration packet to the tree. Does not open a pull request.
+
+    ``--dry-run`` prints the edits and does not write files. The outside-service
+    path that finds those lines is Python today.
+    """
     root = _resolve_root(path)
     from conduit.gitignore import ensure_conduit_gitignore
 

@@ -13,7 +13,7 @@ from conduit.feeds.client import FeedClient
 from conduit.service.worker import add_customer, tick
 
 service_app = typer.Typer(
-    help="Keep a customer's map, watch its outside services, and open a local fix PR",
+    help="Hosted skeleton: store a map, watch outside services, write a local fix PR",
     add_completion=False,
 )
 console = Console()
@@ -54,7 +54,7 @@ def tick_cmd(
     feeds: Optional[Path] = typer.Option(
         None,
         "--feeds",
-        help="Recorded feed fixtures. Omit to fetch public feeds.",
+        help="Recorded public-feed copies. Omit to fetch those URLs. Change data is the wheels, botocore models, and webhook schemas beside them.",
     ),
     customer: Optional[str] = typer.Option(None, "--customer"),
     apply: bool = typer.Option(
@@ -63,7 +63,7 @@ def tick_cmd(
         help="Write the fix into the customer repo. Default is a local dry-run.",
     ),
 ) -> None:
-    """Run one watch pass over stored maps."""
+    """Run one watch pass over stored maps and write a local fix note."""
     _report(store, feeds, customer, dry_run=not apply)
 
 
@@ -76,7 +76,7 @@ def run_cmd(
     once: bool = typer.Option(False, "--once", help="Run a single pass and exit"),
     apply: bool = typer.Option(False, "--apply"),
 ) -> None:
-    """Scheduled watch. Cron can call ``tick`` instead of leaving this running."""
+    """Scheduled outside-service watch. Cron can call ``tick`` instead of leaving this running."""
     if interval < 1 and not once:
         console.print("[red]--interval must be at least 1 unless --once[/red]")
         raise typer.Exit(2)

@@ -8,12 +8,14 @@ Conduit ships workflows you can copy into consumer repos, plus a composite actio
 |------|---------|---------|
 | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Push / PR | Unit tests + dry-run apply sanity |
 | [`.github/workflows/conduit-watch-demo.yml`](../.github/workflows/conduit-watch-demo.yml) | Push / PR | Watch dirty-fail + clean-pass on ephemeral fixtures |
-| [`.github/workflows/conduit-dependabot.yml`](../.github/workflows/conduit-dependabot.yml) | PR touching manifests/lockfiles | Intercept Dependabot/Renovate bumps |
+| [`.github/workflows/conduit-dependabot.yml`](../.github/workflows/conduit-dependabot.yml) | PR touching manifests/lockfiles | Older `conduit run --base-ref` example. Not the outside-service product |
 | [`.github/workflows/conduit-nightly.yml`](../.github/workflows/conduit-nightly.yml) | Cron `0 0 * * *` | Nightly detect/migrate pass |
 
-## Watch (CI gate)
+## Watch
 
-`conduit watch` is a read-only gate. It fails when the package pin has reached the packet `to_version` but call sites still hit packet `old_callee` leftovers.
+`conduit watch` without `--packet` diffs outside services (PyPI wheels, botocore models, webhook schemas). Release notes are hints. It does not bump lockfiles or announce ordinary library versions.
+
+`conduit watch --packet` is a separate read-only leftover gate. It fails when the package pin has reached the packet `to_version` but call sites still hit packet `old_callee` leftovers. That check belongs to apply. It does not watch another repo.
 
 This repo proves it with ephemeral fixtures in [`.github/workflows/conduit-watch-demo.yml`](../.github/workflows/conduit-watch-demo.yml) (no `OPENAI_API_KEY`, committed demo tree untouched).
 
@@ -33,22 +35,11 @@ Or call the CLI directly:
 conduit watch --path . --packet ./packets/my-hop.json
 ```
 
-## Dependabot / Renovate intercept
+## Not a Dependabot intercept
 
-Idea: when a bot opens a lockfile PR across a breaking boundary, Conduit runs on that branch’s diff.
+Conduit does not open lockfile bump PRs, scan for CVEs, or send new-version notices. The outside-service path does not watch internal repos.
 
-```yaml
-# simplified from conduit-dependabot.yml
-- run: |
-    conduit run \
-      --path . \
-      --base-ref "origin/${{ github.base_ref }}" \
-      --skip-pr
-```
-
-`--base-ref` makes Tier 1 lockfile isolation see exactly what changed on the PR.
-
-Actor filter (bot or `conduit` label) avoids running on unrelated human PRs.
+[`.github/workflows/conduit-dependabot.yml`](../.github/workflows/conduit-dependabot.yml) is an older example of `conduit run --base-ref` on a pull request that already touches a manifest. `--base-ref` limits that packet pipeline to the lockfile diff on the branch. It is not the map / watch / impact product, and it does not turn Conduit into Dependabot.
 
 ## Nightly
 

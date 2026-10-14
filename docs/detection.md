@@ -76,15 +76,15 @@ See [Detect modules](detect-modules.md).
 
 Those signals (plus `installed` versions) seed packet synthesis when no cached/explicit packet file exists. See [Migration packets](migration-packets.md).
 
-## Dependabot / Renovate intercept
+## Lockfile diff on an existing branch
 
-In CI, pass the PR base so the lockfile diff sees the bump:
+`conduit detect` and `conduit run --base-ref` can see a lockfile diff that is already on a branch. That is the older packet pipeline. It is not a Dependabot replacement: Conduit does not open lockfile bump PRs, scan for CVEs, or send new-version notices, and it does not watch internal repos.
 
 ```bash
 conduit run --path . --base-ref origin/main --skip-pr
 ```
 
-Workflow: [GitHub Actions](github-actions.md).
+The outside-service commands are `map`, `watch`, and `impact`. Workflow notes: [GitHub Actions](github-actions.md).
 
 ## Related docs
 

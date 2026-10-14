@@ -92,12 +92,12 @@ Exit `0` if any signals, else `1`.
 
 Two modes.
 
-**Feed watch** (no `--packet`). Read the map, keep outside services (API clients, database drivers, cloud SDKs, incoming webhooks), and poll the feeds they already publish. When a newer release has a recorded or fetched API surface, `impacts` lists each broken call and payload field with `file:line` and a confidence. A version bump with no call-site hit is not reported. This is not a Dependabot notification. Internal modules are skipped. `--feeds` points at recorded fixtures so tests and demos do not use the network. Omit it to fetch the public URLs. Recorded wheels and schemas live next to that directory in `conduit/fixtures/impact`.
+**Outside-service watch** (no `--packet`). Read the map and keep outside services only: external API clients and REST, database drivers, cloud SDKs, and incoming webhooks. A newer published version is the trigger. The change list is a diff of the old and new PyPI wheels (removed, renamed, and changed-signature functions, and return types), the botocore service model, and the webhook schema. GitHub releases and changelogs are extra hints. There is no hand-written change list. `impacts` lists each broken call and payload field with `file:line` and a confidence. A version bump with no call-site hit is not reported. This is not a Dependabot notification and it does not watch internal repos. `--feeds` points at recorded copies of those public URLs so tests and demos do not use the network. Omit it to fetch the URLs. Recorded wheels and schemas live next to that directory in `conduit/fixtures/impact`.
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--path` | `.` | Repo root |
-| `--feeds` | live HTTP | Fixture directory (`index.json` maps each URL to a file) |
+| `--feeds` | live HTTP | Recorded public-feed copies (`index.json` maps each URL to a file). Not a change list |
 | `--out` | none | Write one JSON packet per file |
 | `--service` | every service on the map | One catalogued service |
 | `--json` | false | `{services, skipped, warnings, packets, impacts}` |
@@ -127,7 +127,7 @@ Exit codes for the leftover gate:
 | `1` | Pin has reached `to_version` and leftover `old_callee` calls remain |
 | `2` | Missing path / packet / pin, or invalid packet path |
 
-Does not rewrite files. Use after Dependabot bumps the pin so CI fails until call sites are migrated (or until `conduit apply` clears them).
+Does not rewrite files. This is the apply leftover check for a hop you already have. It is not a Dependabot intercept, a lockfile bump, or a watch of another repo. CI can fail while old call sites remain after the pin reaches `to_version`, until `conduit apply` clears them.
 
 Wrapped call sites are included for catalogued services (openai, anthropic, stripe, twilio, boto3). A function that calls `llm.complete` is a leftover while `complete` still reaches a packet `old_callee`. See [Outside-in mode](outside-in.md).
 
@@ -141,7 +141,7 @@ conduit watch \
 
 ## `conduit map`
 
-Read-only outside-in trace. Inventory API clients, database drivers, cloud calls (service + operation), and incoming webhook handlers. Follow user wrappers. With `--packet`, report the blast radius of that hop.
+Read-only outside-in call graph. Inventory external API clients and REST hosts, database drivers, cloud calls (service + operation, such as S3 through botocore), and incoming webhook handlers. Follow wrappers, aliases, and re-exports. Python only. With `--packet`, report the blast radius of that hop.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -155,7 +155,7 @@ Exit `2` when `--path` is not a directory or `--packet` is missing or invalid. E
 
 ## `conduit impact`
 
-On-demand line-by-line impact for one outside service. Compares the pinned client with `--to`, or with the newer surface in `--fixtures`. Diffs public API wheels, a botocore service model, a webhook payload schema, and changelog hints. Prints only call sites in this repo. Does not edit the lockfile.
+On-demand line-by-line impact for one outside service: `conduit impact --dep X [--from V] [--to V]`. Compares the pin (or `--from`) with `--to`, or with the newer surface in `--fixtures`. Diffs public API wheels for removed, renamed, and changed-signature functions and return types, a botocore service model, and a webhook payload schema. GitHub releases and changelogs are hints only. Prints `file:line` for call sites in this repo. Does not edit the lockfile, scan CVEs, or report ordinary libraries.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -166,7 +166,7 @@ On-demand line-by-line impact for one outside service. Compares the pinned clien
 | `--fixtures` | none (fetch small wheels from PyPI) | Offline wheels, models, and schemas |
 | `--json` | false | `{dependency, impacts, notes}` |
 
-Exit `2` when `--dep` is an ordinary library, or `--path` / `--fixtures` is missing. Exit `0` when the check finishes. If the repo does not pin the client and `--from` is omitted, the text is `not compared: no pinned version found` rather than an all-clear. A pin that does not match a recorded surface is the same kind of miss. An all-clear means the surfaces were compared and no call site was hit.
+Exit `2` when `--dep` is an ordinary library, or `--path` / `--fixtures` is missing. Exit `0` when the check finishes. If the repo does not pin the client and `--from` is omitted, the text is `not compared: no pinned version found` rather than an all-clear. A pin that does not match a recorded surface prints `not compared: pinned version <version> does not match a recorded surface`. An all-clear (`No call sites in this repo are hit by the released change.`) means the surfaces were compared and no call site was hit.
 
 ```bash
 conduit impact \
@@ -177,7 +177,7 @@ conduit impact \
 
 ## `conduit service`
 
-Small hosted loop. No GitHub App. Each customer gets a stored map. `tick` (one pass) or `run` (loop) watches the outside services on that map. A new packet flags affected call sites and runs `conduit apply`. The default is `--dry-run`; `--apply` writes the tree. The fix PR is a markdown file under the store.
+Hosted service skeleton. No GitHub App. Each customer gets a stored map. `tick` (one pass) or `run` (loop) watches the outside services on that map and diffs the same wheels, botocore models, and webhook schemas as `conduit watch`. A hit flags affected call sites and runs `conduit apply`. The default is `--dry-run`; `--apply` writes the tree. The fix PR is a markdown file under the store. Python only.
 
 | Command | What it does |
 |---------|----------------|
@@ -203,7 +203,7 @@ Python only. `getattr`, dependency injection, and positional argument forwarding
 
 ## `conduit apply`
 
-Apply a frozen packet only (no oracle tests, no verify, no LLM). Codemod engines run the packet rules deterministically.
+Apply a frozen migration packet to the tree (no oracle tests, no verify, no LLM, no pull request). `--dry-run` prints the edits and does not write files. Codemod rules run deterministically. The outside-service path that produces the packet is Python today.
 
 | Option | Default | Description |
 |--------|---------|-------------|
