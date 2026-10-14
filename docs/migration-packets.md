@@ -11,7 +11,9 @@ Schema: [`schema/conduit-packet.schema.json`](../schema/conduit-packet.schema.js
 | Vendor / maintainer (producer) | Author the packet (`packet new` with optional LLM enrich, hand edit, or `--scaffold-only`), then `packet test` → `packet publish` into the catalog. Hop scaffolding also via `packet init`, `synthesize`, or `from-detect`. |
 | Consumer (client) | Pull a frozen packet from the catalog (`CONDUIT_PACKET_CATALOG_BASE` or a raw URL), then `conduit apply` / `conduit run` / `conduit watch`. No LLM at apply or Watch. |
 
-Producer flow is **publish, then consumer pull**. `packet publish` writes catalog JSON only. It does not open PRs into consumer repos. An LLM may help author rules. Apply and Watch only execute the frozen JSON.
+Producer flow is **publish, then consumer pull**. `packet publish` writes catalog JSON only. It does not open PRs into consumer repos. An LLM may help author rules. Apply and `watch --packet` execute the frozen JSON.
+
+The outside-service commands (`map`, `watch` without `--packet`, and `impact`) do not use a hand-written change list. They diff published wheels, botocore models, and webhook schemas. That path is Python today. Other languages are planned one at a time, with TypeScript and JavaScript via tree-sitter next.
 
 ## Minimal shape
 

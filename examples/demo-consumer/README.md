@@ -19,7 +19,7 @@ conduit run --path ./examples/demo-consumer \
 
 After a successful run you should see `ChatCompletion.create` gone, an `OpenAI` client call chain, and the dependency pin bumped past 0.28. Restore with `git -C examples/demo-consumer checkout -- .` when you are done inspecting.
 
-Watch (read-only CI gate) against the same packet:
+`conduit watch --packet` is the read-only leftover gate for this hop. It is not a Dependabot bump and it does not watch another repo:
 
 ```bash
 conduit watch --path ./examples/demo-consumer \

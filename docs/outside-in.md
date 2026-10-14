@@ -1,6 +1,6 @@
 # Outside-in mode
 
-Outside-in starts from an **external service** (a vendor SDK or a REST host) and walks inward to every call site that depends on it, including calls hidden behind your own wrappers.
+Outside-in starts from an **outside service** and walks inward to every call site that depends on it, including calls hidden behind your own wrappers, aliases, and re-exports. The scope is external API SDKs and REST hosts, database drivers, cloud SDKs (S3 through botocore models), and incoming webhooks such as Stripe. Ordinary libraries are out of scope. This is not Dependabot territory: no lockfile bumps, no CVE alerts, and no new-version notices. Internal repo-to-repo contracts are out of scope.
 
 Watch and apply already rewrite a file that imports `openai` and calls `openai.ChatCompletion.create`. They miss the application function that only calls your helper:
 
@@ -44,7 +44,7 @@ Apply rewrites the SDK call in the wrapper, which already imports the package. I
 
 Local libraries such as pydantic are not in the service catalog. Their Watch behavior stays the import-and-call scanner.
 
-The same graph covers database drivers (SQLAlchemy, psycopg, psycopg2, pymongo, redis, asyncpg), cloud SDKs (boto3 calls as `s3.put_object`, `google-cloud-*`, `azure-*`), and incoming Stripe, GitHub, and Twilio webhook routes. `conduit impact --dep <name>` diffs the pinned client against a newer released surface and prints the lines that use the changed call, parameter, or payload field. It is not a dependency bumper.
+The same graph covers database drivers (SQLAlchemy, psycopg, psycopg2, pymongo, redis, asyncpg), cloud SDKs (boto3 calls as `s3.put_object`, `google-cloud-*`, `azure-*`), and incoming Stripe, GitHub, and Twilio webhook routes. `conduit impact --dep X [--from V] [--to V]` diffs the pinned client (or `--from`) against `--to` or the newer recorded surface and prints each `file:line`. The diff is the public API of the two wheels (removed, renamed, and changed-signature functions, and return types), a botocore service model, and a webhook schema. Release notes are hints. If the repo does not pin the client and `--from` is omitted, the text is `not compared: no pinned version found` instead of an all-clear. A pin that does not match a recorded surface says `not compared: pinned version <version> does not match a recorded surface`. It does not bump a lockfile.
 
 ```bash
 conduit impact --dep sqlalchemy --path ./examples/service-clients --fixtures ./conduit/fixtures/impact
@@ -52,7 +52,7 @@ conduit impact --dep sqlalchemy --path ./examples/service-clients --fixtures ./c
 
 ## Limitations
 
-- JS/TS is a seam (`analyze_repo`) and is not implemented.
+- Python only today. Other languages are planned one at a time. TypeScript and JavaScript via tree-sitter are next. The JS/TS seam (`analyze_repo`) is not implemented.
 - `getattr`, `globals()`, parameters that hold a callable, and dependency-injection containers are invisible. `examples/wrapped-openai-fixture/dynamic_gap.py` is the deliberate miss.
 - Binding inside a function is not flow-sensitive. Positional argument forwarding is not matched to SDK parameter names. Star-imports are inventoried and not bound.
 - Tests directories are skipped.
@@ -65,22 +65,25 @@ A real consumer to try next is [lm-sys/FastChat](https://github.com/lm-sys/FastC
 
 ## Watching the services on the map
 
-`conduit watch` without `--packet` polls feeds those services already publish. It does not clone anyone else's repo and it does not watch internal contracts.
+`conduit watch` without `--packet` looks at outside services on the map. It does not clone anyone else's repo and it does not watch internal contracts.
 
-| Source | Feed | Confidence |
-|--------|------|------------|
-| GitHub releases | `https://github.com/<org>/<repo>/releases.atom` | high for the version, medium when a rename is only in the notes |
-| PyPI | `https://pypi.org/pypi/<package>/json` | high |
-| npm | `https://registry.npmjs.org/<package>` | high, and only when the repo pins that package |
-| OpenAPI | previous spec vs latest spec | medium |
-| Changelog or deprecation page | the service's public page | low |
+The change list is a diff of published artifacts:
 
-A change becomes a migration packet: package, old version, new version, and old name to new name when the feed says so. Pass `--feeds` with recorded fixtures to run offline. Omit it to fetch the public URLs.
+| Source | What it compares | Confidence |
+|--------|------------------|------------|
+| Two PyPI wheels | removed, renamed, and changed-signature functions, and return types | high for a removed call or parameter; medium for an inferred rename or a response-shape change |
+| Botocore `service-2.json` | AWS operation and shape changes, by service and operation | high when the call uses the member that changed |
+| Webhook schema | payload fields a handler reads | high when the field is removed; medium for a schema rename |
+| GitHub releases Atom and changelog pages | extra hints only | medium when a rename is only in the notes; low for changelog prose |
+
+A newer version on PyPI or npm starts that diff. It is not a report by itself. There is no hand-written change list. `conduit/fixtures/feeds` records the public URLs (release atoms, registry JSON, changelog pages) so a demo can run offline. The wheels, botocore models, and webhook schemas live next to that directory in `conduit/fixtures/impact`. Omit `--feeds` to fetch the public URLs.
 
 ```bash
-conduit watch --path ./examples/wrapped-openai-fixture --feeds ./conduit/fixtures/feeds --json
+conduit watch --path ./examples/service-clients --feeds ./conduit/fixtures/feeds --json
 ```
 
-`--packet` is still the leftover gate for a hop you already have. That path is part of apply. It is not a watcher for another repo's contract.
+`--packet` is still the leftover gate for a hop you already have. That path is part of apply. It is not a watcher for another repo's contract and it is not a Dependabot intercept.
 
-`conduit service` stores one map per customer, runs the same watch on a schedule (`tick` or `run`), flags the call sites the packet would break, and writes a local fix PR by calling `conduit apply` (dry-run unless you pass `--apply`).
+`conduit apply` writes the frozen packet's rules into the tree. `--dry-run` prints the edits and does not write files. It does not open a pull request.
+
+`conduit service` is the hosted skeleton. It stores one map per customer, runs the same watch on a schedule (`tick` or `run`), flags the call sites, and writes a local fix PR by calling `conduit apply` (dry-run unless you pass `--apply`). There is no GitHub App.

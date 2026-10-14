@@ -1,6 +1,6 @@
 # Wrapped OpenAI fixture
 
-A small consumer that never calls `openai.ChatCompletion.create` from application code. The legacy SDK call sits behind a function, a class method, and a package re-export. `alias_client.py` constructs `OpenAI` under the alias `C`. `http_edge.py` posts to `api.openai.com` with `requests`. `dynamic_gap.py` uses `getattr` and is a known miss.
+A small consumer that never calls `openai.ChatCompletion.create` from application code. `conduit map` follows the function wrapper, the class method, the package re-export, and the `OpenAI as C` alias. `http_edge.py` posts to `api.openai.com` with `requests`. `dynamic_gap.py` uses `getattr` and is a known miss. Python only.
 
 From the repo root:
 
@@ -12,4 +12,4 @@ python -m conduit.main map \
   --packet examples/sample-packet/conduit-packet.json
 ```
 
-`--json` prints the same map for Watch and apply. The 0.28 pin makes `conduit watch` a pre-bump warn; the wrapped call sites are still listed.
+`--json` prints the same map for Watch and apply. `conduit watch --packet` against the sample packet is the leftover gate: the 0.28 pin is a pre-bump warn, and the wrapped call sites are still listed. That gate is not an internal-repo watch. Feed watch for this fixture reads recorded release notes. The OpenAI wheel pair used to check public names is built in tests and is not in `conduit/fixtures/impact`.

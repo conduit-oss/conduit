@@ -1,6 +1,12 @@
 # Getting started
 
-Start with `conduit map`, `conduit watch`, and `conduit apply`. Watch without `--packet` reads public feeds for the outside services on the map. `conduit service` stores that map and runs the same loop. The `--packet` form of Watch is the leftover gate after a hop you already have. Apply and that gate use no LLM. Producers can still author packets. Detect modules are Advanced.
+Start with `conduit map`, `conduit watch`, `conduit impact`, and `conduit apply`. `conduit service` is the hosted skeleton for that loop.
+
+Scope is outside services only: external API SDKs and REST, databases, cloud SDKs such as S3 via botocore models, and incoming webhooks such as Stripe. This is not Dependabot territory. Conduit does not bump lockfiles, scan for CVEs, or send new-version notices for ordinary libraries. It does not watch internal repos.
+
+Watch without `--packet` diffs old and new PyPI wheels, botocore models, and webhook schemas. GitHub releases and changelogs are extra hints. There is no hand-written change list. `conduit impact --dep X [--from V] [--to V]` is the same check for one service and prints `file:line`. A repo with no pin says `not compared: no pinned version found` instead of an all-clear. The `--packet` form of Watch is the leftover gate for a hop you already have. Apply and that gate use no LLM. Producers can still author packets. Detect modules are Advanced.
+
+Python only today. Other languages are planned one at a time. TypeScript and JavaScript via tree-sitter are next.
 
 ## Requirements
 
@@ -22,7 +28,7 @@ pip install -e "./conduit[llm,langs,dev]"
 conduit --help
 ```
 
-The `conduit-oss/conduit` repo is **private**. Cloning requires GitHub access to that org.
+The public repo is [conduit-oss/conduit](https://github.com/conduit-oss/conduit).
 
 Extras:
 
@@ -30,21 +36,16 @@ Extras:
 |-------|----------|
 | `llm` | OpenAI Python SDK (also used to talk to Ollama / custom servers) |
 | `llm-anthropic` | Anthropic SDK |
-| `langs` | tree-sitter + JS/TS, Java, and Go grammars for richer AST transforms |
+| `langs` | tree-sitter grammars used by packet-apply engines. The outside-service path does not use them yet |
 | `llm-js` | Alias subset: tree-sitter + JS/TS grammars |
-| `llm-all` | LLM SDKs + all language grammars |
+| `llm-all` | LLM SDKs + language grammars |
 | `dev` | pytest |
 
-## Supported languages
+## Languages
 
-| Target language | AST engine | Notes |
-|-----------------|------------|-------|
-| Python | libcst | Default; demo consumer is Python |
-| JavaScript / TypeScript | tree-sitter (`langs` extra) | Regex fallback without grammars |
-| Java | tree-sitter (`langs` extra) | Import + call/attr + builder params |
-| Go | tree-sitter (`langs` extra) | Import paths + selectors; `gofmt` if available |
+`conduit map`, `conduit watch`, and `conduit impact` read Python only. Other languages are planned one at a time. TypeScript and JavaScript via tree-sitter are next.
 
-String/regex rules also apply to YAML, JSON, and `.env*` files. Install `[langs]` for richer non-Python AST transforms before any LLM step.
+`conduit apply` still runs frozen packet rules through the language engines already in the tree (Python via libcst; JS/TS, Java, and Go via tree-sitter when `[langs]` is installed, with a regex fallback). Those engines are not the outside-service product. String and regex rules also apply to YAML, JSON, and `.env*` files.
 
 ## 1. Apply a Migration Packet (recommended first run)
 
@@ -85,9 +86,16 @@ conduit apply \
   --dry-run
 ```
 
-## 2. Watch the pin (CI gate)
+## 2. Watch outside services, or gate a hop you already have
 
-After a Dependabot bump, fail CI when the pin is at the packet `to_version` but call sites still use packet `old_callee` symbols. Read-only; does not rewrite files.
+`conduit watch` without `--packet` diffs the outside services on the map. Pass `--feeds ./conduit/fixtures/feeds` for the recorded public URLs. The wheels and schemas beside that directory are the change data.
+
+```bash
+conduit watch --path ./examples/service-clients --feeds ./conduit/fixtures/feeds
+conduit impact --dep sqlalchemy --path ./examples/service-clients --fixtures ./conduit/fixtures/impact
+```
+
+`conduit watch --packet` is a separate read-only gate. It fails when the pin is at the packet `to_version` but call sites still use packet `old_callee` symbols. It does not rewrite files. It does not intercept Dependabot, bump a lockfile, or watch another repo.
 
 ```bash
 conduit watch \
