@@ -101,7 +101,9 @@ def test_watch_validator_hop_clean_keeps_unverified_completeness_without_fail(
     (tree / "requirements.txt").write_text("pydantic==2.0.0\n", encoding="utf-8")
     hop = REPO / "examples" / "sample-packet" / "pydantic-validator-hop.json"
     runner = CliRunner()
-    applied = runner.invoke(app, ["apply", "--path", str(tree), "--packet", str(hop)])
+    from tests.apply_support import invoke_apply
+
+    applied = invoke_apply(tree, hop)
     assert applied.exit_code == 0, applied.output
     clean = runner.invoke(
         app, ["watch", "--path", str(tree), "--packet", str(hop), "--json"]

@@ -2,15 +2,15 @@
 name: verify-conduit
 description: >-
   Verify Conduit's CLI consumer-migration path toward a mergeable PR with
-  minimal human review: watch → apply → watch on disposable trees, catalog
-  publish→consume, and honest leftovers for permanent gaps. Use when proving
-  consumer migration or checking what humans must still review — not for LLM
-  mint authoring or UI review.
+  minimal human review: watch, then the deferred rewrite engine, then watch
+  on disposable trees, catalog publish→consume, and honest leftovers for
+  permanent gaps. Use when proving consumer migration or checking what humans
+  must still review — not for LLM mint authoring or UI review.
 ---
 
 # Verify Conduit (consumer migration CLI)
 
-Primary surface is the **`conduit` CLI** (`python -m conduit.main`). There is no web UI for apply/Watch. Producers author/publish packets; consumers run Watch and apply on their own trees. This skill proves the **consumer migration** path on isolated copies — never mutate `examples/` in place.
+Primary surface is the **`conduit` CLI** (`python -m conduit.main`). There is no web UI for Watch. `conduit apply` is deferred and is not a command. `conduit run` still rewrites a tree; the proof helper calls `apply_migration` in process. Producers author/publish packets; consumers run Watch on their own trees. This skill proves the **consumer migration** path on isolated copies — never mutate `examples/` in place.
 
 ## Goal (operator)
 
@@ -33,7 +33,7 @@ export PYTHONPATH=conduit/src          # Windows PowerShell: $env:PYTHONPATH="co
 python -m conduit.main --help
 ```
 
-Ready when `--help` lists `watch`, `apply`, `run`, and `packet`.
+Ready when `--help` lists `watch`, `run`, `map`, `impact`, and `packet`. `apply` must be absent.
 
 Optional editable install (same ready check):
 
@@ -79,14 +79,15 @@ python .cursor/skills/verify-conduit/helpers/prove_watch_apply_watch.py
 python -m conduit.main watch --path <scratch> --packet examples/sample-packet/pydantic-surface-hop.json --json
 # expect exit 1, status=bump_dirty, leftovers non-empty
 
-python -m conduit.main apply --path <scratch> --packet examples/sample-packet/pydantic-surface-hop.json
+# conduit apply is deferred. The rewrite engine is what conduit run calls.
+python -c "from conduit.main import apply_migration; apply_migration(__import__('pathlib').Path('<scratch>'), 'examples/sample-packet/pydantic-surface-hop.json')"
 # expect exit 0; tree rewritten
 
 python -m conduit.main watch --path <scratch> --packet examples/sample-packet/pydantic-surface-hop.json --json
 # expect exit 0, status=clean, leftover_count=0
 ```
 
-Stable handles: CLI subcommands `watch` / `apply` / `run` / `packet publish`; packet paths under `examples/sample-packet/`; Watch `--json` fields `status`, `leftover_count`, `leftovers`, `exit_code` (also `pin`, `message`, optional `completeness`).
+Stable handles: CLI subcommands `watch` / `run` / `map` / `impact` / `packet publish`. `apply` is deferred. Packet paths under `examples/sample-packet/`. Watch `--json` fields `status`, `leftover_count`, `leftovers`, `exit_code` (also `pin`, `message`, optional `completeness`).
 
 Read `features/README.md` and drive the feature file that matches the claim. Do not report a skipped entry point as verified through another path.
 

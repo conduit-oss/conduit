@@ -287,7 +287,8 @@ def test_pair_match_uses_class_and_method_not_the_bare_name():
     assert _method_match("openai.Audio.transcribe", symbol, change, [change, other]) is None
 
 
-def test_openai_public_names_unpinned_exceptions_and_dict_response(tmp_path: Path):
+def test_openai_public_names_unpinned_exceptions_and_dict_response(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("conduit.impact.versions.installed_version", lambda _package: "")
     """Trimmed 0.28-shaped wheels: internal paths, no pin, retry, dict access."""
     fixtures = tmp_path / "impact"
     wheels = fixtures / "wheels"

@@ -7,7 +7,7 @@ conduit --help
 conduit <command> --help
 ```
 
-Top-level `--help` keeps map, watch, impact, apply, service, packet, verify, and run in **Commands**. `detect` and `module` appear under **Advanced**.
+Top-level `--help` keeps map, watch, impact, service, packet, verify, and run in **Commands**. `detect` and `module` appear under **Advanced**. `conduit apply` is deferred and is not a command.
 
 ## Global options
 
@@ -101,6 +101,7 @@ Two modes.
 | `--out` | none | Write one JSON packet per file |
 | `--service` | every service on the map | One catalogued service |
 | `--json` | false | `{services, skipped, warnings, packets, impacts}` |
+| `--show-callers` | false | List wrapper callers. The default puts them in a low-confidence section |
 
 Exit `0` after a feed pass, including when nothing changed. Exit `2` when `--path` or `--feeds` is not a directory.
 
@@ -127,7 +128,7 @@ Exit codes for the leftover gate:
 | `1` | Pin has reached `to_version` and leftover `old_callee` calls remain |
 | `2` | Missing path / packet / pin, or invalid packet path |
 
-Does not rewrite files. This is the apply leftover check for a hop you already have. It is not a Dependabot intercept, a lockfile bump, or a watch of another repo. CI can fail while old call sites remain after the pin reaches `to_version`, until `conduit apply` clears them.
+Does not rewrite files. This is the leftover check for a hop you already have. It is not a Dependabot intercept, a lockfile bump, or a watch of another repo. CI can fail while old call sites remain after the pin reaches `to_version`. Clearing them with `conduit apply` is deferred; `conduit run` still rewrites a tree from a frozen packet.
 
 Wrapped call sites are included for catalogued services (openai, anthropic, stripe, twilio, boto3). A function that calls `llm.complete` is a leftover while `complete` still reaches a packet `old_callee`. See [Outside-in mode](outside-in.md).
 
@@ -151,6 +152,8 @@ Read-only outside-in call graph. Inventory external API clients and REST hosts, 
 | `--json` | false | Machine-readable map (`entries`, `chains`, `blast`) |
 | `--markdown` | false | Markdown report |
 
+The graph follows wrappers, aliases, re-exports, `functools.partial`, `getattr` on a known client with a string literal, and a lambda assigned to a name. Imports inside a function body are tracked, including an import in an enclosing function. `requests`, `httpx`, and `aiohttp` calls are mapped by host and path when the URL, an f-string, a constant, or a client `base_url` can be resolved. A variable passed to `getattr` stays unresolved.
+
 Exit `2` when `--path` is not a directory or `--packet` is missing or invalid. Exit `1` when the packet fails schema validation. Exit `0` after a scan, including an empty map.
 
 ## `conduit impact`
@@ -165,8 +168,11 @@ On-demand line-by-line impact for one outside service: `conduit impact --dep X [
 | `--from` | the pin in this repo | Version to compare from when the repo does not pin one, or the pin does not match a recorded surface |
 | `--fixtures` | none (fetch small wheels from PyPI) | Offline wheels, models, and schemas |
 | `--json` | false | `{dependency, impacts, notes}` |
+| `--show-callers` | false | List wrapper callers. The default puts them in a low-confidence section |
 
-Exit `2` when `--dep` is an ordinary library, or `--path` / `--fixtures` is missing. Exit `0` when the check finishes. If the repo does not pin the client and `--from` is omitted, the text is `not compared: no pinned version found` rather than an all-clear. A pin that does not match a recorded surface prints `not compared: pinned version <version> does not match a recorded surface`. An all-clear (`No call sites in this repo are hit by the released change.`) means the surfaces were compared and no call site was hit.
+Exit `2` when `--dep` is an ordinary library, or `--path` / `--fixtures` is missing. Exit `0` when the check finishes. The version compared from is `--from`, else an exact pin, else a lockfile (`poetry.lock`, `uv.lock`, `Pipfile.lock`), else the installed distribution, else the highest PyPI release matching a requirement range. `--to` or the latest release is the other side. If no version can be determined, the text is `not compared` and names the reason (no pin, lock, install, or resolvable range, or network disabled for a range) rather than an all-clear. A pin that does not match a recorded surface prints `not compared: pinned version <version> does not match a recorded surface`. An all-clear (`No call sites in this repo are hit by the released change.`) means the surfaces were compared and no call site was hit.
+
+The primary finding is the line a concrete change affects: a call, a callable that is loaded but not called (`return pkg.Widget.create`), a write of a module global the new wheel no longer assigns (`pkg.api_base = ...`), or a dict read of a return the wheel classifies as dict-like before and typed after. Callers of a wrapper are listed under `low confidence` and are not part of that count; `--show-callers` expands them. `getattr(package, "__version__")` is the same version read as `package.__version__`. A name the new wheel still exports is not reported as removed. REST calls are compared with a versioned OpenAPI pair when one is recorded. Without that pair the note names the calls that had no spec. A single latest document from a public spec repo is not treated as a diff. Changelog lines that say an endpoint was removed or renamed are low-confidence hints.
 
 ```bash
 conduit impact \
@@ -177,7 +183,7 @@ conduit impact \
 
 ## `conduit service`
 
-Hosted service skeleton. No GitHub App. Each customer gets a stored map. `tick` (one pass) or `run` (loop) watches the outside services on that map and diffs the same wheels, botocore models, and webhook schemas as `conduit watch`. A hit flags affected call sites and runs `conduit apply`. The default is `--dry-run`; `--apply` writes the tree. The fix PR is a markdown file under the store. Python only.
+Hosted service skeleton. No GitHub App. Each customer gets a stored map. `tick` (one pass) or `run` (loop) watches the outside services on that map and diffs the same wheels, botocore models, and webhook schemas as `conduit watch`. A hit flags affected call sites and writes a markdown note under the store. Rewriting the tree is deferred: `conduit apply` is not a command, and `--apply` does not write files. Python only.
 
 | Command | What it does |
 |---------|----------------|
@@ -197,19 +203,13 @@ conduit map \
   --packet ./examples/sample-packet/conduit-packet.json
 ```
 
-Python only. `getattr`, dependency injection, and positional argument forwarding are not resolved. Details: [Outside-in mode](outside-in.md).
+Python only. A variable passed to `getattr`, dependency injection, and positional argument forwarding are not resolved. A string literal passed to `getattr`, `functools.partial`, and a lambda that calls the SDK are. Details: [Outside-in mode](outside-in.md).
 
 ---
 
-## `conduit apply`
+## `conduit apply` (deferred)
 
-Apply a frozen migration packet to the tree (no oracle tests, no verify, no LLM, no pull request). `--dry-run` prints the edits and does not write files. Codemod rules run deterministically. The outside-service path that produces the packet is Python today.
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--path` | `.` | Repo root |
-| `--packet` | required | Packet **file** path or **http(s) URL** |
-| `--dry-run` | false | Print changes without writing |
+`conduit apply` is not a command. Rewriting a tree from the CLI is deferred. `conduit run` still calls the same packet engines (no LLM on the rewrite itself). Tests that need the rewrite call `apply_migration` in process.
 
 ---
 

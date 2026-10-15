@@ -47,7 +47,7 @@ Exact push vs commit behavior follows `open_pull_request(..., push=..., create_p
 
 ## CI pattern
 
-`conduit apply` and `conduit run` can open a fix PR for a hop you already have. Conduit does not open Dependabot-style lockfile bumps, and it does not watch internal repos. An older workflow example passes `--base-ref` so `conduit run` sees a lockfile diff already on a branch, often with `--skip-pr`. That is not the outside-service product.
+`conduit run` can open a fix PR for a hop you already have. `conduit apply` is deferred. Conduit does not open Dependabot-style lockfile bumps, and it does not watch internal repos. An older workflow example passes `--base-ref` so `conduit run` sees a lockfile diff already on a branch, often with `--skip-pr`. That is not the outside-service product.
 
 See [GitHub Actions](github-actions.md).
 

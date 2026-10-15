@@ -73,8 +73,9 @@ def test_top_level_help_demotes_detect_and_module():
     commands = _command_names(_panel_body(text, "Commands"))
     advanced = _command_names(_panel_body(text, "Advanced"))
 
-    for hero in ("packet", "watch", "apply"):
+    for hero in ("packet", "watch", "map", "impact"):
         assert hero in commands, f"{hero} missing from Commands panel:\n{text}"
+    assert "apply" not in commands
 
     assert "detect" not in commands
     assert "module" not in commands

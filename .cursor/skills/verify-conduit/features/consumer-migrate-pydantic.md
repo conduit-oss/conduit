@@ -5,7 +5,7 @@ A consumer stuck on pydantic v1 validator/`dict`/Config shapes loads a frozen mi
 ## Sub-features
 
 - `seed-bump-dirty` — pin at `to_version` with leftover sites → Watch exit 1, `status=bump_dirty`.
-- `apply-hop` — `conduit apply` rewrites validator, classmethod, Config, dict.
+- `apply-hop` — `apply_migration` rewrites validator, classmethod, Config, dict. `conduit apply` is deferred.
 - `watch-clean` — second Watch exit 0, `status=clean`, `leftover_count=0`.
 - `tree-proof` — source shows `@field_validator`, `@classmethod`, `model_dump`, `model_config`/`ConfigDict`, no `class Config`.
 
@@ -13,7 +13,7 @@ A consumer stuck on pydantic v1 validator/`dict`/Config shapes loads a frozen mi
 
 - Copy `examples/pydantic-validator-fixture` aside (or use the prove helper).
 - Point `--packet` at `examples/sample-packet/pydantic-surface-hop.json`.
-- Run `conduit watch`, then `conduit apply`, then `conduit watch` again.
+- Run `conduit watch`, then `apply_migration` (`conduit apply` is deferred), then `conduit watch` again.
 
 ## Driving it with conduit CLI
 
@@ -26,7 +26,7 @@ Preconditions:
 - **One-shot proof.** Run `python .cursor/skills/verify-conduit/helpers/prove_watch_apply_watch.py`. Evidence lands under `evidence/consumer-migrate-pydantic-<UTC>/` with `RESULT.txt` = `PASS`.
 - **Isolate manually.** Run `python .cursor/skills/verify-conduit/helpers/isolate_consumer.py --source examples/pydantic-validator-fixture --dest .cursor/skills/verify-conduit/scratch/pydantic-manual`. Write `pydantic==2.0.0` into that copy’s `requirements.txt`.
 - **Watch dirty.** Run `python -m conduit.main watch --path <scratch> --packet examples/sample-packet/pydantic-surface-hop.json --json`. Exit code is `1`; JSON `status` is `bump_dirty`; leftovers may include call, import_member, and Config declaration rows (not only `validator`).
-- **Apply.** Run `python -m conduit.main apply --path <scratch> --packet examples/sample-packet/pydantic-surface-hop.json`. Exit code is `0`.
+- **Rewrite.** `conduit apply` is deferred. Run `python -c "from conduit.main import apply_migration; apply_migration(__import__('pathlib').Path('<scratch>'), 'examples/sample-packet/pydantic-surface-hop.json')"`. Exit code is `0`.
 - **Watch clean.** Run the same Watch command again. Exit code is `0`; JSON `status` is `clean` and `leftover_count` is `0`. Optional `completeness.status: unverified` may still appear — leftover-clean is the merge bar here, not full surface completeness.
 - **Proof.** Read `<scratch>/src/model.py`: `@field_validator`, `@classmethod`, `model_dump`, `model_config` or `ConfigDict`, and no `class Config` / bare `@validator("name")`. Save transcripts under `evidence/`.
 

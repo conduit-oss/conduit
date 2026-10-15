@@ -215,7 +215,9 @@ def test_pydantic_surface_diff_apply_fixture(tmp_path: Path, monkeypatch):
     )
     assert dirty.exit_code == 1, dirty.output
 
-    applied = runner.invoke(app, ["apply", "--path", str(tree), "--packet", str(hop_path)])
+    from tests.apply_support import invoke_apply
+
+    applied = invoke_apply(tree, hop_path)
     assert applied.exit_code == 0, applied.output
     body = (tree / "src" / "model.py").read_text(encoding="utf-8")
     assert '@field_validator("name")' in body or "@field_validator(" in body

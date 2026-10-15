@@ -1,0 +1,132 @@
+# Migration backtest
+
+Two sets, same command shape: check out the parent of a real migration, diff the published wheels, and compare impact's main lines with the lines that commit deleted. Wrapper callers are blast radius. They are printed under `low confidence` and are not in the counts below. There is no hand-written change list.
+
+**Before** is `main` at `482e4ce` (the numbers already published for the large set; wrappers were included in that precision). **After** is this branch. The main count is a line where a wheel, botocore model, or schema change affects that line.
+
+A deleted line counts when the file mentions the client and the line is a call (`ChatCompletion.create`, `Moderation.create`, and the same shape), a response read (`["choices"]`, `["results"]`, `.choices`, `.delta`), or an `openai.api_*` / `openai.error` / `openai.version` use. Docstrings that only mention the vendor do not count. Lines the migration only added are not in the denominator. Tests directories are excluded, matching the scanner.
+
+## Large set (six merged OpenAI 0.28 → 1.x migrations)
+
+| Repo | PR | Parent | Merge |
+|------|----|--------|-------|
+| [lm-sys/FastChat](https://github.com/lm-sys/FastChat/pull/3032) | 3032 | `98b8f642` | `e087d6e8` |
+| [stanfordnlp/dspy](https://github.com/stanfordnlp/dspy/pull/403) | 403 | `24865c1e` | `889f7fa8` |
+| [mlflow/mlflow](https://github.com/mlflow/mlflow/pull/11034) | 11034 | `2f692895` | `c1c4243d` |
+| [DataDog/dd-trace-py](https://github.com/DataDog/dd-trace-py/pull/7513) | 7513 | `b4eb548f` | `eb220c96` |
+| [wandb/wandb](https://github.com/wandb/wandb/pull/6498) | 6498 | `7a705a9b` | `afffbe60` |
+| [guardrails-ai/guardrails](https://github.com/guardrails-ai/guardrails/pull/788) | 788 | `4386c362` | `a28d01c1` |
+
+Wheels: openai 0.28.1 and 1.0.0 from PyPI.
+
+| | Call-site recall | Precision (main lines ∩ deleted lines) | Lines-needing-edits coverage |
+|--|--|--|--|
+| Before | 9/13 (69%) | 18/85 (21%), wrappers included | 18/117 (15%) |
+| After | 13/13 (100%) | 43/79 (54%) | 43/117 (37%) |
+
+Primary-only precision on the same before tree was 20/43 (47%). The move from 21% to 54% is the low-confidence split plus the new hits below. A re-run after the return-class plumbing below kept call-site recall at 13/13 and edit coverage at 43/117. The main-line denominator moved from 77 to 79: dspy gained two `openai.api_base` writes under `testing/tasks/` that PR 403 did not delete. 54% is the strict overlap with lines that one commit deleted. The other 36 main lines are breaks this one commit did not edit: `ChatCompletion.create` and `openai.api_base` still live in FastChat's judge and in dspy modules the PR left on 0.28, playground scripts call `Embedding.create`, and mlflow still prints `completion["choices"]` after rewriting the call. Those lines do change under 1.0. Counting them as true positives — the same way the small-set report counted Tuje's unfixed `match_routes.py` call — the main count is 79/79. Every main line is a symbol the new wheel dropped, a module global it no longer assigns, or a dict read of a return the old wheel builds as a dict subclass.
+
+| Repo | Calls before → after | Edit coverage before → after | Main-line precision after |
+|------|----------------------|------------------------------|---------------------------|
+| FastChat | 3/3 → 3/3 | 4/18 → 10/18 | 10/29 |
+| dspy | no deleted call | 1/2 → 1/2 | 1/14 |
+| mlflow | 1/1 → 1/1 | 1/27 → 16/27 | 16/18 |
+| dd-trace-py | no deleted call | 0/17 → 0/17 | 0/1 (`openai.util.convert_to_openai_object`, removed, not in this PR's deleted lines) |
+| wandb | no deleted SDK line | n/a (the PR added `fine_tune.py`) | no flags |
+| guardrails | 5/9 → 9/9 | 12/53 → 16/53 | 16/17 |
+
+## Small set (the earlier six-repo report)
+
+Same wheels, `conduit impact --dep openai --from 0.28.1 --to 1.0.0` on the parent of each migration commit. The earlier report's best run (PR #90 at `897eda9`) was call-site recall 8/10 and precision 8/8, with line coverage about 13/28. This run uses the deleted-line filter above, which is a smaller denominator than that hand count.
+
+| Repo | Migration commit | Call hits | Main lines on a deleted line | Main lines |
+|------|------------------|-----------|------------------------------|------------|
+| hackerbyhobby/AI_final_project | `e4f59c7` | 2/2 | 4/6 | 4 |
+| YankunLi/autocut | `c190ff2` | partial(`openai.Audio.transcribe`) flagged; the call filter does not count a `partial(...)` line | 0/0 | 2 |
+| Tujeapp/tuje-analyze-api | `b221b0a` | 1/1 (`acreate`) | 2/3 | 4 (the extra two are the still-live `match_routes.py` call and its `choices` read) |
+| terensy/software-engineering-portfolio | `d25d467` | 1/1 | 2/3 | 2 |
+| wooziemcic/cutler-web | `fac503f` | 1/1 (`Audio.transcribe`; `ChatCompletion.create` is in the edit coverage) | 2/4 | 3 |
+| tranthai189765/ICDM2026 | `a74a918` | 1/1 | 3/4 | 7 |
+
+| | Call-site recall | Precision | Lines-needing-edits coverage |
+|--|--|--|--|
+| Earlier report, best run | 8/10 (80%) | 8/8 (100%) | ~13/28 (46%) |
+| After | 6/6 on the call filter (100%), and the autocut partial is flagged | 13/22 (59%) | 13/20 (65%) |
+
+The nine main lines that are not on a deleted line are the Tuje bug, four ICDM response reads the commit left as dict access, the autocut partial, the `self.whisper_model(...)` call that partial feeds, and one cutler line the filter does not classify as an edit. Every one of them is a name the 1.0 wheel dropped. Concrete hit rate 22/22.
+
+## False-positive categories
+
+Counted on the after run, main lines that are not in the deleted-line set:
+
+| Category | Large set | Small set | What happened |
+|----------|-----------|-----------|----------------|
+| Wrapper callers | 35 FastChat, 9 dspy, 44 cutler, 22 ICDM, and the smaller tails | same | Low-confidence section. Not in the main count. |
+| Public name the new wheel still exports | was 4 (`openai.APIError` on the 1.x branch of a version split, including guardrails `v1.py`) | 0 | Dropped. A re-export that still exists is a move, not a removal. `openai.error.APIError` is still flagged. |
+| Removed call or `api_base` write in a file this commit did not edit | 32 | 3 (Tuje `match_routes.py`, autocut partial, autocut `self.whisper_model(...)`) | Kept. The wheel removed the symbol. |
+| Dict read of a return the wheel classifies as dict-then-model, file not edited | 4 (FastChat playground embeddings, mlflow `completion["choices"]`, guardrails `response["data"]`, plus ICDM's four on the small set) | 6 | Kept. The read breaks when the return is no longer a dict. |
+| Version-branch noise with no API delta | 0 in the main count | 0 | Gates stay in the main count only when the branch reads that package's version. |
+| REST without a spec diff | 0 flags | 0 | mlflow's `GET /v1/models` is a note: a latest OpenAPI file is not a diff. |
+| Duplicate line | collapsed by the line count | same | One line is one main-count row. |
+
+## Hard-coding
+
+Removed or generalized:
+
+- `patcher/leftovers.py` matched `openai < 1` and `_openai_has_legacy` by name. The gate now looks for `__version__`, `importlib.metadata`, or `packaging.version`.
+- Cloud client factories were `boto3` / `botocore` by name. The roots come from catalog entries whose kind is `cloud`.
+- A removed defining path kept aliases such as `openai.APIError` after 1.0 still exported that name. Aliases that exist in the new public surface are dropped.
+- Private modules were ignored, so a class defined in `stripe/_charge.py` and exported from `stripe/__init__.py` never entered the diff. Re-exported names are public. Helpers that are not re-exported stay out.
+
+Left in place, and not used as the impact change list:
+
+- `packs/pypi/openai/impacts.yaml` names `openai.api_base`, `response["choices"]`, and the banned kwarg `engine` for the packet rewrite path.
+- `detect/modules/openai/` and `patcher/openai_client_chain.py` rewrite a frozen packet for `conduit run`.
+- `PUBLIC_SPEC_URLS` is where a latest OpenAPI document lives. It is not a diff.
+- The service catalog names outside services. It does not list renamed functions.
+- Pydantic `BaseModel` is recognized by class base so a return can be classified as a typed object. There is no per-function return list.
+- A function's return class is copied onto each public alias of that function, so `pkg.Client.method` and `pkg._mod.Client.method` share it. `class Child(Base["T"])` still inherits from `Base`. A method the child does not define resolves to the base that does. `factory = kwargs.pop(key, Engine); return factory()` constructs `Engine`.
+- A field assigned on a base class is visible on the subclass. `x = None` after a failed import does not hide the import. A module that lives under `app/src/...` is also indexed as `src....` when that shorter name is unique.
+- The runner keeps the wheel's return classes, inherited methods, and still-exported names on the change list. `list.extend` had been dropping them.
+
+## Non-OpenAI check
+
+Same generic matcher. No package was added to the catalog for this run, and no rule names pymongo, stripe, anthropic, sqlalchemy, or pinecone.
+
+`youneshenniwrites/fastapi-next-ecommerce` commit `fc29f05` bumps stripe from 15.6.1 to 16.0.0 and does not change call sites. On the parent, impact diffs those two PyPI wheels (43 changes: `Reversal` removed, `Charge.create` deprecated, and the same shape on other resources) and maps `stripe.StripeClient`, `stripe.Webhook.construct_event`, and the error classes the backend actually references. Those symbols are absent from that diff, so the run reports no impacts. A nested `app/providers/stripe.py` used to capture `import stripe`; the module index no longer treats a nested file's last component as that top-level package.
+
+### Migrations where call sites changed
+
+Each repo is the parent of a merged commit. Wheels are the real from/to distributions. A call site is a deleted non-comment, non-test line that is the SDK call the migration rewrote (`.insert` / `.update` / `.remove`, `to_dict_recursive(`, a `temperature` write into the request dict, or `.execute(`). Strict precision is main lines that sit on one of those deleted lines. Concrete precision is main lines whose change is a symbol, parameter, or module global the new wheel dropped. Version branches stay in the main count and are called out under concrete.
+
+| Repo | Commit | Wheels | Call-site recall | Strict precision | Concrete | Edit coverage |
+|------|--------|--------|------------------|------------------|----------|---------------|
+| [ConesaLab/PaintOmics](https://github.com/ConesaLab/PaintOmics/commit/0dcc014a306d1b3bfa2f8887c1156a249aaa7edd) | `0dcc014` parent `a039d5d8` | pymongo 3.13.0 → 4.10.1 | 27/27 | 27/28 | 28/28 | 27/27 |
+| [YliasR/briehost-api](https://github.com/YliasR/briehost-api/commit/daf9c0b3562d41311a612b49e10f1334b80f1212) | `daf9c0b` parent `f458b815` | stripe 14.4.1 → 15.0.0 | 1/1 | 1/1 | 1/1 | 1/1 |
+| [aaronsb/knowledge-graph-system](https://github.com/aaronsb/knowledge-graph-system/commit/b97601e082ca9012809d185353cbb23cad9ecb6d) | `b97601e` parent `4aebdb32` | anthropic 0.125.0 → 1.0.0 | 0/5 | 0/4 | 4/4 | 0/5 |
+| [great-expectations/great_expectations](https://github.com/great-expectations/great_expectations/pull/7469) | `0fe0cfe` parent `da817659` | SQLAlchemy 1.4.54 → 2.0.0 | 6/10 | 6/19 | 9/19 | 6/10 |
+| **Total** | | | **34/43 (79%)** | **34/52 (65%)** | **42/52 (81%)** | **34/43 (79%)** |
+
+PaintOmics rewrote `collection.insert` / `update` / `remove` after `db[name][collection]`. All 27 deleted calls are flagged. The 28th main line is `PathwayAcquisitionJobDAO.py:83`, `getCollection("counters").update(...)`, which the commit left in place. `insert_one` and `find` still exist in 4.10.1 and are not flagged. `connection.execute` after `engine.begin()` in great_expectations is not flagged; `Engine.execute` is.
+
+briehost deletes `event.to_dict_recursive()` at `app/payments/stripe.py:156` after `Webhook.construct_event`. That line is the one flag. The wheel removed `StripeObject.to_dict_recursive`.
+
+knowledge-graph-system moves `temperature` off `messages.create` and into `extra_body`. The four deleted assignments in `ai_providers.py` (lines 1272, 1355, 1435, 1519) sit one to three lines above `self.client.messages.create(**request_kwargs)`. Impact flags those four `create` calls, because the dict splat still carries `temperature` and the wheel removed that parameter. The deleted lines themselves are the assignments, so the line overlap is 0/4. `scripts/development/diagnostics/golden_describe_image.py:65` writes `temperature` into a dict that the function returns for a comparison; the client there is a `MagicMock`, so there is no `messages.create` chain in that file.
+
+great_expectations PR 7469 deletes 10 `.execute(` lines while rewriting SQLAlchemy 2 use. Six are flagged: `database_store_backend.py` 263, 330, 350, 362; `query_store.py:126`; `sqlalchemy_execution_engine.py:1147`. Four are misses because the receiver is a parameter: `map_condition_auxilliary_methods.py:365` (`execution_engine.engine.execute`) and `expectations/metrics/util.py` 504, 589, 611 (`sqlalchemy_engine.execute`). The other 13 main lines are real and were not deleted by this PR: `sqlalchemy_execution_engine.py:1061` and `assets/partners/anthonydb/just_connect.py:5` still call `Engine.execute`, `core/util.py:78` imports removed `LegacyRow`, and 10 lines branch on `sqlalchemy.__version__`. Concrete 9/19 counts the removed `Engine.execute` and `LegacyRow` lines. The 10 version branches are in the main count because they read that package's version; they are not a removed symbol.
+
+### Pinecone
+
+[gigas5234/dys-backend](https://github.com/gigas5234/dys-backend/commit/8934c9ea2c3158d43ac4419960f82568ece03b00) `8934c9ea` (parent `c102674`) deletes `pinecone.init`, `pinecone.list_indexes`, `pinecone.create_index`, and `pinecone.Index` in `src/backend/database/pinecone_client.py`. This is a miss, and it was not scored above. `pinecone` is not an outside service in the catalog, so `conduit impact --dep pinecone` has nothing to diff. The PyPI wheels named `pinecone` at 2.2.4 and 3.0.0 are 2.5 KB and 4.4 KB. The v2 surface lives in the `pinecone-client` distribution (2.2.4 is 179 KB, 3.0.0 is 200 KB). A same-name wheel diff cannot see an API that moved to another distribution. No catalog entry was added for this repo.
+
+## Remaining misses
+
+- **Module globals the new wheel still assigns.** `openai.api_key`, `openai.api_type`, and `openai.api_version` are assigned in both 0.28.1 and 1.0.0, so those writes stay unflagged. `openai.api_base` is gone and is flagged.
+- **A version helper.** cutler `_openai_has_legacy_audio` returns `getattr(openai, "__version__", "0")` and the caller branches on the helper. The `getattr` form is recognized inside a condition. A helper called from the condition is not.
+- **Response reads on a parameter.** guardrails stream runners branch on a local `OPENAI_VERSION` string and then read `chunk["choices"]`. `chunk` is a parameter, not a return this function received from the SDK.
+- **Monkeypatch strings.** dd-trace-py wraps `openai.api_requestor._make_session` and indexes resources by string. One real reference is flagged (`openai.util.convert_to_openai_object`). The string table and the `resp["choices"]` hooks are not.
+- **A new file.** wandb PR 6498 adds `fine_tune.py` and deletes no SDK call.
+- **Variable `getattr`, dependency injection, and positional forwarding** stay unresolved.
+- **A removed parameter written on the line above the call.** knowledge-graph-system deletes the `temperature` assignment and leaves `messages.create(**request_kwargs)`. The call is flagged. The deleted assignment is not, so that migration's line overlap is 0/5.
+- **A method on a parameter.** great_expectations passes `execution_engine` and `sqlalchemy_engine` into helpers that call `.execute`. Those four deleted calls are not flagged.
+- **An API that moved to another distribution.** dys-backend's pinecone v2 calls live in the `pinecone-client` wheel. The wheels named `pinecone` are stubs, and pinecone is not in the catalog, so that migration was not scored.

@@ -149,14 +149,15 @@ HTTP_METHOD_TAILS = frozenset(
 LIMITATIONS: tuple[str, ...] = (
     "Python only. JS/TS should plug in beside analyze_python and emit the same map.",
     "Not a Dependabot replacement: no lockfile bumps, no CVE alerts, and no new-version notices for ordinary libraries.",
-    "Dynamic dispatch is invisible: getattr, globals(), a function stored on a parameter, and DI containers.",
-    "Name binding inside a function is not flow-sensitive.",
+    "A variable passed to getattr, globals(), a callable stored on a parameter, and DI containers are invisible. A string literal passed to getattr, functools.partial, and a lambda that calls the SDK are tracked.",
+    "Imports inside a function are tracked, including an import in an enclosing function. Name binding inside a function is not flow-sensitive past that.",
     "Positional arguments are not matched to SDK parameter names.",
     "A cloud service chosen by a variable (client(name)) is not tied to an operation.",
     "Webhook payload fields are the ones read in the handler and a helper it calls in the same file.",
     "Star-imports are inventoried and not bound to call sites.",
-    "Decorator calls and lambdas are not separate symbols.",
+    "Decorator calls are not separate symbols. A lambda assigned to a name is.",
     "Directories named tests are skipped, same as the leftover scanner.",
+    "REST calls are mapped by host and path. A versioned OpenAPI pair flags removed paths and fields; without that pair the call is reported as not compared.",
 )
 
 
