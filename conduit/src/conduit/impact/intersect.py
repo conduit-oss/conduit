@@ -67,6 +67,15 @@ def _sites(
         confidence = _match(change, chain, peers, return_classes, surviving, methods or {})
         if confidence is None:
             continue
+        origins = _param_origin_hits(change, chain, confidence)
+        if origins:
+            for site in origins:
+                key = (site.path, site.line, site.expr)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append(site)
+            continue
         key = (chain.call_rel, chain.call_lineno, chain.call_expr)
         if key in seen:
             continue
@@ -78,6 +87,46 @@ def _sites(
                 expr=chain.call_expr,
                 confidence=confidence,
                 via_wrapper=chain.via_wrapper,
+            )
+        )
+    return found
+
+
+def _param_origin_hits(
+    change: ApiChange, chain: Chain, confidence: str
+) -> list[SiteHit]:
+    """Primary lines where a removed/renamed keyword was introduced into a splat.
+
+    The SDK call stays in the expression as context. Direct keywords on the call
+    have no separate origin, so this returns empty and the call line is flagged.
+    """
+    if change.kind not in {"param_removed", "param_renamed", "param_added"}:
+        return []
+    if chain.via_wrapper:
+        return []
+    name = (change.old or change.new or "").lower()
+    if not name or not chain.param_origins:
+        return []
+    call = f"{chain.call_rel}:{chain.call_lineno}"
+    if chain.call_expr:
+        call = f"{call} {chain.call_expr}"
+    found: list[SiteHit] = []
+    seen: set[tuple[str, int]] = set()
+    for param, path, line, expr in chain.param_origins:
+        if param.lower() != name:
+            continue
+        key = (path, line)
+        if key in seen:
+            continue
+        seen.add(key)
+        context = f"{expr} → {call}" if expr else call
+        found.append(
+            SiteHit(
+                path=path,
+                line=line,
+                expr=context,
+                confidence=confidence,
+                via_wrapper=False,
             )
         )
     return found

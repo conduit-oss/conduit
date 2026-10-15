@@ -41,6 +41,8 @@ class Chain:
     response_fields: tuple[str, ...]
     confidence: str
     via_wrapper: bool
+    #: Where a splatted / forwarded keyword was introduced: ``(name, rel, line, expr)``.
+    param_origins: tuple[tuple[str, str, int, str], ...] = ()
 
     @property
     def call_site(self) -> str:

@@ -88,6 +88,7 @@ Left in place, and not used as the impact change list:
 - A function's return class is copied onto each public alias of that function, so `pkg.Client.method` and `pkg._mod.Client.method` share it. `class Child(Base["T"])` still inherits from `Base`. A method the child does not define resolves to the base that does. `factory = kwargs.pop(key, Engine); return factory()` constructs `Engine`.
 - A field assigned on a base class is visible on the subclass. `x = None` after a failed import does not hide the import. A module that lives under `app/src/...` is also indexed as `src....` when that shorter name is unique.
 - The runner keeps the wheel's return classes, inherited methods, and still-exported names on the change list. `list.extend` had been dropping them.
+- When an SDK call passes `**kwargs` / `**dict` and the wheel removed or renamed a parameter, the introducing lines are primary findings: `d["key"] = ...`, `d.update(...)`, `dict(...)`, `{"key": ...}`, `d.setdefault(...)`, keywords on `functools.partial`, and keys returned from a simple local helper. The call line stays in the expression as context. No package name is special-cased.
 
 ## Non-OpenAI check
 
@@ -103,15 +104,17 @@ Each repo is the parent of a merged commit. Wheels are the real from/to distribu
 |------|--------|--------|------------------|------------------|----------|---------------|
 | [ConesaLab/PaintOmics](https://github.com/ConesaLab/PaintOmics/commit/0dcc014a306d1b3bfa2f8887c1156a249aaa7edd) | `0dcc014` parent `a039d5d8` | pymongo 3.13.0 → 4.10.1 | 27/27 | 27/28 | 28/28 | 27/27 |
 | [YliasR/briehost-api](https://github.com/YliasR/briehost-api/commit/daf9c0b3562d41311a612b49e10f1334b80f1212) | `daf9c0b` parent `f458b815` | stripe 14.4.1 → 15.0.0 | 1/1 | 1/1 | 1/1 | 1/1 |
-| [aaronsb/knowledge-graph-system](https://github.com/aaronsb/knowledge-graph-system/commit/b97601e082ca9012809d185353cbb23cad9ecb6d) | `b97601e` parent `4aebdb32` | anthropic 0.125.0 → 1.0.0 | 0/5 | 0/4 | 4/4 | 0/5 |
+| [aaronsb/knowledge-graph-system](https://github.com/aaronsb/knowledge-graph-system/commit/b97601e082ca9012809d185353cbb23cad9ecb6d) | `b97601e` parent `4aebdb32` | anthropic 0.125.0 → 1.0.0 | 4/5 (was 0/5) | 4/4 (was 0/4) | 4/4 | 4/5 (was 0/5) |
 | [great-expectations/great_expectations](https://github.com/great-expectations/great_expectations/pull/7469) | `0fe0cfe` parent `da817659` | SQLAlchemy 1.4.54 → 2.0.0 | 6/10 | 6/19 | 9/19 | 6/10 |
-| **Total** | | | **34/43 (79%)** | **34/52 (65%)** | **42/52 (81%)** | **34/43 (79%)** |
+| **Total** | | | **38/43 (88%)** (was 34/43) | **38/52 (73%)** (was 34/52) | **42/52 (81%)** | **38/43 (88%)** (was 34/43) |
+
+OpenAI large and small sets were re-run on the same matcher after kwargs-origin tracing. Call-site recall, edit coverage, and primary counts are unchanged: large 13/13, 43/79 (54%), 43/117; small 6/6 on the call filter, 13/22 (59%), 13/20.
 
 PaintOmics rewrote `collection.insert` / `update` / `remove` after `db[name][collection]`. All 27 deleted calls are flagged. The 28th main line is `PathwayAcquisitionJobDAO.py:83`, `getCollection("counters").update(...)`, which the commit left in place. `insert_one` and `find` still exist in 4.10.1 and are not flagged. `connection.execute` after `engine.begin()` in great_expectations is not flagged; `Engine.execute` is.
 
 briehost deletes `event.to_dict_recursive()` at `app/payments/stripe.py:156` after `Webhook.construct_event`. That line is the one flag. The wheel removed `StripeObject.to_dict_recursive`.
 
-knowledge-graph-system moves `temperature` off `messages.create` and into `extra_body`. The four deleted assignments in `ai_providers.py` (lines 1272, 1355, 1435, 1519) sit one to three lines above `self.client.messages.create(**request_kwargs)`. Impact flags those four `create` calls, because the dict splat still carries `temperature` and the wheel removed that parameter. The deleted lines themselves are the assignments, so the line overlap is 0/4. `scripts/development/diagnostics/golden_describe_image.py:65` writes `temperature` into a dict that the function returns for a comparison; the client there is a `MagicMock`, so there is no `messages.create` chain in that file.
+knowledge-graph-system moves `temperature` off `messages.create` and into `extra_body`. The four deleted assignments in `ai_providers.py` (lines 1272, 1355, 1435, 1519) sit one to three lines above `self.client.messages.create(**request_kwargs)`. Kwargs-origin tracing flags those four assignment lines as primary findings; the call stays in the expression as context (`request_kwargs['temperature'] → … messages.create`). `scripts/development/diagnostics/golden_describe_image.py:65` still misses: it writes `temperature` into a dict returned for a comparison, and the client there is a `MagicMock`, so there is no `messages.create` chain in that file.
 
 great_expectations PR 7469 deletes 10 `.execute(` lines while rewriting SQLAlchemy 2 use. Six are flagged: `database_store_backend.py` 263, 330, 350, 362; `query_store.py:126`; `sqlalchemy_execution_engine.py:1147`. Four are misses because the receiver is a parameter: `map_condition_auxilliary_methods.py:365` (`execution_engine.engine.execute`) and `expectations/metrics/util.py` 504, 589, 611 (`sqlalchemy_engine.execute`). The other 13 main lines are real and were not deleted by this PR: `sqlalchemy_execution_engine.py:1061` and `assets/partners/anthonydb/just_connect.py:5` still call `Engine.execute`, `core/util.py:78` imports removed `LegacyRow`, and 10 lines branch on `sqlalchemy.__version__`. Concrete 9/19 counts the removed `Engine.execute` and `LegacyRow` lines. The 10 version branches are in the main count because they read that package's version; they are not a removed symbol.
 
@@ -127,6 +130,6 @@ great_expectations PR 7469 deletes 10 `.execute(` lines while rewriting SQLAlche
 - **Monkeypatch strings.** dd-trace-py wraps `openai.api_requestor._make_session` and indexes resources by string. One real reference is flagged (`openai.util.convert_to_openai_object`). The string table and the `resp["choices"]` hooks are not.
 - **A new file.** wandb PR 6498 adds `fine_tune.py` and deletes no SDK call.
 - **Variable `getattr`, dependency injection, and positional forwarding** stay unresolved.
-- **A removed parameter written on the line above the call.** knowledge-graph-system deletes the `temperature` assignment and leaves `messages.create(**request_kwargs)`. The call is flagged. The deleted assignment is not, so that migration's line overlap is 0/5.
+- **A removed parameter with no SDK call in the file.** knowledge-graph-system's `golden_describe_image.py` writes `temperature` into a comparison dict behind a `MagicMock` client. There is no `messages.create` chain, so the assignment is not flagged. The four live `ai_providers.py` writes are flagged via kwargs-origin tracing.
 - **A method on a parameter.** great_expectations passes `execution_engine` and `sqlalchemy_engine` into helpers that call `.execute`. Those four deleted calls are not flagged.
 - **An API that moved to another distribution.** dys-backend's pinecone v2 calls live in the `pinecone-client` wheel. The wheels named `pinecone` are stubs, and pinecone is not in the catalog, so that migration was not scored.

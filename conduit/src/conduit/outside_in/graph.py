@@ -94,6 +94,10 @@ class ModUnit:
     class_bases: dict[str, list[ast.expr]] = field(default_factory=dict)
     #: ``kwargs["temperature"] = 0.3`` keyed by ``(function, dict name)``.
     dict_keys: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    #: Same keys with the introducing line: ``(function, dict name) → [(key, lineno, expr)]``.
+    dict_key_origins: dict[tuple[str, str], list[tuple[str, int, str]]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass
@@ -110,6 +114,8 @@ class _Direct:
     response_fields: tuple[str, ...]
     returns_raw: bool
     confidence: str
+    #: Splatted / partial keyword introductions: ``(name, lineno, expr)``.
+    param_origins: tuple[tuple[str, int, str], ...] = ()
 
 
 @dataclass
@@ -361,6 +367,7 @@ class _Scanner(ast.NodeVisitor):
         self.enclosing = previous
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        lineno = getattr(node, "lineno", 0) or 0
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             name = node.targets[0].id
             if isinstance(node.value, ast.Lambda):
@@ -369,9 +376,10 @@ class _Scanner(ast.NodeVisitor):
             self.unit.assigns[(self.enclosing, name)] = node.value
             if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                 self.unit.constants[(self.enclosing, name)] = node.value.value
+            self._record_dict_value(name, node.value, lineno)
         for target in node.targets:
             self._record_instance_assign(target, node.value)
-            self._record_dict_key(target)
+            self._record_dict_key(target, lineno)
         self.generic_visit(node)
 
     def _record_instance_assign(self, target: ast.AST, value: ast.expr) -> None:
@@ -385,12 +393,26 @@ class _Scanner(ast.NodeVisitor):
                 (value, self.enclosing)
             )
 
-    def _record_dict_key(self, target: ast.AST) -> None:
+    def _record_dict_key(self, target: ast.AST, lineno: int) -> None:
         if not isinstance(target, ast.Subscript) or not isinstance(target.value, ast.Name):
             return
         key = target.slice
         if isinstance(key, ast.Constant) and isinstance(key.value, str):
-            self.unit.dict_keys.setdefault((self.enclosing, target.value.id), []).append(key.value)
+            name = target.value.id
+            expr = f"{name}[{key.value!r}]"
+            self._add_dict_key_origin(self.enclosing, name, key.value, lineno, expr)
+
+    def _record_dict_value(self, name: str, value: ast.expr, lineno: int) -> None:
+        for key, line, expr in _dict_introductions(value, name, lineno):
+            self._add_dict_key_origin(self.enclosing, name, key, line, expr)
+
+    def _add_dict_key_origin(
+        self, enclosing: str, dict_name: str, key: str, lineno: int, expr: str
+    ) -> None:
+        self.unit.dict_keys.setdefault((enclosing, dict_name), []).append(key)
+        self.unit.dict_key_origins.setdefault((enclosing, dict_name), []).append(
+            (key, lineno, expr)
+        )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if isinstance(node.target, ast.Name):
@@ -403,6 +425,9 @@ class _Scanner(ast.NodeVisitor):
                 self.unit.assigns[(self.enclosing, node.target.id)] = node.value
                 if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                     self.unit.constants[(self.enclosing, node.target.id)] = node.value.value
+                self._record_dict_value(
+                    node.target.id, node.value, getattr(node, "lineno", 0) or 0
+                )
         self.generic_visit(node)
 
     def visit_With(self, node: ast.With) -> None:
@@ -441,7 +466,28 @@ class _Scanner(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         self.unit.calls.append(CallRec(node, self.enclosing, getattr(node, "lineno", 0) or 0))
+        self._record_dict_mutation(node)
         self.generic_visit(node)
+
+    def _record_dict_mutation(self, node: ast.Call) -> None:
+        if not isinstance(node.func, ast.Attribute) or not isinstance(node.func.value, ast.Name):
+            return
+        dict_name = node.func.value.id
+        attr = node.func.attr
+        lineno = getattr(node, "lineno", 0) or 0
+        if attr == "update":
+            for key, line, expr in _update_introductions(
+                node, dict_name, lineno, self.unit, self.enclosing
+            ):
+                self._add_dict_key_origin(self.enclosing, dict_name, key, line, expr)
+            return
+        if attr == "setdefault" and node.args:
+            key_node = node.args[0]
+            if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+                expr = f"{dict_name}.setdefault({key_node.value!r}, ...)"
+                self._add_dict_key_origin(
+                    self.enclosing, dict_name, key_node.value, lineno, expr
+                )
 
     def _qual(self, name: str) -> str:
         if self.enclosing == "<module>":
@@ -1180,20 +1226,130 @@ def _http_payload_keys(call: ast.Call, unit: ModUnit, enclosing: str) -> tuple[s
     return tuple(dict.fromkeys(keys))
 
 
+def _dict_introductions(
+    value: ast.expr, dict_name: str, lineno: int
+) -> list[tuple[str, int, str]]:
+    """Keys introduced by a dict literal or ``dict(...)`` constructor."""
+    found: list[tuple[str, int, str]] = []
+    if isinstance(value, ast.Dict):
+        for key in value.keys:
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                found.append((key.value, lineno, f"{dict_name}[{key.value!r}]"))
+        return found
+    if isinstance(value, ast.Call) and _is_dict_constructor(value):
+        for keyword in value.keywords:
+            if keyword.arg:
+                found.append(
+                    (keyword.arg, lineno, f"{dict_name} = dict({keyword.arg}=...)")
+                )
+        for arg in value.args:
+            if isinstance(arg, ast.Dict):
+                for key in arg.keys:
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        found.append((key.value, lineno, f"{dict_name} = dict(...)"))
+    return found
+
+
+def _update_introductions(
+    node: ast.Call,
+    dict_name: str,
+    lineno: int,
+    unit: ModUnit | None = None,
+    enclosing: str = "",
+) -> list[tuple[str, int, str]]:
+    found: list[tuple[str, int, str]] = []
+    for keyword in node.keywords:
+        if keyword.arg:
+            found.append(
+                (keyword.arg, lineno, f"{dict_name}.update({keyword.arg}=...)")
+            )
+    for arg in node.args:
+        if isinstance(arg, ast.Dict):
+            for key in arg.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    found.append(
+                        (key.value, lineno, f"{dict_name}.update({{{key.value!r}: ...}})")
+                    )
+            continue
+        if unit is None:
+            continue
+        for key, _line, _expr in _dict_key_origins(arg, unit, enclosing):
+            found.append(
+                (key, lineno, f"{dict_name}.update({{{key!r}: ...}})")
+            )
+    return found
+
+
+def _is_dict_constructor(node: ast.Call) -> bool:
+    if isinstance(node.func, ast.Name):
+        return node.func.id == "dict"
+    return isinstance(node.func, ast.Attribute) and node.func.attr == "dict"
+
+
 def _dict_keys(node: ast.AST, unit: ModUnit, enclosing: str, depth: int = 0) -> list[str]:
+    return [key for key, _line, _expr in _dict_key_origins(node, unit, enclosing, depth)]
+
+
+def _dict_key_origins(
+    node: ast.AST, unit: ModUnit, enclosing: str, depth: int = 0
+) -> list[tuple[str, int, str]]:
     if depth > 4:
         return []
     if isinstance(node, ast.Dict):
-        found: list[str] = []
-        for key in node.keys:
-            if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                found.append(key.value)
-        return found
+        lineno = getattr(node, "lineno", 0) or 0
+        return [
+            (key.value, lineno, f"{{{key.value!r}: ...}}")
+            for key in node.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        ]
+    if isinstance(node, ast.Call) and _is_dict_constructor(node):
+        lineno = getattr(node, "lineno", 0) or 0
+        return _dict_introductions(node, "dict", lineno)
     if isinstance(node, ast.Name):
-        assigned = unit.assigns.get((enclosing, node.id)) or unit.assigns.get(("<module>", node.id))
+        found: list[tuple[str, int, str]] = []
+        found.extend(unit.dict_key_origins.get((enclosing, node.id), []))
+        found.extend(unit.dict_key_origins.get(("<module>", node.id), []))
+        assigned = unit.assigns.get((enclosing, node.id)) or unit.assigns.get(
+            ("<module>", node.id)
+        )
         if assigned is not None:
-            return _dict_keys(assigned, unit, enclosing, depth + 1)
+            found.extend(_dict_key_origins(assigned, unit, enclosing, depth + 1))
+        return _dedupe_origins(found)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        qual = _helper_qual(unit, enclosing, node.func.id)
+        if qual is None:
+            return []
+        found = []
+        for returned in unit.returns.get(qual, []):
+            found.extend(_dict_key_origins(returned, unit, qual, depth + 1))
+            if isinstance(returned, ast.Name):
+                found.extend(unit.dict_key_origins.get((qual, returned.id), []))
+        return _dedupe_origins(found)
     return []
+
+
+def _helper_qual(unit: ModUnit, enclosing: str, name: str) -> str | None:
+    """A nested def, or a same-module top-level function used as a local helper."""
+    nested = _local_def(unit, enclosing, name)
+    if nested is not None:
+        return nested
+    defn = unit.defs.get(name)
+    if defn is not None and defn.kind == "function" and "." not in name:
+        return name
+    return None
+
+
+def _dedupe_origins(
+    origins: list[tuple[str, int, str]],
+) -> list[tuple[str, int, str]]:
+    seen: set[tuple[str, int, str]] = set()
+    found: list[tuple[str, int, str]] = []
+    for item in origins:
+        if item in seen:
+            continue
+        seen.add(item)
+        found.append(item)
+    return found
 
 
 def _make_direct(
@@ -1207,6 +1363,7 @@ def _make_direct(
 ) -> _Direct:
     scope = _scope_node(unit, call.enclosing)
     fields, returns_raw = _response_uses(scope, call.node)
+    params, origins = _keyword_bundle(call.node, unit, call.enclosing)
     return _Direct(
         rel=unit.rel,
         enclosing=call.enclosing,
@@ -1216,10 +1373,11 @@ def _make_direct(
         package=spec.package,
         sdk_method=sdk_method,
         kind=kind,
-        params=_keywords(call.node, unit, call.enclosing),
+        params=params,
         response_fields=fields,
         returns_raw=returns_raw,
         confidence=confidence,
+        param_origins=origins,
     )
 
 
@@ -1842,14 +2000,60 @@ def _iter_scope(root: ast.AST):
 
 
 def _keywords(call: ast.Call, unit: ModUnit | None = None, enclosing: str = "") -> tuple[str, ...]:
+    names, _origins = _keyword_bundle(call, unit, enclosing)
+    return names
+
+
+def _keyword_bundle(
+    call: ast.Call, unit: ModUnit | None = None, enclosing: str = ""
+) -> tuple[tuple[str, ...], tuple[tuple[str, int, str], ...]]:
+    """Explicit keywords, ``**`` splat keys, and ``functools.partial`` forwards.
+
+    Origins are only the splat / partial introductions — not keywords written
+    directly on the SDK call (that line is already the finding).
+    """
     names = [kw.arg for kw in call.keywords if kw.arg]
-    if unit is not None:
-        for kw in call.keywords:
-            if kw.arg is not None or not isinstance(kw.value, ast.Name):
-                continue
-            names.extend(_dict_keys(kw.value, unit, enclosing))
-            names.extend(unit.dict_keys.get((enclosing, kw.value.id), []))
-    return tuple(dict.fromkeys(names))
+    origins: list[tuple[str, int, str]] = []
+    if unit is None:
+        return tuple(dict.fromkeys(names)), ()
+    for key, lineno, expr in _partial_kw_origins(call, unit, enclosing):
+        names.append(key)
+        origins.append((key, lineno, expr))
+    for kw in call.keywords:
+        if kw.arg is not None:
+            continue
+        for key, lineno, expr in _dict_key_origins(kw.value, unit, enclosing):
+            names.append(key)
+            origins.append((key, lineno, expr))
+    return tuple(dict.fromkeys(names)), tuple(_dedupe_origins(origins))
+
+
+def _partial_kw_origins(
+    call: ast.Call, unit: ModUnit, enclosing: str
+) -> list[tuple[str, int, str]]:
+    """Keywords bound on ``functools.partial(sdk_fn, key=...)`` when that partial is called."""
+    func = call.func
+    if not isinstance(func, ast.Name):
+        return []
+    assigned = unit.assigns.get((enclosing, func.id)) or unit.assigns.get(
+        ("<module>", func.id)
+    )
+    if not isinstance(assigned, ast.Call) or not _looks_like_partial(assigned):
+        return []
+    lineno = getattr(assigned, "lineno", 0) or 0
+    found: list[tuple[str, int, str]] = []
+    for keyword in assigned.keywords:
+        if keyword.arg:
+            found.append(
+                (keyword.arg, lineno, f"partial(..., {keyword.arg}=...)")
+            )
+    return found
+
+
+def _looks_like_partial(node: ast.Call) -> bool:
+    if isinstance(node.func, ast.Name):
+        return node.func.id == "partial"
+    return isinstance(node.func, ast.Attribute) and node.func.attr == "partial"
 
 
 def _expr(call: ast.Call) -> str:
@@ -2062,6 +2266,9 @@ def _propagate(directs: list[_Direct], edges: list[_Edge]) -> list[Chain]:
     for direct in directs:
         origin = _sym(direct.rel, direct.enclosing)
         hop = Hop(direct.rel, direct.lineno, direct.enclosing, direct.expr)
+        origins = tuple(
+            (name, direct.rel, line, expr) for name, line, expr in direct.param_origins
+        )
         initial = Chain(
             service=direct.service,
             package=direct.package,
@@ -2077,6 +2284,7 @@ def _propagate(directs: list[_Direct], edges: list[_Edge]) -> list[Chain]:
             response_fields=direct.response_fields,
             confidence=direct.confidence,
             via_wrapper=False,
+            param_origins=origins,
         )
         chains.append(initial)
         if (
@@ -2113,6 +2321,7 @@ def _propagate(directs: list[_Direct], edges: list[_Edge]) -> list[Chain]:
                     response_fields=fields,
                     confidence=min_confidence(chain.confidence, edge.confidence),
                     via_wrapper=True,
+                    param_origins=origins,
                 )
                 chains.append(extended)
                 queue.append((extended, caller, path + (caller,), False))
