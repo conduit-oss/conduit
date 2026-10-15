@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from conduit.outside_in.catalog import (
+    CATALOG,
     HTTP_CLIENT_ROOTS,
     HTTP_METHOD_TAILS,
     LIMITATIONS,
@@ -119,14 +120,22 @@ class _Edge:
     confidence: str
 
 
+_SOURCE_ROOTS = {"src", "lib"}
+
+
 class _ModuleIndex:
     def __init__(self, rels: list[str]) -> None:
         buckets: dict[str, set[str]] = {}
         for rel in rels:
             dotted = _dotted(rel)
+            keys = [dotted]
             parts = [part for part in dotted.split(".") if part]
-            for index in range(len(parts)):
-                key = ".".join(parts[index:])
+            # ``src/pkg/mod.py`` is imported as ``pkg.mod``. A nested file
+            # whose last component matches a dependency (``app/providers/stripe.py``)
+            # is not that dependency.
+            if len(parts) > 1 and parts[0] in _SOURCE_ROOTS:
+                keys.append(".".join(parts[1:]))
+            for key in keys:
                 buckets.setdefault(key, set()).add(rel)
         self._exact = {
             key: next(iter(hits)) for key, hits in buckets.items() if len(hits) == 1
@@ -812,6 +821,17 @@ def _kind_prefix(spec: ServiceSpec) -> str:
 _FACTORY_TAILS = frozenset({"client", "resource"})
 
 
+def _cloud_factory_roots() -> frozenset[str]:
+    """Import roots of catalogued cloud SDKs (``boto3.client``, and the same shape)."""
+    roots: set[str] = set()
+    for spec in CATALOG.values():
+        if spec.kind != "cloud":
+            continue
+        roots.update(spec.modules)
+        roots.update(prefix.split(".")[0] for prefix in spec.module_prefixes if prefix)
+    return frozenset(roots)
+
+
 def _factory_service(
     func: Binding,
     node: ast.Call,
@@ -825,7 +845,7 @@ def _factory_service(
     if not parts or parts[-1] not in _FACTORY_TAILS:
         return ""
     root = parts[0]
-    if root not in {"boto3", "botocore"} and "Session" not in func.target:
+    if root not in _cloud_factory_roots() and "Session" not in func.target:
         return ""
     if not node.args:
         return ""
@@ -1109,7 +1129,9 @@ def _exception_refs(
     seen: set[tuple[str, int, str]] = set()
     for rel, unit in units.items():
         callee_ids = _callee_ids(unit.tree)
-        _RefScan(unit, resolver, specs, callee_ids, found, seen).visit(unit.tree)
+        scan = _RefScan(unit, resolver, specs, callee_ids, found, seen)
+        scan.visit(unit.tree)
+        scan.flush_symbols()
     return found
 
 
@@ -1128,6 +1150,17 @@ def _callee_ids(tree: ast.AST) -> set[int]:
             else:
                 cur = cur.value
     return found
+
+
+def _rooted_on_package(node: ast.Attribute, resolver: _Resolver, unit: ModUnit, enclosing: str) -> bool:
+    """True when the attribute chain starts at an imported package or symbol."""
+    cur: ast.AST = node
+    while isinstance(cur, ast.Attribute):
+        cur = cur.value
+    if not isinstance(cur, ast.Name):
+        return False
+    binding = resolver._resolve_name(cur.id, unit, enclosing, set())
+    return binding.kind in {"external_module", "external_attr"}
 
 
 def _exception_like(target: str) -> bool:
@@ -1159,6 +1192,7 @@ class _RefScan(ast.NodeVisitor):
         self.found = found
         self.seen = seen
         self.enclosing = "<module>"
+        self._symbols: list[tuple[ast.Attribute, Binding, str]] = []
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         previous = self.enclosing
@@ -1208,6 +1242,9 @@ class _RefScan(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if isinstance(node.ctx, ast.Load):
             self._record(node, force=False)
+            self._remember_symbol(node)
+        elif isinstance(node.ctx, (ast.Store, ast.Del)):
+            self._remember_symbol(node)
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -1249,6 +1286,59 @@ class _RefScan(ast.NodeVisitor):
                 confidence=binding.confidence or "high",
             )
         )
+
+    def _remember_symbol(self, node: ast.Attribute) -> None:
+        """A package attribute that is loaded or stored, not called.
+
+        ``return pkg.Widget.create`` and ``pkg.api_base = ...`` name a symbol
+        without calling it. Exception classes are already recorded.
+        """
+        if id(node) in self.callee_ids:
+            return
+        if not _rooted_on_package(node, self.resolver, self.unit, self.enclosing):
+            return
+        binding = self.resolver._resolve_expr(node, self.unit, self.enclosing, set())
+        if binding.kind not in {"external_attr", "external_module"} or not binding.target:
+            return
+        if _exception_like(binding.target):
+            return
+        if binding.target.count(".") < 1:
+            return
+        self._symbols.append((node, binding, self.enclosing))
+
+    def flush_symbols(self) -> None:
+        inners: set[int] = set()
+        for node, _binding, _enclosing in self._symbols:
+            cur: ast.AST | None = node.value
+            while isinstance(cur, ast.Attribute):
+                inners.add(id(cur))
+                cur = cur.value
+        for node, binding, enclosing in self._symbols:
+            if id(node) in inners:
+                continue
+            spec = _service_of(binding, self.specs)
+            if spec is None:
+                continue
+            key = (self.unit.rel, getattr(node, "lineno", 0) or 0, binding.target)
+            if key in self.seen:
+                continue
+            self.seen.add(key)
+            self.found.append(
+                _Direct(
+                    rel=self.unit.rel,
+                    enclosing=enclosing,
+                    lineno=key[1],
+                    expr=_unparse(node),
+                    service=spec.service_id,
+                    package=spec.package,
+                    sdk_method=binding.target,
+                    kind=f"{_kind_prefix(spec)}_ref",
+                    params=(),
+                    response_fields=(),
+                    returns_raw=False,
+                    confidence=binding.confidence or "high",
+                )
+            )
 
 
 def _atomic_exprs(node: ast.AST) -> list[ast.AST]:
@@ -1305,18 +1395,24 @@ def _response_uses(scope: ast.AST, call: ast.Call) -> tuple[tuple[str, ...], boo
     return _fields_of_names(scope, tuple(flowed)), raw
 
 
+def _unwrap_await(node: ast.AST | None) -> ast.AST | None:
+    while isinstance(node, ast.Await):
+        node = node.value
+    return node
+
+
 def _assigned_names(scope: ast.AST, call: ast.Call) -> tuple[str, ...]:
     names: list[str] = []
     for node in _iter_scope(scope):
-        if isinstance(node, ast.Assign) and node.value is call:
+        if isinstance(node, ast.Assign) and _unwrap_await(node.value) is call:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     names.append(target.id)
-        elif isinstance(node, ast.AnnAssign) and node.value is call and isinstance(node.target, ast.Name):
+        elif isinstance(node, ast.AnnAssign) and _unwrap_await(node.value) is call and isinstance(node.target, ast.Name):
             names.append(node.target.id)
         elif isinstance(node, (ast.With, ast.AsyncWith)):
             for item in node.items:
-                if item.context_expr is call and isinstance(item.optional_vars, ast.Name):
+                if _unwrap_await(item.context_expr) is call and isinstance(item.optional_vars, ast.Name):
                     names.append(item.optional_vars.id)
     return tuple(dict.fromkeys(names))
 
@@ -1493,7 +1589,7 @@ def _returns_call(scope: ast.AST, call: ast.Call, names: tuple[str, ...]) -> boo
     for node in _iter_scope(scope):
         if not isinstance(node, ast.Return) or node.value is None:
             continue
-        if node.value is call:
+        if _unwrap_await(node.value) is call:
             return True
         if isinstance(node.value, ast.Name) and node.value.id in name_set:
             return True
@@ -1710,8 +1806,38 @@ def _version_ref(
             return spec.package
         return ""
     if isinstance(node, ast.Call):
+        package = _getattr_dunder_version(node, unit, enclosing, resolver, specs)
+        if package:
+            return package
         return _metadata_version_call(node, unit, enclosing, resolver, specs)
     return ""
+
+
+def _getattr_dunder_version(
+    node: ast.Call,
+    unit: ModUnit,
+    enclosing: str,
+    resolver: _Resolver,
+    specs: tuple[ServiceSpec, ...],
+) -> str:
+    """``getattr(package, "__version__")`` is the same read as ``package.__version__``."""
+    name = ""
+    if isinstance(node.func, ast.Name):
+        name = node.func.id
+    elif isinstance(node.func, ast.Attribute):
+        name = node.func.attr
+    if name != "getattr" or len(node.args) < 2:
+        return ""
+    literal = _const_str(node.args[1], unit, enclosing)
+    if literal != "__version__":
+        return ""
+    binding = resolver._resolve_expr(node.args[0], unit, enclosing, set())
+    spec = _service_of(binding, specs)
+    if spec is None and binding.target:
+        spec = _spec_named(binding.target.split(".")[0], specs)
+    if spec is None or spec.family:
+        return ""
+    return spec.package
 
 
 def _metadata_version_call(

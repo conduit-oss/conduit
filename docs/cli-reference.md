@@ -101,7 +101,7 @@ Two modes.
 | `--out` | none | Write one JSON packet per file |
 | `--service` | every service on the map | One catalogued service |
 | `--json` | false | `{services, skipped, warnings, packets, impacts}` |
-| `--show-callers` | false | List wrapper callers under each breaking SDK line. The default prints a count |
+| `--show-callers` | false | List wrapper callers. The default puts them in a low-confidence section |
 
 Exit `0` after a feed pass, including when nothing changed. Exit `2` when `--path` or `--feeds` is not a directory.
 
@@ -168,11 +168,11 @@ On-demand line-by-line impact for one outside service: `conduit impact --dep X [
 | `--from` | the pin in this repo | Version to compare from when the repo does not pin one, or the pin does not match a recorded surface |
 | `--fixtures` | none (fetch small wheels from PyPI) | Offline wheels, models, and schemas |
 | `--json` | false | `{dependency, impacts, notes}` |
-| `--show-callers` | false | List wrapper callers under each breaking SDK line. The default prints a count |
+| `--show-callers` | false | List wrapper callers. The default puts them in a low-confidence section |
 
 Exit `2` when `--dep` is an ordinary library, or `--path` / `--fixtures` is missing. Exit `0` when the check finishes. The version compared from is `--from`, else an exact pin, else a lockfile (`poetry.lock`, `uv.lock`, `Pipfile.lock`), else the installed distribution, else the highest PyPI release matching a requirement range. `--to` or the latest release is the other side. If no version can be determined, the text is `not compared` and names the reason (no pin, lock, install, or resolvable range, or network disabled for a range) rather than an all-clear. A pin that does not match a recorded surface prints `not compared: pinned version <version> does not match a recorded surface`. An all-clear (`No call sites in this repo are hit by the released change.`) means the surfaces were compared and no call site was hit.
 
-The primary finding is the SDK call. Callers of a wrapper collapse to `N wrapper callers` unless `--show-callers` is set. When a return type or response shape changed, attribute, dict, and index uses of that return value are flagged, including aliases (`choice = resp.choices[0]`). A branch on `package.__version__`, `importlib.metadata.version`, or `packaging.version` is flagged when that dependency's version changed. REST calls are compared with a versioned OpenAPI pair when one is recorded. Without that pair the note names the calls that had no spec. A single latest document from a public spec repo is not treated as a diff. Changelog lines that say an endpoint was removed or renamed are low-confidence hints.
+The primary finding is the line a concrete change affects: a call, a callable that is loaded but not called (`return pkg.Widget.create`), a write of a module global the new wheel no longer assigns (`pkg.api_base = ...`), or a dict read of a return the wheel classifies as dict-like before and typed after. Callers of a wrapper are listed under `low confidence` and are not part of that count; `--show-callers` expands them. `getattr(package, "__version__")` is the same version read as `package.__version__`. A name the new wheel still exports is not reported as removed. REST calls are compared with a versioned OpenAPI pair when one is recorded. Without that pair the note names the calls that had no spec. A single latest document from a public spec repo is not treated as a diff. Changelog lines that say an endpoint was removed or renamed are low-confidence hints.
 
 ```bash
 conduit impact \

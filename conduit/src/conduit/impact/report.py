@@ -38,14 +38,16 @@ def _format_sites(item: Impact, *, show_callers: bool) -> list[str]:
         expr = f"  {site.expr}" if site.expr else ""
         lines.append(f"    {site.path}:{site.line}{expr} [{site.confidence}]")
     if primary and callers:
+        lines.append("    low confidence (excluded from the breaking-line count):")
         if show_callers:
-            lines.append(f"    wrapper callers ({len(callers)}):")
+            noun = "wrapper caller" if len(callers) == 1 else "wrapper callers"
+            lines.append(f"      {noun} ({len(callers)}):")
             for site in callers:
                 expr = f"  {site.expr}" if site.expr else ""
-                lines.append(f"      {site.path}:{site.line}{expr} [{site.confidence}]")
+                lines.append(f"        {site.path}:{site.line}{expr} [{site.confidence}]")
         else:
             noun = "wrapper caller" if len(callers) == 1 else "wrapper callers"
-            lines.append(f"    {len(callers)} {noun}; pass --show-callers to list")
+            lines.append(f"      {len(callers)} {noun}; pass --show-callers to list")
     return lines
 
 

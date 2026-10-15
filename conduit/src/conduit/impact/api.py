@@ -26,11 +26,21 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
     """Removed, renamed, and signature-changed public callables, plus deprecations."""
     old_root = _materialize(old)
     new_root = _materialize(new)
-    before = load_api(old_root)
-    after = load_api(new_root)
+    before_all = load_api(old_root, include_private=True)
+    after_all = load_api(new_root, include_private=True)
     old_index = _index_tree(old_root)
     new_index = _index_tree(new_root)
-    aliases = _public_aliases(old_index, set(before))
+    aliases = _public_aliases(old_index, set(before_all))
+    new_aliases = _public_aliases(new_index, set(after_all))
+    before = _public_symbols(before_all, aliases)
+    after = _public_symbols(after_all, new_aliases)
+    new_public = set(after) | {name for names in new_aliases.values() for name in names}
+    new_public |= _module_values(new_index)
+    # A re-export that still exists under the same public name was moved, not removed.
+    aliases = {
+        key: tuple(name for name in names if name not in new_public)
+        for key, names in aliases.items()
+    }
     old_returns = _return_kinds(old_index)
     new_returns = _return_kinds(new_index)
     new_models = any(kind == "model" for kind in _class_kinds(new_index).values())
@@ -87,17 +97,34 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
                     aliases,
                 )
             )
+    old_values = _module_values(old_index)
+    callable_names = set(before) | set(after)
+    for name in sorted(old_values - _module_values(new_index)):
+        if name in callable_names or name in new_public:
+            continue
+        changes.append(
+            ApiChange(
+                kind="removed",
+                symbol=name,
+                old=name,
+                new="",
+                detail=f"{_short(name)} removed",
+                confidence="high",
+                source="wheel",
+            )
+        )
     return changes
 
 
-def load_api(path: Path) -> dict[str, Symbol]:
+def load_api(path: Path, *, include_private: bool = False) -> dict[str, Symbol]:
     root = _materialize(path)
     found: dict[str, Symbol] = {}
     for py in sorted(root.rglob("*.py")):
         if not py.is_file() or _skipped(py, root):
             continue
         module = _module_name(py, root)
-        if not module or module.split(".")[-1].startswith("_") and not py.name == "__init__.py":
+        leaf = module.split(".")[-1] if module else ""
+        if not module or leaf.startswith("_") and py.name != "__init__.py" and not include_private:
             continue
         try:
             tree = ast.parse(py.read_text(encoding="utf-8-sig"))
@@ -248,6 +275,23 @@ def _public(name: str) -> bool:
     return bool(name) and not name.startswith("_")
 
 
+def _public_symbols(symbols: dict[str, Symbol], aliases: dict[str, tuple[str, ...]]) -> dict[str, Symbol]:
+    """Public modules, plus names re-exported from a public module.
+
+    SDKs often define ``Charge`` in ``stripe/_charge.py`` and export it from
+    ``stripe/__init__.py``. The defining module is private; the export is the
+    public surface. Private helpers that are not re-exported stay out.
+    """
+    exported = set(aliases)
+    keep: dict[str, Symbol] = {}
+    for name, sym in symbols.items():
+        private = any(part.startswith("_") for part in name.split("."))
+        if private and name not in exported and not any(name.startswith(item + ".") for item in exported):
+            continue
+        keep[name] = sym
+    return keep
+
+
 def _short(qualname: str) -> str:
     parts = qualname.split(".")
     if len(parts) >= 2:
@@ -385,15 +429,42 @@ def _definitions(
             defined[node.name] = qual
             classes[qual] = node
             for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(child.name):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and not child.name.startswith("__"):
                     method = f"{qual}.{child.name}"
-                    defined[f"{node.name}.{child.name}"] = method
                     functions[method] = child
+                    if _public(child.name):
+                        defined[f"{node.name}.{child.name}"] = method
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(node.name):
             qual = f"{module}.{node.name}"
             defined[node.name] = qual
             functions[qual] = node
     return defined, classes, functions
+
+
+def _module_values(mods: dict[str, _Mod]) -> set[str]:
+    """Public data names assigned at module level (``pkg.api_base = ...``).
+
+    Functions and classes are already in the callable surface. Names that
+    start with ``_`` are not part of that surface.
+    """
+    found: set[str] = set()
+    for mod in mods.values():
+        defined = set(mod.defined)
+        for node in _module_level(mod.tree):
+            targets: list[ast.AST] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            elif isinstance(node, ast.AugAssign):
+                targets = [node.target]
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if not _public(target.id) or target.id in defined:
+                    continue
+                found.add(f"{mod.name}.{target.id}")
+    return found
 
 
 def _exported_names(tree: ast.AST) -> tuple[str, ...]:
@@ -559,7 +630,7 @@ def _return_kinds(mods: dict[str, _Mod]) -> dict[str, str]:
         for qual, node in mod.functions.items():
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            hints[qual] = _return_hints(mod, node, classes)
+            hints[qual] = _return_hints(mod, node, classes, qual)
             owner, method = _owner_method(qual)
             delegated = _super_method(node)
             if owner and delegated:
@@ -578,7 +649,12 @@ def _return_kinds(mods: dict[str, _Mod]) -> dict[str, str]:
                 if item in {"dict", "model"}:
                     kind = _prefer_kind(kind, item)
                 elif item.startswith("fn:"):
-                    kind = _prefer_kind(kind, kinds.get(item[3:], ""))
+                    target = item[3:]
+                    inherited = kinds.get(target, "")
+                    if not inherited:
+                        base_owner, base_method = _owner_method(target)
+                        inherited = _base_method_kind(base_owner, base_method, bases, kinds)
+                    kind = _prefer_kind(kind, inherited)
             owner_method = supers.get(qual)
             if owner_method:
                 owner, method = owner_method
@@ -628,7 +704,7 @@ def _base_method_kind(
     return ""
 
 
-def _return_hints(mod: _Mod, node: ast.AST, classes: dict[str, str]) -> set[str]:
+def _return_hints(mod: _Mod, node: ast.AST, classes: dict[str, str], qual: str) -> set[str]:
     assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     _expr_kinds.seen = set()
     found: set[str] = set()
@@ -637,6 +713,7 @@ def _return_hints(mod: _Mod, node: ast.AST, classes: dict[str, str]) -> set[str]
     assigns = _local_assigns(node)
     for expr in _return_exprs(node):
         found |= _expr_kinds(mod, expr, assigns, classes)
+    found |= _instance_call_hints(mod, node, qual)
     return found
 
 
@@ -738,14 +815,182 @@ def _named_kind(mod: _Mod, dotted: str, classes: dict[str, str]) -> set[str]:
 
 
 def _super_method(node: ast.AST) -> str:
+    """Method name when the return is ``super().method()`` or a name bound to that call."""
+    bound: dict[str, str] = {}
+    for child in _walk_function(node):
+        value = None
+        target = None
+        if isinstance(child, ast.Assign) and len(child.targets) == 1 and isinstance(child.targets[0], ast.Name):
+            target = child.targets[0].id
+            value = child.value
+        elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+            target = child.target.id
+            value = child.value
+        method = _super_attr(value)
+        if target and method:
+            bound[target] = method
     for expr in _return_exprs(node):
         inner = expr.value if isinstance(expr, ast.Await) else expr
-        if not isinstance(inner, ast.Call) or not isinstance(inner.func, ast.Attribute):
-            continue
-        receiver = inner.func.value
-        if isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Name) and receiver.func.id == "super":
-            return inner.func.attr
+        method = _super_attr(inner)
+        if method:
+            return method
+        if isinstance(inner, ast.Name) and inner.id in bound:
+            return bound[inner.id]
     return ""
+
+
+def _super_attr(expr: ast.AST | None) -> str:
+    if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.Attribute):
+        return ""
+    receiver = expr.func.value
+    if isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Name) and receiver.func.id == "super":
+        return expr.func.attr
+    return ""
+
+
+def _instance_call_hints(mod: _Mod, node: ast.AST, qual: str) -> set[str]:
+    """``fn:Class.method`` when a return calls a method on an instance of ``Class``.
+
+    The class comes from ``cls()`` / ``ClassName()`` and from tuple slots of
+    another method on the same class. The method body is classified on its
+    own; this only links the call.
+    """
+    owner, _method = _owner_method(qual)
+    if not owner:
+        return set()
+    binds = _name_binds(node)
+    found: set[str] = set()
+    for expr in _return_exprs(node):
+        found |= _methods_on_return(mod, expr, binds, owner, depth=0)
+    return found
+
+
+def _methods_on_return(
+    mod: _Mod,
+    expr: ast.AST,
+    binds: dict[str, list[tuple[ast.AST, int | None]]],
+    owner: str,
+    depth: int,
+) -> set[str]:
+    if depth > 6:
+        return set()
+    inner = expr.value if isinstance(expr, ast.Await) else expr
+    if isinstance(inner, ast.Name):
+        found: set[str] = set()
+        for value, index in binds.get(inner.id, []):
+            if index is None:
+                found |= _methods_on_return(mod, value, binds, owner, depth + 1)
+        return found
+    if not isinstance(inner, ast.Call) or not isinstance(inner.func, ast.Attribute):
+        return set()
+    if _super_attr(inner):
+        return set()
+    klasses = _classes_of(mod, inner.func.value, binds, owner, depth)
+    return {f"fn:{klass}.{inner.func.attr}" for klass in klasses}
+
+
+def _classes_of(
+    mod: _Mod,
+    expr: ast.AST | None,
+    binds: dict[str, list[tuple[ast.AST, int | None]]],
+    owner: str,
+    depth: int,
+) -> set[str]:
+    if expr is None or depth > 6:
+        return set()
+    inner = expr.value if isinstance(expr, ast.Await) else expr
+    if isinstance(inner, ast.Name):
+        if inner.id in {"self", "cls"}:
+            return {owner}
+        found: set[str] = set()
+        for value, index in binds.get(inner.id, []):
+            if index is None:
+                found |= _classes_of(mod, value, binds, owner, depth + 1)
+            else:
+                found |= _slot_classes(mod, value, index, owner, depth + 1)
+        return found
+    if isinstance(inner, ast.Call):
+        constructed = _constructed_class(mod, inner.func, owner)
+        if constructed:
+            return {constructed}
+    return set()
+
+
+def _slot_classes(mod: _Mod, expr: ast.AST, index: int, owner: str, depth: int) -> set[str]:
+    """Class of one element of a tuple returned by a call."""
+    if depth > 6 or not isinstance(expr, ast.Call):
+        return set()
+    qual = _called_method(mod, expr.func, owner)
+    target = mod.functions.get(qual)
+    if target is None or not isinstance(target, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return set()
+    target_owner, _name = _owner_method(qual)
+    binds = _name_binds(target)
+    found: set[str] = set()
+    for item in _return_exprs(target):
+        inner = item.value if isinstance(item, ast.Await) else item
+        if isinstance(inner, (ast.Tuple, ast.List)):
+            if index < len(inner.elts):
+                found |= _classes_of(mod, inner.elts[index], binds, target_owner or owner, depth + 1)
+        elif index == 0:
+            found |= _classes_of(mod, inner, binds, target_owner or owner, depth + 1)
+    return found
+
+
+def _called_method(mod: _Mod, func: ast.AST, owner: str) -> str:
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id in {"self", "cls"}:
+        return f"{owner}.{func.attr}"
+    if isinstance(func, ast.Name):
+        return mod.defined.get(func.id, "")
+    if isinstance(func, ast.Attribute):
+        dotted = _dotted(mod, func)
+        return dotted
+    return ""
+
+
+def _constructed_class(mod: _Mod, func: ast.AST, owner: str) -> str:
+    if isinstance(func, ast.Name) and func.id in {"cls", "self"}:
+        return owner
+    if isinstance(func, ast.Name):
+        qual = mod.defined.get(func.id) or ""
+        if qual in mod.classes:
+            return qual
+        bound = mod.bindings.get(func.id, "")
+        return bound if bound in mod.classes else ""
+    if isinstance(func, ast.Attribute):
+        dotted = _dotted(mod, func)
+        return dotted if dotted in mod.classes else ""
+    return ""
+
+
+def _name_binds(node: ast.AST) -> dict[str, list[tuple[ast.AST, int | None]]]:
+    found: dict[str, list[tuple[ast.AST, int | None]]] = {}
+    for child in _walk_function(node):
+        if isinstance(child, ast.Assign):
+            for target in child.targets:
+                _bind_target(found, target, child.value, None)
+        elif isinstance(child, ast.AnnAssign) and child.value is not None:
+            _bind_target(found, child.target, child.value, None)
+    return found
+
+
+def _bind_target(
+    found: dict[str, list[tuple[ast.AST, int | None]]],
+    target: ast.AST,
+    value: ast.AST,
+    index: int | None,
+) -> None:
+    if isinstance(target, ast.Name):
+        found.setdefault(target.id, []).append((value, index))
+        return
+    if isinstance(target, (ast.Tuple, ast.List)) and index is None:
+        if isinstance(value, (ast.Tuple, ast.List)):
+            for slot, elt in enumerate(target.elts):
+                if slot < len(value.elts):
+                    _bind_target(found, elt, value.elts[slot], None)
+        else:
+            for slot, elt in enumerate(target.elts):
+                _bind_target(found, elt, value, slot)
 
 
 def _module_name(path: Path, root: Path) -> str:

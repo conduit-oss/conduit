@@ -8,7 +8,7 @@ Outside-in starts from an **outside service** and walks inward to every call sit
 app.ask  ->  llm.complete  ->  openai.ChatCompletion.create
 ```
 
-`conduit map` builds that chain. The breaking line in a report is the SDK call at the end of the chain. Callers of the wrapper collapse to a count unless you pass `--show-callers`. `conduit watch --packet` still treats the outer call site as a leftover of the packet's `old_callee` until that SDK call is gone. `conduit apply` is deferred.
+`conduit map` builds that chain. The breaking line in a report is the line a wheel, model, or schema change affects. Callers of a wrapper sit in a low-confidence section unless you pass `--show-callers`. `conduit watch --packet` still treats the outer call site as a leftover of the packet's `old_callee` until that SDK call is gone. `conduit apply` is deferred.
 
 ## Command
 

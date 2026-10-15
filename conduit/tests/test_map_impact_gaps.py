@@ -8,6 +8,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from conduit.impact.api import diff_wheels
 from conduit.impact.intersect import intersect
 from conduit.impact.model import ApiChange
 from conduit.impact.notes import endpoint_changes_from_notes
@@ -78,6 +79,26 @@ def test_partial_getattr_literal_and_lambda_reach_the_sdk(tmp_path: Path):
     assert callers[0].sdk_method.endswith("Completion.create")
 
 
+def test_nested_module_does_not_shadow_the_dependency(tmp_path: Path):
+    _write(
+        tmp_path,
+        "app/providers/stripe.py",
+        """
+        import stripe
+
+        class StripeProvider:
+            def __init__(self, key):
+                self.client = stripe.StripeClient(key)
+        """,
+    )
+    chains = [
+        chain
+        for chain in analyze_repo(tmp_path).chains
+        if chain.sdk_method.endswith("StripeClient") and not chain.via_wrapper
+    ]
+    assert chains
+
+
 def test_variable_getattr_stays_unresolved(tmp_path: Path):
     _write(
         tmp_path,
@@ -132,10 +153,15 @@ def test_version_branch_is_an_impact_when_the_dependency_changes(tmp_path: Path)
             if importlib.metadata.version("openai") >= "1.0.0":
                 client = openai.OpenAI()
                 return client.chat.completions.create(model="gpt-4", messages=[])
+
+        def legacy_audio():
+            if int(str(getattr(openai, "__version__", "0")).split(".")[0]) < 1:
+                return openai.Audio.transcribe("a.wav")
         """,
     )
     gates = [chain for chain in analyze_repo(tmp_path).chains if chain.kind == "version_gate"]
-    assert len(gates) >= 2
+    assert len(gates) >= 3
+    assert any("getattr" in chain.call_expr for chain in gates)
     assert all(chain.package == "openai" for chain in gates)
 
     fixtures = tmp_path / "impact"
@@ -191,6 +217,22 @@ def test_response_aliases_are_their_own_lines(tmp_path: Path):
     assert "message.content" in exprs
     assert any("choices" in chain.call_expr and chain.call_symbol == "caller" for chain in response)
     assert any("chunk[" in chain.call_expr and "choices" in chain.call_expr for chain in response)
+
+
+def test_awaited_response_is_tracked(tmp_path: Path):
+    _write(
+        tmp_path,
+        "async_read.py",
+        """
+        import openai
+
+        async def ask():
+            response = await openai.ChatCompletion.acreate(model="gpt-4", messages=[])
+            return response.choices[0].message["content"]
+        """,
+    )
+    response = [chain for chain in analyze_repo(tmp_path).chains if chain.kind.endswith("_response")]
+    assert any("choices" in chain.call_expr for chain in response)
 
 
 def test_wrapper_callers_collapse_unless_requested(tmp_path: Path):
@@ -472,3 +514,246 @@ def test_rest_urls_and_openapi_fields(tmp_path: Path):
         allow_network=False,
     )
     assert any("had no OpenAPI spec" in note and "api.stripe.com/v1/charges" in note for note in missing)
+
+
+def _primary_lines(impacts) -> set[tuple[str, int]]:
+    return {
+        (site.path, site.line)
+        for item in impacts
+        for site in item.sites
+        if not site.via_wrapper
+    }
+
+
+def test_module_attribute_diff_flags_only_names_the_new_wheel_dropped(tmp_path: Path):
+    _write(tmp_path, "old/openai/__init__.py", "api_base = None\napi_key = None\napi_type = None\n")
+    _write(tmp_path, "new/openai/__init__.py", "api_key = None\napi_type = None\n")
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    removed = {item.symbol for item in changes if item.kind == "removed"}
+    assert "openai.api_base" in removed
+    assert "openai.api_key" not in removed
+    assert "openai.api_type" not in removed
+
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "app.py",
+        """
+        import openai
+
+        def configure(base, key):
+            openai.api_base = base
+            openai.api_key = key
+            openai.api_type = "azure"
+        """,
+    )
+    impacts = intersect(
+        changes,
+        analyze_repo(repo).chains,
+        dependency="openai",
+        from_version="0",
+        to_version="1",
+    )
+    text = " ".join(site.expr for item in impacts for site in item.sites)
+    assert "api_base" in text
+    assert "api_key" not in text
+    assert "api_type" not in text
+
+
+def test_referenced_callable_is_flagged_when_it_is_not_called(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "loaders.py",
+        """
+        import openai
+
+        def chat():
+            return openai.ChatCompletion.create
+
+        def complete():
+            return openai.Completion.acreate
+        """,
+    )
+    changes = [
+        ApiChange(
+            kind="removed",
+            symbol="openai.api_resources.chat_completion.ChatCompletion.create",
+            old="openai.api_resources.chat_completion.ChatCompletion.create",
+            new="",
+            detail="ChatCompletion.create removed",
+            confidence="high",
+            source="wheel",
+            aliases=("openai.ChatCompletion.create",),
+        ),
+        ApiChange(
+            kind="removed",
+            symbol="openai.api_resources.completion.Completion.acreate",
+            old="openai.api_resources.completion.Completion.acreate",
+            new="",
+            detail="Completion.acreate removed",
+            confidence="high",
+            source="wheel",
+            aliases=("openai.Completion.acreate",),
+        ),
+    ]
+    impacts = intersect(
+        changes,
+        analyze_repo(repo).chains,
+        dependency="openai",
+        from_version="0.28.1",
+        to_version="1.0.0",
+    )
+    lines = _primary_lines(impacts)
+    assert ("loaders.py", 5) in lines or any(path.endswith("loaders.py") for path, _line in lines)
+    exprs = " ".join(site.expr for item in impacts for site in item.sites if not site.via_wrapper)
+    assert "ChatCompletion.create" in exprs
+    assert "Completion.acreate" in exprs
+    assert all(not site.via_wrapper for item in impacts for site in item.sites)
+
+
+def test_return_shape_follows_instance_method_and_super_assignment(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        """
+        from openai.resources import Mod, Child
+        """,
+    )
+    _write(
+        tmp_path,
+        "old/openai/obj.py",
+        """
+        class Obj(dict):
+            def request(self, *args, **kwargs):
+                return Obj()
+        """,
+    )
+    _write(
+        tmp_path,
+        "old/openai/resources.py",
+        """
+        from openai.obj import Obj
+
+        class Parent(Obj):
+            @classmethod
+            def create(cls, *args, **kwargs):
+                return Obj()
+
+        class Child(Parent):
+            @classmethod
+            def create(cls, *args, **kwargs):
+                response = super().create(*args, **kwargs)
+                return response
+
+        class Mod(Obj):
+            @classmethod
+            def _prepare(cls):
+                instance = cls()
+                return instance, {}
+
+            @classmethod
+            def create(cls, *args, **kwargs):
+                instance, params = cls._prepare()
+                return instance.request("post", params)
+        """,
+    )
+    _write(
+        tmp_path,
+        "new/openai/__init__.py",
+        """
+        class Mod:
+            pass
+        """,
+    )
+    _write(
+        tmp_path,
+        "new/openai/_models.py",
+        """
+        import pydantic
+
+        class BaseModel(pydantic.BaseModel):
+            pass
+
+        class Reply(BaseModel):
+            results: list
+        """,
+    )
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    shaped = {item.symbol for item in changes if item.kind == "response_shape"}
+    assert any(symbol.endswith("Mod.create") for symbol in shaped)
+    assert any(symbol.endswith("Child.create") for symbol in shaped)
+
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "use.py",
+        """
+        import openai
+
+        def moderate(text):
+            res = openai.Mod.create(text)
+            return res["results"][0]["flagged"]
+        """,
+    )
+    impacts = intersect(
+        changes,
+        analyze_repo(repo).chains,
+        dependency="openai",
+        from_version="0",
+        to_version="1",
+    )
+    reads = [
+        site.expr
+        for item in impacts
+        if "return changed" in item.change
+        for site in item.sites
+        if not site.via_wrapper
+    ]
+    assert any("results" in expr for expr in reads)
+
+
+def test_public_name_that_still_exists_is_not_a_removal(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        "from openai.error import APIError\n",
+    )
+    _write(
+        tmp_path,
+        "old/openai/error.py",
+        "class APIError(Exception):\n    pass\n",
+    )
+    _write(
+        tmp_path,
+        "new/openai/__init__.py",
+        "class APIError(Exception):\n    pass\n",
+    )
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    removed = [item for item in changes if item.kind == "removed" and item.symbol.endswith("APIError")]
+    assert removed
+    assert all("openai.APIError" not in item.aliases for item in removed)
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "errs.py",
+        """
+        import openai
+
+        def modern():
+            return openai.APIError
+
+        def legacy():
+            return openai.error.APIError
+        """,
+    )
+    impacts = intersect(
+        changes,
+        analyze_repo(repo).chains,
+        dependency="openai",
+        from_version="0",
+        to_version="1",
+    )
+    exprs = " ".join(site.expr for item in impacts for site in item.sites if not site.via_wrapper)
+    assert "openai.error.APIError" in exprs
+    assert "openai.APIError" not in exprs.replace("openai.error.APIError", "")

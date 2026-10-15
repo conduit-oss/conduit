@@ -13,7 +13,7 @@ from conduit.export_delta.usage import PackageCall, leftover_calls, legacy_resou
 from conduit.test_runner import TestResult, annotate_verify
 
 _VERSION_GUARD_RE = re.compile(
-    r"__version__|openai\s*<\s*1(?:\.0)?|_openai_has_legacy",
+    r"__version__|importlib\.metadata|packaging\.version",
     re.I,
 )
 
