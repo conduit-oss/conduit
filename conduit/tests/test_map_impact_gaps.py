@@ -925,8 +925,137 @@ def test_splatted_dict_keys_are_call_parameters(tmp_path: Path):
     )
     impacts = _impacts(changes, repo)
     assert any("temperature" in item.change for item in impacts)
-    assert any("messages.create" in hit for hit in _primary(impacts))
+    primary = _primary(impacts)
+    assert any("kwargs[" in hit and "temperature" in hit for hit in primary)
+    assert any("messages.create" in hit for hit in primary)
 
+
+def test_kwargs_origin_traces_dict_update_setdefault_and_partial(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        """
+        class Messages:
+            def create(self, model, temperature=None, top_p=None, max_tokens=None):
+                return None
+
+        class Client:
+            @property
+            def messages(self):
+                return Messages(self)
+        """,
+    )
+    _write(
+        tmp_path,
+        "new/openai/__init__.py",
+        """
+        class Messages:
+            def create(self, model):
+                return None
+
+        class Client:
+            @property
+            def messages(self):
+                return Messages(self)
+        """,
+    )
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "ask.py",
+        """
+        import functools
+        import openai
+
+        def build():
+            return {"max_tokens": 16}
+
+        def ask():
+            client = openai.Client()
+            kwargs = dict(model="m")
+            kwargs.update(temperature=0.2)
+            kwargs.setdefault("top_p", 0.9)
+            kwargs.update(build())
+            return client.messages.create(**kwargs)
+
+        def via_partial():
+            client = openai.Client()
+            create = functools.partial(client.messages.create, temperature=0.1)
+            return create(model="m")
+        """,
+    )
+    impacts = _impacts(changes, repo)
+    primary = _primary(impacts)
+    text = "\n".join(primary)
+    assert "temperature" in text
+    assert "top_p" in text
+    assert "max_tokens" in text
+    assert "update" in text or "setdefault" in text or "dict(" in text
+    assert "partial" in text
+    assert any("messages.create" in hit for hit in primary)
+
+
+def test_kwargs_origin_traces_typed_assign_and_helper_return(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        """
+        class Messages:
+            def create(self, model, temperature=None):
+                return None
+
+        class Client:
+            @property
+            def messages(self):
+                return Messages(self)
+        """,
+    )
+    _write(
+        tmp_path,
+        "new/openai/__init__.py",
+        """
+        class Messages:
+            def create(self, model):
+                return None
+
+        class Client:
+            @property
+            def messages(self):
+                return Messages(self)
+        """,
+    )
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "ask.py",
+        """
+        from typing import Any, Dict
+        import openai
+
+        def options():
+            body = {}
+            body["temperature"] = 0.3
+            return body
+
+        def ask():
+            client = openai.Client()
+            request_kwargs: Dict[str, Any] = {"model": "m"}
+            request_kwargs["temperature"] = 0.3
+            return client.messages.create(**request_kwargs)
+
+        def ask_helper():
+            client = openai.Client()
+            return client.messages.create(model="m", **options())
+        """,
+    )
+    impacts = _impacts(changes, repo)
+    primary = _primary(impacts)
+    assert any("request_kwargs" in hit and "temperature" in hit for hit in primary)
+    assert any("body[" in hit or "options" in hit or "temperature" in hit for hit in primary)
+    # Origin lines are primary; the call stays as context in the expression.
+    assert any("→" in hit and "messages.create" in hit for hit in primary)
 
 def test_constructor_return_class_matches_a_later_method(tmp_path: Path):
     _write(
