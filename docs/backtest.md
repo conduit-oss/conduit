@@ -66,7 +66,7 @@ Counted on the after run, main lines that are not in the deleted-line set:
 | Removed call or `api_base` write in a file this commit did not edit | 32 | 3 (Tuje `match_routes.py`, autocut partial, autocut `self.whisper_model(...)`) | Kept. The wheel removed the symbol. |
 | Dict read of a return the wheel classifies as dict-then-model, file not edited | 4 (FastChat playground embeddings, mlflow `completion["choices"]`, guardrails `response["data"]`, plus ICDM's four on the small set) | 6 | Kept. The read breaks when the return is no longer a dict. |
 | Version-branch noise with no API delta | 0 in the main count | 0 | Gates stay in the main count only when the branch reads that package's version. |
-| REST without a spec diff | 0 flags | 0 | mlflow's `GET /v1/models` is a note: a latest OpenAPI file is not a diff. |
+| REST without a versioned OpenAPI pair | 0 flags | 0 | mlflow's `GET /v1/models` is a note when `--from`/`--to` cannot pick two documents. |
 | Duplicate line | collapsed by the line count | same | One line is one main-count row. |
 
 ## Hard-coding
@@ -83,6 +83,7 @@ Left in place, and not used as the impact change list:
 - `packs/pypi/openai/impacts.yaml` names `openai.api_base`, `response["choices"]`, and the banned kwarg `engine` for the packet rewrite path.
 - `detect/modules/openai/` and `patcher/openai_client_chain.py` rewrite a frozen packet for `conduit run`.
 - `PUBLIC_SPEC_URLS` is where a latest OpenAPI document lives. It is not a diff.
+- `SPEC_SOURCES` maps a host to where versioned OpenAPI history lives (git repo path or Stainless `.stats.yml`). It is a location catalog, not a list of endpoint changes.
 - The service catalog names outside services. It does not list renamed functions.
 - Pydantic `BaseModel` is recognized by class base so a return can be classified as a typed object. There is no per-function return list.
 - A function's return class is copied onto each public alias of that function, so `pkg.Client.method` and `pkg._mod.Client.method` share it. `class Child(Base["T"])` still inherits from `Base`. A method the child does not define resolves to the base that does. `factory = kwargs.pop(key, Engine); return factory()` constructs `Engine`.
@@ -121,6 +122,36 @@ great_expectations PR 7469 deletes 10 `.execute(` lines while rewriting SQLAlche
 ### Pinecone
 
 [gigas5234/dys-backend](https://github.com/gigas5234/dys-backend/commit/8934c9ea2c3158d43ac4419960f82568ece03b00) `8934c9ea` (parent `c102674`) deletes `pinecone.init`, `pinecone.list_indexes`, `pinecone.create_index`, and `pinecone.Index` in `src/backend/database/pinecone_client.py`. This is a miss, and it was not scored above. `pinecone` is not an outside service in the catalog, so `conduit impact --dep pinecone` has nothing to diff. The PyPI wheels named `pinecone` at 2.2.4 and 3.0.0 are 2.5 KB and 4.4 KB. The v2 surface lives in the `pinecone-client` distribution (2.2.4 is 179 KB, 3.0.0 is 200 KB). A same-name wheel diff cannot see an API that moved to another distribution. No catalog entry was added for this repo.
+
+## Versioned OpenAPI REST
+
+Raw `requests` / `httpx` / `aiohttp` / `urllib` calls (and vendor SDK helpers that take an OpenAPI path string, such as `stripe.*._static_request`) are mapped by host and path. Change data comes from diffing two resolved OpenAPI documents — not from a hand-written endpoint list.
+
+### Spec source catalog (verified)
+
+| Service | Kind | Location | What actually exists |
+|---------|------|----------|----------------------|
+| stripe | git_repo | `stripe/openapi` `openapi/spec3.json` | Tagged releases (`vNNNN`). |
+| github | git_repo | `github/rest-api-description` `descriptions/api.github.com/api.github.com.json` | Continuous commits; resolve by date. |
+| openai | git_repo | `openai/openai-openapi` `openapi.yaml` | Sparse tags (`1.3.0`, `2.0.0`). `openai-python` ships `.castiron.stats.yml` with `openapi_spec_hash` but **no** `openapi_spec_url`. |
+| anthropic | stainless_sdk | `anthropics/anthropic-sdk-python` `.stats.yml` | Tags through `v1.0.0` expose `openapi_spec_url`; later tags (e.g. `v1.5.0+`) only list `configured_endpoints`. |
+| cloudflare | stainless_sdk | `cloudflare/cloudflare-python` `.stats.yml` | Current tags list `configured_endpoints` only; **no** `openapi_spec_url`. |
+
+When no from/to pair can be resolved, impact keeps an honest `not compared: …` note.
+
+### REST migration backtests
+
+Same command shape: check out the parent, run `conduit impact --dep stripe --from v1000 --to v2565` (Stripe OpenAPI tags that remove `POST …/usage_records` and `GET /v1/invoices/upcoming`). A call site is a deleted non-comment line that is the REST call (or SDK path request) the migration rewrote. Strict precision is main lines on those deleted lines.
+
+| Repo | Commit | Call-site recall | Precision | Edit coverage |
+|------|--------|------------------|-----------|---------------|
+| [kikuchi-mizuki/lp](https://github.com/kikuchi-mizuki/lp/commit/c519e1ca4249da5398492e0d026ac5223ae48784) | `c519e1c` parent `3d85dcc` | 1/1 | 1/1 | 1/1 |
+| [betterchoicedev/NewClientsWeb](https://github.com/betterchoicedev/NewClientsWeb/commit/32aa86ff2f4c318befcb3eac21adff44d3f45dfd) | `32aa86f` parent `32aa86f^` | 1/1 | 1/1 | 1/1 |
+| **Total** | | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** |
+
+lp deletes `requests.post(…/usage_records)` at `lp/services/line_service.py:523` and switches to `billing/meter_events`. NewClientsWeb deletes the path string on `stripe.SubscriptionItem._static_request("post", "/v1/subscription_items/%s/usage_records" % si_id)` at `test.py:13` and points it at `/v1/billing/meter_events`. Both are flagged from the OpenAPI removal; no per-API change list.
+
+OpenAI large/small and non-OpenAI wheel sets were re-run after this change. Call-site recall, edit coverage, and primary counts are unchanged: large 13/13, 43/79 (54%), 43/117; small 6/6 on the call filter, 13/22 (59%), 13/20; non-OpenAI 38/43 (88%), 38/52 (73%).
 
 ## Remaining misses
 

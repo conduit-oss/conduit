@@ -14,6 +14,7 @@ from conduit.impact.intersect import intersect
 from conduit.impact.model import ApiChange, Impact, SiteHit
 from conduit.impact.notes import changes_from_notes
 from conduit.impact.openapi_rest import PUBLIC_SPEC_URLS, diff_openapi, split_http_target
+from conduit.impact.openapi_sources import resolve_spec_pair, spec_source_for
 from conduit.impact.versions import pypi_latest, resolve_client_version
 from conduit.impact.webhook_schema import diff_webhook_schemas
 from conduit.outside_in.catalog import CATALOG, catalog_spec
@@ -303,7 +304,15 @@ def _changes_for(
                 changes.surviving = getattr(wheel_diff, "surviving", set()) or set()
                 compared = True
                 wheel_compared = True
-            elif wheels or (explicit and allow_network):
+            elif wheels:
+                note = _missing_surface_note(from_version, to_version, old_missing=old_wheel is None)
+            elif (
+                explicit
+                and allow_network
+                and spec_source_for(service_id) is None
+                and not _has_webhook(service_map, service_id, package)
+            ):
+                # No wheel, no OpenAPI history, no webhook — the pin cannot be compared.
                 note = _missing_surface_note(from_version, to_version, old_missing=old_wheel is None)
         botocore = entry.get("botocore") if isinstance(entry.get("botocore"), dict) else {}
         old_model = _artifact(fixtures, botocore.get("from"))
@@ -348,6 +357,8 @@ def _changes_for(
         fixtures,
         service_map=service_map,
         allow_network=allow_network,
+        from_version=from_version,
+        to_version=to_version,
     )
     changes.extend(rest)
     if rest_compared:
@@ -426,6 +437,8 @@ def _rest_changes(
     *,
     service_map: ServiceMap,
     allow_network: bool,
+    from_version: str = "",
+    to_version: str = "",
 ) -> tuple[list[ApiChange], str, bool]:
     """OpenAPI pair when present, otherwise changelog hints and an honest miss."""
     calls = [
@@ -440,6 +453,16 @@ def _rest_changes(
     new_spec = _artifact(fixtures, spec.get("to"))
     if old_spec is not None and new_spec is not None:
         return diff_openapi(old_spec, new_spec, service=service_id), "", True
+    fetch_note = ""
+    if allow_network and from_version and to_version and from_version != to_version:
+        fetched_old, fetched_new, fetch_note = resolve_spec_pair(
+            service_id,
+            from_ref=from_version,
+            to_ref=to_version,
+            allow_network=True,
+        )
+        if fetched_old is not None and fetched_new is not None:
+            return diff_openapi(fetched_old, fetched_new, service=service_id), "", True
     changes: list[ApiChange] = []
     changelog = _artifact(fixtures, entry.get("changelog"))
     if changelog is not None:
@@ -449,9 +472,21 @@ def _rest_changes(
             text = ""
         if text:
             changes.extend(
-                item for item in changes_from_notes(text) if item.kind in {"endpoint_removed", "endpoint_renamed"}
+                item
+                for item in changes_from_notes(text)
+                if item.kind in {"endpoint_removed", "endpoint_renamed"}
             )
     uncovered = _uncovered_rest(calls, changes)
+    if fetch_note:
+        note = fetch_note
+        if changes:
+            note = note + " Changelog text was used only as a hint."
+        return changes, note, bool(changes)
+    source = spec_source_for(service_id)
+    if old_spec is None and new_spec is None and allow_network and source is not None:
+        if not from_version or not to_version or from_version == to_version:
+            note = _versioned_spec_note(service_id, uncovered or calls, source_note=source.note)
+            return changes, note, bool(changes)
     if old_spec is None and new_spec is None and allow_network and service_id.lower() in PUBLIC_SPEC_URLS:
         note = _public_spec_note(service_id, uncovered or calls)
         return changes, note, bool(changes)
@@ -503,6 +538,20 @@ def _public_spec_note(service_id: str, calls: list[Chain]) -> str:
     return (
         f"not compared: {service_id} REST call(s) ({preview}) had no versioned OpenAPI pair. "
         f"The public spec repo is {url}; a latest document alone is not a diff."
+    )
+
+
+def _versioned_spec_note(service_id: str, calls: list[Chain], *, source_note: str = "") -> str:
+    shown = []
+    for chain in calls:
+        label = chain.sdk_method
+        if label and label not in shown:
+            shown.append(label)
+    preview = ", ".join(shown[:3])
+    extra = f" {source_note}" if source_note else ""
+    return (
+        f"not compared: {service_id} REST call(s) ({preview}) need --from and --to "
+        f"(API version, SDK version, date, or spec tag) to pick two OpenAPI documents.{extra}"
     )
 
 

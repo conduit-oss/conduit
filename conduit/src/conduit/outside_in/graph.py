@@ -8,6 +8,7 @@ function that touches a service, recording each hop.
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -204,6 +205,7 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
                 if extra:
                     direct.params = tuple(dict.fromkeys((*extra, *direct.params)))
                 directs.append(direct)
+                directs.extend(_response_directs(unit, call, direct))
                 continue
             spec = _service_of(binding, specs)
             if spec is None:
@@ -1107,6 +1109,12 @@ def _enclosing_chain(enclosing: str) -> list[str]:
     return chain
 
 
+#: Method tails on vendor SDKs that take an OpenAPI-style path string.
+_SDK_REQUEST_TAILS = frozenset(
+    {"request", "_request", "_static_request", "request_stream", "_request_stream"}
+)
+
+
 def _http_service(
     binding: Binding,
     call: CallRec,
@@ -1116,21 +1124,85 @@ def _http_service(
     if binding.kind != "external_attr":
         return None
     parts = binding.target.split(".")
-    if not parts or parts[0] not in HTTP_CLIENT_ROOTS or parts[-1] not in HTTP_METHOD_TAILS:
+    if not parts:
         return None
-    url = _call_url(call.node, unit, call.enclosing, binding.base_url)
-    if not url:
+    # requests / httpx / aiohttp / urllib against a catalogued host.
+    if parts[0] in HTTP_CLIENT_ROOTS and parts[-1] in HTTP_METHOD_TAILS:
+        url = _call_url(call.node, unit, call.enclosing, binding.base_url)
+        if not url:
+            return None
+        host = urlparse(url).hostname or ""
+        spec = service_for_host(host, specs)
+        if spec is None:
+            return None
+        verb = parts[-1].upper()
+        if verb == "REQUEST":
+            verb = _request_verb(call.node) or "GET"
+        if verb == "URLOPEN":
+            verb = "GET"
+        return spec, f"{verb} {url}", "high"
+    # Vendor SDK low-level helpers that take METHOD + /v1/... path strings
+    # (e.g. stripe.SubscriptionItem._static_request("post", "/v1/...")).
+    return _sdk_path_request(binding, call, unit, specs)
+
+
+def _sdk_path_request(
+    binding: Binding,
+    call: CallRec,
+    unit: ModUnit,
+    specs: tuple[ServiceSpec, ...],
+) -> tuple[ServiceSpec, str, str] | None:
+    parts = binding.target.split(".")
+    if not parts or parts[-1] not in _SDK_REQUEST_TAILS:
         return None
-    host = urlparse(url).hostname or ""
-    spec = service_for_host(host, specs)
-    if spec is None:
+    spec = service_for_module(binding.target, specs)
+    if spec is None or not spec.hosts:
         return None
-    verb = parts[-1].upper()
-    if verb == "REQUEST":
-        verb = _request_verb(call.node) or "GET"
-    if verb == "URLOPEN":
-        verb = "GET"
+    verb, path = _sdk_request_verb_path(call.node, unit, call.enclosing)
+    if not verb or not path:
+        return None
+    host = spec.hosts[0]
+    url = f"https://{host}{path}" if path.startswith("/") else f"https://{host}/{path}"
     return spec, f"{verb} {url}", "high"
+
+
+def _sdk_request_verb_path(
+    call: ast.Call, unit: ModUnit, enclosing: str
+) -> tuple[str, str]:
+    """``("post", "/v1/charges")`` from positional or keyword args."""
+    strings: list[str] = []
+    for arg in call.args:
+        text = _const_str(arg, unit, enclosing)
+        if text:
+            strings.append(text)
+    for keyword in call.keywords:
+        if keyword.arg not in {None, "method", "url", "path"}:
+            continue
+        text = _const_str(keyword.value, unit, enclosing)
+        if text:
+            strings.append(text)
+    verb = ""
+    path = ""
+    for text in strings:
+        lowered = text.strip().lower()
+        if not verb and lowered in {
+            "get", "post", "put", "patch", "delete", "head", "options"
+        }:
+            verb = lowered.upper()
+            continue
+        if not path and _looks_like_api_path(text):
+            path = text.split("?", 1)[0]
+    return verb, path
+
+
+def _looks_like_api_path(text: str) -> bool:
+    token = (text or "").strip()
+    if not token.startswith("/"):
+        return False
+    if "://" in token or " " in token:
+        return False
+    # OpenAPI-style path: /v1/..., /repos/..., /billing/...
+    return bool(re.match(r"^/[A-Za-z0-9_./{}%-]+$", token))
 
 
 def _request_verb(call: ast.Call) -> str:
@@ -1207,6 +1279,12 @@ def _const_str(node: ast.AST, unit: ModUnit, enclosing: str, depth: int = 0) -> 
         if left is None or right is None:
             return None
         return left + right
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        # ``"/v1/items/%s/usage_records" % item_id`` → template with ``{}``.
+        left = _const_str(node.left, unit, enclosing, depth + 1)
+        if left is None:
+            return None
+        return re.sub(r"%(?:\([^)]+\))?[#0 +\-]*\d*(?:\.\d+)?[sdif]", "{}", left)
     if isinstance(node, ast.Name):
         cached = unit.constants.get((enclosing, node.id)) or unit.constants.get(("<module>", node.id))
         if cached:
@@ -1720,18 +1798,40 @@ def _unwrap_await(node: ast.AST | None) -> ast.AST | None:
     return node
 
 
+#: Response-body helpers chained off an HTTP call (``resp.json()``, …).
+_HTTP_BODY_TAILS = frozenset({"json", "text", "read", "content", "aread", "aiter_bytes"})
+
+
+def _unwrap_http_body(value: ast.AST | None) -> ast.AST | None:
+    """Strip ``await`` and ``.json()`` / ``.text()`` wrappers down to the HTTP call."""
+    cur = _unwrap_await(value)
+    for _ in range(4):
+        if not isinstance(cur, ast.Call) or not isinstance(cur.func, ast.Attribute):
+            break
+        if cur.func.attr not in _HTTP_BODY_TAILS:
+            break
+        cur = _unwrap_await(cur.func.value)
+    return cur
+
+
 def _assigned_names(scope: ast.AST, call: ast.Call) -> tuple[str, ...]:
     names: list[str] = []
     for node in _iter_scope(scope):
-        if isinstance(node, ast.Assign) and _unwrap_await(node.value) is call:
+        if isinstance(node, ast.Assign) and _unwrap_http_body(node.value) is call:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     names.append(target.id)
-        elif isinstance(node, ast.AnnAssign) and _unwrap_await(node.value) is call and isinstance(node.target, ast.Name):
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and _unwrap_http_body(node.value) is call
+            and isinstance(node.target, ast.Name)
+        ):
             names.append(node.target.id)
         elif isinstance(node, (ast.With, ast.AsyncWith)):
             for item in node.items:
-                if _unwrap_await(item.context_expr) is call and isinstance(item.optional_vars, ast.Name):
+                if _unwrap_http_body(item.context_expr) is call and isinstance(
+                    item.optional_vars, ast.Name
+                ):
                     names.append(item.optional_vars.id)
     return tuple(dict.fromkeys(names))
 
@@ -1762,6 +1862,12 @@ def _response_names(scope: ast.AST, seeds: tuple[str, ...] | set[str]) -> set[st
                 if parsed is not None and parsed[0] in known:
                     known.add(target.id)
                     changed = True
+                    continue
+            # ``data = resp.json()`` keeps the same response object for field reads.
+            body = _unwrap_http_body(value)
+            if isinstance(body, ast.Name) and body.id in known:
+                known.add(target.id)
+                changed = True
         if not changed:
             break
     return known
