@@ -189,6 +189,22 @@ git-workflow deletes both `requests.post('https://api.github.com/authorizations'
 
 Stripe REST pair re-run: still 2/2. OpenAI large/small and non-OpenAI wheel sets were re-run after this change. Call-site recall, edit coverage, and primary counts are unchanged: large 13/13, 43/79 (54%), 43/117; small 6/6 on the call filter, 13/22 (59%), 13/20; non-OpenAI 38/43 (88%), 38/52 (73%).
 
+## Declared distributions
+
+`conduit map` used to inventory only the service catalog. A tree that called Supabase (`supabase: Client = create_client(...)`, the local name shadowing the package) and Slack (`WebClient` stored on `self.client`, plus `host.endswith("hooks.slack.com")` before `requests` / `httpx`) reported `psycopg2` and nothing else. `psycopg2` is catalogued. `supabase` and `slack_sdk` are not, and `slack-sdk` does not equal the import root `slack_sdk`.
+
+Declared distributions now come from requirements (pinned or not), pyproject, lockfiles, and installed metadata. Import roots come from that metadata when the import name differs, otherwise from the normalized distribution name (`slack-sdk` → `slack_sdk`). A declared distribution is an outside service when a call reaches it. The standard library and the repo's own modules are not, even if a requirements line names them. An import with no call is not usage. Annotated assignments bind the same way as plain assignments, including `self.client: WebClient = WebClient(...)`. Callers of that class are wrapper callers. No SDK name was added to the catalog for this.
+
+Impact on the scored migrations was re-run here and on the previous matcher (`main` at `1ed1106`). Primary lines (`via_wrapper` false) are identical on every repo, so recall and strict precision do not move.
+
+| Set | Before | After |
+|-----|--------|-------|
+| OpenAI large | 13/13 call sites, 43/79 strict (54%), 43/117 edit coverage | same |
+| OpenAI small | 6/6 on the call filter, 13/22 strict (59%), 13/20 edit coverage | same |
+| Non-OpenAI | 38/43 caught (88%), 38/52 strict (73%) | same |
+
+Primary-line counts behind those denominators, before and after: FastChat 29, dspy 14, mlflow 18, dd-trace-py 1, wandb 0, guardrails 17 (79); small set 4, 2, 4, 2, 3, 7 (22); PaintOmics 28, briehost 1, knowledge-graph-system 4, great_expectations 19 (52).
+
 ## Remaining misses
 
 - **Module globals the new wheel still assigns.** `openai.api_key`, `openai.api_type`, and `openai.api_version` are assigned in both 0.28.1 and 1.0.0, so those writes stay unflagged. `openai.api_base` is gone and is flagged.

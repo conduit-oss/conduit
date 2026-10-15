@@ -464,6 +464,7 @@ class _Scanner(ast.NodeVisitor):
         )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        lineno = getattr(node, "lineno", 0) or 0
         if isinstance(node.target, ast.Name):
             if node.annotation is not None:
                 self.unit.annotations[(self.enclosing, node.target.id)] = node.annotation
@@ -474,9 +475,10 @@ class _Scanner(ast.NodeVisitor):
                 self.unit.assigns[(self.enclosing, node.target.id)] = node.value
                 if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                     self.unit.constants[(self.enclosing, node.target.id)] = node.value.value
-                self._record_dict_value(
-                    node.target.id, node.value, getattr(node, "lineno", 0) or 0
-                )
+                self._record_dict_value(node.target.id, node.value, lineno)
+        if node.value is not None:
+            self._record_instance_assign(node.target, node.value)
+            self._record_dict_key(node.target, lineno)
         self.generic_visit(node)
 
     def visit_With(self, node: ast.With) -> None:
@@ -1172,6 +1174,111 @@ _SDK_REQUEST_TAILS = frozenset(
 )
 
 
+def _guarded_host(unit: ModUnit, call: CallRec) -> str:
+    """Host named by a check that selects this HTTP call.
+
+    ``host.endswith("hooks.example.com")``, ``host == "..."``, and
+    ``"..." in host`` count. The call has to sit in that branch, or in
+    the function body outside any ``if``, when the function names one host.
+    A catalogued host is left to the literal-URL path.
+    """
+    scope = _scope_node(unit, call.enclosing)
+    found: list[str] = []
+    state = "miss"
+
+    def walk(node: ast.AST, inherited: list[str], inside_if: bool) -> bool:
+        nonlocal state
+        if node is call.node:
+            if inherited:
+                found.extend(inherited)
+                state = "branch"
+            elif not inside_if:
+                state = "open"
+            else:
+                state = "other"
+            return True
+        if isinstance(node, ast.If):
+            test_hosts = _hosts_in_expr(node.test, unit, call.enclosing)
+            active = test_hosts or inherited
+            for stmt in node.body:
+                if walk(stmt, active, True):
+                    return True
+            for stmt in node.orelse:
+                if walk(stmt, inherited, True):
+                    return True
+            return False
+        for child in ast.iter_child_nodes(node):
+            if walk(child, inherited, inside_if):
+                return True
+        return False
+
+    walk(scope, [], False)
+    if state == "branch":
+        return _pick_host(found)
+    if state != "open":
+        return ""
+    hosts = _hosts_in_tree(scope, unit, call.enclosing)
+    if len(set(hosts)) != 1:
+        return ""
+    return _pick_host(hosts)
+
+
+def _hosts_in_tree(node: ast.AST, unit: ModUnit, enclosing: str) -> list[str]:
+    found: list[str] = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.If):
+            found.extend(_hosts_in_expr(child.test, unit, enclosing))
+    return found
+
+
+def _hosts_in_expr(node: ast.AST, unit: ModUnit, enclosing: str) -> list[str]:
+    found: list[str] = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+            if child.func.attr == "endswith" and child.args:
+                host = _host_token(_const_str(child.args[0], unit, enclosing))
+                if host:
+                    found.append(host)
+            continue
+        if not isinstance(child, ast.Compare):
+            continue
+        for op, comp in zip(child.ops, child.comparators):
+            if not isinstance(op, (ast.Eq, ast.In)):
+                continue
+            for side in (child.left, comp):
+                host = _host_token(_const_str(side, unit, enclosing))
+                if host:
+                    found.append(host)
+    return found
+
+
+def _host_token(text: str | None) -> str:
+    if not text:
+        return ""
+    token = text.strip().lower()
+    if token.startswith(("http://", "https://")):
+        return (urlparse(token).hostname or "").lower()
+    token = token.strip(".")
+    if not token or any(char in token for char in " /:\\"):
+        return ""
+    labels = token.split(".")
+    if len(labels) < 2:
+        return ""
+    if any(not re.fullmatch(r"[a-z0-9-]+", label) or not label for label in labels):
+        return ""
+    if not re.fullmatch(r"[a-z]{2,}", labels[-1]):
+        return ""
+    return token
+
+
+def _pick_host(hosts: list[str]) -> str:
+    unique = list(dict.fromkeys(host for host in hosts if host))
+    if not unique:
+        return ""
+    unique.sort(key=len, reverse=True)
+    return unique[0]
+
+
 def _http_service(
     binding: Binding,
     call: CallRec,
@@ -1183,25 +1290,36 @@ def _http_service(
     parts = binding.target.split(".")
     if not parts:
         return None
-    # requests / httpx / aiohttp / urllib against a catalogued host.
+    # requests / httpx / aiohttp / urllib. A literal URL still needs a
+    # catalogued host. A host named only by a guard (``endswith``, ``==``,
+    # ``in``) is its own service when the catalog does not already claim it.
     if (
         binding.kind == "external_attr"
         and parts[0] in HTTP_CLIENT_ROOTS
         and parts[-1] in HTTP_METHOD_TAILS
     ):
-        url = _call_url(call.node, unit, call.enclosing, binding.base_url)
-        if not url:
-            return None
-        host = urlparse(url).hostname or ""
-        spec = service_for_host(host, specs)
-        if spec is None:
-            return None
         verb = parts[-1].upper()
         if verb == "REQUEST":
             verb = _request_verb(call.node) or "GET"
         if verb == "URLOPEN":
             verb = "GET"
-        return spec, f"{verb} {url}", "high"
+        url = _call_url(call.node, unit, call.enclosing, binding.base_url)
+        if url:
+            host = urlparse(url).hostname or ""
+            spec = service_for_host(host, specs)
+            if spec is None:
+                return None
+            return spec, f"{verb} {url}", "high"
+        host = _guarded_host(unit, call)
+        if not host or service_for_host(host, specs) is not None:
+            return None
+        spec = ServiceSpec(
+            service_id=host,
+            package=host,
+            modules=(),
+            hosts=(host,),
+        )
+        return spec, f"{verb} https://{host}", "medium"
     # Vendor SDK low-level helpers that take METHOD + /v1/... path strings
     # (e.g. stripe.SubscriptionItem._static_request("post", "/v1/...")).
     return _sdk_path_request(binding, call, unit, specs)

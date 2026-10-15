@@ -58,11 +58,14 @@ def test_pins_ignore_ordinary_libraries():
     assert catalog_spec("requests") is None
 
 
-def test_map_finds_each_outside_service_and_skips_ordinary_libraries():
+def test_map_finds_catalog_services_and_called_third_party_dists():
     service_map = _map()
     assert set(service_map.services()) >= {"sqlalchemy", "boto3", "stripe", "acme"}
-    assert "pydantic" not in service_map.services()
-    assert not any(chain.call_rel == "unrelated.py" for chain in service_map.chains)
+    # pydantic is declared and called, so the map includes it. requests is
+    # not declared, and example.com is not a catalogued host.
+    assert "pydantic" in service_map.services()
+    assert any(chain.call_rel == "unrelated.py" and chain.package == "pydantic" for chain in service_map.chains)
+    assert not any(chain.package == "requests" or "example.com" in chain.sdk_method for chain in service_map.chains)
 
     query_get = [
         chain

@@ -1,14 +1,26 @@
 """Outside services the code talks to.
 
-API SDKs and REST hosts, database drivers and ORMs, and cloud SDKs.
-This is not a catalog of every PyPI library. Ordinary packages (pydantic,
-requests as a library, your own modules) stay out. ``spec_for_name`` is
-the seam for an explicit module that is not listed here.
+The catalog records hosts, kinds, and constructor names for API SDKs,
+database drivers, and cloud SDKs. It is not the whole set. Any other
+third-party distribution declared by the repo (requirements, a lockfile,
+or installed metadata) is an outside service when a call reaches it.
+Import roots come from that metadata when the import name differs from
+the distribution, and otherwise from the normalized distribution name.
+The standard library and the repo's own modules are not services.
+``spec_for_name`` is the seam for an explicit module that is not listed here.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
+
+_DIST_NORMALIZE = re.compile(r"[-_.]+")
+
+
+def normalize_dist(name: str) -> str:
+    """PEP 503 name: lowercase, runs of ``-``, ``_``, and ``.`` become one ``-``."""
+    return _DIST_NORMALIZE.sub("-", (name or "").strip().lower())
 
 
 @dataclass(frozen=True)
