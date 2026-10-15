@@ -83,7 +83,7 @@ Left in place, and not used as the impact change list:
 - `packs/pypi/openai/impacts.yaml` names `openai.api_base`, `response["choices"]`, and the banned kwarg `engine` for the packet rewrite path.
 - `detect/modules/openai/` and `patcher/openai_client_chain.py` rewrite a frozen packet for `conduit run`.
 - `PUBLIC_SPEC_URLS` is where a latest OpenAPI document lives. It is not a diff.
-- `SPEC_SOURCES` maps a host to where versioned OpenAPI history lives (git repo path or Stainless `.stats.yml`). It is a location catalog, not a list of endpoint changes.
+- `SPEC_SOURCES` maps a host to where versioned OpenAPI history lives (git repo path, Stainless `.stats.yml`, Speakeasy/OpenAPI Generator SDK repos, APIs.guru, Azure, Google discovery). It is a location catalog, not a list of endpoint changes. Generic discovery also walks PyPI `project_urls` → release tags for committed specs.
 - The service catalog names outside services. It does not list renamed functions.
 - Pydantic `BaseModel` is recognized by class base so a return can be classified as a typed object. There is no per-function return list.
 - A function's return class is copied onto each public alias of that function, so `pkg.Client.method` and `pkg._mod.Client.method` share it. `class Child(Base["T"])` still inherits from `Base`. A method the child does not define resolves to the base that does. `factory = kwargs.pop(key, Engine); return factory()` constructs `Engine`.
@@ -125,33 +125,67 @@ great_expectations PR 7469 deletes 10 `.execute(` lines while rewriting SQLAlche
 
 ## Versioned OpenAPI REST
 
-Raw `requests` / `httpx` / `aiohttp` / `urllib` calls (and vendor SDK helpers that take an OpenAPI path string, such as `stripe.*._static_request`) are mapped by host and path. Change data comes from diffing two resolved OpenAPI documents — not from a hand-written endpoint list.
+Raw `requests` / `httpx` / `aiohttp` / `urllib` calls (and vendor SDK helpers that take an OpenAPI path string, such as `stripe.*._static_request`, OpenAPI Generator `param_serialize(resource_path=…)`, Speakeasy `path="/…"`) are mapped by host and path. Change data comes from diffing two resolved OpenAPI / Swagger / Google discovery documents — not from a hand-written endpoint list.
 
-### Spec source catalog (verified)
+### Generic discovery rule
+
+Given an SDK package: PyPI `project_urls` → GitHub source repo → at each release tag look for a committed OpenAPI/Swagger/discovery document (common paths `openapi.{yaml,json}`, `spec/`, `specs/`, `api/`, `.speakeasy/` workflow inputs, OpenAPI Generator inputs, `.stats.yml` `openapi_spec_url`). Diff the from-tag vs to-tag documents and map onto REST call sites. Public registries with git history are also supported: APIs.guru `openapi-directory`, Azure `azure-rest-api-specs`, Google `discovery-artifact-manager`.
+
+### Spec source verification (live repos)
+
+| Source | Works? | Concrete example | Notes |
+|--------|--------|------------------|-------|
+| Stainless `.stats.yml` | Partial | `anthropics/anthropic-sdk-python` tags through `v1.0.0` expose `openapi_spec_url`; `v1.5.0+` and `cloudflare/cloudflare-python` tip do not | Honest miss when URL absent |
+| Speakeasy workflow | Yes when pinned | `clerk/clerk-sdk-python` `@v1.8.0` → `clerk/openapi-specs` `bapi/2024-10-01.yml`; `@v3.0.0` → `bapi/2025-03-12.yml` | `gr4vy/gr4vy-python` points at an unversioned `gr4vy.github.io` URL — same tip at every tag, not a from/to pair |
+| Fern-generated SDK | No | `cohere-ai/cohere-python`, `VapiAI/server-sdk-python` ship `.fern/metadata.json` only | API definitions live elsewhere; discovery reports Fern without a committed spec |
+| OpenAPI Generator | Yes | `apache/airflow-client-python` tags ship `spec/v2.yaml` (`3.0.0` → `3.1.3` removes `GET /api/v2/dagReports`) | Also maps `param_serialize(resource_path=…)` call sites |
+| APIs.guru directory | Yes (sparse) | `APIs/github.com/api.github.com/1.1.4/openapi.yaml` commits `2021-06-09` → `2023-02-15` remove `/authorizations` | Prefer first-party repos when they have denser history; used as github fallback |
+| Azure rest-api-specs | Yes | `specification/storage/…/stable/{2023-05-01,2026-09-01}/openapi.json` | TypeSpec layout (`openapi.json` under `stable/`); recursive git trees are truncated — walk contents API |
+| Google discovery | Yes | `discoveries/drive.v3.json` / `gmail.v1.json` by commit date | No release tags; `flatPath` normalization avoids false removals from `videos` → `youtube/v3/videos` path reshapes |
+
+Catalogued shortcuts (not change lists):
 
 | Service | Kind | Location | What actually exists |
 |---------|------|----------|----------------------|
 | stripe | git_repo | `stripe/openapi` `openapi/spec3.json` | Tagged releases (`vNNNN`). |
-| github | git_repo | `github/rest-api-description` `descriptions/api.github.com/api.github.com.json` | Continuous commits; resolve by date. |
-| openai | git_repo | `openai/openai-openapi` `openapi.yaml` | Sparse tags (`1.3.0`, `2.0.0`). `openai-python` ships `.castiron.stats.yml` with `openapi_spec_hash` but **no** `openapi_spec_url`. |
-| anthropic | stainless_sdk | `anthropics/anthropic-sdk-python` `.stats.yml` | Tags through `v1.0.0` expose `openapi_spec_url`; later tags (e.g. `v1.5.0+`) only list `configured_endpoints`. |
-| cloudflare | stainless_sdk | `cloudflare/cloudflare-python` `.stats.yml` | Current tags list `configured_endpoints` only; **no** `openapi_spec_url`. |
+| github | git_repo (+ APIs.guru fallback) | `github/rest-api-description` … | Continuous commits; resolve by date; falls back to APIs.guru when the primary path has no history for the refs. |
+| openai | git_repo | `openai/openai-openapi` `openapi.yaml` | Sparse tags (`1.3.0`, `2.0.0`). |
+| anthropic | stainless_sdk | `anthropics/anthropic-sdk-python` `.stats.yml` | See Stainless row above. |
+| cloudflare | stainless_sdk | `cloudflare/cloudflare-python` `.stats.yml` | No `openapi_spec_url` on current tags. |
+| airflow | sdk_repo | `apache/airflow-client-python` | Discover `spec/v2.yaml` at tags. |
+| clerk | sdk_repo | `clerk/clerk-sdk-python` | Speakeasy workflow → dated openapi-specs. |
+| azure-storage / azure-web | azure_specs | `Azure/azure-rest-api-specs` | Version dirs or commit-by-date. |
+| google-drive / google-gmail | google_discovery | `googleapis/discovery-artifact-manager` | Commit-by-date. |
+| apis-guru-github / apis-guru-stripe | apis_guru | `APIs-guru/openapi-directory` | Version dirs or commit-by-date. |
 
 When no from/to pair can be resolved, impact keeps an honest `not compared: …` note.
 
 ### REST migration backtests
 
-Same command shape: check out the parent, run `conduit impact --dep stripe --from v1000 --to v2565` (Stripe OpenAPI tags that remove `POST …/usage_records` and `GET /v1/invoices/upcoming`). A call site is a deleted non-comment line that is the REST call (or SDK path request) the migration rewrote. Strict precision is main lines on those deleted lines.
+Same command shape: check out the parent, run `conduit impact --dep <svc> --from <ref> --to <ref>`. A call site is a deleted non-comment line that is the REST call (or SDK path request) the migration rewrote. Strict precision is main lines on those deleted lines.
+
+#### Stripe OpenAPI tags (existing)
+
+`conduit impact --dep stripe --from v1000 --to v2565` (removes `POST …/usage_records` and `GET /v1/invoices/upcoming`).
 
 | Repo | Commit | Call-site recall | Precision | Edit coverage |
 |------|--------|------------------|-----------|---------------|
 | [kikuchi-mizuki/lp](https://github.com/kikuchi-mizuki/lp/commit/c519e1ca4249da5398492e0d026ac5223ae48784) | `c519e1c` parent `3d85dcc` | 1/1 | 1/1 | 1/1 |
 | [betterchoicedev/NewClientsWeb](https://github.com/betterchoicedev/NewClientsWeb/commit/32aa86ff2f4c318befcb3eac21adff44d3f45dfd) | `32aa86f` parent `32aa86f^` | 1/1 | 1/1 | 1/1 |
-| **Total** | | **2/2 (100%)** | **2/2 (100%)** | **2/2 (100%)** |
 
-lp deletes `requests.post(…/usage_records)` at `lp/services/line_service.py:523` and switches to `billing/meter_events`. NewClientsWeb deletes the path string on `stripe.SubscriptionItem._static_request("post", "/v1/subscription_items/%s/usage_records" % si_id)` at `test.py:13` and points it at `/v1/billing/meter_events`. Both are flagged from the OpenAPI removal; no per-API change list.
+lp deletes `requests.post(…/usage_records)` at `lp/services/line_service.py:523`. NewClientsWeb deletes the path on `stripe.SubscriptionItem._static_request(…, "/v1/subscription_items/%s/usage_records" % si_id)` at `test.py:13`.
 
-OpenAI large/small and non-OpenAI wheel sets were re-run after this change. Call-site recall, edit coverage, and primary counts are unchanged: large 13/13, 43/79 (54%), 43/117; small 6/6 on the call filter, 13/22 (59%), 13/20; non-OpenAI 38/43 (88%), 38/52 (73%).
+#### New sources (APIs.guru + OpenAPI Generator)
+
+| Repo | Source | Commit | Command | Call-site recall | Precision |
+|------|--------|--------|---------|------------------|-----------|
+| [dpup/git-workflow](https://github.com/dpup/git-workflow/commit/3b34e962a966550bc5e96f9b5bb7e0e58befd0d4) | APIs.guru (github fallback) | `3b34e96` parent `ba7c875` | `--dep github --from 2021-06-10 --to 2023-02-16` | 2/2 | 2/2 |
+| [apache/airflow-client-python](https://github.com/apache/airflow-client-python/commit/7a2ccc6629c39fa8559cbfc0b60514655d522705) | OpenAPI Generator `spec/v2.yaml` | `7a2ccc6` parent `241405e` | `--dep airflow --from 3.0.0 --to 3.1.3` | 1/1 | 1/1 |
+| **Total (new)** | | | | **3/3 (100%)** | **3/3 (100%)** |
+
+git-workflow deletes both `requests.post('https://api.github.com/authorizations', …)` call sites in the extensionless Python script `git-github-login` (shebang-scanned) after GitHub removed the Authorizations API; the pair is resolved via APIs.guru when `github/rest-api-description` has no commit for the early from-date. airflow-client-python deletes `param_serialize(…, resource_path='/api/v2/dagReports')` in `dag_report_api.py` when regenerating after the Airflow OpenAPI drop; discovery uses the committed `spec/v2.yaml` at the client tags.
+
+Stripe REST pair re-run: still 2/2. OpenAI large/small and non-OpenAI wheel sets were re-run after this change. Call-site recall, edit coverage, and primary counts are unchanged: large 13/13, 43/79 (54%), 43/117; small 6/6 on the call filter, 13/22 (59%), 13/20; non-OpenAI 38/43 (88%), 38/52 (73%).
 
 ## Remaining misses
 

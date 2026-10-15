@@ -188,6 +188,22 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
         for call in unit.calls:
             resolved = resolver.resolve_call(unit, call)
             if resolved is None:
+                # OpenAPI Generator / Speakeasy clients often call
+                # self.api_client.param_serialize(resource_path="/…") without a
+                # resolvable external binding on self.api_client.
+                http = _module_path_request(call, unit, specs)
+                if http is not None:
+                    spec, method, conf = http
+                    directs.append(
+                        _make_direct(
+                            unit,
+                            call,
+                            spec=spec,
+                            sdk_method=method,
+                            kind="http_call",
+                            confidence=conf,
+                        )
+                    )
                 continue
             binding, confidence = resolved
             http = _http_service(binding, call, unit, specs)
@@ -246,18 +262,49 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
 
 def _python_files(root: Path) -> list[str]:
     rels: list[str] = []
+    seen: set[str] = set()
     for path in root.rglob("*.py"):
-        if not path.is_file():
+        rel = _rel_python_file(root, path)
+        if rel and rel not in seen:
+            seen.add(rel)
+            rels.append(rel)
+    # Extensionless scripts with a Python shebang (e.g. git-github-login).
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix:
             continue
         if any(part in _SKIP_PARTS for part in path.parts):
             continue
-        try:
-            rel = path.resolve().relative_to(root).as_posix()
-        except ValueError:
+        if not _has_python_shebang(path):
             continue
-        rels.append(rel)
+        rel = _rel_python_file(root, path)
+        if rel and rel not in seen:
+            seen.add(rel)
+            rels.append(rel)
     rels.sort()
     return rels
+
+
+def _rel_python_file(root: Path, path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    if any(part in _SKIP_PARTS for part in path.parts):
+        return None
+    try:
+        return path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def _has_python_shebang(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            first = handle.readline(120)
+    except OSError:
+        return False
+    if not first.startswith(b"#!"):
+        return False
+    text = first.decode("utf-8", errors="ignore").lower()
+    return "python" in text
 
 
 def _dotted(rel: str) -> str:
@@ -1110,8 +1157,18 @@ def _enclosing_chain(enclosing: str) -> list[str]:
 
 
 #: Method tails on vendor SDKs that take an OpenAPI-style path string.
+#: Includes OpenAPI Generator ``param_serialize`` / ``call_api`` and Speakeasy
+#: low-level helpers that pass ``path="/…"``.
 _SDK_REQUEST_TAILS = frozenset(
-    {"request", "_request", "_static_request", "request_stream", "_request_stream"}
+    {
+        "request",
+        "_request",
+        "_static_request",
+        "request_stream",
+        "_request_stream",
+        "param_serialize",
+        "call_api",
+    }
 )
 
 
@@ -1121,13 +1178,17 @@ def _http_service(
     unit: ModUnit,
     specs: tuple[ServiceSpec, ...],
 ) -> tuple[ServiceSpec, str, str] | None:
-    if binding.kind != "external_attr":
+    if binding.kind not in {"external_attr", "instance_external"}:
         return None
     parts = binding.target.split(".")
     if not parts:
         return None
     # requests / httpx / aiohttp / urllib against a catalogued host.
-    if parts[0] in HTTP_CLIENT_ROOTS and parts[-1] in HTTP_METHOD_TAILS:
+    if (
+        binding.kind == "external_attr"
+        and parts[0] in HTTP_CLIENT_ROOTS
+        and parts[-1] in HTTP_METHOD_TAILS
+    ):
         url = _call_url(call.node, unit, call.enclosing, binding.base_url)
         if not url:
             return None
@@ -1156,6 +1217,33 @@ def _sdk_path_request(
     if not parts or parts[-1] not in _SDK_REQUEST_TAILS:
         return None
     spec = service_for_module(binding.target, specs)
+    if spec is None and unit.rel:
+        # Generated client methods often call self.api_client.param_serialize;
+        # the module path still names the package (airflow_client.…).
+        dotted = _dotted(unit.rel)
+        spec = service_for_module(dotted, specs)
+    if spec is None or not spec.hosts:
+        return None
+    verb, path = _sdk_request_verb_path(call.node, unit, call.enclosing)
+    if not verb or not path:
+        return None
+    host = spec.hosts[0]
+    url = f"https://{host}{path}" if path.startswith("/") else f"https://{host}/{path}"
+    return spec, f"{verb} {url}", "high"
+
+
+def _module_path_request(
+    call: CallRec,
+    unit: ModUnit,
+    specs: tuple[ServiceSpec, ...],
+) -> tuple[ServiceSpec, str, str] | None:
+    """``param_serialize(method=…, resource_path="/…")`` inside a package module."""
+    func = call.node.func
+    if not isinstance(func, ast.Attribute) or func.attr not in _SDK_REQUEST_TAILS:
+        return None
+    if not unit.rel:
+        return None
+    spec = service_for_module(_dotted(unit.rel), specs)
     if spec is None or not spec.hosts:
         return None
     verb, path = _sdk_request_verb_path(call.node, unit, call.enclosing)
@@ -1176,7 +1264,7 @@ def _sdk_request_verb_path(
         if text:
             strings.append(text)
     for keyword in call.keywords:
-        if keyword.arg not in {None, "method", "url", "path"}:
+        if keyword.arg not in {None, "method", "url", "path", "resource_path"}:
             continue
         text = _const_str(keyword.value, unit, enclosing)
         if text:

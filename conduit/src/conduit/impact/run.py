@@ -460,6 +460,7 @@ def _rest_changes(
             from_ref=from_version,
             to_ref=to_version,
             allow_network=True,
+            package=package,
         )
         if fetched_old is not None and fetched_new is not None:
             return diff_openapi(fetched_old, fetched_new, service=service_id), "", True

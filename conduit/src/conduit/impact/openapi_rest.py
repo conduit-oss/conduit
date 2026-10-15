@@ -130,10 +130,14 @@ def load_openapi(path: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict):
         return None
+    if _is_google_discovery(data):
+        return _discovery_as_openapi(data)
     return data
 
 
 def operations(document: dict[str, Any]) -> list[Operation]:
+    if _is_google_discovery(document):
+        document = _discovery_as_openapi(document)
     paths = document.get("paths")
     if not isinstance(paths, dict):
         return []
@@ -179,6 +183,129 @@ def operations(document: dict[str, Any]) -> list[Operation]:
                 )
             )
     return found
+
+
+def _is_google_discovery(document: dict[str, Any]) -> bool:
+    """Google API Discovery documents use ``resources`` / ``methods``, not ``paths``."""
+    if document.get("discoveryVersion") or document.get("discovery_version"):
+        return True
+    if "paths" in document:
+        return False
+    return bool(
+        document.get("resources")
+        and document.get("name")
+        and document.get("version")
+        and isinstance(document.get("resources"), dict)
+    )
+
+
+def _discovery_as_openapi(document: dict[str, Any]) -> dict[str, Any]:
+    """Project a Discovery document onto an OpenAPI-like ``paths`` map for diffing."""
+    base = str(document.get("servicePath") or document.get("basePath") or "").strip("/")
+    schemas = document.get("schemas") if isinstance(document.get("schemas"), dict) else {}
+    paths: dict[str, Any] = {}
+
+    def walk(node: dict[str, Any]) -> None:
+        resources = node.get("resources")
+        if isinstance(resources, dict):
+            for child in resources.values():
+                if isinstance(child, dict):
+                    walk(child)
+        methods = node.get("methods")
+        if not isinstance(methods, dict):
+            return
+        for _name, method in methods.items():
+            if not isinstance(method, dict):
+                continue
+            http = str(method.get("httpMethod") or "").lower()
+            if http not in {"get", "post", "put", "patch", "delete", "head", "options"}:
+                continue
+            flat = str(method.get("flatPath") or "").strip("/")
+            rel = str(method.get("path") or "").strip("/")
+            if flat:
+                path = "/" + flat
+            elif rel:
+                path = "/" + "/".join(part for part in (base, rel) if part)
+            else:
+                continue
+            # Discovery path params use ``{var}`` already in flatPath.
+            path = path.replace("+", "")
+            op: dict[str, Any] = {
+                "operationId": str(method.get("id") or ""),
+                "parameters": [],
+            }
+            params = method.get("parameters")
+            if isinstance(params, dict):
+                for pname, pmeta in params.items():
+                    if not isinstance(pmeta, dict):
+                        continue
+                    op["parameters"].append(
+                        {
+                            "name": str(pname),
+                            "in": str(pmeta.get("location") or "query"),
+                            "required": bool(pmeta.get("required")),
+                        }
+                    )
+            req_ref = method.get("request")
+            if isinstance(req_ref, dict) and req_ref.get("$ref"):
+                ref_name = str(req_ref["$ref"])
+                op["requestBody"] = {
+                    "content": {
+                        "application/json": {
+                            "schema": _discovery_schema(schemas.get(ref_name), schemas)
+                        }
+                    }
+                }
+            resp_ref = method.get("response")
+            if isinstance(resp_ref, dict) and resp_ref.get("$ref"):
+                ref_name = str(resp_ref["$ref"])
+                op["responses"] = {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": _discovery_schema(schemas.get(ref_name), schemas)
+                            }
+                        }
+                    }
+                }
+            else:
+                op.setdefault("responses", {"200": {"description": "ok"}})
+            bucket = paths.setdefault(path, {})
+            bucket[http] = op
+
+    walk(document)
+    return {
+        "openapi": "3.0.0",
+        "info": {
+            "title": str(document.get("title") or document.get("name") or "discovery"),
+            "version": str(document.get("version") or ""),
+        },
+        "paths": paths,
+    }
+
+
+def _discovery_schema(
+    schema: Any, schemas: dict[str, Any], depth: int = 0
+) -> dict[str, Any]:
+    if not isinstance(schema, dict) or depth > 4:
+        return {}
+    props_in = schema.get("properties")
+    if not isinstance(props_in, dict):
+        return {}
+    props: dict[str, Any] = {}
+    for name, meta in props_in.items():
+        if not isinstance(meta, dict):
+            props[str(name)] = {"type": "string"}
+            continue
+        if meta.get("$ref") and str(meta["$ref"]) in schemas and depth < 3:
+            props[str(name)] = _discovery_schema(schemas[str(meta["$ref"])], schemas, depth + 1)
+        else:
+            props[str(name)] = {"type": str(meta.get("type") or "string")}
+    required = schema.get("required")
+    out: dict[str, Any] = {"type": "object", "properties": props}
+    if isinstance(required, list):
+        out["required"] = [str(item) for item in required]
+    return out
 
 
 def endpoint_symbol(method: str, path: str) -> str:

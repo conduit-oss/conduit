@@ -8,10 +8,18 @@ from pathlib import Path
 
 from conduit.impact.intersect import intersect
 from conduit.impact.openapi_rest import diff_openapi
-from conduit.impact.openapi_sources import SPEC_SOURCES, resolve_spec_pair, spec_source_for
+from conduit.impact.openapi_sources import (
+    SPEC_SOURCES,
+    discover_spec_at_ref,
+    pypi_source_repo,
+    resolve_sdk_package_pair,
+    resolve_spec_pair,
+    spec_source_for,
+)
 from conduit.impact.run import collect_impacts
 from conduit.outside_in.analyze import analyze_repo
 from conduit.outside_in.bridge import build_service_map
+from conduit.impact.openapi_rest import load_openapi, operations
 
 
 def test_catalog_maps_hosts_to_verified_sources():
@@ -299,3 +307,129 @@ def test_resolve_spec_pair_stainless_older_tags_have_urls():
     )
     assert note == ""
     assert old is not None and new is not None
+
+
+def test_pypi_source_repo_from_project_urls():
+    assert pypi_source_repo("apache-airflow-client") == "apache/airflow-client-python"
+    assert pypi_source_repo("clerk-backend-api") == "clerk/clerk-sdk-python"
+    assert pypi_source_repo("gr4vy") == "gr4vy/gr4vy-python"
+
+
+def test_discover_openapi_generator_spec_at_tag():
+    loc, why = discover_spec_at_ref("apache/airflow-client-python", "3.0.0")
+    assert loc is not None and loc.endswith("spec/v2.yaml"), why
+
+
+def test_discover_speakeasy_workflow_pins_openapi():
+    loc, why = discover_spec_at_ref("clerk/clerk-sdk-python", "v1.8.0")
+    assert loc is not None, why
+    assert "openapi-specs" in loc or loc.startswith("url:")
+
+
+def test_discover_fern_sdk_without_committed_spec():
+    loc, why = discover_spec_at_ref("cohere-ai/cohere-python", "v5.0.0")
+    assert loc is None
+    assert "Fern" in why
+
+
+def test_resolve_sdk_package_airflow_removes_dag_reports():
+    old, new, note = resolve_sdk_package_pair(
+        "apache-airflow-client", from_ref="3.0.0", to_ref="3.1.3"
+    )
+    assert note == ""
+    assert old is not None and new is not None
+    changes = diff_openapi(old, new, service="airflow")
+    assert any(
+        item.kind == "endpoint_removed" and item.old == "/api/v2/dagReports"
+        for item in changes
+    )
+
+
+def test_resolve_apis_guru_github_removes_authorizations():
+    old, new, note = resolve_spec_pair(
+        "apis-guru-github", from_ref="2021-06-10", to_ref="2023-02-16", allow_network=True
+    )
+    assert note == ""
+    assert old is not None and new is not None
+    changes = diff_openapi(old, new, service="github")
+    assert any(
+        item.kind == "endpoint_removed" and item.old == "/authorizations"
+        for item in changes
+    )
+
+
+def test_resolve_azure_storage_version_dirs():
+    old, new, note = resolve_spec_pair(
+        "azure-storage", from_ref="2023-05-01", to_ref="2026-09-01", allow_network=True
+    )
+    assert note == ""
+    assert old is not None and new is not None
+
+
+def test_resolve_google_drive_discovery_pair():
+    old, new, note = resolve_spec_pair(
+        "google-drive", from_ref="2019-06-01", to_ref="2026-09-01", allow_network=True
+    )
+    assert note == ""
+    assert old is not None and new is not None
+    # flatPath normalization: path format changes must not look like mass removals.
+    before = {op.path for op in operations(load_openapi(old))}
+    after = {op.path for op in operations(load_openapi(new))}
+    assert any(path.startswith("/drive/v3/") for path in before | after)
+
+
+def test_github_falls_back_to_apis_guru_when_primary_misses():
+    # Early dates are missing from github/rest-api-description; APIs.guru has history.
+    old, new, note = resolve_spec_pair(
+        "github", from_ref="2021-06-10", to_ref="2023-02-16", allow_network=True
+    )
+    assert note == ""
+    assert old is not None and new is not None
+
+
+def test_openapi_generator_param_serialize_maps_to_http(tmp_path: Path):
+    repo = tmp_path / "repo"
+    pkg = repo / "airflow_client" / "client" / "api"
+    pkg.mkdir(parents=True)
+    (pkg / "dag_report_api.py").write_text(
+        textwrap.dedent(
+            """
+            class DagReportApi:
+                def __init__(self, api_client):
+                    self.api_client = api_client
+
+                def get_dag_reports(self):
+                    return self.api_client.param_serialize(
+                        method="GET",
+                        resource_path="/api/v2/dagReports",
+                    )
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    service_map, _ = build_service_map(repo)
+    http = [c for c in service_map.chains if c.kind == "http_call" and not c.via_wrapper]
+    assert http
+    assert "dagReports" in http[0].sdk_method
+
+
+def test_python_shebang_scripts_are_scanned(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    script = repo / "git-github-login"
+    script.write_text(
+        textwrap.dedent(
+            """
+            #!/usr/bin/env python
+            import requests
+
+            def login():
+                return requests.post("https://api.github.com/authorizations", json={})
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    service_map, _ = build_service_map(repo)
+    http = [c for c in service_map.chains if c.kind == "http_call" and not c.via_wrapper]
+    assert http
+    assert "authorizations" in http[0].sdk_method
