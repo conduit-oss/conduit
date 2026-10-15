@@ -171,6 +171,14 @@ def _http_match(change: ApiChange, chain: Chain) -> str | None:
         if chain.kind != "http_call":
             return None
         return min_confidence(change.confidence, chain.confidence)
+    if change.kind == "param_added" and "became required" in (change.detail or ""):
+        # A newly required request field: flag the call when the site omits it.
+        if chain.kind != "http_call":
+            return None
+        name = change.new or change.old
+        if not name or _param_used(chain, name):
+            return None
+        return min_confidence(change.confidence, chain.confidence)
     if change.kind not in {"field_removed", "field_renamed", "param_removed", "param_renamed"}:
         return None
     name = change.old or change.new

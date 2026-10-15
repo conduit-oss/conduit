@@ -8,6 +8,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,6 +20,10 @@ jobs:
           pip install -e "./conduit[dev,llm,langs]"
           pip install pytest
       - name: Unit tests
+        env:
+          # Authenticated GitHub API (5k/hr) for live OpenAPI commit-by-date
+          # resolution; without this, unauthenticated 60/hr is exhausted mid-suite.
+          GITHUB_TOKEN: ${{ github.token }}
         run: python -m pytest -q conduit/tests
       - name: Offline demo rewrite
         run: |

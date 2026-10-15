@@ -34,6 +34,8 @@ class Operation:
     operation_id: str
     request_fields: tuple[str, ...]
     response_fields: tuple[str, ...]
+    #: Request parameter / body property names marked required in the spec.
+    required_request_fields: tuple[str, ...] = ()
 
 
 def diff_openapi(old: Path, new: Path, *, service: str) -> list[ApiChange]:
@@ -50,11 +52,29 @@ def diff_openapi(old: Path, new: Path, *, service: str) -> list[ApiChange]:
     new_by_key = {(item.method, item.path): item for item in new_ops}
     changes: list[ApiChange] = []
     renamed: set[tuple[str, str]] = set()
+    # Spec-to-spec comparison uses exact path keys (and operationId for renames).
+    # Template matching is only for mapping concrete call sites onto changes.
     for op_id, previous in sorted(old_by_id.items()):
         current = new_by_id.get(op_id)
         if current is None or (current.method, current.path) == (previous.method, previous.path):
             continue
         renamed.add((previous.method, previous.path))
+        if previous.method != current.method:
+            changes.append(
+                ApiChange(
+                    kind="endpoint_removed",
+                    symbol=f"{previous.method} {previous.path}",
+                    old=previous.path,
+                    new="",
+                    detail=(
+                        f"{previous.method} {previous.path} method changed to "
+                        f"{current.method} {current.path}"
+                    ),
+                    confidence="high",
+                    source="openapi",
+                    service=service,
+                )
+            )
         changes.append(
             ApiChange(
                 kind="endpoint_renamed",
@@ -69,7 +89,7 @@ def diff_openapi(old: Path, new: Path, *, service: str) -> list[ApiChange]:
         )
     for previous in old_ops:
         key = (previous.method, previous.path)
-        if key in renamed or key in new_keys or _template_present(key, new_keys):
+        if key in renamed or key in new_keys:
             continue
         changes.append(
             ApiChange(
@@ -84,10 +104,9 @@ def diff_openapi(old: Path, new: Path, *, service: str) -> list[ApiChange]:
             )
         )
     for previous in old_ops:
-        key = (previous.method, previous.path)
-        current = new_by_key.get(key)
-        if current is None:
-            current = _template_partner(key, new_by_key)
+        # Field diffs use the exact path key. An operationId move off this path
+        # does not mean the path vanished — another operation may still live here.
+        current = new_by_key.get((previous.method, previous.path))
         if current is None:
             continue
         changes.extend(_field_changes(previous, current, service=service))
@@ -111,10 +130,14 @@ def load_openapi(path: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict):
         return None
+    if _is_google_discovery(data):
+        return _discovery_as_openapi(data)
     return data
 
 
 def operations(document: dict[str, Any]) -> list[Operation]:
+    if _is_google_discovery(document):
+        document = _discovery_as_openapi(document)
     paths = document.get("paths")
     if not isinstance(paths, dict):
         return []
@@ -132,6 +155,7 @@ def operations(document: dict[str, Any]) -> list[Operation]:
             own = operation.get("parameters")
             if isinstance(own, list):
                 params.extend(own)
+            request_schema = _request_schema(operation)
             found.append(
                 Operation(
                     method=method.upper(),
@@ -141,14 +165,147 @@ def operations(document: dict[str, Any]) -> list[Operation]:
                         sorted(
                             {
                                 *_parameter_names(params, document),
-                                *_schema_fields(_request_schema(operation), document),
+                                *_schema_fields(request_schema, document),
                             }
                         )
                     ),
-                    response_fields=tuple(sorted(_schema_fields(_response_schema(operation), document))),
+                    response_fields=tuple(
+                        sorted(_schema_fields(_response_schema(operation), document))
+                    ),
+                    required_request_fields=tuple(
+                        sorted(
+                            {
+                                *_required_parameter_names(params, document),
+                                *_required_schema_fields(request_schema, document),
+                            }
+                        )
+                    ),
                 )
             )
     return found
+
+
+def _is_google_discovery(document: dict[str, Any]) -> bool:
+    """Google API Discovery documents use ``resources`` / ``methods``, not ``paths``."""
+    if document.get("discoveryVersion") or document.get("discovery_version"):
+        return True
+    if "paths" in document:
+        return False
+    return bool(
+        document.get("resources")
+        and document.get("name")
+        and document.get("version")
+        and isinstance(document.get("resources"), dict)
+    )
+
+
+def _discovery_as_openapi(document: dict[str, Any]) -> dict[str, Any]:
+    """Project a Discovery document onto an OpenAPI-like ``paths`` map for diffing."""
+    base = str(document.get("servicePath") or document.get("basePath") or "").strip("/")
+    schemas = document.get("schemas") if isinstance(document.get("schemas"), dict) else {}
+    paths: dict[str, Any] = {}
+
+    def walk(node: dict[str, Any]) -> None:
+        resources = node.get("resources")
+        if isinstance(resources, dict):
+            for child in resources.values():
+                if isinstance(child, dict):
+                    walk(child)
+        methods = node.get("methods")
+        if not isinstance(methods, dict):
+            return
+        for _name, method in methods.items():
+            if not isinstance(method, dict):
+                continue
+            http = str(method.get("httpMethod") or "").lower()
+            if http not in {"get", "post", "put", "patch", "delete", "head", "options"}:
+                continue
+            flat = str(method.get("flatPath") or "").strip("/")
+            rel = str(method.get("path") or "").strip("/")
+            if flat:
+                path = "/" + flat
+            elif rel:
+                path = "/" + "/".join(part for part in (base, rel) if part)
+            else:
+                continue
+            # Discovery path params use ``{var}`` already in flatPath.
+            path = path.replace("+", "")
+            op: dict[str, Any] = {
+                "operationId": str(method.get("id") or ""),
+                "parameters": [],
+            }
+            params = method.get("parameters")
+            if isinstance(params, dict):
+                for pname, pmeta in params.items():
+                    if not isinstance(pmeta, dict):
+                        continue
+                    op["parameters"].append(
+                        {
+                            "name": str(pname),
+                            "in": str(pmeta.get("location") or "query"),
+                            "required": bool(pmeta.get("required")),
+                        }
+                    )
+            req_ref = method.get("request")
+            if isinstance(req_ref, dict) and req_ref.get("$ref"):
+                ref_name = str(req_ref["$ref"])
+                op["requestBody"] = {
+                    "content": {
+                        "application/json": {
+                            "schema": _discovery_schema(schemas.get(ref_name), schemas)
+                        }
+                    }
+                }
+            resp_ref = method.get("response")
+            if isinstance(resp_ref, dict) and resp_ref.get("$ref"):
+                ref_name = str(resp_ref["$ref"])
+                op["responses"] = {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": _discovery_schema(schemas.get(ref_name), schemas)
+                            }
+                        }
+                    }
+                }
+            else:
+                op.setdefault("responses", {"200": {"description": "ok"}})
+            bucket = paths.setdefault(path, {})
+            bucket[http] = op
+
+    walk(document)
+    return {
+        "openapi": "3.0.0",
+        "info": {
+            "title": str(document.get("title") or document.get("name") or "discovery"),
+            "version": str(document.get("version") or ""),
+        },
+        "paths": paths,
+    }
+
+
+def _discovery_schema(
+    schema: Any, schemas: dict[str, Any], depth: int = 0
+) -> dict[str, Any]:
+    if not isinstance(schema, dict) or depth > 4:
+        return {}
+    props_in = schema.get("properties")
+    if not isinstance(props_in, dict):
+        return {}
+    props: dict[str, Any] = {}
+    for name, meta in props_in.items():
+        if not isinstance(meta, dict):
+            props[str(name)] = {"type": "string"}
+            continue
+        if meta.get("$ref") and str(meta["$ref"]) in schemas and depth < 3:
+            props[str(name)] = _discovery_schema(schemas[str(meta["$ref"])], schemas, depth + 1)
+        else:
+            props[str(name)] = {"type": str(meta.get("type") or "string")}
+    required = schema.get("required")
+    out: dict[str, Any] = {"type": "object", "properties": props}
+    if isinstance(required, list):
+        out["required"] = [str(item) for item in required]
+    return out
 
 
 def endpoint_symbol(method: str, path: str) -> str:
@@ -211,22 +368,28 @@ def _field_changes(previous: Operation, current: Operation, *, service: str) -> 
                 service=service,
             )
         )
+    newly_required = sorted(
+        set(current.required_request_fields) - set(previous.required_request_fields)
+    )
+    for name in newly_required:
+        if name not in current.request_fields and name not in previous.request_fields:
+            continue
+        changes.append(
+            ApiChange(
+                kind="param_added",
+                symbol=symbol,
+                old="",
+                new=name,
+                detail=(
+                    f"request field {name} became required on "
+                    f"{previous.method} {previous.path}"
+                ),
+                confidence="high",
+                source="openapi",
+                service=service,
+            )
+        )
     return changes
-
-
-def _template_present(key: tuple[str, str], keys: set[tuple[str, str]]) -> bool:
-    method, path = key
-    return any(other_method == method and paths_match(path, other_path) for other_method, other_path in keys)
-
-
-def _template_partner(
-    key: tuple[str, str], index: dict[tuple[str, str], Operation]
-) -> Operation | None:
-    method, path = key
-    for (other_method, other_path), operation in index.items():
-        if other_method == method and paths_match(path, other_path):
-            return operation
-    return None
 
 
 def _is_param(part: str) -> bool:
@@ -240,6 +403,37 @@ def _parameter_names(params: list[Any], document: dict[str, Any]) -> set[str]:
             item = _resolve_ref(str(item.get("$ref") or ""), document) or {}
         if isinstance(item, dict) and item.get("name"):
             found.add(str(item["name"]))
+    return found
+
+
+def _required_parameter_names(params: list[Any], document: dict[str, Any]) -> set[str]:
+    found: set[str] = set()
+    for item in params:
+        if isinstance(item, dict) and "$ref" in item:
+            item = _resolve_ref(str(item.get("$ref") or ""), document) or {}
+        if isinstance(item, dict) and item.get("name") and item.get("required") is True:
+            found.add(str(item["name"]))
+    return found
+
+
+def _required_schema_fields(
+    schema: dict[str, Any] | None, document: dict[str, Any], depth: int = 0
+) -> set[str]:
+    if not isinstance(schema, dict) or depth > 4:
+        return set()
+    if "$ref" in schema:
+        resolved = _resolve_ref(str(schema.get("$ref") or ""), document)
+        return _required_schema_fields(resolved, document, depth + 1)
+    found: set[str] = set()
+    required = schema.get("required")
+    if isinstance(required, list):
+        found.update(str(name) for name in required)
+    for key in ("allOf", "oneOf", "anyOf"):
+        items = schema.get(key)
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    found.update(_required_schema_fields(item, document, depth + 1))
     return found
 
 

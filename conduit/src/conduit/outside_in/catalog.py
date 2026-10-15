@@ -122,6 +122,21 @@ CATALOG: dict[str, ServiceSpec] = {
         modules=(),
         hosts=("api.github.com", "github.com"),
     ),
+    "airflow": ServiceSpec(
+        service_id="airflow",
+        package="apache-airflow-client",
+        modules=("airflow_client",),
+        # Generated clients use relative OpenAPI paths; host is only for URL shaping.
+        hosts=("airflow.apache.org",),
+        constructor_tails=("ApiClient", "Configuration"),
+    ),
+    "clerk": ServiceSpec(
+        service_id="clerk",
+        package="clerk-backend-api",
+        modules=("clerk_backend_api", "clerk_client"),
+        hosts=("api.clerk.com",),
+        constructor_tails=("Clerk", "ApiClient"),
+    ),
     "google-cloud": ServiceSpec(
         service_id="google-cloud",
         package="google-cloud",
