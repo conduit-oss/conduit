@@ -49,6 +49,10 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
         sym = before[name]
         other = after.get(name)
         if other is None:
+            # The defining path moved, but the same public name is still exported
+            # (a compatibility star-import, ``from package.sync.collection import *``).
+            if name in new_public:
+                continue
             changes.append(
                 _alias(
                     ApiChange(
@@ -113,7 +117,31 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
                 source="wheel",
             )
         )
-    return changes
+    diff = _WheelDiff(changes)
+    diff.return_classes = _return_classes(old_index)
+    diff.methods = _method_owners(old_index)
+    diff.surviving = new_public
+    return diff
+
+
+class _WheelDiff(list):
+    """A wheel diff plus the facts the matcher needs to follow returns.
+
+    Callers that only iterate the changes keep working. ``return_classes``
+    maps a function qualname to the class it constructs. ``methods`` maps
+    ``Class.method`` to the base that defines it when the class itself does
+    not. ``surviving`` is every public name the new wheel still exports.
+    """
+
+    return_classes: dict[str, set[str]]
+    methods: dict[str, str]
+    surviving: set[str]
+
+    def __init__(self, changes: list[ApiChange]) -> None:
+        super().__init__(changes)
+        self.return_classes = {}
+        self.methods = {}
+        self.surviving = set()
 
 
 def load_api(path: Path, *, include_private: bool = False) -> dict[str, Symbol]:
@@ -429,11 +457,25 @@ def _definitions(
             defined[node.name] = qual
             classes[qual] = node
             for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and not child.name.startswith("__"):
+                if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                # Dunder methods stay out of the public surface. ``__getitem__``
+                # still has a return class, because ``client[name]`` is that call.
+                if child.name in {"__init__", "__new__"}:
+                    continue
+                if child.name.startswith("_") and not (
+                    child.name.startswith("__") and child.name.endswith("__")
+                ):
                     method = f"{qual}.{child.name}"
                     functions[method] = child
-                    if _public(child.name):
-                        defined[f"{node.name}.{child.name}"] = method
+                    continue
+                if child.name.startswith("__"):
+                    functions[f"{qual}.{child.name}"] = child
+                    continue
+                method = f"{qual}.{child.name}"
+                functions[method] = child
+                if _public(child.name):
+                    defined[f"{node.name}.{child.name}"] = method
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(node.name):
             qual = f"{module}.{node.name}"
             defined[node.name] = qual
@@ -558,6 +600,263 @@ def _public_aliases(mods: dict[str, _Mod], symbols: set[str]) -> dict[str, tuple
     return {key: tuple(sorted(value)) for key, value in found.items()}
 
 
+def _return_classes(mods: dict[str, _Mod]) -> dict[str, set[str]]:
+    """Class a function returns, from its annotation or ``return Class(...)``.
+
+    A later call can use this to turn ``client.messages.create`` into
+    ``Messages.create``, and ``db[name].insert`` into ``Collection.insert``.
+    """
+    classes = {qual for mod in mods.values() for qual in mod.classes}
+    inverse: dict[str, str] = {}
+    symbols = {
+        symbol
+        for mod in mods.values()
+        for symbol in (*mod.functions, *mod.classes)
+    }
+    aliases = _public_aliases(mods, symbols)
+    for defining, names in aliases.items():
+        if defining in classes:
+            for name in names:
+                inverse.setdefault(name, defining)
+    direct: dict[str, set[str]] = {}
+    pending: dict[str, set[str]] = {}
+    for mod in mods.values():
+        for qual, node in mod.functions.items():
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            owner, _method = _owner_method(qual)
+            local = _function_bindings(mod, node)
+            binds = _name_binds(node)
+            found: set[str] = set()
+            calls: set[str] = set()
+            if node.returns is not None:
+                found |= _annotation_classes(mod, node.returns, classes, inverse, local)
+            for expr in _return_exprs(node):
+                klasses, called = _expr_classes(
+                    mod, expr, binds, owner, classes, inverse, local, depth=0
+                )
+                found |= klasses
+                calls |= called
+            if found:
+                direct[qual] = found
+            if calls:
+                pending[qual] = calls
+    resolved = {key: set(value) for key, value in direct.items()}
+    for _ in range(len(pending) + 2):
+        changed = False
+        for qual, called in pending.items():
+            found = set(resolved.get(qual, ()))
+            for target in called:
+                inherited = set(resolved.get(target, ()))
+                if not inherited:
+                    owner, method = _owner_method(target)
+                    inherited = _base_return_classes(owner, method, mods, resolved)
+                if inherited - found:
+                    found |= inherited
+                    changed = True
+            if found and found != resolved.get(qual):
+                resolved[qual] = found
+                changed = True
+        if not changed:
+            break
+    found = {key: value for key, value in resolved.items() if value}
+    # ``pkg.Client.method`` is the name a caller writes; the body lives on
+    # ``pkg._mod.Client.method``. Both name the same return.
+    for qual, klasses in list(found.items()):
+        for alias in aliases.get(qual, ()):
+            found.setdefault(alias, set()).update(klasses)
+    return found
+
+
+def _function_bindings(mod: _Mod, node: ast.AST) -> dict[str, str]:
+    """Imports inside the function (``from .resources.messages import Messages``)."""
+    found: dict[str, str] = {}
+    for child in _walk_function(node):
+        if isinstance(child, ast.ImportFrom):
+            base = _abs_module(mod.package, child.level or 0, child.module or "")
+            for alias in child.names:
+                if alias.name == "*":
+                    continue
+                local = alias.asname or alias.name
+                found[local] = f"{base}.{alias.name}" if base else alias.name
+        elif isinstance(child, ast.Import):
+            for alias in child.names:
+                local = alias.asname or alias.name.split(".")[0]
+                found[local] = alias.name if alias.asname else alias.name.split(".")[0]
+    return found
+
+
+def _annotation_classes(
+    mod: _Mod,
+    node: ast.AST,
+    classes: set[str],
+    inverse: dict[str, str],
+    local: dict[str, str],
+) -> set[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        resolved = _class_named(mod, node.value, classes, inverse, local)
+        return {resolved} if resolved else set()
+    if isinstance(node, ast.Name):
+        dotted = local.get(node.id) or _dotted(mod, node)
+        resolved = _class_named(mod, dotted, classes, inverse, local)
+        return {resolved} if resolved else set()
+    if isinstance(node, ast.Attribute):
+        resolved = _class_named(mod, _dotted(mod, node), classes, inverse, local)
+        return {resolved} if resolved else set()
+    if isinstance(node, ast.Subscript):
+        # Optional[Engine] / list[Engine]: the parameter, not the container.
+        slice_node = node.slice
+        return _annotation_classes(mod, slice_node, classes, inverse, local)
+    if isinstance(node, ast.BinOp):
+        return _annotation_classes(mod, node.left, classes, inverse, local) | _annotation_classes(
+            mod, node.right, classes, inverse, local
+        )
+    return set()
+
+
+def _class_named(
+    mod: _Mod,
+    dotted: str,
+    classes: set[str],
+    inverse: dict[str, str],
+    local: dict[str, str],
+) -> str:
+    if not dotted:
+        return ""
+    if dotted in local:
+        dotted = local[dotted]
+    if dotted in classes:
+        return dotted
+    if inverse.get(dotted) in classes:
+        return inverse[dotted]
+    tail = dotted.split(".")[-1]
+    for candidate in (mod.defined.get(tail, ""), mod.bindings.get(tail, ""), local.get(tail, "")):
+        if candidate in classes:
+            return candidate
+        if inverse.get(candidate) in classes:
+            return inverse[candidate]
+    return ""
+
+
+def _expr_classes(
+    mod: _Mod,
+    expr: ast.AST | None,
+    binds: dict[str, list[tuple[ast.AST, int | None]]],
+    owner: str,
+    classes: set[str],
+    inverse: dict[str, str],
+    local: dict[str, str],
+    depth: int,
+) -> tuple[set[str], set[str]]:
+    """``(classes, called function qualnames)`` for one return expression."""
+    if expr is None or depth > 8:
+        return set(), set()
+    if isinstance(expr, ast.Await):
+        return _expr_classes(mod, expr.value, binds, owner, classes, inverse, local, depth + 1)
+    if isinstance(expr, ast.Name):
+        if expr.id in {"self", "cls"} and owner in classes:
+            return {owner}, set()
+        if expr.id in local:
+            named = _class_named(mod, local[expr.id], classes, inverse, local)
+            return ({named} if named else set()), set()
+        found: set[str] = set()
+        called: set[str] = set()
+        for value, index in binds.get(expr.id, []):
+            if index is None:
+                klasses, more = _expr_classes(
+                    mod, value, binds, owner, classes, inverse, local, depth + 1
+                )
+                found |= klasses
+                called |= more
+        if found or called:
+            return found, called
+        named = _class_named(mod, _dotted(mod, expr), classes, inverse, local)
+        return ({named} if named else set()), set()
+    if isinstance(expr, ast.Attribute):
+        named = _class_named(mod, _dotted(mod, expr), classes, inverse, local)
+        return ({named} if named else set()), set()
+    if isinstance(expr, ast.Call):
+        default = _mapping_default(expr)
+        if default is not None:
+            return _expr_classes(
+                mod, default, binds, owner, classes, inverse, local, depth + 1
+            )
+        constructed = _class_named(mod, _dotted(mod, expr.func), classes, inverse, local)
+        if not constructed and isinstance(expr.func, ast.Name) and expr.func.id in {"cls", "self"}:
+            constructed = owner if owner in classes else ""
+        if constructed:
+            return {constructed}, set()
+        if isinstance(expr.func, ast.Name) and expr.func.id not in {"self", "cls"}:
+            klasses: set[str] = set()
+            called: set[str] = set()
+            for value, _index in binds.get(expr.func.id, []):
+                more, more_calls = _expr_classes(
+                    mod, value, binds, owner, classes, inverse, local, depth + 1
+                )
+                klasses |= more
+                called |= more_calls
+            if klasses or called:
+                return klasses, called
+        called_name = _called_qual(mod, expr.func, owner, local, classes, inverse)
+        return set(), ({called_name} if called_name else set())
+    if isinstance(expr, ast.IfExp):
+        left, left_calls = _expr_classes(
+            mod, expr.body, binds, owner, classes, inverse, local, depth + 1
+        )
+        right, right_calls = _expr_classes(
+            mod, expr.orelse, binds, owner, classes, inverse, local, depth + 1
+        )
+        return left | right, left_calls | right_calls
+    return set(), set()
+
+
+def _called_qual(
+    mod: _Mod,
+    func: ast.AST,
+    owner: str,
+    local: dict[str, str],
+    classes: set[str],
+    inverse: dict[str, str],
+) -> str:
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id in {"self", "cls"}:
+        return f"{owner}.{func.attr}" if owner else ""
+    if isinstance(func, ast.Name):
+        return local.get(func.id) or mod.defined.get(func.id) or mod.bindings.get(func.id, "")
+    if isinstance(func, ast.Attribute):
+        dotted = _dotted(mod, func)
+        receiver = _class_named(mod, _dotted(mod, func.value), classes, inverse, local)
+        if receiver:
+            return f"{receiver}.{func.attr}"
+        return dotted
+    return ""
+
+
+def _base_return_classes(
+    owner: str,
+    method: str,
+    mods: dict[str, _Mod],
+    resolved: dict[str, set[str]],
+) -> set[str]:
+    if not owner or not method:
+        return set()
+    bases: dict[str, tuple[str, ...]] = {}
+    for mod in mods.values():
+        for qual, node in mod.classes.items():
+            bases[qual] = tuple(_base_name(mod, base) for base in node.bases)
+    queue = list(bases.get(owner, ()))
+    seen = {owner}
+    while queue:
+        base = queue.pop(0)
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        found = resolved.get(f"{base}.{method}")
+        if found:
+            return set(found)
+        queue.extend(bases.get(base, ()))
+    return set()
+
+
 def _class_kinds(mods: dict[str, _Mod]) -> dict[str, str]:
     bases: dict[str, tuple[str, ...]] = {}
     for mod in mods.values():
@@ -609,7 +908,57 @@ def _is_model_base(base: str) -> bool:
 
 
 def _base_name(mod: _Mod, node: ast.AST) -> str:
+    """``class Child(Base["T"])`` still inherits from ``Base``."""
+    while isinstance(node, ast.Subscript):
+        node = node.value
     return _dotted(mod, node)
+
+
+def _method_owners(mods: dict[str, _Mod]) -> dict[str, str]:
+    """``Child.method`` → ``Base.method`` when the child does not define it."""
+    methods: dict[str, set[str]] = {}
+    bases: dict[str, tuple[str, ...]] = {}
+    for mod in mods.values():
+        for qual, node in mod.classes.items():
+            bases[qual] = tuple(_base_name(mod, base) for base in node.bases)
+        for qual in mod.functions:
+            owner, method = _owner_method(qual)
+            if owner and method:
+                methods.setdefault(owner, set()).add(method)
+    found: dict[str, str] = {}
+    for owner in bases:
+        own = methods.get(owner, set())
+        seen_methods: set[str] = set()
+        walked = {owner}
+        queue = list(bases.get(owner, ()))
+        while queue:
+            base = queue.pop(0)
+            if not base or base in walked:
+                continue
+            walked.add(base)
+            for method in methods.get(base, ()):
+                if method in own or method in seen_methods:
+                    continue
+                seen_methods.add(method)
+                found[f"{owner}.{method}"] = f"{base}.{method}"
+            queue.extend(bases.get(base, ()))
+    return found
+
+
+def _mapping_default(expr: ast.Call) -> ast.AST | None:
+    """``kwargs.pop(key, Factory)`` may be the value held in that name.
+
+    A method call on ``self`` or ``cls`` stays a call, so ``client.get`` is
+    not replaced by its default argument.
+    """
+    func = expr.func
+    if not isinstance(func, ast.Attribute) or func.attr not in {"get", "pop"}:
+        return None
+    if len(expr.args) < 2 or not isinstance(func.value, ast.Name):
+        return None
+    if func.value.id in {"self", "cls"}:
+        return None
+    return expr.args[1]
 
 
 def _dotted(mod: _Mod, node: ast.AST | None) -> str:

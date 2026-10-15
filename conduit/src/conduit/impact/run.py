@@ -121,6 +121,9 @@ def collect_impacts(
                     dependency=package,
                     from_version=resolved_from,
                     to_version=resolved_to,
+                    return_classes=getattr(changes, "return_classes", None),
+                    surviving=getattr(changes, "surviving", None),
+                    methods=getattr(changes, "methods", None),
                 )
             )
         if rest_changes:
@@ -274,7 +277,7 @@ def _changes_for(
     skip_versioned: bool,
     explicit: bool,
 ) -> tuple[list[ApiChange], bool, str]:
-    changes: list[ApiChange] = []
+    changes = _ChangeList()
     compared = False
     note = ""
     wheel_compared = False
@@ -293,7 +296,11 @@ def _changes_for(
             if new_wheel is None and allow_network:
                 new_wheel = _download_wheel(package, to_version)
             if old_wheel is not None and new_wheel is not None:
-                changes.extend(diff_wheels(old_wheel, new_wheel))
+                wheel_diff = diff_wheels(old_wheel, new_wheel)
+                changes.extend(wheel_diff)
+                changes.return_classes = getattr(wheel_diff, "return_classes", {}) or {}
+                changes.methods = getattr(wheel_diff, "methods", {}) or {}
+                changes.surviving = getattr(wheel_diff, "surviving", set()) or set()
                 compared = True
                 wheel_compared = True
             elif wheels or (explicit and allow_network):
@@ -348,6 +355,20 @@ def _changes_for(
     if rest_note:
         note = f"{note}\n{rest_note}" if note else rest_note
     return changes, compared, note
+
+
+class _ChangeList(list):
+    """Wheel diff facts the matcher needs, kept when other sources are appended."""
+
+    return_classes: dict
+    methods: dict
+    surviving: set
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.return_classes = {}
+        self.methods = {}
+        self.surviving = set()
 
 
 def _is_rest(change: ApiChange) -> bool:

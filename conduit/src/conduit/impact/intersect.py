@@ -15,6 +15,9 @@ def intersect(
     dependency: str,
     from_version: str,
     to_version: str,
+    return_classes: dict[str, set[str]] | None = None,
+    surviving: set[str] | None = None,
+    methods: dict[str, str] | None = None,
 ) -> list[Impact]:
     relevant = [chain for chain in chains if _same_dependency(chain, dependency)]
     impacts: list[Impact] = []
@@ -23,7 +26,14 @@ def intersect(
     for change in ordered:
         if change.confidence == "low" and any(change.old and change.old == old for old, _site in covered):
             continue
-        sites = _sites(change, relevant, changes)
+        sites = _sites(
+            change,
+            relevant,
+            changes,
+            return_classes or {},
+            surviving or set(),
+            methods or {},
+        )
         if not sites:
             continue
         for site in sites:
@@ -47,11 +57,14 @@ def _sites(
     change: ApiChange,
     chains: list[Chain],
     peers: list[ApiChange],
+    return_classes: dict[str, set[str]],
+    surviving: set[str],
+    methods: dict[str, str] | None = None,
 ) -> list[SiteHit]:
     found: list[SiteHit] = []
     seen: set[tuple[str, int, str]] = set()
     for chain in chains:
-        confidence = _match(change, chain, peers)
+        confidence = _match(change, chain, peers, return_classes, surviving, methods or {})
         if confidence is None:
             continue
         key = (chain.call_rel, chain.call_lineno, chain.call_expr)
@@ -70,7 +83,14 @@ def _sites(
     return found
 
 
-def _match(change: ApiChange, chain: Chain, peers: list[ApiChange]) -> str | None:
+def _match(
+    change: ApiChange,
+    chain: Chain,
+    peers: list[ApiChange],
+    return_classes: dict[str, set[str]],
+    surviving: set[str],
+    methods: dict[str, str] | None = None,
+) -> str | None:
     if change.source == "webhook":
         return _webhook_match(change, chain)
     if change.source == "botocore":
@@ -79,7 +99,7 @@ def _match(change: ApiChange, chain: Chain, peers: list[ApiChange]) -> str | Non
         return _http_match(change, chain)
     if chain.kind in {"version_gate", "http_call", "http_response"}:
         return None
-    return _python_match(change, chain, peers)
+    return _python_match(change, chain, peers, return_classes, surviving, methods)
 
 
 def _http_match(change: ApiChange, chain: Chain) -> str | None:
@@ -147,20 +167,37 @@ def _botocore_match(change: ApiChange, chain: Chain) -> str | None:
     return None
 
 
-def _python_match(change: ApiChange, chain: Chain, peers: list[ApiChange]) -> str | None:
+def _python_match(
+    change: ApiChange,
+    chain: Chain,
+    peers: list[ApiChange],
+    return_classes: dict[str, set[str]] | None = None,
+    surviving: set[str] | None = None,
+    methods: dict[str, str] | None = None,
+) -> str | None:
     if chain.kind == "webhook":
         return None
     if change.kind == "response_shape":
         if not chain.kind.endswith("_response"):
             return None
-        how = _method_match(chain.sdk_method, change.symbol, change, peers)
+        how = _method_match(
+            chain.sdk_method,
+            change.symbol,
+            change,
+            peers,
+            return_classes or {},
+            surviving or set(),
+            methods or {},
+        )
         if how is None:
             return None
         base = change.confidence if how == "exact" else min_confidence(change.confidence, "medium")
         return min_confidence(base, chain.confidence)
     if chain.kind.endswith("_response"):
         return None
-    how = _method_match(chain.sdk_method, change.symbol, change, peers)
+    how = _method_match(
+        chain.sdk_method, change.symbol, change, peers, return_classes, surviving, methods
+    )
     if how is None and change.kind == "param_renamed" and "." not in change.symbol:
         if _param_used(chain, change.old):
             return min_confidence(change.confidence, chain.confidence)
@@ -175,23 +212,37 @@ def _python_match(change: ApiChange, chain: Chain, peers: list[ApiChange]) -> st
     return min_confidence(base, chain.confidence)
 
 
-def _method_match(sdk_method: str, symbol: str, change: ApiChange, peers: list[ApiChange]) -> str | None:
+def _method_match(
+    sdk_method: str,
+    symbol: str,
+    change: ApiChange,
+    peers: list[ApiChange],
+    return_classes: dict[str, set[str]] | None = None,
+    surviving: set[str] | None = None,
+    methods: dict[str, str] | None = None,
+) -> str | None:
     """Match a call to a diff symbol.
 
     Exact means the call's resolved name is the defining path or a public
-    re-export. Otherwise the last two parts (``ChatCompletion.create``) match
-    when that pair is unique. The bare last part (``create``) is never enough:
-    too many methods share it.
+    re-export, including after the wheel's return class is substituted
+    (``client.messages.create`` is ``Messages.create``). Otherwise the last
+    two parts (``ChatCompletion.create``) match when that pair is unique.
+    The bare last part (``create``) is never enough: too many methods share
+    it. A call whose name the new wheel still exports is not that pair.
     """
     if not sdk_method or not symbol or sdk_method == "webhook":
         return None
-    for name in (symbol, *change.aliases):
-        if name and (sdk_method == name or sdk_method.endswith("." + name)):
-            return "exact"
+    candidates = _with_return_classes(sdk_method, return_classes or {}, methods or {})
+    for candidate in candidates:
+        for name in (symbol, *change.aliases):
+            if name and (candidate == name or candidate.endswith("." + name)):
+                return "exact"
+    if _still_exported(sdk_method, surviving or set()):
+        return None
     pair = _last_two(symbol)
     if not pair:
         return None
-    if sdk_method != pair and not sdk_method.endswith("." + pair):
+    if not any(item == pair or item.endswith("." + pair) for item in candidates):
         return None
     same = [
         item
@@ -201,6 +252,63 @@ def _method_match(sdk_method: str, symbol: str, change: ApiChange, peers: list[A
     if len(same) == 1:
         return "pair"
     return None
+
+
+def _with_return_classes(
+    sdk_method: str,
+    return_classes: dict[str, set[str]],
+    methods: dict[str, str] | None = None,
+) -> set[str]:
+    """Rewrite ``Factory.method`` once the wheel says what ``Factory`` returns.
+
+    ``__getitem__`` is the subscript ``client[name]``. Several rewrites fold
+    ``Client.__getitem__.__getitem__.insert`` into ``Collection.insert``.
+    A method the return class inherits is rewritten to the class that defines it.
+    """
+    owners = methods or {}
+    found = {sdk_method}
+    for _ in range(6):
+        extra: set[str] = set()
+        for item in found:
+            defined = owners.get(item)
+            if defined and defined not in found:
+                extra.add(defined)
+            parts = item.split(".")
+            for index in range(len(parts) - 1, 0, -1):
+                prefix = ".".join(parts[:index])
+                classes = return_classes.get(prefix)
+                if not classes:
+                    continue
+                rest = ".".join(parts[index:])
+                head, _, tail = rest.partition(".")
+                for klass in classes:
+                    extra.add(f"{klass}.{rest}")
+                    defined = owners.get(f"{klass}.{head}")
+                    if defined:
+                        extra.add(defined if not tail else f"{defined}.{tail}")
+                break
+        if not extra - found:
+            break
+        found |= extra
+    return found
+
+
+def _still_exported(sdk_method: str, surviving: set[str]) -> bool:
+    """True when the call's name is still a public symbol in the new wheel.
+
+    A surviving name matches when it is the call or a dotted suffix of it
+    (``engine.Engine`` still exported, so ``sqlalchemy.engine.Engine`` is not
+    a removal). Suffixes are looked up in the set rather than scanning it.
+    """
+    if not sdk_method or not surviving:
+        return False
+    if sdk_method in surviving:
+        return True
+    parts = sdk_method.split(".")
+    for index in range(1, len(parts)):
+        if ".".join(parts[index:]) in surviving:
+            return True
+    return False
 
 
 def _last_two(qualname: str) -> str:

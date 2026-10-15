@@ -88,6 +88,12 @@ class ModUnit:
     constants: dict[tuple[str, str], str] = field(default_factory=dict)
     annotations: dict[tuple[str, str], ast.expr] = field(default_factory=dict)
     returns: dict[str, list[ast.expr]] = field(default_factory=dict)
+    #: ``self.engine = create_engine(...)`` keyed by ``(class qualname, attr)``.
+    instance_assigns: dict[tuple[str, str], list[tuple[ast.expr, str]]] = field(default_factory=dict)
+    #: Base expressions of each class, so a subclass can see fields assigned above it.
+    class_bases: dict[str, list[ast.expr]] = field(default_factory=dict)
+    #: ``kwargs["temperature"] = 0.3`` keyed by ``(function, dict name)``.
+    dict_keys: dict[tuple[str, str], list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -130,11 +136,16 @@ class _ModuleIndex:
             dotted = _dotted(rel)
             keys = [dotted]
             parts = [part for part in dotted.split(".") if part]
-            # ``src/pkg/mod.py`` is imported as ``pkg.mod``. A nested file
-            # whose last component matches a dependency (``app/providers/stripe.py``)
-            # is not that dependency.
-            if len(parts) > 1 and parts[0] in _SOURCE_ROOTS:
-                keys.append(".".join(parts[1:]))
+            # ``src/pkg/mod.py`` and ``app/src/pkg/mod.py`` are imported as
+            # ``pkg.mod`` or ``src.pkg.mod``. A nested file whose last
+            # component matches a dependency (``app/providers/stripe.py``)
+            # is not that dependency: only a ``src`` / ``lib`` component
+            # opens the shorter name, and only when that name is unique.
+            for index, part in enumerate(parts):
+                if part not in _SOURCE_ROOTS or index + 1 >= len(parts):
+                    continue
+                keys.append(".".join(parts[index:]))
+                keys.append(".".join(parts[index + 1 :]))
             for key in keys:
                 buckets.setdefault(key, set()).add(rel)
         self._exact = {
@@ -307,6 +318,7 @@ class _Scanner(ast.NodeVisitor):
             class_name=self.class_name,
             node=node,
         )
+        self.unit.class_bases[qual] = list(node.bases)
         previous, previous_class = self.enclosing, self.class_name
         self.enclosing = qual
         self.class_name = qual
@@ -357,7 +369,28 @@ class _Scanner(ast.NodeVisitor):
             self.unit.assigns[(self.enclosing, name)] = node.value
             if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                 self.unit.constants[(self.enclosing, name)] = node.value.value
+        for target in node.targets:
+            self._record_instance_assign(target, node.value)
+            self._record_dict_key(target)
         self.generic_visit(node)
+
+    def _record_instance_assign(self, target: ast.AST, value: ast.expr) -> None:
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id in {"self", "cls"}
+            and self.class_name
+        ):
+            self.unit.instance_assigns.setdefault((self.class_name, target.attr), []).append(
+                (value, self.enclosing)
+            )
+
+    def _record_dict_key(self, target: ast.AST) -> None:
+        if not isinstance(target, ast.Subscript) or not isinstance(target.value, ast.Name):
+            return
+        key = target.slice
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            self.unit.dict_keys.setdefault((self.enclosing, target.value.id), []).append(key.value)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if isinstance(node.target, ast.Name):
@@ -508,6 +541,13 @@ class _Resolver:
                             self._returns[key] = binding
                             changed = True
                             break
+                    if key in self._returns or defn.node is None:
+                        continue
+                    announced = self._resolve_annotation(getattr(defn.node, "returns", None), unit, qual)
+                    announced = _as_instance(announced)
+                    if announced.kind in {"instance_external", "instance_local"}:
+                        self._returns[key] = announced
+                        changed = True
             if not changed:
                 break
 
@@ -582,15 +622,86 @@ class _Resolver:
             return self._resolve_name(node.id, unit, enclosing, stack)
         if isinstance(node, ast.Attribute):
             base = self._resolve_expr(node.value, unit, enclosing, stack)
-            return self._attribute(base, node.attr)
+            return self._attribute(base, node.attr, stack)
         if isinstance(node, ast.Call):
             aliased = self._alias_call(node, unit, enclosing, stack)
             if aliased is not None:
                 return aliased
             func = self._resolve_expr(node.func, unit, enclosing, stack)
             cloud = _factory_service(func, node, unit, enclosing) or func.cloud_service
-            return self._call_result(func, node, unit, enclosing, cloud_service=cloud)
+            result = self._call_result(func, node, unit, enclosing, cloud_service=cloud)
+            if result.kind == "unknown":
+                default = self._mapping_get_default(node, unit, enclosing, stack)
+                if default is not None:
+                    return default
+            return result
+        if isinstance(node, ast.Subscript):
+            base = self._resolve_expr(node.value, unit, enclosing, stack)
+            if base.kind in {"instance_external", "external_attr"} and base.target:
+                return Binding(
+                    "instance_external",
+                    f"{base.target}.__getitem__",
+                    confidence=min_confidence(base.confidence, "medium"),
+                    cloud_service=base.cloud_service,
+                    base_url=base.base_url,
+                )
+            return UNKNOWN
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and "." in node.value:
+            return self._resolve_dotted_text(node.value, unit, enclosing, stack)
         return UNKNOWN
+
+    def _resolve_annotation(
+        self,
+        node: ast.AST | None,
+        unit: ModUnit,
+        enclosing: str,
+    ) -> Binding:
+        if node is None:
+            return UNKNOWN
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return self._resolve_dotted_text(node.value, unit, enclosing, set())
+        if isinstance(node, ast.Subscript):
+            return self._resolve_annotation(node.slice, unit, enclosing)
+        return self._resolve_expr(node, unit, enclosing, set())
+
+    def _resolve_dotted_text(
+        self,
+        text: str,
+        unit: ModUnit,
+        enclosing: str,
+        stack: set[tuple[str, str, str]],
+    ) -> Binding:
+        parts = [part for part in text.split(".") if part]
+        if not parts:
+            return UNKNOWN
+        binding = self._resolve_name(parts[0], unit, enclosing, stack)
+        for attr in parts[1:]:
+            if binding.kind == "unknown":
+                return UNKNOWN
+            binding = self._attribute(binding, attr)
+        return binding
+
+    def _mapping_get_default(
+        self,
+        node: ast.Call,
+        unit: ModUnit,
+        enclosing: str,
+        stack: set[tuple[str, str, str]],
+    ) -> Binding | None:
+        """``kwargs.get(key, Factory())`` may be the default value.
+
+        Only when the receiver is not itself an SDK object, so ``client.get``
+        stays a call.
+        """
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "get" or len(node.args) < 2:
+            return None
+        receiver = self._resolve_expr(node.func.value, unit, enclosing, stack)
+        if receiver.kind in {"external_attr", "external_module", "instance_external"}:
+            return None
+        default = self._resolve_expr(node.args[1], unit, enclosing, stack)
+        if default.kind == "unknown":
+            return None
+        return default
 
     def _alias_call(
         self,
@@ -638,7 +749,7 @@ class _Resolver:
             if name in {"self", "cls"} and defn is not None and defn.class_name:
                 return Binding("instance_local", unit.rel, defn.class_name)
             assigned = unit.assigns.get((enclosing, name))
-            if assigned is not None:
+            if assigned is not None and not _is_none(assigned):
                 return self._resolve_expr(assigned, unit, enclosing, stack)
             if name not in _params_of(unit, enclosing):
                 for scope in _enclosing_chain(enclosing):
@@ -650,7 +761,7 @@ class _Resolver:
                 return Binding("symbol", unit.rel, local_def)
             if enclosing != "<module>" and name not in _params_of(unit, enclosing):
                 module_assign = unit.assigns.get(("<module>", name))
-                if module_assign is not None:
+                if module_assign is not None and not _is_none(module_assign):
                     return self._resolve_expr(module_assign, unit, "<module>", stack)
             binding = self._bindings_for(unit.rel).get(name)
             if binding is not None:
@@ -673,7 +784,12 @@ class _Resolver:
         finally:
             stack.discard(token)
 
-    def _attribute(self, base: Binding, attr: str) -> Binding:
+    def _attribute(
+        self,
+        base: Binding,
+        attr: str,
+        stack: set[tuple[str, str, str]] | None = None,
+    ) -> Binding:
         if base.kind in {"external_module", "external_attr", "instance_external"}:
             return Binding(
                 "external_attr",
@@ -687,6 +803,9 @@ class _Resolver:
             unit = self.units.get(base.target)
             if unit is not None and method in unit.defs:
                 return Binding("symbol", base.target, method, confidence=base.confidence)
+            found = self._instance_field(base, attr, stack if stack is not None else set())
+            if found is not None:
+                return found
             return UNKNOWN
         if base.kind == "symbol":
             unit = self.units.get(base.target)
@@ -706,6 +825,43 @@ class _Resolver:
                 return Binding("module_local", sub, confidence=base.confidence)
             return UNKNOWN
         return UNKNOWN
+
+    def _instance_field(
+        self,
+        base: Binding,
+        attr: str,
+        stack: set[tuple[str, str, str]],
+    ) -> Binding | None:
+        """A field assigned on this class or one of its bases."""
+        queue = [(base.target, base.qualname)]
+        seen: set[tuple[str, str]] = set()
+        while queue:
+            rel, qual = queue.pop(0)
+            if not rel or not qual or (rel, qual) in seen:
+                continue
+            seen.add((rel, qual))
+            unit = self.units.get(rel)
+            if unit is None:
+                continue
+            token = ("field", qual, attr)
+            if token not in stack:
+                stack.add(token)
+                try:
+                    for expr, scope in unit.instance_assigns.get((qual, attr), []):
+                        resolved = self._resolve_expr(expr, unit, scope, stack)
+                        if resolved.kind == "external_attr":
+                            resolved = _as_instance(resolved)
+                        if resolved.kind != "unknown":
+                            return resolved
+                finally:
+                    stack.discard(token)
+            for base_expr in unit.class_bases.get(qual, []):
+                while isinstance(base_expr, ast.Subscript):
+                    base_expr = base_expr.value
+                parent = self._resolve_expr(base_expr, unit, qual, stack)
+                if parent.kind == "symbol" and parent.qualname:
+                    queue.append((parent.target, parent.qualname))
+        return None
 
     def _call_result(
         self,
@@ -781,6 +937,11 @@ def _params_of(unit: ModUnit, enclosing: str) -> set[str]:
     if defn is None:
         return set()
     return set(defn.params)
+
+
+def _is_none(node: ast.AST) -> bool:
+    """``x = None`` in an except clause is the missing-import fallback, not a binding."""
+    return isinstance(node, ast.Constant) and node.value is None
 
 
 def _as_instance(binding: Binding) -> Binding:
@@ -1055,7 +1216,7 @@ def _make_direct(
         package=spec.package,
         sdk_method=sdk_method,
         kind=kind,
-        params=_keywords(call.node),
+        params=_keywords(call.node, unit, call.enclosing),
         response_fields=fields,
         returns_raw=returns_raw,
         confidence=confidence,
@@ -1680,8 +1841,14 @@ def _iter_scope(root: ast.AST):
             stack.append(child)
 
 
-def _keywords(call: ast.Call) -> tuple[str, ...]:
+def _keywords(call: ast.Call, unit: ModUnit | None = None, enclosing: str = "") -> tuple[str, ...]:
     names = [kw.arg for kw in call.keywords if kw.arg]
+    if unit is not None:
+        for kw in call.keywords:
+            if kw.arg is not None or not isinstance(kw.value, ast.Name):
+                continue
+            names.extend(_dict_keys(kw.value, unit, enclosing))
+            names.extend(unit.dict_keys.get((enclosing, kw.value.id), []))
     return tuple(dict.fromkeys(names))
 
 

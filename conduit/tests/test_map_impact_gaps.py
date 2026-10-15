@@ -757,3 +757,547 @@ def test_public_name_that_still_exists_is_not_a_removal(tmp_path: Path):
     exprs = " ".join(site.expr for item in impacts for site in item.sites if not site.via_wrapper)
     assert "openai.error.APIError" in exprs
     assert "openai.APIError" not in exprs.replace("openai.error.APIError", "")
+
+
+def _impacts(changes, repo: Path):
+    return intersect(
+        changes,
+        analyze_repo(repo).chains,
+        dependency="openai",
+        from_version="0",
+        to_version="1",
+        return_classes=getattr(changes, "return_classes", None),
+        surviving=getattr(changes, "surviving", None),
+        methods=getattr(changes, "methods", None),
+    )
+
+
+def _primary(impacts) -> list[str]:
+    return [
+        f"{site.path}:{site.line}:{site.expr}"
+        for item in impacts
+        for site in item.sites
+        if not site.via_wrapper
+    ]
+
+
+def test_star_import_keeps_a_method_that_moved(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/collection.py",
+        """
+        class Collection:
+            def insert(self, doc):
+                return None
+
+            def insert_one(self, doc):
+                return None
+        """,
+    )
+    _write(tmp_path, "old/openai/__init__.py", "from openai.collection import Collection\n")
+    _write(
+        tmp_path,
+        "new/openai/collection.py",
+        "from openai.synchronous.collection import *\n",
+    )
+    _write(
+        tmp_path,
+        "new/openai/synchronous/collection.py",
+        """
+        class Collection:
+            def insert_one(self, doc):
+                return None
+        """,
+    )
+    _write(tmp_path, "new/openai/__init__.py", "")
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    removed = {item.symbol for item in changes if item.kind == "removed"}
+    assert any(symbol.endswith("Collection.insert") for symbol in removed)
+    assert not any(symbol.endswith("Collection.insert_one") for symbol in removed)
+
+
+def test_subscript_and_instance_field_follow_the_wheel_return_class(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        """
+        class Collection:
+            def insert(self, doc):
+                return None
+
+        class Database:
+            def __getitem__(self, name):
+                return Collection(self, name)
+
+        class Client:
+            def __getitem__(self, name):
+                return Database(self, name)
+        """,
+    )
+    _write(
+        tmp_path,
+        "new/openai/__init__.py",
+        """
+        class Collection:
+            def insert_one(self, doc):
+                return None
+
+        class Database:
+            def __getitem__(self, name):
+                return Collection(self, name)
+
+        class Client:
+            def __getitem__(self, name):
+                return Database(self, name)
+        """,
+    )
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "jobs.py",
+        """
+        import openai
+
+        class Repo:
+            def __init__(self):
+                self.client = openai.Client()
+
+            def save(self, doc):
+                db = self.client["app"]
+                collection = db["jobs"]
+                collection.insert(doc)
+        """,
+    )
+    hits = _primary(_impacts(changes, repo))
+    assert any("collection.insert" in hit for hit in hits)
+
+
+def test_splatted_dict_keys_are_call_parameters(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        """
+        class Messages:
+            def create(self, model, temperature=None):
+                return None
+
+        class Client:
+            @property
+            def messages(self):
+                return Messages(self)
+        """,
+    )
+    _write(
+        tmp_path,
+        "new/openai/__init__.py",
+        """
+        class Messages:
+            def create(self, model):
+                return None
+
+        class Client:
+            @property
+            def messages(self):
+                return Messages(self)
+        """,
+    )
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "ask.py",
+        """
+        import openai
+
+        def ask():
+            client = openai.Client()
+            kwargs = {"model": "m"}
+            kwargs["temperature"] = 0
+            return client.messages.create(**kwargs)
+        """,
+    )
+    impacts = _impacts(changes, repo)
+    assert any("temperature" in item.change for item in impacts)
+    assert any("messages.create" in hit for hit in _primary(impacts))
+
+
+def test_constructor_return_class_matches_a_later_method(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        """
+        class Engine:
+            def execute(self, sql):
+                return None
+
+        def create_engine(url):
+            return Engine()
+        """,
+    )
+    _write(
+        tmp_path,
+        "new/openai/__init__.py",
+        """
+        class Engine:
+            pass
+
+        def create_engine(url):
+            return Engine()
+        """,
+    )
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "db.py",
+        """
+        import openai
+
+        class Store:
+            def open(self):
+                self.engine = openai.create_engine("sqlite")
+
+            def read(self):
+                return self.engine.execute("select 1")
+        """,
+    )
+    hits = _primary(_impacts(changes, repo))
+    assert any("engine.execute" in hit for hit in hits)
+
+
+def test_a_name_the_new_wheel_still_exports_is_not_a_pair_match(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        "from openai.engine import Engine\nfrom openai.future.engine import Engine as FutureEngine\n",
+    )
+    _write(tmp_path, "old/openai/engine.py", "class Engine:\n    pass\n")
+    _write(tmp_path, "old/openai/future/__init__.py", "")
+    _write(tmp_path, "old/openai/future/engine.py", "class Engine:\n    pass\n")
+    _write(tmp_path, "new/openai/__init__.py", "from openai.engine import Engine\n")
+    _write(tmp_path, "new/openai/engine.py", "class Engine:\n    pass\n")
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "types.py",
+        """
+        import openai
+
+        def anno(engine: openai.engine.Engine):
+            return engine
+        """,
+    )
+    hits = _primary(_impacts(changes, repo))
+    assert not any("engine.Engine" in hit for hit in hits)
+
+
+def test_nested_src_import_resolves_a_base_class_field(tmp_path: Path):
+    _write(
+        tmp_path,
+        "app/src/common/dao.py",
+        """
+        import openai
+
+        class DAO:
+            def __init__(self):
+                self.client = openai.Client()
+        """,
+    )
+    _write(
+        tmp_path,
+        "app/src/jobs.py",
+        """
+        from src.common.dao import DAO
+
+        class Jobs(DAO):
+            def save(self, doc):
+                self.client["jobs"].insert(doc)
+        """,
+    )
+    chains = _chains(tmp_path, symbol="Jobs.save", expr="insert")
+    assert chains
+    assert any(chain.sdk_method.endswith("Client.__getitem__.insert") for chain in chains)
+
+
+def test_subclass_uses_a_field_assigned_on_the_base(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        """
+        class Collection:
+            def insert(self, doc):
+                return None
+
+        class Client:
+            def __getitem__(self, name):
+                return Collection()
+        """,
+    )
+    _write(
+        tmp_path,
+        "new/openai/__init__.py",
+        """
+        class Collection:
+            pass
+
+        class Client:
+            def __getitem__(self, name):
+                return Collection()
+        """,
+    )
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "jobs.py",
+        """
+        import openai
+
+        class Manager:
+            def __init__(self, **kwargs):
+                self.client = kwargs.get("client", openai.Client())
+
+        class Repo(Manager):
+            def save(self, doc):
+                self.client["jobs"].insert(doc)
+        """,
+    )
+    hits = _primary(_impacts(changes, repo))
+    assert any("insert" in hit for hit in hits)
+
+
+def test_optional_import_assigned_none_still_reaches_the_sdk(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        """
+        class ChatCompletion:
+            @staticmethod
+            def create(model):
+                return None
+        """,
+    )
+    _write(tmp_path, "new/openai/__init__.py", "class ChatCompletion:\n    pass\n")
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "ask.py",
+        """
+        try:
+            import openai
+        except ImportError:
+            openai = None
+
+        def ask(prompt):
+            return openai.ChatCompletion.create(model=prompt)
+        """,
+    )
+    hits = _primary(_impacts(changes, repo))
+    assert any("ChatCompletion.create" in hit for hit in hits)
+
+
+def test_reexported_factory_return_matches_the_public_name(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/engine.py",
+        """
+        class Engine:
+            def execute(self, sql):
+                return None
+
+        def create_engine(url):
+            return Engine()
+        """,
+    )
+    _write(tmp_path, "old/openai/__init__.py", "from openai.engine import create_engine\n")
+    _write(
+        tmp_path,
+        "new/openai/engine.py",
+        """
+        class Engine:
+            pass
+
+        def create_engine(url):
+            return Engine()
+        """,
+    )
+    _write(tmp_path, "new/openai/__init__.py", "from openai.engine import create_engine\n")
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "db.py",
+        """
+        import openai
+
+        def read():
+            return openai.create_engine("sqlite").execute("select 1")
+        """,
+    )
+    hits = _primary(_impacts(changes, repo))
+    assert any("execute" in hit for hit in hits)
+
+
+def test_a_variable_holding_a_class_is_what_the_call_returns(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        """
+        class Engine:
+            def execute(self, sql):
+                return None
+
+        class Future:
+            def execute(self, sql):
+                return None
+
+        def create_engine(url, **kwargs):
+            if kwargs.pop("future", False):
+                default = Future
+            else:
+                default = Engine
+            factory = kwargs.pop("cls", default)
+            return factory()
+        """,
+    )
+    _write(
+        tmp_path,
+        "new/openai/__init__.py",
+        """
+        class Engine:
+            pass
+
+        class Future:
+            pass
+
+        def create_engine(url, **kwargs):
+            if kwargs.pop("future", False):
+                default = Future
+            else:
+                default = Engine
+            factory = kwargs.pop("cls", default)
+            return factory()
+        """,
+    )
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "db.py",
+        """
+        import openai
+
+        def read():
+            return openai.create_engine("sqlite").execute("select 1")
+        """,
+    )
+    hits = _primary(_impacts(changes, repo))
+    assert any("execute" in hit for hit in hits)
+
+
+def test_inherited_method_on_a_subscripted_base_matches(tmp_path: Path):
+    _write(
+        tmp_path,
+        "old/openai/__init__.py",
+        """
+        class Base:
+            def export(self):
+                return {}
+
+        class Child(Base["Child"]):
+            pass
+
+        class Factory:
+            def make(self):
+                return Child()
+        """,
+    )
+    _write(
+        tmp_path,
+        "new/openai/__init__.py",
+        """
+        class Base:
+            pass
+
+        class Child(Base["Child"]):
+            pass
+
+        class Factory:
+            def make(self):
+                return Child()
+        """,
+    )
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "hook.py",
+        """
+        import openai
+
+        def run():
+            event = openai.Factory().make()
+            return event.export()
+        """,
+    )
+    hits = _primary(_impacts(changes, repo))
+    assert any("export" in hit for hit in hits)
+
+
+def test_runner_keeps_the_wheel_return_class(tmp_path: Path):
+    """collect_impacts used to copy the diff into a plain list and drop returns."""
+    _write(
+        tmp_path,
+        "wheels/old/openai/engine.py",
+        """
+        class Engine:
+            def execute(self, sql):
+                return None
+
+        def create_engine(url):
+            return Engine()
+        """,
+    )
+    _write(tmp_path, "wheels/old/openai/__init__.py", "from openai.engine import create_engine\n")
+    _write(
+        tmp_path,
+        "wheels/new/openai/engine.py",
+        """
+        class Engine:
+            pass
+
+        def create_engine(url):
+            return Engine()
+        """,
+    )
+    _write(tmp_path, "wheels/new/openai/__init__.py", "from openai.engine import create_engine\n")
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "index.json").write_text(
+        json.dumps({"packages": {"openai": {"wheels": {"0": "../wheels/old", "1": "../wheels/new"}}}}),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    _write(
+        repo,
+        "db.py",
+        """
+        import openai
+
+        def read():
+            return openai.create_engine("sqlite").execute("select 1")
+        """,
+    )
+    impacts, diffed, _notes = collect_impacts(
+        repo,
+        analyze_repo(repo),
+        fixtures=fixtures,
+        dep="openai",
+        from_version="0",
+        to_version="1",
+    )
+    assert "openai" in diffed
+    assert any("execute" in site.expr for item in impacts for site in item.sites)
