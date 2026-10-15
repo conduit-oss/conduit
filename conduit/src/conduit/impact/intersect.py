@@ -64,6 +64,7 @@ def _sites(
                 line=chain.call_lineno,
                 expr=chain.call_expr,
                 confidence=confidence,
+                via_wrapper=chain.via_wrapper,
             )
         )
     return found
@@ -74,7 +75,43 @@ def _match(change: ApiChange, chain: Chain, peers: list[ApiChange]) -> str | Non
         return _webhook_match(change, chain)
     if change.source == "botocore":
         return _botocore_match(change, chain)
+    if change.source == "openapi" or change.kind in {"endpoint_removed", "endpoint_renamed"}:
+        return _http_match(change, chain)
+    if chain.kind in {"version_gate", "http_call", "http_response"}:
+        return None
     return _python_match(change, chain, peers)
+
+
+def _http_match(change: ApiChange, chain: Chain) -> str | None:
+    from conduit.impact.openapi_rest import paths_match, split_http_target
+
+    if chain.kind not in {"http_call", "http_response"}:
+        return None
+    method, path = split_http_target(chain.sdk_method)
+    if " " in (change.symbol or ""):
+        spec_method, spec_path = change.symbol.split(" ", 1)
+    else:
+        spec_method, spec_path = "", change.old or change.symbol
+    if spec_method in {"", "*"}:
+        spec_method = method
+    if method and spec_method and method.upper() != spec_method.upper():
+        return None
+    if not path or not (paths_match(path, spec_path) or paths_match(path, change.old)):
+        return None
+    if change.kind in {"endpoint_removed", "endpoint_renamed"}:
+        if chain.kind != "http_call":
+            return None
+        return min_confidence(change.confidence, chain.confidence)
+    if change.kind not in {"field_removed", "field_renamed", "param_removed", "param_renamed"}:
+        return None
+    name = change.old or change.new
+    response = "response field" in (change.detail or "")
+    if response:
+        if chain.kind != "http_response" or not _field_used(chain, name):
+            return None
+    elif chain.kind != "http_call" or not _param_used(chain, name):
+        return None
+    return min_confidence(change.confidence, chain.confidence)
 
 
 def _webhook_match(change: ApiChange, chain: Chain) -> str | None:

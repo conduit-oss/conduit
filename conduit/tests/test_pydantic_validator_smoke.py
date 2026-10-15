@@ -98,7 +98,9 @@ def test_pydantic_validator_smoke_cli_watch_apply_watch(tmp_path: Path, monkeypa
     assert dirty_payload["exit_code"] == 1
     assert any("validator" in item for item in dirty_payload["leftovers"])
 
-    applied = runner.invoke(app, ["apply", "--path", str(tree), "--packet", packet_arg])
+    from tests.apply_support import invoke_apply
+
+    applied = invoke_apply(tree, packet_arg)
     assert applied.exit_code == 0, applied.output
     after = src.read_text(encoding="utf-8")
     assert '@field_validator("name")' in after
@@ -111,7 +113,7 @@ def test_pydantic_validator_smoke_cli_watch_apply_watch(tmp_path: Path, monkeypa
         "model": src.read_text(encoding="utf-8"),
         "req": (tree / "requirements.txt").read_text(encoding="utf-8"),
     }
-    second = runner.invoke(app, ["apply", "--path", str(tree), "--packet", packet_arg])
+    second = invoke_apply(tree, packet_arg)
     assert second.exit_code == 0, second.output
     assert src.read_text(encoding="utf-8") == before_second["model"]
     assert (tree / "requirements.txt").read_text(encoding="utf-8") == before_second["req"]

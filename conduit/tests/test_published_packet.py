@@ -192,23 +192,14 @@ def test_run_packet_url(tmp_path: Path, monkeypatch):
 
 
 def test_cli_invalid_packet_url(tmp_path: Path, monkeypatch):
-    from typer.testing import CliRunner
-
     _disable_llm(monkeypatch)
 
     def fake_get(self, url, **kwargs):
         return _FakeResponse(body=b"nope")
 
     monkeypatch.setattr(httpx.Client, "get", fake_get)
-    result = CliRunner().invoke(
-        app,
-        [
-            "apply",
-            "--path",
-            str(tmp_path),
-            "--packet",
-            "https://example.com/not-a-packet.json",
-        ],
-    )
+    from tests.apply_support import invoke_apply
+
+    result = invoke_apply(tmp_path, "https://example.com/not-a-packet.json")
     assert result.exit_code == 2
     assert "JSON" in result.output

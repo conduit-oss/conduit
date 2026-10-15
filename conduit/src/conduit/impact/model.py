@@ -28,6 +28,8 @@ class SiteHit:
     line: int
     expr: str
     confidence: str
+    #: True when this line only calls a wrapper. The SDK line is the primary hit.
+    via_wrapper: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -35,6 +37,7 @@ class SiteHit:
             "line": self.line,
             "expr": self.expr,
             "confidence": self.confidence,
+            "via_wrapper": self.via_wrapper,
         }
 
 

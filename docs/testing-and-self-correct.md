@@ -47,7 +47,7 @@ If the packet has **no** extractable tokens and the repo has **no** other tests,
 
 Existing consumer tests are **audited**, not trusted: skip/xfail/tautology notes are fed to functional test generation. They do not count as migration coverage.
 
-`conduit apply` does **not** write these tests. `conduit run --skip-tests` skips generation and verify.
+`conduit apply` is deferred and does not write these tests. `conduit run --skip-tests` skips generation and verify.
 
 ## Anti-cheat (separate from apply, inventory, and repair)
 

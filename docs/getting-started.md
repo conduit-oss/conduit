@@ -1,10 +1,10 @@
 # Getting started
 
-Start with `conduit map`, `conduit watch`, `conduit impact`, and `conduit apply`. `conduit service` is the hosted skeleton for that loop.
+Start with `conduit map`, `conduit watch`, and `conduit impact`. `conduit service` is the hosted skeleton for that loop. `conduit apply` is deferred.
 
 Scope is outside services only: external API SDKs and REST, databases, cloud SDKs such as S3 via botocore models, and incoming webhooks such as Stripe. This is not Dependabot territory. Conduit does not bump lockfiles, scan for CVEs, or send new-version notices for ordinary libraries. It does not watch internal repos.
 
-Watch without `--packet` diffs old and new PyPI wheels, botocore models, and webhook schemas. GitHub releases and changelogs are extra hints. There is no hand-written change list. `conduit impact --dep X [--from V] [--to V]` is the same check for one service and prints `file:line`. A repo with no pin says `not compared: no pinned version found` instead of an all-clear. The `--packet` form of Watch is the leftover gate for a hop you already have. Apply and that gate use no LLM. Producers can still author packets. Detect modules are Advanced.
+Watch without `--packet` diffs old and new PyPI wheels, botocore models, webhook schemas, and a versioned OpenAPI pair when one is recorded. GitHub releases and changelogs are extra hints. There is no hand-written change list. `conduit impact --dep X [--from V] [--to V]` is the same check for one service and prints `file:line`. The version comes from `--from`, an exact pin, a lockfile, the installed distribution, or the highest PyPI release matching a requirement range. If none of those exist, the note says `not compared` and why. The `--packet` form of Watch is the leftover gate for a hop you already have. That gate uses no LLM. Producers can still author packets. Detect modules are Advanced.
 
 Python only today. Other languages are planned one at a time. TypeScript and JavaScript via tree-sitter are next.
 
@@ -45,11 +45,11 @@ Extras:
 
 `conduit map`, `conduit watch`, and `conduit impact` read Python only. Other languages are planned one at a time. TypeScript and JavaScript via tree-sitter are next.
 
-`conduit apply` still runs frozen packet rules through the language engines already in the tree (Python via libcst; JS/TS, Java, and Go via tree-sitter when `[langs]` is installed, with a regex fallback). Those engines are not the outside-service product. String and regex rules also apply to YAML, JSON, and `.env*` files.
+`conduit apply` is deferred. `conduit run` still runs frozen packet rules through the language engines already in the tree (Python via libcst; JS/TS, Java, and Go via tree-sitter when `[langs]` is installed, with a regex fallback). Those engines are not the outside-service product. String and regex rules also apply to YAML, JSON, and `.env*` files.
 
 ## 1. Apply a Migration Packet (recommended first run)
 
-The repo ships a tiny consumer stuck on **openai 0.28** (`openai.ChatCompletion.create`) plus a sample Migration Packet that performs the structural 0.28 → 1.x hop. That sample is the offline harness proof for apply and Watch. It does not need LLM keys.
+The repo ships a tiny consumer stuck on **openai 0.28** (`openai.ChatCompletion.create`) plus a sample Migration Packet that performs the structural 0.28 → 1.x hop. That sample is the offline harness proof for `conduit run` and Watch. It does not need LLM keys. `conduit apply` is deferred.
 
 ```bash
 conduit run \
@@ -77,13 +77,11 @@ git -C examples/demo-consumer checkout -- .
 
 `--skip-pr` does **not** mean dry-run. Files are actually modified. It only skips `git push` / `gh pr create`.
 
-Preview transforms without writing:
+`conduit apply` is deferred, so there is no dry-run command. `conduit run` writes the tree. Inspect the diff and restore it:
 
 ```bash
-conduit apply \
-  --path ./examples/demo-consumer \
-  --packet ./examples/sample-packet/conduit-packet.json \
-  --dry-run
+git -C examples/demo-consumer diff
+git -C examples/demo-consumer checkout -- .
 ```
 
 ## 2. Watch outside services, or gate a hop you already have

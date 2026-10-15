@@ -1,10 +1,11 @@
-"""Per-customer map, one watch pass, and a local fix PR from ``conduit apply``."""
+"""Per-customer map, one watch pass, and a local fix PR.
+
+``conduit apply`` is deferred, so the pass flags call sites and does not rewrite the tree.
+"""
 
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -161,27 +162,13 @@ def flag_call_sites(repo: Path, packet: dict) -> list[dict[str, Any]]:
 
 
 def run_apply(repo: Path, packet_path: Path, *, dry_run: bool) -> tuple[int, str]:
-    """Run the existing ``conduit apply`` command. Default is ``--dry-run``."""
-    cmd = [
-        sys.executable,
-        "-m",
-        "conduit.main",
-        "apply",
-        "--path",
-        str(repo),
-        "--packet",
-        str(packet_path),
-    ]
-    if dry_run:
-        cmd.append("--dry-run")
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False,
+    """``conduit apply`` is deferred. Flagged lines stay in the PR; the tree is not rewritten."""
+    del repo, packet_path
+    mode = "dry-run" if dry_run else "apply"
+    return 0, (
+        f"conduit apply is deferred ({mode}). "
+        "The tree was not rewritten. Call sites are listed above."
     )
-    output = (proc.stdout or "") + (proc.stderr or "")
-    return proc.returncode, output
 
 
 def render_pr(
@@ -200,11 +187,10 @@ def render_pr(
     lines = [
         f"# {package} {hop}",
         "",
-        f"Local fix PR ({mode}) from `conduit apply`. No GitHub App.",
+        f"Local fix PR ({mode}). `conduit apply` is deferred, so this does not rewrite the tree. No GitHub App.",
         "",
         "```",
-        f"conduit apply --path {repo} --packet {packet_path}"
-        + (" --dry-run" if dry_run else ""),
+        f"conduit impact --path {repo}",
         "```",
         "",
         "## Affected call sites",
@@ -222,11 +208,10 @@ def render_pr(
     if checklist.strip():
         lines.append(checklist.rstrip())
     else:
-        lines.append("No packet side effects. Read the apply output before merging.")
-    if dry_run:
-        lines.append("")
-        lines.append("Dry-run did not rewrite the tree. Leftovers stay until apply writes.")
-    lines.extend(["", f"## conduit apply ({mode}) exit {apply_exit}", "", "```", apply_output.rstrip(), "```", ""])
+        lines.append("No packet side effects. Read the flagged call sites before editing.")
+    lines.append("")
+    lines.append("Rewriting the tree is deferred with `conduit apply`.")
+    lines.extend(["", f"## apply deferred ({mode}) exit {apply_exit}", "", "```", apply_output.rstrip(), "```", ""])
     return "\n".join(lines)
 
 

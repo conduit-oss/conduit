@@ -230,10 +230,9 @@ def test_cli_apply_dict_packet_rewrites_self_dict(tmp_path: Path, monkeypatch):
     (tree / "requirements.txt").write_text("pydantic==2.0.0\n", encoding="utf-8")
     packet_path = tmp_path / "dict.json"
     packet_path.write_text(json.dumps(_dict_packet()), encoding="utf-8")
-    runner = CliRunner()
-    result = runner.invoke(
-        app, ["apply", "--path", str(tree), "--packet", str(packet_path)]
-    )
+    from tests.apply_support import invoke_apply
+
+    result = invoke_apply(tree, packet_path)
     assert result.exit_code == 0, result.output
     text = (tree / "src" / "model.py").read_text(encoding="utf-8")
     assert "self.model_dump()" in text

@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from typer.testing import CliRunner
-
-from conduit.main import app
+from tests.apply_support import invoke_apply
 from conduit.patcher.leftovers import (
     evaluate_apply_leftovers,
     packet_has_call_site_rules,
@@ -100,10 +98,7 @@ def test_apply_leftover_gate_fails_on_residual_old_callee(tmp_path: Path, monkey
         json.dumps(_rules_bearing_packet(target_files=["never_matches.py"])),
         encoding="utf-8",
     )
-    result = CliRunner().invoke(
-        app,
-        ["apply", "--path", str(tree), "--packet", str(pkt)],
-    )
+    result = invoke_apply(tree, pkt)
     assert result.exit_code != 0, result.output
     assert "legacy_fn" in result.output
     assert "widgets.legacy_fn()" in (tree / "src" / "app.py").read_text(encoding="utf-8")
@@ -118,10 +113,7 @@ def test_apply_leftover_gate_passes_when_rewrite_clears(tmp_path: Path, monkeypa
         json.dumps(_rules_bearing_packet(target_files=["*.py"])),
         encoding="utf-8",
     )
-    result = CliRunner().invoke(
-        app,
-        ["apply", "--path", str(tree), "--packet", str(pkt)],
-    )
+    result = invoke_apply(tree, pkt)
     assert result.exit_code == 0, result.output
     text = (tree / "src" / "app.py").read_text(encoding="utf-8")
     assert "modern_fn" in text
@@ -134,10 +126,7 @@ def test_apply_pin_only_exits_zero_with_message(tmp_path: Path, monkeypatch):
     tree = _make_tree(tmp_path / "pin", src=DIRTY_SRC)
     pkt = tmp_path / "packet.json"
     pkt.write_text(json.dumps(_pin_only_packet()), encoding="utf-8")
-    result = CliRunner().invoke(
-        app,
-        ["apply", "--path", str(tree), "--packet", str(pkt)],
-    )
+    result = invoke_apply(tree, pkt)
     assert result.exit_code == 0, result.output
     out = result.output.lower()
     assert "pin-only" in out or "no call-site rules" in out
@@ -152,10 +141,7 @@ def test_apply_dry_run_does_not_claim_leftover_pass(tmp_path: Path, monkeypatch)
         json.dumps(_rules_bearing_packet(target_files=["never_matches.py"])),
         encoding="utf-8",
     )
-    result = CliRunner().invoke(
-        app,
-        ["apply", "--path", str(tree), "--packet", str(pkt), "--dry-run"],
-    )
+    result = invoke_apply(tree, pkt, dry_run=True)
     assert result.exit_code == 0, result.output
     assert "apply complete" not in result.output.lower()
     assert "leftover call" not in result.output.lower()

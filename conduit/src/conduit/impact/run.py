@@ -11,11 +11,13 @@ from conduit.feeds.versions import is_newer, parse_version
 from conduit.impact.api import diff_wheels
 from conduit.impact.botocore import diff_service_models
 from conduit.impact.intersect import intersect
-from conduit.impact.model import ApiChange, Impact
+from conduit.impact.model import ApiChange, Impact, SiteHit
 from conduit.impact.notes import changes_from_notes
+from conduit.impact.openapi_rest import PUBLIC_SPEC_URLS, diff_openapi, split_http_target
+from conduit.impact.versions import pypi_latest, resolve_client_version
 from conduit.impact.webhook_schema import diff_webhook_schemas
 from conduit.outside_in.catalog import CATALOG, catalog_spec
-from conduit.outside_in.model import ServiceMap
+from conduit.outside_in.model import Chain, ServiceMap
 
 if TYPE_CHECKING:
     from conduit.feeds.model import FeedHit
@@ -39,7 +41,10 @@ def service_pins(root: Path) -> dict[str, str]:
     return pins
 
 
-NO_PIN_NOTE = "not compared: no pinned version found"
+NO_PIN_NOTE = (
+    "not compared: no version could be determined "
+    "(no exact pin, lockfile entry, installed distribution, or resolvable requirement)"
+)
 
 
 def collect_impacts(
@@ -74,6 +79,7 @@ def collect_impacts(
         if not _should_run(package, entry, hits or [], explicit=explicit):
             continue
         resolved_from, resolved_to, version_note = _versions(
+            root,
             package,
             pins,
             entry,
@@ -81,6 +87,7 @@ def collect_impacts(
             to_version if explicit else None,
             from_version if explicit else None,
             explicit=explicit,
+            allow_network=allow_network,
         )
         if version_note and version_note not in notes:
             notes.append(version_note)
@@ -96,22 +103,41 @@ def collect_impacts(
             skip_versioned=bool(version_note),
             explicit=explicit,
         )
-        if compare_note and compare_note not in notes:
-            notes.append(compare_note)
+        for line in (compare_note or "").splitlines():
+            if line and line not in notes:
+                notes.append(line)
         if compared:
             diffed.add(package.lower())
-        if not changes or not resolved_to or resolved_to == resolved_from:
-            webhook_only = [item for item in changes if item.source == "webhook"]
-            if not webhook_only:
-                continue
-        version_changes = [item for item in changes if item.source != "webhook"]
+        version_changes = [item for item in changes if item.source != "webhook" and not _is_rest(item)]
         webhook_changes = [item for item in changes if item.source == "webhook"]
+        rest_changes = [item for item in changes if _is_rest(item)]
+        if not resolved_to or resolved_to == resolved_from:
+            version_changes = []
         if version_changes and resolved_to and resolved_to != resolved_from:
             impacts.extend(
                 intersect(
                     version_changes,
                     service_map.chains,
                     dependency=package,
+                    from_version=resolved_from,
+                    to_version=resolved_to,
+                )
+            )
+        if rest_changes:
+            impacts.extend(
+                intersect(
+                    rest_changes,
+                    service_map.chains,
+                    dependency=package,
+                    from_version=resolved_from,
+                    to_version=resolved_to or "latest",
+                )
+            )
+        if resolved_from and resolved_to and resolved_to != resolved_from:
+            impacts.extend(
+                _version_gate_impacts(
+                    service_map.chains,
+                    package=package,
                     from_version=resolved_from,
                     to_version=resolved_to,
                 )
@@ -163,6 +189,7 @@ def _should_run(package: str, entry: dict, hits: list[FeedHit], *, explicit: boo
 
 
 def _versions(
+    root: Path,
     package: str,
     pins: dict[str, str],
     entry: dict,
@@ -171,9 +198,19 @@ def _versions(
     from_override: str | None,
     *,
     explicit: bool,
+    allow_network: bool,
 ) -> tuple[str, str, str]:
     """Resolve versions. Never invent a from-version from the fixture index."""
-    chosen = (from_override or "").strip() or pins.get(package.lower(), "")
+    note = ""
+    chosen = (from_override or "").strip()
+    if not chosen:
+        chosen, reason = resolve_client_version(root, package, allow_network=allow_network)
+        if not chosen:
+            pinned = pins.get(package.lower(), "")
+            if pinned and _exact_looking(pinned):
+                chosen = pinned
+            else:
+                note = reason or NO_PIN_NOTE
     if to_override:
         resolved_to = to_override
     else:
@@ -184,11 +221,28 @@ def _versions(
             if hit.to_version and _newer(hit.to_version, chosen):
                 hit_to = hit.to_version
         resolved_to = hit_to or str(entry.get("to") or "")
-    note = ""
+        if not resolved_to and explicit and allow_network and chosen:
+            try:
+                resolved_to = pypi_latest(package)
+            except Exception:
+                resolved_to = ""
+            if not resolved_to:
+                note = note or f"not compared: could not read the latest {package} version from PyPI"
     webhook_only = bool(entry.get("webhook")) and not _needs_library_version(entry)
-    if not chosen and not webhook_only and (explicit or _needs_library_version(entry)):
-        note = NO_PIN_NOTE
+    if chosen and note == NO_PIN_NOTE:
+        note = ""
+    if not chosen and webhook_only:
+        note = ""
+    elif not chosen and not (explicit or _needs_library_version(entry)):
+        note = ""
+    elif not chosen:
+        note = note or NO_PIN_NOTE
     return chosen, resolved_to, note
+
+
+def _exact_looking(value: str) -> bool:
+    token = (value or "").strip()
+    return bool(token) and not any(op in token for op in (">", "<", "!", "~", "^", ",", "*"))
 
 
 def _needs_library_version(entry: dict) -> bool:
@@ -265,7 +319,11 @@ def _changes_for(
                 except OSError:
                     text = ""
                 if text:
-                    changes.extend(changes_from_notes(text))
+                    changes.extend(
+                        item
+                        for item in changes_from_notes(text)
+                        if item.kind not in {"endpoint_removed", "endpoint_renamed"}
+                    )
                     compared = True
     elif not skip_versioned and explicit and (wheels or entry.get("botocore") or entry.get("changelog")):
         note = _missing_surface_note(from_version, to_version)
@@ -276,7 +334,155 @@ def _changes_for(
         if old_schema is not None and new_schema is not None:
             changes.extend(diff_webhook_schemas(old_schema, new_schema, provider=service_id))
             compared = True
+    rest, rest_note, rest_compared = _rest_changes(
+        package,
+        service_id,
+        entry,
+        fixtures,
+        service_map=service_map,
+        allow_network=allow_network,
+    )
+    changes.extend(rest)
+    if rest_compared:
+        compared = True
+    if rest_note:
+        note = f"{note}\n{rest_note}" if note else rest_note
     return changes, compared, note
+
+
+def _is_rest(change: ApiChange) -> bool:
+    return change.source == "openapi" or change.kind in {"endpoint_removed", "endpoint_renamed"}
+
+
+def _version_gate_impacts(
+    chains: tuple[Chain, ...] | list[Chain],
+    *,
+    package: str,
+    from_version: str,
+    to_version: str,
+) -> list[Impact]:
+    key = package.lower()
+    sites: list[SiteHit] = []
+    seen: set[tuple[str, int, str]] = set()
+    for chain in chains:
+        if chain.kind != "version_gate":
+            continue
+        if chain.package.lower() != key and chain.service.lower() != key:
+            continue
+        marker = (chain.call_rel, chain.call_lineno, chain.call_expr)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        sites.append(
+            SiteHit(
+                path=chain.call_rel,
+                line=chain.call_lineno,
+                expr=chain.call_expr,
+                confidence=chain.confidence,
+                via_wrapper=False,
+            )
+        )
+    if not sites:
+        return []
+    return [
+        Impact(
+            dependency=package,
+            from_version=from_version,
+            to_version=to_version,
+            change=f"code branches on {package} version",
+            confidence="high",
+            source="version",
+            sites=tuple(sites),
+        )
+    ]
+
+
+def _rest_changes(
+    package: str,
+    service_id: str,
+    entry: dict,
+    fixtures: Path | None,
+    *,
+    service_map: ServiceMap,
+    allow_network: bool,
+) -> tuple[list[ApiChange], str, bool]:
+    """OpenAPI pair when present, otherwise changelog hints and an honest miss."""
+    calls = [
+        chain
+        for chain in service_map.chains
+        if chain.kind == "http_call" and _same_package(chain, package, service_id)
+    ]
+    if not calls:
+        return [], "", False
+    spec = entry.get("openapi") if isinstance(entry.get("openapi"), dict) else {}
+    old_spec = _artifact(fixtures, spec.get("from"))
+    new_spec = _artifact(fixtures, spec.get("to"))
+    if old_spec is not None and new_spec is not None:
+        return diff_openapi(old_spec, new_spec, service=service_id), "", True
+    changes: list[ApiChange] = []
+    changelog = _artifact(fixtures, entry.get("changelog"))
+    if changelog is not None:
+        try:
+            text = changelog.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        if text:
+            changes.extend(
+                item for item in changes_from_notes(text) if item.kind in {"endpoint_removed", "endpoint_renamed"}
+            )
+    uncovered = _uncovered_rest(calls, changes)
+    if old_spec is None and new_spec is None and allow_network and service_id.lower() in PUBLIC_SPEC_URLS:
+        note = _public_spec_note(service_id, uncovered or calls)
+        return changes, note, bool(changes)
+    if not uncovered and changes:
+        return changes, "", True
+    note = _no_spec_note(uncovered or calls)
+    if changes:
+        note = note + " Changelog text was used only as a hint."
+    return changes, note, bool(changes)
+
+
+def _same_package(chain: Chain, package: str, service_id: str) -> bool:
+    key = {package.lower(), service_id.lower()}
+    return chain.package.lower() in key or chain.service.lower() in key
+
+
+def _uncovered_rest(calls: list[Chain], changes: list[ApiChange]) -> list[Chain]:
+    from conduit.impact.openapi_rest import paths_match
+
+    covered: list[Chain] = []
+    for chain in calls:
+        _method, path = split_http_target(chain.sdk_method)
+        if any(paths_match(path, change.old) or paths_match(path, change.symbol.split(" ", 1)[-1]) for change in changes):
+            covered.append(chain)
+    return [chain for chain in calls if chain not in covered]
+
+
+def _no_spec_note(calls: list[Chain]) -> str:
+    shown = []
+    for chain in calls:
+        label = chain.sdk_method or f"{chain.call_rel}:{chain.call_lineno}"
+        if label not in shown:
+            shown.append(label)
+    preview = ", ".join(shown[:4])
+    extra = f" (+{len(shown) - 4} more)" if len(shown) > 4 else ""
+    return (
+        f"not compared: {len(shown)} REST call(s) had no OpenAPI spec to compare ({preview}{extra})"
+    )
+
+
+def _public_spec_note(service_id: str, calls: list[Chain]) -> str:
+    url = PUBLIC_SPEC_URLS.get(service_id.lower(), "")
+    shown = []
+    for chain in calls:
+        label = chain.sdk_method
+        if label and label not in shown:
+            shown.append(label)
+    preview = ", ".join(shown[:3])
+    return (
+        f"not compared: {service_id} REST call(s) ({preview}) had no versioned OpenAPI pair. "
+        f"The public spec repo is {url}; a latest document alone is not a diff."
+    )
 
 
 def _missing_surface_note(from_version: str, to_version: str, *, old_missing: bool = True) -> str:

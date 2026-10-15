@@ -9,7 +9,7 @@ A small repo that talks to four outside services:
 
 `unrelated.py` imports pydantic and requests. Those are not outside services.
 
-`conduit map` walks wrappers, aliases, and re-exports. `conduit impact` diffs recorded wheels, the S3 botocore model, and the Stripe webhook schema. Pass `--from` when the repo does not pin the client; otherwise the line is `not compared: no pinned version found` instead of an all-clear.
+`conduit map` walks wrappers, aliases, and re-exports. `conduit impact` diffs recorded wheels, the S3 botocore model, and the Stripe webhook schema. The version comes from `--from`, an exact pin, a lockfile, or the installed distribution. If none of those exist, the line is `not compared` and says why, instead of an all-clear.
 
 ```bash
 conduit map --path examples/service-clients

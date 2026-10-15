@@ -19,6 +19,6 @@ jobs:
           pip install pytest
       - name: Unit tests
         run: python -m pytest -q conduit/tests
-      - name: Offline demo apply
+      - name: Offline demo rewrite
         run: |
-          conduit apply --path ./examples/demo-consumer --packet ./examples/sample-packet/conduit-packet.json --dry-run
+          python -c "from pathlib import Path; from conduit.main import apply_migration; apply_migration(Path('examples/demo-consumer'), 'examples/sample-packet/conduit-packet.json', dry_run=True)"

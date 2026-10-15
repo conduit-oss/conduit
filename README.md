@@ -24,9 +24,10 @@ map your repo → watch its outside services → change lands → flag affected 
 |---------|----------------|
 | `conduit map` | Outside-in call graph: SDK and REST calls, database drivers, cloud operations, webhook handlers, through your wrappers, aliases, and re-exports |
 | `conduit watch` | Diff old and new PyPI wheels, botocore models, and webhook schemas. Print the lines that break. Release notes are hints only |
-| `conduit impact --dep X` | Same line-by-line check for one service. `--from` and `--to` pick the versions. A missing pin says `not compared` instead of an all-clear |
-| `conduit apply` | Apply a migration packet to your tree |
-| `conduit service` | Hosted skeleton: keep each customer's map, run watch on a schedule, and write a local fix PR |
+| `conduit impact --dep X` | Same line-by-line check for one service. `--from` and `--to` pick the versions. If no version can be resolved, the note says `not compared` and why |
+| `conduit service` | Hosted skeleton: keep each customer's map, run watch on a schedule, and write a local note of the lines that break |
+
+`conduit apply` is deferred. `conduit run` still rewrites a tree from a frozen packet.
 
 Nothing is installed in anyone else's repo.
 
@@ -57,7 +58,7 @@ conduit watch \
   --json
 ```
 
-Store the map and run one hosted pass. This writes a local fix PR (dry-run `conduit apply`, no GitHub App) under `.conduit-service/`:
+Store the map and run one hosted pass. A hit writes a local note of the lines that break under `.conduit-service/`. Rewriting the tree is deferred (`conduit apply` is not a command):
 
 ```bash
 conduit service add \
@@ -80,16 +81,13 @@ conduit impact --dep acme-sdk --path ./examples/service-clients --fixtures ./con
 conduit watch --path ./examples/service-clients --feeds ./conduit/fixtures/feeds
 ```
 
-`impact` prints the dependency, the version it moved from and to, the change (removed, renamed, or changed-signature function, or a return type that went from a dict-like object to a typed model), and each `file:line` with a confidence. `watch` does that when a newer release has a real surface to diff. A version number on its own is not a report. If the repo does not pin the client, pass `--from <version>`; otherwise impact says `not compared: no pinned version found` instead of an all-clear. A pin that does not match a recorded surface says `not compared: pinned version <version> does not match a recorded surface`.
+`impact` prints the dependency, the version it moved from and to, the change (removed, renamed, or changed-signature function, a return type that went from a dict-like object to a typed model, a removed REST path or field, or a branch on the library version), and each `file:line` with a confidence. The SDK call inside a wrapper is the finding. Callers of that wrapper collapse to a count; `--show-callers` lists them. `watch` does the same when a newer release has a real surface to diff. A version number on its own is not a report.
 
-`--packet` is still the leftover gate for a hop you already have. It fails when the pin is at the new version but old call sites remain. That check belongs to apply. It does not watch internal contracts.
+The version to compare from is `--from`, else an exact `==` pin, else `poetry.lock` / `uv.lock` / `Pipfile.lock`, else the installed distribution (`importlib.metadata` or `site-packages`), else the highest PyPI release that matches a requirement range. `--to` or the latest release is the other side. The note is `not compared` only when no version can be determined, and it says why (no pin, lock, install, or resolvable range, or network disabled for a range). A pin that does not match a recorded surface says `not compared: pinned version <version> does not match a recorded surface`.
 
-```bash
-conduit apply \
-  --path ./examples/demo-consumer \
-  --packet ./examples/sample-packet/conduit-packet.json \
-  --dry-run
-```
+Raw `requests`, `httpx`, and `aiohttp` calls are mapped by host and path. A pair of OpenAPI documents flags removed or renamed paths and request or response fields that changed. A public spec repo (Stripe, GitHub, OpenAI) is named when only a latest document exists; that document is not a diff. Calls with no spec to compare are listed as `not compared`, with the reason.
+
+`--packet` is still the leftover gate for a hop you already have. It fails when the pin is at the new version but old call sites remain. It does not watch internal contracts. Rewriting those sites with `conduit apply` is deferred; `conduit run` still applies a frozen packet.
 
 ## Where a change comes from
 
@@ -100,7 +98,8 @@ The list of changes is a diff of published artifacts. There is no hand-written c
 | Two wheels from PyPI (or a recorded pair) | removed, renamed, and changed-signature functions, plus a return type that went from a dict-like object to a typed model | high for a removed call or parameter; medium for an inferred rename or a response-shape change |
 | Botocore service model (`service-2.json`) | AWS operation and shape changes, by service and operation (`s3.PutObject`) | high when your call uses the member that changed |
 | Webhook schema (Stripe OpenAPI, trimmed in tests) | payload fields a handler reads | high when the field is removed; medium when the schema says it was renamed |
-| GitHub releases Atom and a changelog or deprecation page | extra hints only: a version, or a rename the notes state | medium when a rename is only in the release notes; low for changelog prose |
+| Two OpenAPI documents (or a recorded pair) | removed or renamed endpoint paths, and request or response fields that changed | high when the path or field is in both documents; a single latest public spec is not a diff |
+| GitHub releases Atom and a changelog or deprecation page | extra hints only: a version, a rename the notes state, or an endpoint the notes say was removed | medium when a rename is only in the release notes; low for changelog prose |
 
 A newer version on PyPI or npm is the trigger for that diff. It is not a notice by itself. Omit `--feeds` or `--fixtures` to fetch the public URLs and small wheels.
 
@@ -121,7 +120,7 @@ A newer version on PyPI or npm is the trigger for that diff. It is not a notice 
 
 ## Known gaps
 
-Python only today. Misses functions looked up by name at runtime (`getattr`) and functions passed in as arguments. A cloud service stored in a variable (`client(name)`) is not tied to an operation. Positional arguments are not matched to parameter names. Webhook fields read in a helper in another file are missed. The checked-in surfaces under `conduit/fixtures/impact` are recorded wheels, botocore models, and webhook schemas. Omit `--fixtures` and impact can download small wheels.
+Python only today. `functools.partial`, `getattr` with a string literal, and a lambda that wraps an SDK call are tracked. A variable passed to `getattr`, `globals()`, a callable stored on a parameter, and dependency injection stay invisible (`examples/wrapped-openai-fixture/dynamic_gap.py`). Imports inside a function, including an enclosing function, are tracked. A cloud service stored in a variable (`client(name)`) is not tied to an operation. Positional arguments are not matched to parameter names. Webhook fields read in a helper in another file are missed. REST calls with no versioned OpenAPI pair are reported as `not compared`, with the reason. The checked-in surfaces under `conduit/fixtures/impact` are recorded wheels, botocore models, and webhook schemas. Omit `--fixtures` and impact can download small wheels.
 
 ## Docs
 

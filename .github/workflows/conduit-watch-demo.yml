@@ -163,5 +163,5 @@ jobs:
           dirty=$?
           set -e
           test "$dirty" -eq 1
-          conduit apply --path "$FIXTURE" --packet "$PACKET"
+          python -c "from pathlib import Path; from conduit.main import apply_migration; apply_migration(Path('$FIXTURE'), '$PACKET')"
           conduit watch --path "$FIXTURE" --packet "$PACKET"

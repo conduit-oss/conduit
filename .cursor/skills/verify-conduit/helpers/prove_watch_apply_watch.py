@@ -81,10 +81,21 @@ def main() -> int:
     write(evidence / "watch-before.stderr.txt", watch1.stderr)
     write(evidence / "watch-before.exitcode.txt", str(watch1.returncode))
 
-    apply = run_cli(
-        repo,
-        ["apply", "--path", str(scratch), "--packet", str(packet)],
+    # ``conduit apply`` is deferred. The rewrite engine is what ``conduit run`` calls.
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo / "conduit" / "src")
+    apply = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from conduit.main import apply_migration; "
+            f"apply_migration({str(scratch)!r}, {str(packet)!r})",
+        ],
         cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
     write(evidence / "apply.stdout.txt", apply.stdout)
     write(evidence / "apply.stderr.txt", apply.stderr)

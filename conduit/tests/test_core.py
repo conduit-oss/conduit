@@ -823,18 +823,15 @@ def test_verify_cmd_writes_oracle(tmp_path: Path, monkeypatch):
 
 
 def test_apply_cmd_does_not_write_oracle(tmp_path: Path, monkeypatch):
-    from typer.testing import CliRunner
-
     _disable_llm(monkeypatch)
     (tmp_path / "app.py").write_text(
         "import openai\nmodel = 'gpt-4-0613'\n", encoding="utf-8"
     )
     pkt = tmp_path / "conduit-packet.json"
     pkt.write_text(json.dumps(_leftover_packet()), encoding="utf-8")
-    result = CliRunner().invoke(
-        app,
-        ["apply", "--path", str(tmp_path), "--packet", str(pkt)],
-    )
+    from tests.apply_support import invoke_apply
+
+    result = invoke_apply(tmp_path, pkt)
     assert result.exit_code == 0, result.output
     assert not (tmp_path / "tests" / "test_conduit_oracle.py").exists()
 

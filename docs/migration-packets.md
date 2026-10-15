@@ -9,7 +9,7 @@ Schema: [`schema/conduit-packet.schema.json`](../schema/conduit-packet.schema.js
 | Role | Typical action |
 |------|----------------|
 | Vendor / maintainer (producer) | Author the packet (`packet new` with optional LLM enrich, hand edit, or `--scaffold-only`), then `packet test` → `packet publish` into the catalog. Hop scaffolding also via `packet init`, `synthesize`, or `from-detect`. |
-| Consumer (client) | Pull a frozen packet from the catalog (`CONDUIT_PACKET_CATALOG_BASE` or a raw URL), then `conduit apply` / `conduit run` / `conduit watch`. No LLM at apply or Watch. |
+| Consumer (client) | Pull a frozen packet from the catalog (`CONDUIT_PACKET_CATALOG_BASE` or a raw URL), then `conduit run` / `conduit watch`. No LLM at the rewrite or at Watch. `conduit apply` is deferred. |
 
 Producer flow is **publish, then consumer pull**. `packet publish` writes catalog JSON only. It does not open PRs into consumer repos. An LLM may help author rules. Apply and `watch --packet` execute the frozen JSON.
 
@@ -139,7 +139,6 @@ Try it without a demo consumer:
 ```bash
 conduit packet test --packet ./packets/google-genai-pypi-1.0.0.json
 conduit packet test --packet ./packets/google-genai-pypi-1.0.0.json --path /tmp/my-app
-conduit apply --packet ./packets/google-genai-pypi-1.0.0.json --path /tmp/my-app --dry-run
 conduit run --path /tmp/my-app --packet ./packets/google-genai-pypi-1.0.0.json --skip-pr
 ```
 
@@ -191,7 +190,7 @@ Give a Python client the **pypi** hops with `to_version` greater than their pin,
 
 ### Apply order
 
-`conduit run` / `conduit apply` runs two stages on the scoped packet. **SDK** first (dependency bumps + AST call/import/param rules on code files), then **REST** (EXACT/REGEX path and model literals, KEY_RENAME in configs). REST path strings such as `/v1/fine-tunes` are never applied as Python callees. Invalid `AST_CALL_REWRITE` rules are skipped at apply time.
+`conduit run` runs two stages on the scoped packet. `conduit apply` is deferred. **SDK** first (dependency bumps + AST call/import/param rules on code files), then **REST** (EXACT/REGEX path and model literals, KEY_RENAME in configs). REST path strings such as `/v1/fine-tunes` are never applied as Python callees. Invalid `AST_CALL_REWRITE` rules are skipped at rewrite time.
 
 ### OpenAI client chain
 

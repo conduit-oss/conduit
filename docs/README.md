@@ -1,6 +1,6 @@
 # Conduit documentation
 
-Conduit maps the outside services a Python repo talks to and shows the lines that break when one of those services changes. The commands are `map`, `watch`, `impact`, `apply`, and `service`. Scope is external API SDKs and REST, databases, cloud SDKs (S3 through botocore models), and incoming webhooks such as Stripe.
+Conduit maps the outside services a Python repo talks to and shows the lines that break when one of those services changes. The commands are `map`, `watch`, `impact`, and `service`. `conduit apply` is deferred. Scope is external API SDKs and REST, databases, cloud SDKs (S3 through botocore models), and incoming webhooks such as Stripe.
 
 This is not Dependabot territory: no lockfile bumps, no CVE alerts, and no new-version notices for ordinary libraries. Change data comes from diffing published wheels, botocore models, and webhook schemas. GitHub releases and changelogs are extra hints. There is no hand-written change list and no internal repo-to-repo watch.
 
@@ -10,15 +10,16 @@ Packet authoring stays in this repo for maintainers. Detect stays Advanced. Star
 
 ## Consumer
 
-Map the repo, watch or impact one outside service, then apply a frozen packet. Watch and apply use no LLM.
+Map the repo, then watch or impact one outside service. Watch uses no LLM. `conduit apply` is deferred; `conduit run` still rewrites a tree from a frozen packet.
 
 | Doc | Covers |
 |-----|--------|
-| [Getting started](getting-started.md) | Install, map, watch, impact, apply, hosted service skeleton |
+| [Getting started](getting-started.md) | Install, map, watch, impact, hosted service skeleton |
 | [GitHub Actions](github-actions.md) | Leftover Watch gate, nightly, composite action |
 | [CLI reference](cli-reference.md) | Every command and flag |
 | [Outside-in mode](outside-in.md) | Call graph through wrappers, aliases, and re-exports; wheel and schema diffs; hosted watch |
-| [Codemods](codemods.md) | Packet rule types. Map, watch, and impact are Python; apply still has extra language engines |
+| [Migration backtest](backtest.md) | Six merged SDK migrations: recall, precision, and edit coverage |
+| [Codemods](codemods.md) | Packet rule types. Map, watch, and impact are Python; `conduit run` still has extra language engines |
 | [LLM configuration](llm.md) | OpenAI, Anthropic, Ollama, custom local |
 | [Testing & self-correction](testing-and-self-correct.md) | Test runners, smoke-test gen, retry loop |
 | [Pull requests](pull-requests.md) | Branching, `gh`, PR body |

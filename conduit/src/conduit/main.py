@@ -570,6 +570,7 @@ def _watch_feeds(
     feeds: Path | None,
     out: Path | None,
     service: str | None,
+    show_callers: bool = False,
 ) -> None:
     """Poll public feeds for outside services on this repo's map."""
     from conduit.feeds.client import FeedClient
@@ -630,6 +631,7 @@ def _watch_feeds(
                             line=int(site.get("line") or 0),
                             expr=str(site.get("expr") or ""),
                             confidence=str(site.get("confidence") or ""),
+                            via_wrapper=bool(site.get("via_wrapper")),
                         )
                         for site in (item.get("sites") or [])
                         if isinstance(site, dict)
@@ -639,7 +641,7 @@ def _watch_feeds(
                 if isinstance(item, dict)
             ]
             console.print(
-                format_impacts(rendered),
+                format_impacts(rendered, show_callers=show_callers),
                 markup=False,
                 highlight=False,
                 soft_wrap=True,
@@ -661,6 +663,11 @@ def watch_cmd(
         help="Leftover gate: path or http(s) URL to conduit-packet.json. Omit to watch outside services.",
     ),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable verdict or packets"),
+    show_callers: bool = typer.Option(
+        False,
+        "--show-callers",
+        help="List wrapper callers under each breaking SDK line. Default is a count.",
+    ),
     feeds: Optional[Path] = typer.Option(
         None,
         "--feeds",
@@ -692,7 +699,14 @@ def watch_cmd(
     """
     root = _resolve_root(path)
     if not packet:
-        _watch_feeds(root, json_out=json_out, feeds=feeds, out=out, service=service)
+        _watch_feeds(
+            root,
+            json_out=json_out,
+            feeds=feeds,
+            out=out,
+            service=service,
+            show_callers=show_callers,
+        )
         return
     packet_file, _ = _resolve_packet_arg(
         str(packet), root=root, allow_package_name=False
@@ -823,15 +837,23 @@ def impact_cmd(
         help="Recorded wheels, botocore models, and webhook schemas (offline).",
     ),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable impact"),
+    show_callers: bool = typer.Option(
+        False,
+        "--show-callers",
+        help="List wrapper callers under each breaking SDK line. Default is a count.",
+    ),
 ) -> None:
     """Show which lines break when an outside service or its client changes.
 
     Diffs the pin (or ``--from``) against ``--to`` or the newer recorded
     surface: public API of the two wheels, including return types, botocore
     service models, and a webhook schema. GitHub releases and changelogs are
-    hints. Prints each file:line. If the repo has no pin and ``--from`` is
-    omitted, prints ``not compared: no pinned version found`` instead of an
-    all-clear. Does not bump locks, scan CVEs, or report ordinary libraries.
+    hints. Prints each file:line. The breaking SDK line is the finding;
+    wrapper callers collapse to a count unless ``--show-callers`` is set.
+    A version comes from ``--from``, an exact pin, a lockfile, the installed
+    distribution, or the highest PyPI release matching a requirement range.
+    If none of those exist, the note says ``not compared`` and why. Does not
+    bump locks, scan CVEs, or report ordinary libraries.
     """
     root = _resolve_root(path)
     from conduit.impact.report import format_impacts, impacts_to_dicts
@@ -870,7 +892,7 @@ def impact_cmd(
         if notes and not impacts:
             text = "\n".join(notes) + "\n"
         else:
-            text = format_impacts(impacts)
+            text = format_impacts(impacts, show_callers=show_callers)
             if notes:
                 text = "\n".join(notes) + "\n" + text
         console.print(
@@ -883,16 +905,10 @@ def impact_cmd(
     raise typer.Exit(0)
 
 
-@app.command("apply")
-def apply_cmd(
-    path: Path = typer.Option(Path("."), "--path"),
-    packet: str = typer.Option(..., "--packet", help="Path or http(s) URL to conduit-packet.json"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
-) -> None:
-    """Apply a migration packet to the tree. Does not open a pull request.
+def apply_migration(path: Path, packet: str, dry_run: bool = False) -> None:
+    """Rewrite a tree from a packet. Not a CLI command.
 
-    ``--dry-run`` prints the edits and does not write files. The outside-service
-    path that finds those lines is Python today.
+    ``conduit apply`` is deferred. ``conduit run`` still calls the same engines.
     """
     root = _resolve_root(path)
     from conduit.gitignore import ensure_conduit_gitignore
@@ -2046,7 +2062,7 @@ def packet_new_cmd(
     )
     console.print(
         "[dim]Or:[/dim] "
-        f"conduit apply --packet {path_written} --path <consumer> --dry-run"
+        f"conduit run --path <consumer> --packet {path_written} --skip-pr"
     )
 
 

@@ -159,7 +159,7 @@ ADD/REMOVE default to `pip` + `pyproject` unless `ecosystems` is set. They do no
 
 ## Language engines
 
-`conduit map`, `conduit watch`, and `conduit impact` read Python only. Other languages are planned one at a time. TypeScript and JavaScript via tree-sitter are next. The engines below are what `conduit apply` uses for a frozen packet. Java and Go engines exist for those rules. They are not a supported outside-service language yet.
+`conduit map`, `conduit watch`, and `conduit impact` read Python only. Other languages are planned one at a time. TypeScript and JavaScript via tree-sitter are next. The engines below are what `conduit run` uses for a frozen packet. `conduit apply` is deferred. Java and Go engines exist for those rules. They are not a supported outside-service language yet.
 
 Pluggable engines under `conduit.patcher.languages` dispatch AST rules by file suffix.
 Missing optional grammars fall back to regex/string transforms (apply never hard-fails).
@@ -182,14 +182,13 @@ pip install -e "./conduit[llm,langs,dev]"
 ```
 
 
-## Apply CLI
+## Packet rewrite
+
+`conduit apply` is deferred and is not a command. `conduit run` calls the same engine after prune + export delta:
 
 ```bash
-conduit apply --path . --packet ./conduit-packet.json
-conduit apply --path . --packet ./conduit-packet.json --dry-run
+conduit run --path . --packet ./conduit-packet.json --skip-pr
 ```
-
-`conduit run` calls the same engine after prune + export delta.
 
 ## Safety rails
 

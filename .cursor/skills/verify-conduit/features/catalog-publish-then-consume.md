@@ -12,7 +12,7 @@ A producer publishes the pydantic **migration hop** (surface-authored JSON) and 
 
 - Create or init a disposable catalog git directory.
 - `conduit packet publish --packet <hop> --recipe <recipe> --catalog <catalog> [--no-commit]`.
-- `conduit apply` / `conduit watch` with `--packet` = catalog hop JSON.
+- `apply_migration` / `conduit watch` with `--packet` = catalog hop JSON. `conduit apply` is deferred.
 
 ## Driving it with conduit CLI
 
@@ -26,7 +26,7 @@ Preconditions:
 - **Publish.** Run `python -m conduit.main packet publish --packet examples/sample-packet/pydantic-surface-hop.json --recipe examples/reshape-recipes/pydantic-1.10.13-2.0.0.json --catalog <catalog> --no-commit`. Exit code is `0`.
 - **Assert layout.** Confirm `<catalog>/by-package/pydantic/pypi/pydantic-1.10.13-2.0.0.json` and `…/pydantic-1.10.13-2.0.0.recipe.json` exist. (Name “surface hop” means authored from surface diff; it is a **migration** hop, not `packet_kind=surface` under `surfaces/`.)
 - **Isolate consumer.** Copy `examples/pydantic-validator-fixture` to scratch; seed `pydantic==2.0.0`.
-- **Consume.** Run `python -m conduit.main apply --path <scratch> --packet <catalog>/by-package/pydantic/pypi/pydantic-1.10.13-2.0.0.json`. Exit `0`. The `.recipe.json` sibling is **not** the apply input — rules are already merged into the hop.
+- **Consume.** `conduit apply` is deferred. Run `python -c "from conduit.main import apply_migration; apply_migration(__import__('pathlib').Path('<scratch>'), '<catalog>/by-package/pydantic/pypi/pydantic-1.10.13-2.0.0.json')"`. Exit `0`. The `.recipe.json` sibling is **not** the rewrite input — rules are already merged into the hop.
 - **Watch.** Run Watch with the **same catalog hop path**; expect `status=clean` after apply.
 - **Proof.** Save publish stdout, listing of `by-package/pydantic/pypi/`, apply/Watch transcripts, and post-apply `model.py` under `evidence/catalog-publish-then-consume-<UTC>/`.
 

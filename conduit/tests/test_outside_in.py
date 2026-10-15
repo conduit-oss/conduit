@@ -264,10 +264,9 @@ def test_watch_bump_dirty_then_apply_clears_wrappers(tmp_path: Path, monkeypatch
     assert dirty.exit_code == 1
     assert any(item.rel == "consumer.py" for item in dirty.leftovers)
 
-    result = CliRunner().invoke(
-        app,
-        ["apply", "--path", str(tree), "--packet", str(PACKET_PATH)],
-    )
+    from tests.apply_support import invoke_apply
+
+    result = invoke_apply(tree, PACKET_PATH)
     llm_text = (tree / "llm.py").read_text(encoding="utf-8")
     alias_text = (tree / "direct_alias.py").read_text(encoding="utf-8")
     app_text = (tree / "app.py").read_text(encoding="utf-8")
@@ -477,10 +476,9 @@ def test_apply_imports_qualified_callee_without_duplicating(tmp_path: Path, monk
     )
     tree = tmp_path / "wrapped"
     shutil.copytree(FIXTURE, tree)
-    result = CliRunner().invoke(
-        app,
-        ["apply", "--path", str(tree), "--packet", str(PACKET_PATH)],
-    )
+    from tests.apply_support import invoke_apply
+
+    result = invoke_apply(tree, PACKET_PATH)
     assert result.exit_code in {0, 1}, result.output
 
     alias = (tree / "direct_alias.py").read_text(encoding="utf-8")

@@ -36,7 +36,7 @@ class Leftover:
 
 @dataclass(frozen=True)
 class ApplyLeftoverVerdict:
-    """Outcome of the post-apply leftover gate for ``conduit apply``."""
+    """Outcome of the post-rewrite leftover gate. ``conduit apply`` is deferred."""
 
     status: Literal["clean", "dirty", "pin_only", "incomplete", "unverified"]
     leftovers: tuple[Leftover, ...]
