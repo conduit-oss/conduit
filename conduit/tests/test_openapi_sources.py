@@ -6,11 +6,14 @@ import json
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from conduit.impact.intersect import intersect
 from conduit.impact.openapi_rest import diff_openapi
 from conduit.impact.openapi_sources import (
     SPEC_SOURCES,
     discover_spec_at_ref,
+    github_api_available,
     pypi_source_repo,
     resolve_sdk_package_pair,
     resolve_spec_pair,
@@ -20,6 +23,11 @@ from conduit.impact.run import collect_impacts
 from conduit.outside_in.analyze import analyze_repo
 from conduit.outside_in.bridge import build_service_map
 from conduit.impact.openapi_rest import load_openapi, operations
+
+
+def _require_github_api() -> None:
+    if not github_api_available():
+        pytest.skip("GitHub API unavailable or rate-limited")
 
 
 def test_catalog_maps_hosts_to_verified_sources():
@@ -346,6 +354,7 @@ def test_resolve_sdk_package_airflow_removes_dag_reports():
 
 
 def test_resolve_apis_guru_github_removes_authorizations():
+    _require_github_api()
     old, new, note = resolve_spec_pair(
         "apis-guru-github", from_ref="2021-06-10", to_ref="2023-02-16", allow_network=True
     )
@@ -359,6 +368,7 @@ def test_resolve_apis_guru_github_removes_authorizations():
 
 
 def test_resolve_azure_storage_version_dirs():
+    _require_github_api()
     old, new, note = resolve_spec_pair(
         "azure-storage", from_ref="2023-05-01", to_ref="2026-09-01", allow_network=True
     )
@@ -367,6 +377,7 @@ def test_resolve_azure_storage_version_dirs():
 
 
 def test_resolve_google_drive_discovery_pair():
+    _require_github_api()
     old, new, note = resolve_spec_pair(
         "google-drive", from_ref="2019-06-01", to_ref="2026-09-01", allow_network=True
     )
@@ -379,6 +390,7 @@ def test_resolve_google_drive_discovery_pair():
 
 
 def test_github_falls_back_to_apis_guru_when_primary_misses():
+    _require_github_api()
     # Early dates are missing from github/rest-api-description; APIs.guru has history.
     old, new, note = resolve_spec_pair(
         "github", from_ref="2021-06-10", to_ref="2023-02-16", allow_network=True

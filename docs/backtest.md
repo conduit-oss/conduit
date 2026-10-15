@@ -160,6 +160,8 @@ Catalogued shortcuts (not change lists):
 
 When no from/to pair can be resolved, impact keeps an honest `not compared: …` note.
 
+Commit-by-date resolution (APIs.guru, Azure, Google discovery, GitHub fallback) uses the GitHub commits API. Set `GITHUB_TOKEN` or `GH_TOKEN` (or an authenticated `gh`) so lookups stay within the authenticated rate limit; Conduit CI passes `github.token` into the unit-test job for that reason.
+
 ### REST migration backtests
 
 Same command shape: check out the parent, run `conduit impact --dep <svc> --from <ref> --to <ref>`. A call site is a deleted non-comment line that is the REST call (or SDK path request) the migration rewrote. Strict precision is main lines on those deleted lines.

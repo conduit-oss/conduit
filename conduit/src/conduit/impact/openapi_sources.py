@@ -601,7 +601,8 @@ def _commit_by_date(source: SpecSource, token: str) -> tuple[str, str]:
         return "", f"no path for {source.service_id}"
     sha = _commit_before(source.repo, path, date)
     if not sha:
-        return "", f"no commit for {path} at or before {token}"
+        api_err = f" ({_GITHUB_API_LAST_ERROR})" if _GITHUB_API_LAST_ERROR else ""
+        return "", f"no commit for {path} at or before {token}{api_err}"
     return sha, ""
 
 
@@ -1057,6 +1058,31 @@ def _commit_before(repo: str, path: str, when: datetime) -> str:
     return str(first.get("sha") or "")
 
 
+# Last GitHub API failure (status + short reason). Cleared on success.
+_GITHUB_API_LAST_ERROR: str = ""
+
+
+def github_api_available() -> bool:
+    """True when the GitHub API accepts authenticated (or light unauth) traffic.
+
+    Live OpenAPI commit-by-date tests call this to skip when CI has no token
+    and the shared runner IP is rate-limited.
+    """
+    global _GITHUB_API_LAST_ERROR
+    payload, _link = _github_json("https://api.github.com/rate_limit")
+    if isinstance(payload, dict):
+        core = payload.get("resources", {})
+        if isinstance(core, dict):
+            core = core.get("core", {})
+        if isinstance(core, dict):
+            remaining = core.get("remaining")
+            if isinstance(remaining, int) and remaining <= 0:
+                _GITHUB_API_LAST_ERROR = "rate limit remaining=0"
+                return False
+        return True
+    return not bool(_GITHUB_API_LAST_ERROR)
+
+
 def _parse_date(text: str) -> datetime | None:
     token = (text or "").strip()
     if not token:
@@ -1237,9 +1263,11 @@ def _fetch_text(url: str) -> str | None:
 
 
 def _github_json(url: str) -> tuple[Any, str]:
+    global _GITHUB_API_LAST_ERROR
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "conduit-openapi",
+        "X-GitHub-Api-Version": "2022-11-28",
     }
     token = _github_token()
     if token:
@@ -1247,10 +1275,30 @@ def _github_json(url: str) -> tuple[Any, str]:
     try:
         with httpx.Client(timeout=60.0, follow_redirects=True) as client:
             response = client.get(url, headers=headers)
-            if response.status_code != 200:
-                return None, ""
-            return response.json(), response.headers.get("Link", "")
-    except Exception:
+            if response.status_code == 200:
+                _GITHUB_API_LAST_ERROR = ""
+                return response.json(), response.headers.get("Link", "")
+            # One short retry on secondary rate limit / transient abuse.
+            if response.status_code in {403, 429}:
+                import time
+
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = min(float(retry_after), 5.0) if retry_after else 1.5
+                except ValueError:
+                    delay = 1.5
+                time.sleep(delay)
+                response = client.get(url, headers=headers)
+                if response.status_code == 200:
+                    _GITHUB_API_LAST_ERROR = ""
+                    return response.json(), response.headers.get("Link", "")
+            detail = (response.text or "").strip().replace("\n", " ")[:160]
+            _GITHUB_API_LAST_ERROR = f"HTTP {response.status_code}" + (
+                f": {detail}" if detail else ""
+            )
+            return None, ""
+    except Exception as exc:
+        _GITHUB_API_LAST_ERROR = f"{type(exc).__name__}: {exc}"
         return None, ""
 
 
