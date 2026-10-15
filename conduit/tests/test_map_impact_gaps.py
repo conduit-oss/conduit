@@ -287,12 +287,18 @@ def test_wrapper_callers_collapse_unless_requested(tmp_path: Path):
     runner = CliRunner().invoke(
         app,
         ["impact", "--path", str(tmp_path), "--dep", "openai", "--help"],
+        env={"COLUMNS": "120", "TERM": "dumb", "NO_COLOR": "1"},
     )
     assert runner.exit_code == 0
-    assert "--show-callers" in runner.stdout
+    help_text = runner.stdout or runner.output or ""
+    assert "--show-callers" in help_text
 
 
 def test_unpinned_versions_resolve_from_locks_installs_and_pypi(tmp_path: Path, monkeypatch):
+    # CI installs ``./conduit[llm]``, which puts openai on the runner. The empty
+    # tree has no pin; hide the site-packages hit so this case stays about the
+    # repo, not the test environment.
+    monkeypatch.setattr("conduit.impact.versions.installed_version", lambda _package: "")
     empty = tmp_path / "empty"
     empty.mkdir()
     version, reason = resolve_client_version(empty, "openai", allow_network=False)
