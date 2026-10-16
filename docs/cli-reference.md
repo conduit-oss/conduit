@@ -7,7 +7,7 @@ conduit --help
 conduit <command> --help
 ```
 
-Top-level `--help` keeps map, watch, impact, service, packet, verify, and run in **Commands**. `detect` and `module` appear under **Advanced**. `conduit apply` is deferred and is not a command.
+Top-level commands are `map`, `watch`, `impact`, and `service`. The migration rewrite (`run`, `verify`, `detect`, `packet`, `module`) was removed.
 
 ## Global options
 

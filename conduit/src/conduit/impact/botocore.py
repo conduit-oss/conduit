@@ -1,7 +1,7 @@
-"""Diff two botocore service-2.json models.
+"""Diff two service-model documents (service-2.json).
 
-Botocore ships one JSON model per AWS service. Operation and shape changes
-there are the cloud-API diff. Call sites are ``s3.put_object`` style names.
+Cloud SDKs ship one JSON model per service. Operation and shape changes
+there are the cloud-API diff. Call sites are ``service.operation`` names.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def diff_service_models(old: Path, new: Path, *, service: str) -> list[ApiChange
                 new="",
                 detail=f"{service_id}.{name} removed",
                 confidence="high",
-                source="botocore",
+                source="service-model",
                 service=service_id,
             )
         )
@@ -51,7 +51,7 @@ def diff_service_models(old: Path, new: Path, *, service: str) -> list[ApiChange
                     new="",
                     detail=f"{service_id}.{name} parameter {member} removed",
                     confidence="high",
-                    source="botocore",
+                    source="service-model",
                     service=service_id,
                 )
             )
@@ -66,7 +66,7 @@ def diff_service_models(old: Path, new: Path, *, service: str) -> list[ApiChange
                     new="",
                     detail=f"{service_id}.{name} response field {member} removed",
                     confidence="high",
-                    source="botocore",
+                    source="service-model",
                     service=service_id,
                 )
             )

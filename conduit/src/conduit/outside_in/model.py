@@ -80,6 +80,8 @@ class ServiceMap:
     entries: tuple[Entry, ...] = ()
     chains: tuple[Chain, ...] = ()
     limitations: tuple[str, ...] = field(default_factory=tuple)
+    #: service id -> evidence path, such as ``name -> dep -> ssl``.
+    evidence: dict[str, str] = field(default_factory=dict)
 
     def services(self) -> list[str]:
         found: list[str] = []

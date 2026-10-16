@@ -54,7 +54,7 @@ def tick_cmd(
     feeds: Optional[Path] = typer.Option(
         None,
         "--feeds",
-        help="Recorded public-feed copies. Omit to fetch those URLs. Change data is the wheels, botocore models, and webhook schemas beside them.",
+        help="Recorded public-feed copies. Omit to fetch those URLs. Change data is the wheels, service models, and webhook schemas beside them.",
     ),
     customer: Optional[str] = typer.Option(None, "--customer"),
     apply: bool = typer.Option(

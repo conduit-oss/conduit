@@ -25,9 +25,5 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          conduit run --path . --skip-lockfile --module openai --no-push || true
-          # Prefer consumer repos to point this workflow at their app path.
-          # In this monorepo, prove the structural 0.28 kill-bar hop (skip demo
-          # suite assertions that intentionally encode the legacy surface):
-          conduit run --path ./examples/demo-consumer --packet ./examples/sample-packet/conduit-packet.json --demo --skip-tests --skip-pr
-          git -C examples/demo-consumer checkout -- .
+          conduit map --path . --json > /tmp/conduit-map.json
+          conduit map --path ./examples/wrapped-openai-fixture

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from conduit.detect.manifests import pin_for_packet_ecosystem, read_installed_by_ecosystem
+from conduit.deps.manifests import pin_for_packet_ecosystem, read_installed_by_ecosystem
 from conduit.feeds.catalog import feeds_for
 from conduit.feeds.client import FeedClient
 from conduit.feeds.model import FeedHit
@@ -53,7 +53,12 @@ def watch_outside(
     the built-in list when a caller wants a different plug-in set.
     """
     service_map, _blast = build_service_map(root, service=service)
-    targets, skipped = targets_for_map(root, service_map, service=service)
+    targets, skipped = targets_for_map(
+        root,
+        service_map,
+        service=service,
+        urls=client.index or None,
+    )
     chosen = list(sources) if sources is not None else default_sources()
     hits: list[FeedHit] = []
     for target in targets:
@@ -118,14 +123,16 @@ def targets_for_map(
     service_map: ServiceMap,
     *,
     service: str | None = None,
+    urls: dict[str, str] | None = None,
 ) -> tuple[list[WatchTarget], list[str]]:
-    """Keep catalogued outside services. Drop everything else."""
+    """Keep classified outside services. Drop everything else."""
     by_eco = read_installed_by_ecosystem(root)
+    pins = {name.lower(): version for name, version in (by_eco.get("pypi") or {}).items()}
     targets: list[WatchTarget] = []
     skipped: list[str] = []
     names = service_map.services()
     if service and not names:
-        spec = catalog_spec(service)
+        spec = catalog_spec(service, root=root)
         if spec is None:
             skipped.append(
                 f"{service}: not an outside service; internal modules and "
@@ -133,14 +140,14 @@ def targets_for_map(
             )
             return [], skipped
     for name in names:
-        spec = catalog_spec(name)
+        spec = catalog_spec(name, pins.get(name.lower()), root=root)
         if spec is None:
             skipped.append(
                 f"{name}: not an outside service; internal modules and "
                 "repo-to-repo contracts are not watched"
             )
             continue
-        feeds = feeds_for(spec.service_id)
+        feeds = feeds_for(spec.service_id, spec.package, urls=urls)
         if feeds is None:
             skipped.append(f"{spec.service_id}: no public feeds configured")
             continue

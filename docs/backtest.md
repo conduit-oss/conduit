@@ -185,9 +185,35 @@ lp deletes `requests.post(…/usage_records)` at `lp/services/line_service.py:52
 | [apache/airflow-client-python](https://github.com/apache/airflow-client-python/commit/7a2ccc6629c39fa8559cbfc0b60514655d522705) | OpenAPI Generator `spec/v2.yaml` | `7a2ccc6` parent `241405e` | `--dep airflow --from 3.0.0 --to 3.1.3` | 1/1 | 1/1 |
 | **Total (new)** | | | | **3/3 (100%)** | **3/3 (100%)** |
 
-git-workflow deletes both `requests.post('https://api.github.com/authorizations', …)` call sites in the extensionless Python script `git-github-login` (shebang-scanned) after GitHub removed the Authorizations API; the pair is resolved via APIs.guru when `github/rest-api-description` has no commit for the early from-date. airflow-client-python deletes `param_serialize(…, resource_path='/api/v2/dagReports')` in `dag_report_api.py` when regenerating after the Airflow OpenAPI drop; discovery uses the committed `spec/v2.yaml` at the client tags.
+git-workflow deletes both `requests.post('https://api.github.com/authorizations', …)` call sites in the extensionless Python script `git-github-login` (shebang-scanned) after GitHub removed the Authorizations API. The numbers above used a catalogued registry fallback. That table is gone; a spec is discovered from the package's own source repository. airflow-client-python deletes `param_serialize(…, resource_path='/api/v2/dagReports')` in `dag_report_api.py` when regenerating after the Airflow OpenAPI drop; discovery uses the committed `spec/v2.yaml` at the client tags.
 
 Stripe REST pair re-run: still 2/2. OpenAI large/small and non-OpenAI wheel sets were re-run after this change. Call-site recall, edit coverage, and primary counts are unchanged: large 13/13, 43/79 (54%), 43/117; small 6/6 on the call filter, 13/22 (59%), 13/20; non-OpenAI 38/43 (88%), 38/52 (73%).
+
+## Evidence classifier
+
+The hand-written service catalog is gone. A distribution is an outside service only when its own wheel, sdist, or installed files show I/O, followed a bounded number of dependency levels:
+
+- network: the code calls `socket`, `ssl`, `http.client`, or `urllib.request`, or it depends on a distribution that does;
+- database: the code implements DB-API 2.0 (`connect` / `cursor` / `execute` / `commit`), or it shows a wire protocol (`struct` pack/unpack), a connection pool (`checkout`/`checkin`, or `get_socket` plus `connect`), and a cursor iterator, or it depends on a distribution that does;
+- spec: the wheel ships a versioned API model (`service-2.json` or an OpenAPI document).
+
+A client, session, or connection class has to be what the caller constructs. An incidental download helper is not a service. Generic HTTP libraries stay transports: they are used to attribute URL calls and are not map services. A core HTTP layer that many product clients share, and that exposes no product client of its own, is a transport too. Kind (`api`, `database`, `cloud`) and constructor names come from that evidence. `--markdown` prints the path. The hop is the client the caller's methods use, not a client built only in the constructor. For a table call that is `supabase -> postgrest -> httpx -> httpcore -> http.client`.
+
+Pure-compute libraries are not services. `pydantic`, `pandas`, `numpy`, and `attrs` stay out. `requests`, `httpx`, `aiohttp`, `urllib3`, `fastapi`, `starlette`, `anyio`, and `websockets` are transports. These are services, from the wheel alone: `supabase` (api), `slack-sdk` (api, host `api.slack.com`), `psycopg2` (database), `stripe` (api), `boto3` (cloud, via a service model), `sqlalchemy` (database), `openai` (api, host `api.openai.com`). A requirement range such as `>=1.4.0,<2.0.0` is not a wheel version; classification uses a concrete release.
+
+The evidence hop follows public methods the caller invokes. `supabase` reaches `postgrest` from those methods (`supabase -> postgrest -> httpx -> httpcore -> http.client`). Current `openai` releases depend on `httpx2`, so that name appears in the path; 0.28.1 reaches `aiohttp`. `pymongo` is `database` via `socket`: it frames a wire protocol, pools sockets, and walks a cursor, without DB-API names. `azure-core` is a transport (`azure-core -> requests -> urllib3 -> ssl`). `azure-storage-blob` stays a product through that transport. A two-label host such as a health-check URL is not a service. A signature header that does not carry a package token does not name one either.
+
+There is no vendor-name allowlist. String literals under `conduit/src` are scanned, including impact, the CLI, and service. The migration rewrite (`detect`, `patcher`, `packet`, credentials, and `conduit run`) was removed, and with it the hand-written OpenAPI location table. Specs are still discovered from a package's source repository.
+
+Impact was re-run here and on `main` at `1ed1106` after the migration rewrite was deleted and the three classifier fixes landed. Primary lines (`via_wrapper` false) are identical on every repo, so recall and strict precision do not move.
+
+| Set | Before (`main` `1ed1106`) | After |
+|-----|---------------------------|-------|
+| OpenAI large | 13/13 call sites, 43/79 strict (54%), 43/117 edit coverage | same |
+| OpenAI small | 6/6 on the call filter, 13/22 strict (59%), 13/20 edit coverage | same |
+| Non-OpenAI | 38/43 caught (88%), 38/52 strict (73%) | same |
+
+Primary-line counts behind those denominators, before and after: FastChat 29, dspy 14, mlflow 18, dd-trace-py 1, wandb 0, guardrails 17 (79); small set 4, 2, 4, 2, 3, 7 (22); PaintOmics 28, briehost 1, knowledge-graph-system 4, great_expectations 19 (52).
 
 ## Remaining misses
 

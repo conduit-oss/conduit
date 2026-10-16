@@ -37,6 +37,7 @@ def service_map_to_dict(
         ],
         "chains": [_chain_dict(chain) for chain in service_map.chains],
         "limitations": list(service_map.limitations),
+        "evidence": dict(service_map.evidence),
     }
     if blast is not None:
         payload["blast"] = {
@@ -80,6 +81,9 @@ def format_report(
     for service in services:
         header = f"## {service}" if markdown else f"{service}"
         lines.append(header)
+        shown = service_map.evidence.get(service, "")
+        if markdown and shown:
+            lines.append(f"evidence: `{shown}`")
         for entry in by_service.get(service, []):
             lines.append(
                 f"- {entry.rel}:{entry.lineno}  {entry.kind}  {entry.symbol}  "

@@ -1,10 +1,10 @@
 # Getting started
 
-Start with `conduit map`, `conduit watch`, and `conduit impact`. `conduit service` is the hosted skeleton for that loop. `conduit apply` is deferred.
+Start with `conduit map`, `conduit watch`, and `conduit impact`. `conduit service` is the hosted skeleton for that loop. Those commands do not rewrite the tree.
 
 Scope is outside services only: external API SDKs and REST, databases, cloud SDKs such as S3 via botocore models, and incoming webhooks such as Stripe. This is not Dependabot territory. Conduit does not bump lockfiles, scan for CVEs, or send new-version notices for ordinary libraries. It does not watch internal repos.
 
-Watch without `--packet` diffs old and new PyPI wheels, botocore models, webhook schemas, and a versioned OpenAPI pair when one is recorded. GitHub releases and changelogs are extra hints. There is no hand-written change list. `conduit impact --dep X [--from V] [--to V]` is the same check for one service and prints `file:line`. The version comes from `--from`, an exact pin, a lockfile, the installed distribution, or the highest PyPI release matching a requirement range. If none of those exist, the note says `not compared` and why. The `--packet` form of Watch is the leftover gate for a hop you already have. That gate uses no LLM. Producers can still author packets. Detect modules are Advanced.
+`conduit watch` diffs old and new wheels, service models, webhook schemas, and a versioned OpenAPI pair discovered from the package. Release notes are extra hints. There is no hand-written change list. `conduit impact --dep X [--from V] [--to V]` is the same check for one service and prints `file:line`. The version comes from `--from`, an exact pin, a lockfile, the installed distribution, or the highest PyPI release matching a requirement range. If none of those exist, the note says `not compared` and why. `conduit map --packet` adds blast radius for a hop document. It does not rewrite call sites.
 
 Python only today. Other languages are planned one at a time. TypeScript and JavaScript via tree-sitter are next.
 

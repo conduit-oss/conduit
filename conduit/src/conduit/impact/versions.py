@@ -11,7 +11,7 @@ import json
 import re
 from pathlib import Path
 
-from conduit.detect.pip_manifests import iter_pip_manifests
+from conduit.deps.manifests import iter_pip_manifests
 
 _NAME = r"[A-Za-z0-9_.\-]+"
 

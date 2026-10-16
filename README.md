@@ -27,7 +27,7 @@ map your repo → watch its outside services → change lands → flag affected 
 | `conduit impact --dep X` | Same line-by-line check for one service. `--from` and `--to` pick the versions. If no version can be resolved, the note says `not compared` and why |
 | `conduit service` | Hosted skeleton: keep each customer's map, run watch on a schedule, and write a local note of the lines that break |
 
-`conduit apply` is deferred. `conduit run` still rewrites a tree from a frozen packet.
+Map, watch, impact, and service are the commands. They do not rewrite the tree.
 
 Nothing is installed in anyone else's repo.
 
@@ -85,9 +85,9 @@ conduit watch --path ./examples/service-clients --feeds ./conduit/fixtures/feeds
 
 The version to compare from is `--from`, else an exact `==` pin, else `poetry.lock` / `uv.lock` / `Pipfile.lock`, else the installed distribution (`importlib.metadata` or `site-packages`), else the highest PyPI release that matches a requirement range. `--to` or the latest release is the other side. The note is `not compared` only when no version can be determined, and it says why (no pin, lock, install, or resolvable range, or network disabled for a range). A pin that does not match a recorded surface says `not compared: pinned version <version> does not match a recorded surface`.
 
-Raw `requests`, `httpx`, and `aiohttp` calls are mapped by host and path. A pair of OpenAPI documents flags removed or renamed paths and request or response fields that changed. A public spec repo (Stripe, GitHub, OpenAI) is named when only a latest document exists; that document is not a diff. Calls with no spec to compare are listed as `not compared`, with the reason.
+Raw `requests`, `httpx`, and `aiohttp` calls are mapped by host and path. A pair of OpenAPI documents flags removed or renamed paths and request or response fields that changed. The documents are discovered from the package's source repository. Calls with no spec to compare are listed as `not compared`, with the reason.
 
-`--packet` is still the leftover gate for a hop you already have. It fails when the pin is at the new version but old call sites remain. It does not watch internal contracts. Rewriting those sites with `conduit apply` is deferred; `conduit run` still applies a frozen packet.
+`conduit map --packet` adds blast radius for a hop document you already have. It does not rewrite call sites.
 
 ## Where a change comes from
 

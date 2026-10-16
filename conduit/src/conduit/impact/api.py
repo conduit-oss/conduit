@@ -306,8 +306,8 @@ def _public(name: str) -> bool:
 def _public_symbols(symbols: dict[str, Symbol], aliases: dict[str, tuple[str, ...]]) -> dict[str, Symbol]:
     """Public modules, plus names re-exported from a public module.
 
-    SDKs often define ``Charge`` in ``stripe/_charge.py`` and export it from
-    ``stripe/__init__.py``. The defining module is private; the export is the
+    SDKs often define a type in a private module and export it from the
+    package init. The defining module is private; the export is the
     public surface. Private helpers that are not re-exported stay out.
     """
     exported = set(aliases)
@@ -371,7 +371,7 @@ def _response_shape_changed(
     removed: bool,
     new_models: bool,
 ) -> bool:
-    """Dict subclass (``OpenAIObject``) then pydantic ``BaseModel``."""
+    """Dict subclass then pydantic ``BaseModel``."""
     if old_returns.get(name) != "dict":
         return False
     if removed:
@@ -971,7 +971,7 @@ def _dotted(mod: _Mod, node: ast.AST | None) -> str:
 
 
 def _return_kinds(mods: dict[str, _Mod]) -> dict[str, str]:
-    """``dict`` for an OpenAIObject-style return, ``model`` for a BaseModel."""
+    """``dict`` for a mapping-style return, ``model`` for a BaseModel."""
     classes = _class_kinds(mods)
     hints: dict[str, set[str]] = {}
     supers: dict[str, tuple[str, str]] = {}
