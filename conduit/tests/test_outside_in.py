@@ -11,11 +11,7 @@ from typer.testing import CliRunner
 from conduit.main import app
 from conduit.outside_in.analyze import analyze_repo
 from conduit.outside_in.blast import blast_radius
-from conduit.outside_in.bridge import merge_wrapped_leftovers
 from conduit.outside_in.report import format_report, service_map_to_dict
-from conduit.patcher.ast_attr_call import rewrite_python_call
-from conduit.patcher.leftovers import scan_packet_leftovers
-from conduit.watch import evaluate_watch
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "examples" / "wrapped-openai-fixture"
@@ -198,10 +194,6 @@ def test_blast_names_method_and_forwarded_param():
     assert "method_renamed" in main_kinds
     assert "param_renamed" in main_kinds
 
-    http = next(item for item in blast.affected if item.chain.call_symbol == "ask_http")
-    assert any(issue.kind == "method_renamed" and issue.confidence == "medium" for issue in http.breaks)
-
-
 def test_response_key_break_when_packet_says_so():
     service_map = _map()
     packet = {
@@ -226,66 +218,6 @@ def test_response_key_break_when_packet_says_so():
         if item.chain.call_rel == "llm.py" and not item.chain.via_wrapper
     )
     assert any(issue.kind == "response_key_renamed" and issue.old == "content" for issue in direct.breaks)
-
-
-def test_watch_lists_wrapped_call_sites_import_prune_misses():
-    packet = _packet()
-    leftovers = scan_packet_leftovers(FIXTURE, packet)
-    rels = {item.rel for item in leftovers}
-    assert "app.py" in rels
-    assert "consumer.py" in rels
-    assert "gateway.py" in rels
-    assert "direct_alias.py" in rels
-    assert "http_edge.py" not in rels
-    assert "unrelated.py" not in rels
-    app_items = [item for item in leftovers if item.rel == "app.py"]
-    assert any("ChatCompletion.create" in item.callee for item in app_items)
-    assert any("wrapper chain" in item.reason for item in app_items)
-
-
-def test_watch_bump_dirty_then_apply_clears_wrappers(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("CONDUIT_LLM_PROVIDER", raising=False)
-    monkeypatch.setattr(
-        "conduit.patcher.sync_env.sync_bumped_packages",
-        lambda *args, **kwargs: [],
-    )
-    tree = tmp_path / "wrapped"
-    shutil.copytree(FIXTURE, tree)
-    packet = _packet()
-    before = evaluate_watch(root=tree, packet=packet)
-    assert before.status == "pre_bump"
-    assert any(item.rel == "app.py" for item in before.leftovers)
-
-    (tree / "requirements.txt").write_text("openai==1.0.0\n", encoding="utf-8")
-    dirty = evaluate_watch(root=tree, packet=packet)
-    assert dirty.status == "bump_dirty"
-    assert dirty.exit_code == 1
-    assert any(item.rel == "consumer.py" for item in dirty.leftovers)
-
-    from tests.apply_support import invoke_apply
-
-    result = invoke_apply(tree, PACKET_PATH)
-    llm_text = (tree / "llm.py").read_text(encoding="utf-8")
-    alias_text = (tree / "direct_alias.py").read_text(encoding="utf-8")
-    app_text = (tree / "app.py").read_text(encoding="utf-8")
-    assert "ChatCompletion.create" not in llm_text
-    assert "openai.chat.completions.create" in llm_text
-    assert "ChatCompletion.create" not in alias_text
-    assert "openai.chat.completions.create" in alias_text
-    assert "complete(prompt, max_tokens=16)" in app_text
-    assert result.exit_code in {0, 1}, result.output
-
-    # The 0.28 packet's old_callee leaf is `create`. After the rewrite,
-    # `import openai` + `openai.chat.completions.create` is still a
-    # package-rooted `.create` for the lexical surface binder, so apply/Watch
-    # can exit unverified with no leftovers. Wrapped old_callee hits must be gone.
-    assert scan_packet_leftovers(tree, packet) == []
-    clean = evaluate_watch(root=tree, packet=packet)
-    assert clean.leftovers == ()
-    assert clean.status in {"clean", "unverified"}
-    assert clean.status != "bump_dirty"
 
 
 def test_map_cli_prints_wrapped_blast_radius():
@@ -363,9 +295,7 @@ def test_each_call_site_lists_a_method_rename_once():
         )
         assert short not in rendered
         assert rest_short not in rendered
-        assert rendered.count(rest_qualified) == sum(
-            1 for item in blast.affected if item.chain.kind == "http_call" and item.breaks
-        )
+        assert rest_qualified not in rendered
     json_breaks = [
         issue
         for item in payload["blast"]["affected"]
@@ -382,9 +312,8 @@ def test_each_call_site_lists_a_method_rename_once():
         for issue in item["breaks"]
         if issue["kind"] == "method_renamed"
     ]
-    assert http
-    assert {issue["old"] for issue in http} == {"openai.ChatCompletion.create"}
-    assert {issue["confidence"] for issue in http} == {"medium"}
+    # A dotted callee is not a URL path, so it does not invent a REST match.
+    assert http == []
 
     # A different destination is a different change and stays visible.
     packet = _packet()
@@ -464,95 +393,3 @@ def test_inner_kwarg_breaks_every_outer_call_site():
     assert any(issue["old"] == "max_tokens" for issue in consumer["breaks"])
     assert consumer["confidence"] == "high"
 
-
-def test_apply_imports_qualified_callee_without_duplicating(tmp_path: Path, monkeypatch):
-    """A rewrite to openai.* gains import openai once, including through a re-export."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("CONDUIT_LLM_PROVIDER", raising=False)
-    monkeypatch.setattr(
-        "conduit.patcher.sync_env.sync_bumped_packages",
-        lambda *args, **kwargs: [],
-    )
-    tree = tmp_path / "wrapped"
-    shutil.copytree(FIXTURE, tree)
-    from tests.apply_support import invoke_apply
-
-    result = invoke_apply(tree, PACKET_PATH)
-    assert result.exit_code in {0, 1}, result.output
-
-    alias = (tree / "direct_alias.py").read_text(encoding="utf-8")
-    assert "openai.chat.completions.create" in alias
-    assert _import_openai_lines(alias) == 1
-    assert alias.index("from __future__ import annotations") < alias.index("import openai")
-    assert alias.index("import openai") < alias.index("from pkg import ChatCompletion")
-    compile(alias, "direct_alias.py", "exec")
-
-    for rel in ("llm.py", "gateway.py", "pkg/impl.py"):
-        text = (tree / rel).read_text(encoding="utf-8")
-        assert _import_openai_lines(text) == 1, rel
-    for rel in ("app.py", "consumer.py", "http_edge.py", "pkg/__init__.py"):
-        text = (tree / rel).read_text(encoding="utf-8")
-        assert _import_openai_lines(text) == 0, rel
-
-    wrapper = (
-        "import llm\n\n"
-        "def ask(prompt: str) -> str:\n"
-        "    return llm.complete(prompt)\n"
-    )
-    wrapped, n = rewrite_python_call(
-        wrapper, "llm.complete", "openai.chat.completions.create"
-    )
-    assert n == 1
-    assert wrapped.count("import openai") == 1
-    assert "import llm" in wrapped
-    assert "openai.chat.completions.create(prompt)" in wrapped
-    compile(wrapped, "app.py", "exec")
-
-    already = "import openai\n\ndef complete():\n    return openai.ChatCompletion.create()\n"
-    once, n_once = rewrite_python_call(
-        already, "openai.ChatCompletion.create", "openai.chat.completions.create"
-    )
-    assert n_once == 1
-    assert once.count("import openai") == 1
-
-    rebound = "from openai import ChatCompletion\n\nChatCompletion.create()\n"
-    added, n_added = rewrite_python_call(
-        rebound, "ChatCompletion.create", "openai.chat.completions.create"
-    )
-    assert n_added == 1
-    assert added.count("import openai") == 1
-    assert "from openai import ChatCompletion" in added
-
-    submodule = "import openai.chat\n\nopenai.ChatCompletion.create()\n"
-    kept, n_kept = rewrite_python_call(
-        submodule, "openai.ChatCompletion.create", "openai.chat.completions.create"
-    )
-    assert n_kept == 1
-    assert kept.count("import openai") == 1
-
-
-def test_merge_wrapped_skips_non_catalog_packages(tmp_path: Path):
-    """pydantic-style packages stay on the import scanner."""
-    root = tmp_path / "lib"
-    root.mkdir()
-    (root / "wrap.py").write_text(
-        "import widgets\n\ndef go():\n    return widgets.legacy_fn()\n",
-        encoding="utf-8",
-    )
-    (root / "app.py").write_text(
-        "from wrap import go\n\ndef main():\n    return go()\n",
-        encoding="utf-8",
-    )
-    packet = {
-        "package": "widgets",
-        "rules": [
-            {
-                "type": "AST_CALL_REWRITE",
-                "target_files": ["*.py"],
-                "old_callee": "widgets.legacy_fn",
-                "new_callee": "widgets.modern_fn",
-            }
-        ],
-    }
-    assert merge_wrapped_leftovers(root, packet, []) == []

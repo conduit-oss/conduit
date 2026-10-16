@@ -1,7 +1,7 @@
 """Diff a published webhook payload schema.
 
-Stripe publishes event objects in OpenAPI. The fixture is a trimmed pair:
-an ``Event`` schema whose properties are the payload a handler reads.
+Providers publish event objects in an API document. The fixture is a trimmed
+pair: an ``Event`` schema whose properties are the payload a handler reads.
 """
 
 from __future__ import annotations

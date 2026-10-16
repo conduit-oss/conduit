@@ -104,134 +104,7 @@ class SpecSource:
 
 #: Host / service → where a versioned OpenAPI history can be fetched.
 #: Verified against the live repos (see docs/backtest.md).
-SPEC_SOURCES: dict[str, SpecSource] = {
-    "stripe": SpecSource(
-        service_id="stripe",
-        kind="git_repo",
-        repo="stripe/openapi",
-        path="openapi/spec3.json",
-        default_branch="master",
-        ref_style="tag",
-        note="Tagged releases (vNNNN) each ship openapi/spec3.json.",
-    ),
-    "github": SpecSource(
-        service_id="github",
-        kind="git_repo",
-        repo="github/rest-api-description",
-        path="descriptions/api.github.com/api.github.com.json",
-        default_branch="main",
-        ref_style="commit_by_date",
-        note="Continuous commits update the OpenAPI file; resolve by date.",
-    ),
-    "anthropic": SpecSource(
-        service_id="anthropic",
-        kind="stainless_sdk",
-        repo="anthropics/anthropic-sdk-python",
-        stats_file=".stats.yml",
-        note=(
-            "SDK tags through v1.0.0 expose openapi_spec_url in .stats.yml; "
-            "later tags (e.g. v1.5.0+) only list configured_endpoints."
-        ),
-    ),
-    "openai": SpecSource(
-        service_id="openai",
-        kind="git_repo",
-        repo="openai/openai-openapi",
-        path="openapi.yaml",
-        default_branch="master",
-        ref_style="tag",
-        note=(
-            "Repo has sparse tags (1.3.0, 2.0.0). openai-python ships "
-            ".castiron.stats.yml with openapi_spec_hash but no openapi_spec_url."
-        ),
-    ),
-    "cloudflare": SpecSource(
-        service_id="cloudflare",
-        kind="stainless_sdk",
-        repo="cloudflare/cloudflare-python",
-        stats_file=".stats.yml",
-        note="Current tags only list configured_endpoints; no openapi_spec_url.",
-    ),
-    # Public registries (git history). service_id selects the document path.
-    "apis-guru-github": SpecSource(
-        service_id="apis-guru-github",
-        kind="apis_guru",
-        repo="APIs-guru/openapi-directory",
-        apis_guru_provider="github.com",
-        default_branch="main",
-        ref_style="commit_by_date",
-        note=(
-            "APIs/github.com/…/openapi.yaml (or nested version dirs). "
-            "Git history is sparse; prefer github/rest-api-description when possible."
-        ),
-    ),
-    "apis-guru-stripe": SpecSource(
-        service_id="apis-guru-stripe",
-        kind="apis_guru",
-        repo="APIs-guru/openapi-directory",
-        apis_guru_provider="stripe.com",
-        default_branch="main",
-        ref_style="commit_by_date",
-        note="APIs/stripe.com/<version>/openapi.yaml snapshot tree.",
-    ),
-    "azure-storage": SpecSource(
-        service_id="azure-storage",
-        kind="azure_specs",
-        repo="Azure/azure-rest-api-specs",
-        azure_service="storage",
-        default_branch="main",
-        ref_style="commit_by_date",
-        note="specification/storage/… swagger JSON; resolve by API version or date.",
-    ),
-    "azure-web": SpecSource(
-        service_id="azure-web",
-        kind="azure_specs",
-        repo="Azure/azure-rest-api-specs",
-        azure_service="web",
-        default_branch="main",
-        ref_style="commit_by_date",
-        note="specification/web/… swagger JSON; resolve by API version or date.",
-    ),
-    "google-drive": SpecSource(
-        service_id="google-drive",
-        kind="google_discovery",
-        repo="googleapis/discovery-artifact-manager",
-        path="discoveries/drive.v3.json",
-        google_discovery="drive.v3",
-        default_branch="master",
-        ref_style="commit_by_date",
-        note="discoveries/drive.v3.json; no release tags — resolve by commit date.",
-    ),
-    "google-gmail": SpecSource(
-        service_id="google-gmail",
-        kind="google_discovery",
-        repo="googleapis/discovery-artifact-manager",
-        path="discoveries/gmail.v1.json",
-        google_discovery="gmail.v1",
-        default_branch="master",
-        ref_style="commit_by_date",
-        note="discoveries/gmail.v1.json; resolve by commit date.",
-    ),
-    "airflow": SpecSource(
-        service_id="airflow",
-        kind="sdk_repo",
-        repo="apache/airflow-client-python",
-        note=(
-            "OpenAPI Generator SDK: committed spec/v2.yaml at release tags "
-            "(verified 3.0.0 → 3.3.2)."
-        ),
-    ),
-    "clerk": SpecSource(
-        service_id="clerk",
-        kind="sdk_repo",
-        repo="clerk/clerk-sdk-python",
-        note=(
-            "Speakeasy SDK: .speakeasy/workflow.yaml inputs.location pins "
-            "dated files under clerk/openapi-specs (verified)."
-        ),
-    ),
-}
-
+SPEC_SOURCES: dict[str, SpecSource] = {}
 
 def spec_source_for(service_id: str) -> SpecSource | None:
     return SPEC_SOURCES.get((service_id or "").lower())
@@ -326,11 +199,7 @@ def resolve_spec_pair(
 
 #: When the primary catalogued source cannot resolve a from/to pair, try these
 #: public registries (same host/service, different git history).
-_REGISTRY_FALLBACKS: dict[str, tuple[str, ...]] = {
-    "github": ("apis-guru-github",),
-    "stripe": ("apis-guru-stripe",),
-}
-
+_REGISTRY_FALLBACKS: dict[str, tuple[str, ...]] = {}
 
 def resolve_sdk_package_pair(
     package: str,

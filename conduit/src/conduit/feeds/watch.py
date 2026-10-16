@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from conduit.detect.manifests import pin_for_packet_ecosystem, read_installed_by_ecosystem
+from conduit.deps.manifests import pin_for_packet_ecosystem, read_installed_by_ecosystem
 from conduit.feeds.catalog import feeds_for
 from conduit.feeds.client import FeedClient
 from conduit.feeds.model import FeedHit

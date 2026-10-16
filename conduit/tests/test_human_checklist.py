@@ -8,10 +8,6 @@ from conduit.human_checklist import (
     format_human_checklist_markdown,
     format_side_effect_row,
 )
-from conduit.pr_generator import build_pr_body
-from conduit.patcher.engine import PatchReport
-from conduit.run_summary import build_run_summary, format_run_summary
-from conduit.test_runner import TestResult
 
 
 def _packet():
@@ -72,48 +68,6 @@ def test_checklist_includes_leftover_and_side_effects():
     md = format_human_checklist_markdown(packet, leftovers=leftovers)
     assert "Double-check" in md
     assert "each_item" in md
-
-
-def test_run_summary_human_checklist_section():
-    packet = _packet()
-    leftover = _L("src/x.py:1  each_item=True")
-    summary = build_run_summary(
-        packet=packet,
-        report=PatchReport(),
-        test_result=TestResult(
-            runner="t",
-            passed=False,
-            returncode=1,
-            stdout="",
-            stderr="",
-            command=[],
-        ),
-        leftover_items=[leftover],
-    )
-    text = format_run_summary(summary)
-    assert "Human checks (copy into PR)" in text
-    assert "MAX_EMAIL_LENGTH" in text
-    assert "leftover: src/x.py:1" in text
-
-
-def test_pr_body_double_check_section():
-    packet = _packet()
-    body = build_pr_body(
-        packet,
-        PatchReport(),
-        TestResult(
-            runner="t",
-            passed=True,
-            returncode=0,
-            stdout="",
-            stderr="",
-            command=[],
-        ),
-        leftovers=[_L("src/each_item.py:13  each_item=True")],
-    )
-    assert "Double-check (human)" in body
-    assert "MAX_EMAIL_LENGTH" in body
-    assert "each_item" in body
 
 
 def test_empty_checklist_when_no_gaps():

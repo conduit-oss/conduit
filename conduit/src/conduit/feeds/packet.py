@@ -7,7 +7,7 @@ from collections import defaultdict
 
 from conduit.feeds.model import FeedHit
 from conduit.feeds.versions import parse_version
-from conduit.packet.validate import validate_packet
+from conduit.packet_schema import validate_packet
 
 _SOURCE_KIND = {
     "github_releases": "github_release",

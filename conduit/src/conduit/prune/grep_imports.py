@@ -81,31 +81,6 @@ def expand_allowlist_for_exact_rules(
     return out
 
 
-def expand_apply_allowlist_oracle(
-    root: Path,
-    files: list[Path],
-    packet: dict,
-    *,
-    changed_files: list[str] | None = None,
-) -> list[Path]:
-    """Add oracle scan paths so REST rules reach config/script files."""
-    from conduit.test_gen import oracle_scan_rels
-
-    seen = {p.resolve() for p in files}
-    out = list(files)
-    for rel in oracle_scan_rels(
-        root,
-        packet,
-        changed_files=changed_files,
-        file_allowlist=files,
-    ):
-        path = (root / rel).resolve()
-        if path.is_file() and path not in seen:
-            out.append(path)
-            seen.add(path)
-    return out
-
-
 def _import_patterns(package: str) -> list[re.Pattern[str]]:
     pkg = re.escape(package)
     return [

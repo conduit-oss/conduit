@@ -184,14 +184,12 @@ def _http_path(sdk_method: str) -> str | None:
 
 
 def _path_for_callee(callee: str) -> str | None:
-    try:
-        from conduit.detect.modules.openai.path_callees import path_for_api_pattern
-    except Exception:
-        return None
-    try:
-        return path_for_api_pattern(callee)
-    except Exception:
-        return None
+    """REST path embedded in a callee, when the callee is itself a path."""
+    text = (callee or "").strip()
+    if text.startswith("/") or "://" in text:
+        path = urlparse(text).path if "://" in text else text
+        return path or None
+    return None
 
 
 def _field_mentions(fields: tuple[str, ...], token: str) -> bool:

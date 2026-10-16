@@ -6,16 +6,14 @@ Conduit ships workflows you can copy into consumer repos, plus a composite actio
 
 | File | Trigger | Purpose |
 |------|---------|---------|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Push / PR | Unit tests + packet rewrite sanity (`conduit apply` is deferred) |
-| [`.github/workflows/conduit-watch-demo.yml`](../.github/workflows/conduit-watch-demo.yml) | Push / PR | Watch dirty-fail + clean-pass on ephemeral fixtures |
-| [`.github/workflows/conduit-dependabot.yml`](../.github/workflows/conduit-dependabot.yml) | PR touching manifests/lockfiles | Older `conduit run --base-ref` example. Not the outside-service product |
-| [`.github/workflows/conduit-nightly.yml`](../.github/workflows/conduit-nightly.yml) | Cron `0 0 * * *` | Nightly detect/migrate pass |
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Push / PR | Unit tests + offline map of the wrapped client fixture |
+| [`.github/workflows/conduit-watch-demo.yml`](../.github/workflows/conduit-watch-demo.yml) | Push / PR | Map the wrapped client and watch recorded feeds |
+| [`.github/workflows/conduit-dependabot.yml`](../.github/workflows/conduit-dependabot.yml) | PR touching manifests/lockfiles | `conduit map` on the consumer tree |
+| [`.github/workflows/conduit-nightly.yml`](../.github/workflows/conduit-nightly.yml) | Cron `0 0 * * *` | Nightly map |
 
 ## Watch
 
-`conduit watch` without `--packet` diffs outside services (PyPI wheels, botocore models, webhook schemas). Release notes are hints. It does not bump lockfiles or announce ordinary library versions.
-
-`conduit watch --packet` is a separate read-only leftover gate. It fails when the package pin has reached the packet `to_version` but call sites still hit packet `old_callee` leftovers. `conduit apply` is deferred. It does not watch another repo.
+`conduit watch` diffs outside services (wheels, service models, webhook schemas). Release notes are hints. It does not bump lockfiles or announce ordinary library versions, and it does not rewrite the tree.
 
 This repo proves it with ephemeral fixtures in [`.github/workflows/conduit-watch-demo.yml`](../.github/workflows/conduit-watch-demo.yml) (no `OPENAI_API_KEY`, committed demo tree untouched).
 

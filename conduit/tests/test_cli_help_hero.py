@@ -66,30 +66,12 @@ def test_panel_body_accepts_rounded_corners():
     assert "detect" in advanced and "module" in advanced
 
 
-def test_top_level_help_demotes_detect_and_module():
+def test_top_level_help_is_map_watch_impact_service():
     code, text = _help_text("--help")
     assert code == 0
 
     commands = _command_names(_panel_body(text, "Commands"))
-    advanced = _command_names(_panel_body(text, "Advanced"))
-
-    for hero in ("packet", "watch", "map", "impact"):
+    for hero in ("watch", "map", "impact", "service"):
         assert hero in commands, f"{hero} missing from Commands panel:\n{text}"
-    assert "apply" not in commands
-
-    assert "detect" not in commands
-    assert "module" not in commands
-    assert "detect" in advanced
-    assert "module" in advanced
-
-
-def test_detect_help_still_works():
-    code, text = _help_text("detect", "--help")
-    assert code == 0
-    assert "detect" in text.lower()
-
-
-def test_module_list_still_works():
-    code, text = _help_text("module", "list")
-    assert code == 0
-    assert "Detect modules" in text or "module" in text.lower()
+    for gone in ("packet", "apply", "detect", "module", "run", "verify"):
+        assert gone not in commands, f"{gone} still listed:\n{text}"

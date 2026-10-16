@@ -25,6 +25,6 @@ jobs:
           # resolution; without this, unauthenticated 60/hr is exhausted mid-suite.
           GITHUB_TOKEN: ${{ github.token }}
         run: python -m pytest -q conduit/tests
-      - name: Offline demo rewrite
+      - name: Offline map
         run: |
-          python -c "from pathlib import Path; from conduit.main import apply_migration; apply_migration(Path('examples/demo-consumer'), 'examples/sample-packet/conduit-packet.json', dry_run=True)"
+          python -c "from pathlib import Path; from conduit.outside_in.analyze import analyze_repo; mapped = analyze_repo(Path('examples/wrapped-openai-fixture')); assert mapped.chains, 'map produced no chains'"

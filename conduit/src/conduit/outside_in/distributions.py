@@ -13,7 +13,7 @@ import re
 import sys
 from pathlib import Path
 
-from conduit.detect.pip_manifests import iter_pip_manifests
+from conduit.deps.manifests import iter_pip_manifests
 from conduit.outside_in.catalog import ServiceSpec, catalog_spec, normalize_dist
 
 _STDLIB = frozenset(getattr(sys, "stdlib_module_names", ())) | {"__future__", "builtins"}

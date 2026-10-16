@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 from conduit.outside_in.catalog import ServiceSpec, normalize_dist
 
-_SCHEMA = 18
+_SCHEMA = 20
 _MAX_DEPTH = 4
 _MAX_BYTES = 40_000_000
 # Verb names on an HTTP client. ``close`` is not one: connection objects
@@ -142,6 +142,14 @@ class _Direct:
     constructed_roots: set[str] = field(default_factory=set)
     #: Public Client/Session classes that are not HTTP verb surfaces.
     client_classes: set[str] = field(default_factory=set)
+    #: DB-API names are present. Wire-protocol drivers set ``database`` without this.
+    db_api: bool = False
+    #: struct pack/unpack beside a socket, a checkout/checkin pool, and a cursor.
+    wire: bool = False
+    pool: bool = False
+    cursor: bool = False
+    #: Dependency root -> how many public caller methods reach a constructor of it.
+    caller_hits: dict[str, int] = field(default_factory=dict)
 
 
 def cache_dir() -> Path:
@@ -228,7 +236,7 @@ def spec_for_distribution(
 
 def specs_for_repo(root: Path) -> tuple[ServiceSpec, ...]:
     """Services the repo imports or receives a webhook from, plus HTTP transports."""
-    from conduit.detect.manifests import read_installed
+    from conduit.deps.manifests import read_installed
     from conduit.outside_in.distributions import declared_distribution_names, is_stdlib_module
 
     root = root.resolve()
@@ -325,7 +333,10 @@ def _finish(
     transport = False
     if direct.database:
         kind = "database"
-        evidence = f"{norm} -> db-api"
+        if direct.db_api or not direct.stdlib:
+            evidence = f"{norm} -> db-api"
+        else:
+            evidence = f"{norm} -> {direct.stdlib}"
     elif direct.spec == "service-model" or cloud is not None:
         kind = "cloud"
         evidence = f"{norm} -> service-model" if direct.spec == "service-model" else f"{norm} -> {cloud.evidence}"
@@ -429,10 +440,24 @@ def _evidence_dep(
     products: list[Classification],
     transports: list[Classification],
 ) -> Classification | None:
-    """Prefer the dependency a client constructor actually builds."""
+    """Prefer the dependency the caller's methods actually use.
+
+    A client constructed only in ``__init__`` loses to one reached from the
+    public methods those calls go through.
+    """
     ordered = [*products, *transports]
     if not ordered:
         return None
+    if direct.caller_hits:
+        ranked = sorted(direct.caller_hits.items(), key=lambda item: (-item[1], item[0]))
+        for root, _count in ranked:
+            matched = [
+                item
+                for item in ordered
+                if _uses_dep(direct, item.name, item) and _root_overlap({root}, item)
+            ]
+            if matched:
+                return matched[0]
     if direct.constructed_roots:
         constructed = [
             item
@@ -499,8 +524,14 @@ def _scan(code: _Code) -> _Direct:
         _scan_python(name, blob, direct, db_defs, own)
     if _DB_NAMES <= db_defs:
         direct.database = True
+        direct.db_api = True
         direct.constructors.update(name for name in db_defs if name in direct.factories or name == "connect")
         direct.constructors.add("connect")
+    elif direct.strong and direct.wire and direct.pool and direct.cursor:
+        # A driver that frames bytes on a socket, pools connections, and
+        # walks rows with a cursor is a database even without DB-API names.
+        direct.database = True
+        direct.constructors.update(direct.client_classes)
     return direct
 
 
@@ -566,9 +597,9 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
                 strong = True
                 direct.stdlib = _stdlib_of(expanded) or direct.stdlib
             if class_name and target.startswith("self."):
-                method = target.split(".", 1)[1]
-                if method in class_methods.get(class_name, ()):
-                    calls.add(f"{class_name}.{method}")
+                head = target.split(".", 1)[1].split(".", 1)[0]
+                if head in class_methods.get(class_name, ()):
+                    calls.add(f"{class_name}.{head}")
             elif target in local_funcs:
                 calls.add(target)
             root_name = target.split(".", 1)[0]
@@ -674,9 +705,22 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
         if strong_here:
             direct.domain_strong.add(class_name)
     if not _incidental_module(name):
-        for class_name in class_methods:
-            if _client_type(class_name) and _product_class(class_name, class_methods, http_classes):
+        for class_name, methods in class_methods.items():
+            # checkout/checkin is one pool. get_socket plus connect is the
+            # same shape when the driver checks a socket out of the pool.
+            if {"checkout", "checkin"} <= methods or {"get_socket", "connect"} <= methods:
+                direct.pool = True
+            if "next" in methods and ({"__iter__", "__next__", "__anext__", "__aiter__"} & methods):
+                direct.cursor = True
+            if (
+                _client_type(class_name)
+                and _product_class(class_name, class_methods, http_classes)
+                and not _pipeline_client(class_name, class_methods)
+            ):
                 direct.client_classes.add(class_name)
+    if _uses_struct(tree, aliases):
+        direct.wire = True
+    _note_caller_hits(direct, class_methods, func_calls, func_constructed)
 
 
 def _method_names(node: ast.ClassDef) -> set[str]:
@@ -723,6 +767,62 @@ def _constructor_name(name: str) -> bool:
 def _factory_method(qual: str) -> bool:
     method = qual.split(".", 1)[-1]
     return method in {"__init__", "__new__", "create"} or method.startswith("from_")
+
+
+def _pipeline_client(class_name: str, class_methods: dict[str, set[str]]) -> bool:
+    """A client whose only public operations send an HTTP request.
+
+    Product clients add their own operations on top of that. A core layer
+    that only exposes the pipeline is a transport.
+    """
+    public = {
+        method
+        for method in class_methods.get(class_name, ())
+        if not method.startswith("_") and method not in {"close", "aclose"}
+    }
+    return bool(public) and public <= (_HTTP_SURFACE | {"send_request", "open"})
+
+
+def _uses_struct(tree: ast.AST, aliases: dict[str, str]) -> bool:
+    """Binary framing. HTTP libraries do not pack message headers this way."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        expanded = _expand(_call_name(node.func), aliases)
+        if expanded in {"struct.pack", "struct.unpack", "struct.pack_into", "struct.unpack_from"}:
+            return True
+    return False
+
+
+def _note_caller_hits(
+    direct: _Direct,
+    class_methods: dict[str, set[str]],
+    func_calls: dict[str, set[str]],
+    func_constructed: dict[str, set[str]],
+) -> None:
+    """Count deps reached from public methods other than the constructor."""
+
+    def reached(start: str) -> set[str]:
+        seen: set[str] = set()
+        pending = [start]
+        roots: set[str] = set()
+        while pending:
+            qual = pending.pop()
+            if qual in seen:
+                continue
+            seen.add(qual)
+            roots.update(func_constructed.get(qual, ()))
+            pending.extend(func_calls.get(qual, ()))
+        return roots
+
+    for class_name, methods in class_methods.items():
+        for method in methods:
+            if method.startswith("_") or method in {"__init__", "__new__"}:
+                continue
+            if method == "create" or method.startswith("create_"):
+                continue
+            for root in reached(f"{class_name}.{method}"):
+                direct.caller_hits[root] = direct.caller_hits.get(root, 0) + 1
 
 
 def _product_class(class_name: str, class_methods: dict[str, set[str]], http_classes: set[str]) -> bool:

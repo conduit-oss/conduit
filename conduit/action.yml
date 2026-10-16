@@ -1,5 +1,5 @@
 name: Conduit
-description: Detect dependency/API breaks, apply Migration Packets, verify, and open PRs
+description: Map outside services and watch the lines that break when they change
 author: Conduit
 
 inputs:
@@ -58,24 +58,7 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         if [ "${{ inputs.mode }}" = "watch" ]; then
-          if [ -z "${{ inputs.packet }}" ]; then
-            echo "mode=watch requires packet=" >&2
-            exit 2
-          fi
-          conduit watch --path "${{ inputs.path }}" --packet "${{ inputs.packet }}"
+          conduit watch --path "${{ inputs.path }}"
           exit $?
         fi
-        ARGS=(run --path "${{ inputs.path }}")
-        if [ -n "${{ inputs.base-ref }}" ]; then
-          ARGS+=(--base-ref "${{ inputs.base-ref }}")
-        fi
-        if [ -n "${{ inputs.package }}" ]; then
-          ARGS+=(--package "${{ inputs.package }}")
-        fi
-        if [ -n "${{ inputs.packet }}" ]; then
-          ARGS+=(--packet "${{ inputs.packet }}")
-        fi
-        if [ "${{ inputs.skip-pr }}" = "true" ]; then
-          ARGS+=(--skip-pr)
-        fi
-        conduit "${ARGS[@]}"
+        conduit map --path "${{ inputs.path }}"

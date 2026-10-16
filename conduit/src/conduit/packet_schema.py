@@ -1,4 +1,8 @@
-"""Validate conduit-packet.json against the public schema."""
+"""Validate a hop document against the public packet schema.
+
+Feed watch and map blast radius still read these documents. Authoring and
+rewriting them is not part of this package.
+"""
 
 from __future__ import annotations
 
@@ -15,9 +19,8 @@ except ImportError:  # pragma: no cover
 def schema_path() -> Path:
     here = Path(__file__).resolve()
     candidates = [
-        here.parents[4] / "schema" / "conduit-packet.schema.json",  # monorepo root
-        here.parents[3] / "schema" / "conduit-packet.schema.json",  # package root
-        here.parents[1] / "schema" / "conduit-packet.schema.json",  # unlikely
+        here.parents[3] / "schema" / "conduit-packet.schema.json",
+        here.parents[2] / "schema" / "conduit-packet.schema.json",
     ]
     for path in candidates:
         if path.is_file():

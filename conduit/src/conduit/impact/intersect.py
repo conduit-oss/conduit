@@ -142,7 +142,7 @@ def _match(
 ) -> str | None:
     if change.source == "webhook":
         return _webhook_match(change, chain)
-    if change.source == "botocore":
+    if change.source == "service-model":
         return _botocore_match(change, chain)
     if change.source == "openapi" or change.kind in {"endpoint_removed", "endpoint_renamed"}:
         return _http_match(change, chain)
@@ -354,7 +354,7 @@ def _still_exported(sdk_method: str, surviving: set[str]) -> bool:
     """True when the call's name is still a public symbol in the new wheel.
 
     A surviving name matches when it is the call or a dotted suffix of it
-    (``engine.Engine`` still exported, so ``sqlalchemy.engine.Engine`` is not
+    (``engine.Engine`` still exported, so ``pkg.engine.Engine`` is not
     a removal). Suffixes are looked up in the set rather than scanning it.
     """
     if not sdk_method or not surviving:

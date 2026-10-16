@@ -21,7 +21,7 @@ from conduit.feeds.sources.pypi import parse_pypi_json
 from conduit.feeds.targets import WatchTarget
 from conduit.feeds.watch import watch_outside
 from conduit.main import app
-from conduit.packet.validate import validate_packet
+from conduit.packet_schema import validate_packet
 
 REPO = Path(__file__).resolve().parents[2]
 FEEDS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "feeds"

@@ -17,14 +17,8 @@ import yaml
 from conduit.impact.model import ApiChange
 
 #: Latest documents in public spec repositories. A single file is not a diff.
-PUBLIC_SPEC_URLS = {
-    "stripe": "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json",
-    "github": (
-        "https://raw.githubusercontent.com/github/rest-api-description/main/"
-        "descriptions/api.github.com/api.github.com.json"
-    ),
-    "openai": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml",
-}
+#: Product locations are discovered from the package, not listed here.
+PUBLIC_SPEC_URLS: dict[str, str] = {}
 
 
 @dataclass(frozen=True)

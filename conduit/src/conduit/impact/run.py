@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from conduit.detect.manifests import read_installed
+from conduit.deps.manifests import read_installed
 from conduit.feeds.versions import is_newer, parse_version
 from conduit.impact.api import diff_wheels
 from conduit.impact.botocore import diff_service_models
@@ -260,7 +260,7 @@ def _exact_looking(value: str) -> bool:
 
 
 def _needs_library_version(entry: dict) -> bool:
-    return bool(entry.get("wheels") or entry.get("botocore") or entry.get("changelog"))
+    return bool(entry.get("wheels") or entry.get("service_model") or entry.get("changelog"))
 
 
 def _newer(latest: str, current: str) -> bool:
@@ -324,14 +324,14 @@ def _changes_for(
             ):
                 # No wheel, no OpenAPI history, no webhook — the pin cannot be compared.
                 note = _missing_surface_note(from_version, to_version, old_missing=old_wheel is None)
-        botocore = entry.get("botocore") if isinstance(entry.get("botocore"), dict) else {}
-        old_model = _artifact(fixtures, botocore.get("from"))
-        new_model = _artifact(fixtures, botocore.get("to"))
+        service_model = entry.get("service_model") if isinstance(entry.get("service_model"), dict) else {}
+        old_model = _artifact(fixtures, service_model.get("from"))
+        new_model = _artifact(fixtures, service_model.get("to"))
         if old_model is not None and new_model is not None:
             if recorded_from and from_version != recorded_from:
                 note = note or _missing_surface_note(from_version, to_version, old_missing=True)
             else:
-                service = str(botocore.get("service") or "s3")
+                service = str(service_model.get("service") or "s3")
                 changes.extend(diff_service_models(old_model, new_model, service=service))
                 compared = True
         changelog = _artifact(fixtures, entry.get("changelog"))
@@ -351,7 +351,7 @@ def _changes_for(
                         if item.kind not in {"endpoint_removed", "endpoint_renamed"}
                     )
                     compared = True
-    elif not skip_versioned and explicit and (wheels or entry.get("botocore") or entry.get("changelog")):
+    elif not skip_versioned and explicit and (wheels or entry.get("service_model") or entry.get("changelog")):
         note = _missing_surface_note(from_version, to_version)
     if _has_webhook(service_map, service_id, package):
         hook = entry.get("webhook") if isinstance(entry.get("webhook"), dict) else {}
