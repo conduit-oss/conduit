@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from conduit.outside_in.catalog import ServiceSpec, normalize_dist
+from conduit.outside_in.specs import ServiceSpec, normalize_dist
 
 _SCHEMA = 20
 _MAX_DEPTH = 4

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conduit.outside_in.catalog import ServiceSpec, catalog_spec, spec_for_name
+from conduit.outside_in.specs import ServiceSpec, evidence_spec, spec_for_name
 from conduit.outside_in.distributions import expand_unknown_spec
 from conduit.outside_in.graph import analyze_python
 from conduit.outside_in.model import ServiceMap
@@ -18,7 +18,7 @@ def specs_for(
 ) -> tuple[ServiceSpec, ...]:
     """One explicit service, or the services this repo actually reaches."""
     if service:
-        found = catalog_spec(service, root=root)
+        found = evidence_spec(service, root=root)
         chosen = [found or spec_for_name(service)]
         # An explicit service still needs the HTTP libraries the repo imports,
         # so a URL aimed at that service is recognized as an HTTP call.
@@ -38,7 +38,7 @@ def specs_for(
         chosen = []
     seen = {item.service_id for item in chosen}
     for name in extra_modules:
-        spec = catalog_spec(name, root=root) or spec_for_name(name)
+        spec = evidence_spec(name, root=root) or spec_for_name(name)
         if spec.service_id not in seen:
             chosen.append(spec)
             seen.add(spec.service_id)

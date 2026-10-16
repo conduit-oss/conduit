@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from conduit.feeds.catalog import ServiceFeeds
+from conduit.feeds.lookup import ServiceFeeds
 
 
 @dataclass(frozen=True)

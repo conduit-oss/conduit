@@ -13,11 +13,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-from conduit.outside_in.catalog import (
+from conduit.outside_in.specs import (
     HTTP_METHOD_TAILS,
     LIMITATIONS,
     ServiceSpec,
-    catalog_spec,
+    evidence_spec,
     service_for_host,
     service_for_module,
 )
@@ -1202,7 +1202,7 @@ def _guarded_host(unit: ModUnit, call: CallRec) -> str:
     ``host.endswith("hooks.example.com")``, ``host == "..."``, and
     ``"..." in host`` count. The call has to sit in that branch, or in
     the function body outside any ``if``, when the function names one host.
-    A catalogued host is left to the literal-URL path.
+    A host already matched from evidence is left to the literal-URL path.
     """
     scope = _scope_node(unit, call.enclosing)
     found: list[str] = []
@@ -1328,7 +1328,7 @@ def _spec_for_literal_host(
         return found
     label = _package_label(host)
     if label:
-        spec = catalog_spec(label, root=root)
+        spec = evidence_spec(label, root=root)
         if spec is not None and service_for_host(host, (spec,)):
             return spec
     # A two-label host such as a documentation or health URL is not a service.
@@ -2453,7 +2453,7 @@ def _version_gates(
     resolver: _Resolver,
     specs: tuple[ServiceSpec, ...],
 ) -> list[_Direct]:
-    """Lines that branch on a catalogued library's version."""
+    """Lines that branch on an outside service's version."""
     found: list[_Direct] = []
     seen: set[tuple[str, int, str]] = set()
     for rel, unit in units.items():

@@ -59,13 +59,13 @@ LIMITATIONS: tuple[str, ...] = (
 )
 
 
-def catalog_spec(
+def evidence_spec(
     name: str,
     version: str | None = None,
     *,
     root: Path | None = None,
 ) -> ServiceSpec | None:
-    """Product client for this distribution, or None for ordinary libraries and HTTP transports."""
+    """Service spec from this distribution's own evidence, or None for ordinary libraries and HTTP transports."""
     from conduit.outside_in.evidence import spec_for_distribution
 
     return spec_for_distribution(name, version, root=root)
@@ -73,7 +73,7 @@ def catalog_spec(
 
 def spec_for_name(name: str) -> ServiceSpec:
     """Classifier hit, or a generic module spec for an explicit ``--service``."""
-    found = catalog_spec(name)
+    found = evidence_spec(name)
     if found is not None:
         return found
     token = (name or "").strip()

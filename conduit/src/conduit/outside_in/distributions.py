@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from conduit.deps.manifests import iter_pip_manifests
-from conduit.outside_in.catalog import ServiceSpec, catalog_spec, normalize_dist
+from conduit.outside_in.specs import ServiceSpec, evidence_spec, normalize_dist
 
 _STDLIB = frozenset(getattr(sys, "stdlib_module_names", ())) | {"__future__", "builtins"}
 _VENV_DIRS = (".venv", "venv")
@@ -110,7 +110,7 @@ def import_roots_for(root: Path, distribution: str) -> tuple[str, ...]:
 def merge_declared_specs(
     root: Path, specs: list[ServiceSpec]
 ) -> tuple[list[ServiceSpec], set[str]]:
-    """Append a spec for each declared distribution the catalog does not already name.
+    """Append a spec for each declared distribution evidence does not already classify.
 
     The returned set is those added service ids. Callers drop them again when
     no call, constructor, or other chain reaches them.
@@ -124,7 +124,7 @@ def merge_declared_specs(
     generic: set[str] = set()
     merged = list(specs)
     for name in declared_distribution_names(root):
-        if catalog_spec(name) is not None:
+        if evidence_spec(name) is not None:
             continue
         norm = normalize_dist(name)
         if not norm or norm in covered:
@@ -145,14 +145,14 @@ def merge_declared_specs(
 
 
 def expand_unknown_spec(root: Path, spec: ServiceSpec) -> ServiceSpec:
-    """Fill import roots for an explicit service the catalog does not know.
+    """Fill import roots for an explicit service evidence does not classify.
 
     ``--service some-dist`` has to see ``import some_dist``. Specs that
     already name their modules keep those modules.
     """
     if spec.family or spec.module_prefixes:
         return spec
-    if catalog_spec(spec.service_id) is not None or catalog_spec(spec.package) is not None:
+    if evidence_spec(spec.service_id) is not None or evidence_spec(spec.package) is not None:
         return spec
     extra = import_roots_for(root, spec.package or spec.service_id)
     if not extra:

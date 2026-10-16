@@ -14,10 +14,10 @@ from conduit.impact.intersect import intersect
 from conduit.impact.model import ApiChange, Impact, SiteHit
 from conduit.impact.notes import changes_from_notes
 from conduit.impact.openapi_rest import PUBLIC_SPEC_URLS, diff_openapi, split_http_target
-from conduit.impact.openapi_sources import resolve_spec_pair, spec_source_for
+from conduit.impact.openapi_sources import resolve_spec_pair
 from conduit.impact.versions import pypi_latest, resolve_client_version
 from conduit.impact.webhook_schema import diff_webhook_schemas
-from conduit.outside_in.catalog import catalog_spec, normalize_dist
+from conduit.outside_in.specs import evidence_spec, normalize_dist
 from conduit.outside_in.model import Chain, ServiceMap
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ def service_pins(root: Path, *, only: set[str] | None = None) -> dict[str, str]:
         norm = normalize_dist(name)
         if allowed is not None and norm not in allowed:
             continue
-        spec = catalog_spec(name, version, root=root)
+        spec = evidence_spec(name, version, root=root)
         if spec is None or spec.transport or spec.family:
             continue
         pins[normalize_dist(spec.package or name)] = version
@@ -174,7 +174,7 @@ def _targets(
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
     wanted = (dep or "").strip().lower()
-    wanted_spec = catalog_spec(wanted, root=root) if wanted else None
+    wanted_spec = evidence_spec(wanted, root=root) if wanted else None
     for chain in service_map.chains:
         package = chain.package or chain.service
         if not package or package.lower() in seen:
@@ -185,7 +185,7 @@ def _targets(
         seen.add(package.lower())
         found.append((package, chain.service))
     if wanted and not found:
-        spec = catalog_spec(wanted, root=root)
+        spec = evidence_spec(wanted, root=root)
         if spec is not None and not spec.family:
             found.append((spec.package, spec.service_id))
     return found
@@ -319,7 +319,6 @@ def _changes_for(
             elif (
                 explicit
                 and allow_network
-                and spec_source_for(service_id) is None
                 and not _has_webhook(service_map, service_id, package)
             ):
                 # No wheel, no OpenAPI history, no webhook — the pin cannot be compared.
@@ -493,11 +492,6 @@ def _rest_changes(
         if changes:
             note = note + " Changelog text was used only as a hint."
         return changes, note, bool(changes)
-    source = spec_source_for(service_id)
-    if old_spec is None and new_spec is None and allow_network and source is not None:
-        if not from_version or not to_version or from_version == to_version:
-            note = _versioned_spec_note(service_id, uncovered or calls, source_note=source.note)
-            return changes, note, bool(changes)
     if old_spec is None and new_spec is None and allow_network and service_id.lower() in PUBLIC_SPEC_URLS:
         note = _public_spec_note(service_id, uncovered or calls)
         return changes, note, bool(changes)
@@ -549,20 +543,6 @@ def _public_spec_note(service_id: str, calls: list[Chain]) -> str:
     return (
         f"not compared: {service_id} REST call(s) ({preview}) had no versioned OpenAPI pair. "
         f"The public spec repo is {url}; a latest document alone is not a diff."
-    )
-
-
-def _versioned_spec_note(service_id: str, calls: list[Chain], *, source_note: str = "") -> str:
-    shown = []
-    for chain in calls:
-        label = chain.sdk_method
-        if label and label not in shown:
-            shown.append(label)
-    preview = ", ".join(shown[:3])
-    extra = f" {source_note}" if source_note else ""
-    return (
-        f"not compared: {service_id} REST call(s) ({preview}) need --from and --to "
-        f"(API version, SDK version, date, or spec tag) to pick two OpenAPI documents.{extra}"
     )
 
 

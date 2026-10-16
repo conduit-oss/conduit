@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from conduit.feeds.catalog import feeds_for
+from conduit.feeds.lookup import feeds_for
 from conduit.feeds.client import FeedClient, FeedOfflineError
 from conduit.feeds.model import FeedHit
 from conduit.feeds.packet import packets_from_hits

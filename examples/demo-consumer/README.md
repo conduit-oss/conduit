@@ -1,29 +1,7 @@
 # Demo consumer
 
-Tiny Python app stuck on the **openai 0.28** SDK surface (`openai.ChatCompletion.create`, pin `openai==0.28.1`) so Conduit can prove a structural 0.28 → 1.x apply.
-
-From the repo root (with the Conduit venv activated):
+A small app pinned to an older SDK, used by tests.
 
 ```bash
-# repo root
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e "./conduit[langs,dev]"
-
-conduit run --path ./examples/demo-consumer \
-  --packet ./examples/sample-packet/conduit-packet.json \
-  --demo \
-  --skip-tests \
-  --skip-pr
+conduit map --path examples/demo-consumer
 ```
-
-After a successful run you should see `ChatCompletion.create` gone, an `OpenAI` client call chain, and the dependency pin bumped past 0.28. Restore with `git -C examples/demo-consumer checkout -- .` when you are done inspecting.
-
-`conduit watch --packet` is the read-only leftover gate for this hop. It is not a Dependabot bump and it does not watch another repo:
-
-```bash
-conduit watch --path ./examples/demo-consumer \
-  --packet ./examples/sample-packet/conduit-packet.json
-```
-
-With the committed 0.28 pin this exits 0 (pre-bump warn). After a pin-only bump that leaves `ChatCompletion.create`, Watch fails. CI covers both with ephemeral fixtures in `.github/workflows/conduit-watch-demo.yml` so this tree stays the kill-bar baseline.

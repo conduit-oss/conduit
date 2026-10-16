@@ -6,14 +6,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from conduit.deps.manifests import pin_for_packet_ecosystem, read_installed_by_ecosystem
-from conduit.feeds.catalog import feeds_for
+from conduit.feeds.lookup import feeds_for
 from conduit.feeds.client import FeedClient
 from conduit.feeds.model import FeedHit
 from conduit.feeds.packet import packets_from_hits
 from conduit.feeds.sources import FeedSource, default_sources
 from conduit.feeds.targets import WatchTarget
 from conduit.outside_in.bridge import build_service_map
-from conduit.outside_in.catalog import catalog_spec
+from conduit.outside_in.specs import evidence_spec
 from conduit.outside_in.model import ServiceMap
 
 
@@ -46,7 +46,7 @@ def watch_outside(
     service: str | None = None,
     sources: list[FeedSource] | None = None,
 ) -> FeedWatch:
-    """Poll public feeds for catalogued services on ``root``'s map.
+    """Poll public feeds for outside services on ``root``'s map.
 
     Modules that are not outside services (local packages, pydantic, anything
     Pact / Optic / Backstage would cover) are skipped. ``sources`` replaces
@@ -132,7 +132,7 @@ def targets_for_map(
     skipped: list[str] = []
     names = service_map.services()
     if service and not names:
-        spec = catalog_spec(service, root=root)
+        spec = evidence_spec(service, root=root)
         if spec is None:
             skipped.append(
                 f"{service}: not an outside service; internal modules and "
@@ -140,7 +140,7 @@ def targets_for_map(
             )
             return [], skipped
     for name in names:
-        spec = catalog_spec(name, pins.get(name.lower()), root=root)
+        spec = evidence_spec(name, pins.get(name.lower()), root=root)
         if spec is None:
             skipped.append(
                 f"{name}: not an outside service; internal modules and "

@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 import re
 
-from conduit.outside_in.catalog import ServiceSpec, normalize_dist
+from conduit.outside_in.specs import ServiceSpec, normalize_dist
 from conduit.outside_in.graph import ModUnit, _Direct
 
 _ROUTE_TAILS = frozenset(

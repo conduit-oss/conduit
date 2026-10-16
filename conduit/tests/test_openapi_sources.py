@@ -1,4 +1,4 @@
-"""Versioned OpenAPI sources: catalog locations and pair resolution."""
+"""Versioned API specs: discovery and pair resolution."""
 
 from __future__ import annotations
 
@@ -11,13 +11,11 @@ import pytest
 from conduit.impact.intersect import intersect
 from conduit.impact.openapi_rest import diff_openapi
 from conduit.impact.openapi_sources import (
-    SPEC_SOURCES,
     discover_spec_at_ref,
     github_api_available,
     pypi_source_repo,
     resolve_sdk_package_pair,
     resolve_spec_pair,
-    spec_source_for,
 )
 from conduit.impact.run import collect_impacts
 from conduit.outside_in.analyze import analyze_repo
@@ -30,10 +28,21 @@ def _require_github_api() -> None:
         pytest.skip("GitHub API unavailable or rate-limited")
 
 
-def test_spec_locations_are_not_a_vendor_table():
-    assert SPEC_SOURCES == {}
-    assert spec_source_for("stripe") is None
-    assert spec_source_for("github") is None
+def test_spec_discovery_has_no_location_table():
+    import conduit.impact.openapi_sources as sources
+
+    assert not hasattr(sources, "SPEC_SOURCES")
+    assert not hasattr(sources, "spec_source_for")
+    old, new, note = resolve_spec_pair(
+        "example-service",
+        from_ref="1.0.0",
+        to_ref="2.0.0",
+        allow_network=False,
+        package="example-service",
+    )
+    assert old is None and new is None
+    assert "catalog" not in note.lower()
+    assert note == "not compared: spec discovery for example-service needs network"
 
 
 def test_diff_openapi_flags_newly_required_request_fields(tmp_path: Path):
