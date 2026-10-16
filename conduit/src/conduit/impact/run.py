@@ -82,7 +82,14 @@ def collect_impacts(
     notes: list[str] = []
     for package, service_id in targets:
         entry = index.get(package.lower()) or index.get(service_id.lower()) or {}
-        if not _should_run(package, entry, hits or [], explicit=explicit):
+        if not _should_run(
+            package,
+            entry,
+            hits or [],
+            explicit=explicit,
+            webhook=_has_webhook(service_map, service_id, package),
+            allow_network=allow_network,
+        ):
             continue
         resolved_from, resolved_to, version_note = _versions(
             root,
@@ -105,7 +112,7 @@ def collect_impacts(
             from_version=resolved_from,
             to_version=resolved_to,
             service_map=service_map,
-            allow_network=allow_network and explicit,
+            allow_network=allow_network,
             skip_versioned=bool(version_note),
             explicit=explicit,
         )
@@ -191,15 +198,24 @@ def _targets(
     return found
 
 
-def _should_run(package: str, entry: dict, hits: list[FeedHit], *, explicit: bool) -> bool:
+def _should_run(
+    package: str,
+    entry: dict,
+    hits: list[FeedHit],
+    *,
+    explicit: bool,
+    webhook: bool = False,
+    allow_network: bool = False,
+) -> bool:
     if explicit:
         return True
-    if not entry:
-        return False
     for hit in hits:
         if hit.package.lower() == package.lower() and hit.change == "version" and hit.to_version:
             return True
-    return bool(entry.get("webhook"))
+    if entry.get("webhook"):
+        return True
+    # A live watch has no recorded webhook schema. Still run so the miss is reported.
+    return bool(allow_network and webhook and not entry)
 
 
 def _versions(
@@ -316,13 +332,14 @@ def _changes_for(
                 wheel_compared = True
             elif wheels:
                 note = _missing_surface_note(from_version, to_version, old_missing=old_wheel is None)
-            elif (
-                explicit
-                and allow_network
-                and not _has_webhook(service_map, service_id, package)
-            ):
-                # No wheel, no OpenAPI history, no webhook — the pin cannot be compared.
-                note = _missing_surface_note(from_version, to_version, old_missing=old_wheel is None)
+            elif allow_network:
+                note = _unfetched_wheel_note(
+                    package,
+                    from_version,
+                    to_version,
+                    old_missing=old_wheel is None,
+                    new_missing=new_wheel is None,
+                )
         service_model = entry.get("service_model") if isinstance(entry.get("service_model"), dict) else {}
         old_model = _artifact(fixtures, service_model.get("from"))
         new_model = _artifact(fixtures, service_model.get("to"))
@@ -359,6 +376,9 @@ def _changes_for(
         if old_schema is not None and new_schema is not None:
             changes.extend(diff_webhook_schemas(old_schema, new_schema, provider=service_id))
             compared = True
+        elif fixtures is None and allow_network:
+            hook_note = f"not compared: no versioned webhook schema for {package} could be fetched"
+            note = f"{note}\n{hook_note}" if note else hook_note
     rest, rest_note, rest_compared = _rest_changes(
         package,
         service_id,
@@ -544,6 +564,23 @@ def _public_spec_note(service_id: str, calls: list[Chain]) -> str:
         f"not compared: {service_id} REST call(s) ({preview}) had no versioned OpenAPI pair. "
         f"The public spec repo is {url}; a latest document alone is not a diff."
     )
+
+
+def _unfetched_wheel_note(
+    package: str,
+    from_version: str,
+    to_version: str,
+    *,
+    old_missing: bool,
+    new_missing: bool,
+) -> str:
+    missed: list[str] = []
+    if old_missing and from_version:
+        missed.append(from_version)
+    if new_missing and to_version and to_version not in missed:
+        missed.append(to_version)
+    listed = ", ".join(missed) if missed else "unknown"
+    return f"not compared: could not fetch {package} wheel(s) {listed}"
 
 
 def _missing_surface_note(from_version: str, to_version: str, *, old_missing: bool = True) -> str:

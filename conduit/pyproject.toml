@@ -64,3 +64,6 @@ include-package-data = true
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+  "network: tests that call the public internet",
+]

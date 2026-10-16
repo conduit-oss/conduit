@@ -73,6 +73,8 @@ conduit map --path examples/service-clients --service sqlalchemy
 
 `conduit watch` looks at a newer release of each service on the map and prints the lines that release breaks. A version number by itself is not a result.
 
+Omit `--feeds` and Conduit reads each package's public project page. It follows the source repository linked there, then reads the release feed, a changelog file at those release tags, and the API spec at both tags. npm is included only when that page links to it. Responses are cached. If a file cannot be fetched, the report says `not compared` and why.
+
 This repo includes recorded copies, so the example does not use the network:
 
 ```bash
@@ -97,7 +99,7 @@ The first line is the package and the two versions. Under it, each change, then 
 | Flag | Meaning |
 |------|---------|
 | `--path` | Folder to read. |
-| `--feeds` | Recorded copies of public release info. Omit it to fetch them. |
+| `--feeds` | Recorded copies of public release info. Omit it to discover the same kinds of feeds from the project page and source repository. |
 | `--service` | Only this service. |
 | `--show-callers` | List wrapper callers under each breaking line. |
 | `--json` | Machine-readable report. |
@@ -135,7 +137,7 @@ conduit service add --customer acme --path examples/service-clients --store ./.c
 conduit service tick --store ./.conduit-service --feeds conduit/fixtures/feeds
 ```
 
-`add` prints `Stored map for acme at ./.conduit-service/customers/acme` (as an absolute path). `tick` checks every saved map in `--store`. `--customer` limits that check to one id. `--feeds` is the same recorded copies as watch. Omit it to fetch public release info.
+`add` prints `Stored map for acme at ./.conduit-service/customers/acme` (as an absolute path). `tick` checks every saved map in `--store`. `--customer` limits that check to one id. `--feeds` is the same recorded copies as watch. Omit it to discover feeds from each project's public page.
 
 ## How detection works
 

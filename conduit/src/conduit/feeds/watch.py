@@ -68,13 +68,15 @@ def watch_outside(
             except Exception as exc:
                 client.warnings.append(f"{source.name} {target.service_id}: {exc}")
     packets, problems = packets_from_hits(hits)
+    feed_notes = _unique(note for target in targets for note in target.feeds.notes)
     impact_root = _impact_fixtures(client)
     impacts: list[dict] = []
-    if impact_root is not None:
+    impact_notes: list[str] = []
+    if impact_root is not None or client.allow_network:
         from conduit.impact.report import impacts_to_dicts
         from conduit.impact.run import collect_impacts
 
-        found, diffed, _notes = collect_impacts(
+        found, diffed, impact_notes = collect_impacts(
             root,
             service_map,
             fixtures=impact_root,
@@ -92,7 +94,14 @@ def watch_outside(
     return FeedWatch(
         services=[target.service_id for target in targets],
         skipped=skipped,
-        warnings=[*client.warnings, *problems],
+        warnings=_unique(
+            [
+                *feed_notes,
+                *(impact_notes if client.allow_network else []),
+                *client.warnings,
+                *problems,
+            ]
+        ),
         hits=hits,
         packets=packets,
         impacts=impacts,
@@ -107,6 +116,15 @@ def _impact_fixtures(client: FeedClient) -> Path | None:
         if (candidate / "index.json").is_file():
             return candidate
     return None
+
+
+def _unique(items) -> list[str]:
+    found: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in found:
+            found.append(text)
+    return found
 
 
 def _bump_only(packet: dict) -> bool:
@@ -147,7 +165,8 @@ def targets_for_map(
                 "repo-to-repo contracts are not watched"
             )
             continue
-        feeds = feeds_for(spec.service_id, spec.package, urls=urls)
+        pinned = pins.get((spec.package or "").lower()) or pins.get(name.lower()) or ""
+        feeds = feeds_for(spec.service_id, spec.package, urls=urls, from_version=pinned)
         if feeds is None:
             skipped.append(f"{spec.service_id}: no public feeds configured")
             continue
