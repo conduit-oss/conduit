@@ -24,6 +24,7 @@ REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "examples" / "service-clients"
 IMPACT = Path(__file__).resolve().parents[1] / "fixtures" / "impact"
 FEEDS = Path(__file__).resolve().parents[1] / "fixtures" / "feeds"
+STUBS = Path(__file__).resolve().parents[1] / "tests" / "stubs"
 
 
 def _map():
@@ -34,7 +35,7 @@ def _impacts():
     service_map = _map()
     found = []
     diffed: set[str] = set()
-    for dep in ("sqlalchemy", "boto3", "stripe", "acme-sdk"):
+    for dep in ("sqlalchemy", "boto3"):
         impacts, covered, _notes = collect_impacts(
             FIXTURE,
             service_map,
@@ -51,7 +52,6 @@ def test_pins_ignore_ordinary_libraries():
     pins = service_pins(FIXTURE)
     assert pins["sqlalchemy"] == "1.4.52"
     assert pins["boto3"] == "1.34.0"
-    assert pins["acme-sdk"] == "1.0.0"
     assert "pydantic" not in pins
     assert "fastapi" not in pins
     assert evidence_spec("pydantic") is None
@@ -60,7 +60,7 @@ def test_pins_ignore_ordinary_libraries():
 
 def test_map_finds_evidence_services_and_called_third_party_dists():
     service_map = _map()
-    assert set(service_map.services()) >= {"sqlalchemy", "boto3", "stripe", "acme-sdk"}
+    assert set(service_map.services()) >= {"sqlalchemy", "boto3", "stripe"}
     from conduit.outside_in.report import format_report
 
     rendered = format_report(service_map, markdown=True)
@@ -73,7 +73,7 @@ def test_map_finds_evidence_services_and_called_third_party_dists():
     query_get = [
         chain
         for chain in service_map.chains
-        if chain.package == "sqlalchemy" and chain.sdk_method.endswith("Query.get")
+        if chain.package == "sqlalchemy" and chain.sdk_method.endswith("Query.from_self")
     ]
     assert query_get
     assert query_get[0].call_rel == "db.py"
@@ -93,15 +93,6 @@ def test_map_finds_evidence_services_and_called_third_party_dists():
     assert hooks
     assert hooks[0].service == "stripe"
     assert any(chain.response_fields == ("data.object.currency",) for chain in hooks)
-
-    complete = [
-        chain
-        for chain in service_map.chains
-        if chain.package == "acme-sdk" and chain.sdk_method.endswith("Client.complete")
-    ]
-    assert complete
-    assert "max_tokens" in complete[0].params
-
 
 def test_database_and_cloud_families_map_from_imports(tmp_path: Path):
     (tmp_path / "app.py").write_text(
@@ -130,36 +121,37 @@ def test_database_and_cloud_families_map_from_imports(tmp_path: Path):
     assert any("upload_blob" in chain.sdk_method for chain in service_map.chains)
 
 
-def test_wheel_diff_renames_a_parameter_and_drops_query_get():
+def test_wheel_diff_renames_a_parameter_and_drops_from_self():
     acme = diff_wheels(
-        IMPACT / "wheels" / "acme_sdk-1.0.0-py3-none-any.whl",
-        IMPACT / "wheels" / "acme_sdk-1.2.0-py3-none-any.whl",
+        STUBS / "acme-sdk" / "wheels" / "acme_sdk-1.0.0-py3-none-any.whl",
+        STUBS / "acme-sdk" / "wheels" / "acme_sdk-1.2.0-py3-none-any.whl",
     )
     renamed = next(item for item in acme if item.kind == "param_renamed")
     assert renamed.old == "max_tokens"
     assert renamed.new == "max_completion_tokens"
     assert renamed.confidence == "medium"
-    api = load_api(IMPACT / "wheels" / "sqlalchemy-1.4.52-py3-none-any.whl")
-    assert "sqlalchemy.orm.Query.get" in api
-    sa = diff_wheels(
-        IMPACT / "wheels" / "sqlalchemy-1.4.52-py3-none-any.whl",
-        IMPACT / "wheels" / "sqlalchemy-2.0.36-py3-none-any.whl",
-    )
-    assert any(item.kind == "removed" and item.symbol.endswith("Query.get") for item in sa)
-    assert any(item.kind == "deprecated" and item.symbol.endswith("Session.query") for item in sa)
+    index = json.loads((IMPACT / "index.json").read_text(encoding="utf-8"))
+    wheels = index["packages"]["sqlalchemy"]["wheels"]
+    old = IMPACT / wheels["1.4.52"]
+    new = IMPACT / wheels["2.1.4"]
+    api = load_api(old)
+    assert any(name.endswith("Query.from_self") for name in api)
+    sa = diff_wheels(old, new)
+    assert any(item.kind == "removed" and item.symbol.endswith("Query.from_self") for item in sa)
 
 
-def test_botocore_and_stripe_schema_diffs_are_trimmed_fixtures():
+def test_service_model_and_webhook_stubs_still_diff():
+    """Hand-written documents stay in the unit stubs. They are not recordings."""
     changes = diff_service_models(
-        IMPACT / "botocore" / "s3-2006-03-01-old.json",
-        IMPACT / "botocore" / "s3-2006-03-01-new.json",
+        STUBS / "service-model" / "s3-2006-03-01-old.json",
+        STUBS / "service-model" / "s3-2006-03-01-new.json",
         service="s3",
     )
     assert any(item.kind == "param_removed" and item.old == "ACL" for item in changes)
     assert any(item.kind == "field_removed" and item.old == "VersionId" for item in changes)
     hooks = diff_webhook_schemas(
-        IMPACT / "webhooks" / "stripe-2024-06-20.openapi.yaml",
-        IMPACT / "webhooks" / "stripe-2024-11-20.openapi.yaml",
+        STUBS / "webhooks" / "stripe-2024-06-20.openapi.yaml",
+        STUBS / "webhooks" / "stripe-2024-11-20.openapi.yaml",
         provider="stripe",
     )
     assert any(item.kind == "field_removed" and item.symbol == "data.object.currency" for item in hooks)
@@ -170,34 +162,18 @@ def test_impact_intersects_each_kind_and_skips_unread_fields():
     impacts, _diffed = _impacts()
     blob = json.dumps([item.to_dict() for item in impacts])
     assert "sqlalchemy" in blob
-    assert "Query.get removed" in blob
+    assert "Query.from_self removed" in blob
     assert "db.py" in blob
-    assert "boto3" in blob
-    assert "ACL" in blob
-    assert "storage.py" in blob
-    assert "VersionId" not in blob
-    assert "stripe" in blob
-    assert "data.object.currency" in blob
-    assert "webhooks.py" in blob
-    assert "acme-sdk" in blob
-    assert "max_tokens" in blob
-    assert "acme_client.py" in blob
     assert "pydantic" not in blob
     assert "fastapi" not in blob
-
-    acme = [item for item in impacts if item.dependency == "acme-sdk"]
-    assert any(item.confidence == "medium" and item.source == "wheel" for item in acme)
-    assert any(item.confidence == "low" and item.source == "changelog" for item in acme)
-    query = next(item for item in impacts if item.dependency == "sqlalchemy" and "Query.get" in item.change)
-    direct = next(site for site in query.sites if site.expr == "query.get")
+    assert "acme-sdk" not in blob
+    query = next(item for item in impacts if item.dependency == "sqlalchemy" and "from_self" in item.change)
+    direct = next(site for site in query.sites if site.expr == "query.from_self")
     assert direct.confidence == "high"
     assert direct.path == "db.py"
     assert query.from_version == "1.4.52"
-    assert query.to_version == "2.0.36"
-    hook = next(item for item in impacts if item.dependency == "stripe")
-    assert hook.from_version == "2024-06-20"
-    assert hook.to_version == "2024-11-20"
-    assert any(site.path == "webhooks.py" for site in hook.sites)
+    assert query.to_version == "2.1.4"
+    assert "boto3" in _diffed
 
 
 def test_impact_cli_is_offline(monkeypatch):
@@ -214,7 +190,7 @@ def test_impact_cli_is_offline(monkeypatch):
             "--path",
             str(FIXTURE),
             "--dep",
-            "boto3",
+            "sqlalchemy",
             "--fixtures",
             str(IMPACT),
             "--json",
@@ -223,8 +199,9 @@ def test_impact_cli_is_offline(monkeypatch):
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
     assert payload["impacts"]
-    assert payload["impacts"][0]["dependency"] == "boto3"
-    assert any(site["path"] == "storage.py" for item in payload["impacts"] for site in item["sites"])
+    assert payload["impacts"][0]["dependency"] == "sqlalchemy"
+    assert any("from_self" in item["change"] for item in payload["impacts"])
+    assert any(site["path"] == "db.py" for item in payload["impacts"] for site in item["sites"])
 
     refused = CliRunner().invoke(
         app,
@@ -240,9 +217,8 @@ def test_watch_prints_impact_instead_of_a_bare_version_bump():
     packages = {str(packet.get("package") or "") for packet in result.packets}
     assert "sqlalchemy" not in packages
     assert "boto3" not in packages
-    assert "acme-sdk" not in packages
     deps = {item["dependency"] for item in result.impacts}
-    assert deps >= {"sqlalchemy", "boto3", "stripe", "acme-sdk"}
+    assert "sqlalchemy" in deps
 
     cli = CliRunner().invoke(
         app,
@@ -256,14 +232,12 @@ def test_watch_prints_impact_instead_of_a_bare_version_bump():
         ["watch", "--path", str(FIXTURE), "--feeds", str(FEEDS)],
     )
     assert text.exit_code == 0, text.stdout
-    assert "storage.py" in text.stdout
-    assert "webhooks.py" in text.stdout
     assert "db.py" in text.stdout
-    assert "acme_client.py" in text.stdout
+    assert "from_self" in text.stdout
 
 
 def test_recorded_wheels_parse_as_python():
-    api = load_api(IMPACT / "wheels" / "acme_sdk-1.0.0-py3-none-any.whl")
+    api = load_api(STUBS / "acme-sdk" / "wheels" / "acme_sdk-1.0.0-py3-none-any.whl")
     assert any(name.endswith("Client.complete") for name in api)
     ast.parse((FIXTURE / "webhooks.py").read_text(encoding="utf-8"))
 

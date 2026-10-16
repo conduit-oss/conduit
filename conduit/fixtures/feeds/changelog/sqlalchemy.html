@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+    <title>
+        
+        
+    
+    Changes and Migration
+ &mdash;
+    SQLAlchemy 2.1 Documentation
+
+        
+    </title>
+
+    
+
+    
+
+    <link href='//fonts.googleapis.com/css?family=Lato:400,700|Roboto+Slab:400,700' rel='stylesheet' type='text/css'/>
+
+    
+        <!-- begin iterate through SQLA css_files -->
+            <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+        <!-- end iterate through SQLA css_files -->
+
+        <!-- begin iterate through sphinx environment local css_files -->
+            <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+            <link rel="stylesheet" href="../_static/default.css" type="text/css" />
+            <link rel="stylesheet" href="../_static/copybutton.css" type="text/css" />
+            <link rel="stylesheet" href="../_static/docs.css" type="text/css" />
+            <link rel="stylesheet" href="../_static/changelog.css" type="text/css" />
+            <link rel="stylesheet" href="../_static/sphinx_paramlinks.css" type="text/css" />
+        <!-- end iterate through sphinx environment local css_files -->
+
+        <link rel="stylesheet" type="text/css" media="all" href="//www.sqlalchemy.org/css/bootstrap.min.css"/>
+	    <link rel="stylesheet" type="text/css" media="all" href="//www.sqlalchemy.org/css/site.css"/>
+        <link rel="stylesheet" type="text/css" media="all" href="//www.sqlalchemy.org/css/sidebar_extra.css"/>
+        <link rel="stylesheet" type="text/css" media="print" href="//www.sqlalchemy.org/css/print.css"/>
+
+        <!-- begin iterate through sphinx environment remote css_files -->
+        <!-- end iterate through sphinx environment remote css_files -->
+    
+
+    
+
+    
+
+    
+
+
+    
+        <link rel="canonical" href="http://docs.sqlalchemy.org/en/latest/changelog/" />
+
+    <script type="text/javascript">
+        var doc_version = "latest";
+        var doc_slug = "sqlalchemy";
+        var static_root = "../_static"
+
+        // copied from:
+        // https://github.com/rtfd/readthedocs.org/commit/edbbb4c753454cf20c128d4eb2fef60d740debaa#diff-2f70e8d9361202bfe3f378d2ff2c510bR8
+        var READTHEDOCS_DATA = {
+            project: "sqlalchemy",
+            version: "latest",
+            page: "changelog/index",
+            theme: ""
+          };
+
+
+    </script>
+    <!-- end RTD <head> via SQLAlchemy adapter -->
+
+    
+
+    <!-- begin layout.mako headers -->
+
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+        <link rel="copyright" title="Copyright" href="../copyright.html" />
+    <link rel="top" title="SQLAlchemy 2.1 Documentation" href="../index.html" />
+        <link rel="next" title="What’s New in SQLAlchemy 2.1?" href="migration_21.html" />
+        <link rel="prev" title="Error Messages" href="../errors.html" />
+    <!-- end layout.mako headers -->
+
+
+
+
+    
+
+    <!-- sqlalchemy.org docs base head -->
+    
+<link rel="shortcut icon" href="//www.sqlalchemy.org/favicon.ico" type="image/x-icon"/>
+<link href='//fonts.googleapis.com/css?family=Source+Sans+Pro:400,600,400italic' rel='stylesheet' type='text/css'/>
+
+<script type="text/javascript">
+var site_base='//www.sqlalchemy.org';
+var docs_base='//docs.sqlalchemy.org';
+</script>
+
+
+    <!-- end sqlalchemy.org docs base head -->
+
+</head>
+
+<body>
+
+<div id="wrap" class="container-xxl wrap px-0">
+
+
+
+
+
+<nav class="navbar navbar-light logo">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="//www.sqlalchemy.org/">
+            <img src="//www.sqlalchemy.org/img/sqla_logo.png" width="240" alt="SQLAlchemy">
+        </a>
+        <div class="navbar-brand align-self-end dbtoolkit">
+            <img src="//www.sqlalchemy.org/img/dbtoolkit6.gif" width="180" height="12" alt="The Database Toolkit for Python">
+        </div>
+    </div>
+</nav>
+<nav class="navbar navbar-expand-md navbar-dark bg-sa-green py-0 navigation">
+    <div class="container-fluid">
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavigation" aria-controls="navbarNavigation" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <span class="navbar-brand d-md-block d-md-none" href="#">The Database Toolkit for Python</span>
+        <div class="collapse navbar-collapse" id="navbarNavigation">
+            <ul class="navbar-nav me-auto">
+                <li class="nav-item">
+                    <a class="nav-link "  href="//www.sqlalchemy.org/">home</a>
+                </li>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle "  href="#" id="feature-dropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        features
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-dark bg-sa-green" aria-labelledby="feature-dropdown">
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/philosophy.html">Philosophy Statement</a></li>
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/features.html">Feature Overview</a></li>
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/quotes.html">Testimonials</a></li>
+                    </ul>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link "  href="//www.sqlalchemy.org/blog/">news</a>
+                </li>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle active" aria-current="page"
+                    href="#" id="docs-dropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        documentation
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-dark bg-sa-green" aria-labelledby="docs-dropdown">
+                        <li><a class="dropdown-item" href="//docs.sqlalchemy.org">Current Documentation (version 2.1)</a></li>
+
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/library.html#reference">Documentation by Version</a></li>
+                        
+        <li>
+            <a class="dropdown-item" href="//docs.sqlalchemy.org/en/21/">
+                <span class="ps-2">Version 2.1</span>
+            </a>
+        </li>
+        <li>
+            <a class="dropdown-item" href="//docs.sqlalchemy.org/en/20/">
+                <span class="ps-2">Version 2.0</span>
+            </a>
+        </li>
+        <li>
+            <a class="dropdown-item" href="//docs.sqlalchemy.org/en/14/">
+                <span class="ps-2">Version 1.4</span>
+            </a>
+        </li>
+
+                        <li><hr class="dropdown-divider"></li>
+
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/library.html#talks">Talks and Tutorials</a></li>
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/library.html">Published content overview</a></li>
+                    </ul>
+                </li>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle "  href="#" id="community-dropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        community
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-dark bg-sa-green" aria-labelledby="community-dropdown">
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/support.html">Get Support</a></li>
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/participate.html">Participate</a></li>
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/develop.html">Develop</a></li>
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/codeofconduct.html">Code of Conduct</a></li>
+                        <li><a class="dropdown-item" href="https://github.com/sqlalchemy/sqlalchemy">GitHub</a></li>
+                    </ul>
+                </li>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle "  href="#" id="download-dropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        download
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-dark bg-sa-green" aria-labelledby="download-dropdown">
+                        <li><a class="dropdown-item" href="//www.sqlalchemy.org/download.html">Download</a>
+                        
+
+
+
+
+
+
+    <li><a 
+        class="dropdown-item"
+ href="//www.sqlalchemy.org/download.html#current">Current Release Series (2.1)</a></li>
+
+    <li><a 
+        class="dropdown-item"
+ href="//www.sqlalchemy.org/download.html#maintenance">Maintenance Release (2.0)</a></li>
+
+    <li><a 
+        class="dropdown-item"
+ href="//www.sqlalchemy.org/download.html#development">Development Access</a></li>
+    <li><a 
+        class="dropdown-item"
+ href="//www.sqlalchemy.org/download.html#license">License</a></li>
+    <li><a 
+        class="dropdown-item"
+ href="//www.sqlalchemy.org/download.html#versions">Version Numbering</a></li>
+    <li><a 
+        class="dropdown-item"
+ href="//www.sqlalchemy.org/download.html#relstatus">Release Status</a></li>
+
+                    </ul>
+                </li>
+            </ul>
+        </div>
+    </div>
+</nav>
+
+
+<div id="main-body" class="docs main-body row m-0">
+
+<main id="docs" class="docs">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div id="docs-container">
+
+
+
+
+
+<div id="docs-top-navigation-container" class="body-background">
+<div id="docs-header">
+    <div id="docs-version-header">
+        Release: <span class="version-num">2.1.4</span>
+
+            <span id="sidebar-current">current release</span>
+
+        | Release Date: October 7, 2026
+
+    </div>
+
+    <h1><a href="../index.html">SQLAlchemy 2.1 Documentation</a></h1>
+
+</div>
+</div>
+
+<div id="docs-body-container">
+
+    <div id="fixed-sidebar" class="withsidebar">
+
+
+
+        <div id="docs-sidebar-popout">
+            <h3><a href="../index.html">SQLAlchemy 2.1 Documentation</a></h3>
+                <p id="sidebar-current">current release</p>
+            <p id="sidebar-topnav">
+                <a href="../index.html">Home</a>
+                | <a href="//docs.sqlalchemy.org/21/sqlalchemy_21.zip">Download this Documentation</a>
+            </p>
+
+            <div id="sidebar-search">
+                <form class="search" action="../search.html" method="get">
+                  <label>
+                  Search terms:
+                  <input type="text" placeholder="search..." name="q" size="12" />
+                  </label>
+                  <input type="hidden" name="check_keywords" value="yes" />
+                  <input type="hidden" name="area" value="default" />
+                </form>
+            </div>
+
+        </div>
+
+        <div id="docs-sidebar">
+
+        <div id="sidebar-banner">
+            
+        
+<script async type="text/javascript" id="_carbonads_js"></script>
+<script async type="text/javascript" id="_eaads_js"></script>
+
+<div data-ea-publisher="sqlalchemyorg" data-ea-type="image" class="flat horizontal"></div>
+
+<script type="text/javascript">
+
+var ea = "https://media.ethicalads.io/media/client/ethicalads.min.js";
+var carbon = "//cdn.carbonads.com/carbon.js?serve=CKYILK7Y&placement=sqlalchemyorg";
+
+if (1) {
+    ea_script = document.getElementById("_eaads_js");
+    ea_script.setAttribute('src', ea);
+}
+else {
+    carbon_script = document.getElementById("_carbonads_js");
+    carbon_script.setAttribute('src', carbon);
+}
+
+</script>
+
+    
+        </div>
+
+        <div id="docs-sidebar-inner">
+
+        
+        <h3>
+            <a href="../index.html" title="SQLAlchemy 2.1 Documentation">SQLAlchemy 2.1 Documentation</a>
+        </h3>
+
+        <ul>
+<li><span class="link-container"><a class="reference external" href="../intro.html">Overview</a></span></li>
+<li><span class="link-container"><a class="reference external" href="../tutorial/index.html">SQLAlchemy Unified Tutorial</a></span></li>
+<li><span class="link-container"><a class="reference external" href="../orm/index.html">SQLAlchemy ORM</a></span></li>
+<li><span class="link-container"><a class="reference external" href="../core/index.html">SQLAlchemy Core</a></span></li>
+<li><span class="link-container"><a class="reference external" href="../dialects/index.html">Dialects</a></span></li>
+<li><span class="link-container"><a class="reference external" href="../faq/index.html">Frequently Asked Questions</a></span></li>
+<li><span class="link-container"><a class="reference external" href="../errors.html">Error Messages</a></span></li>
+<li class="selected"><span class="link-container"><strong>Changes and Migration</strong><a class="paramlink headerlink reference internal" href="#">¶</a></span><ul>
+<li><span class="link-container"><a class="reference external" href="#current-migration-guide">Current Migration Guide</a></span></li>
+<li><span class="link-container"><a class="reference external" href="#change-logs">Change logs</a></span></li>
+<li><span class="link-container"><a class="reference external" href="#older-migration-guides">Older Migration Guides</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_21.html">What’s New in SQLAlchemy 2.1?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_21.html">2.1 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_20.html">2.0 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_14.html">1.4 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_13.html">1.3 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_12.html">1.2 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_11.html">1.1 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_10.html">1.0 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_09.html">0.9 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_08.html">0.8 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_07.html">0.7 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_06.html">0.6 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_05.html">0.5 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_04.html">0.4 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_03.html">0.3 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_02.html">0.2 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="changelog_01.html">0.1 Changelog</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_20.html">SQLAlchemy 2.0 - Major Migration Guide</a></span></li>
+<li><span class="link-container"><a class="reference external" href="whatsnew_20.html">What’s New in SQLAlchemy 2.0?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_14.html">What’s New in SQLAlchemy 1.4?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_13.html">What’s New in SQLAlchemy 1.3?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_12.html">What’s New in SQLAlchemy 1.2?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_11.html">What’s New in SQLAlchemy 1.1?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_10.html">What’s New in SQLAlchemy 1.0?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_09.html">What’s New in SQLAlchemy 0.9?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_08.html">What’s New in SQLAlchemy 0.8?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_07.html">What’s New in SQLAlchemy 0.7?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_06.html">What’s New in SQLAlchemy 0.6?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_05.html">What’s new in SQLAlchemy 0.5?</a></span></li>
+<li><span class="link-container"><a class="reference external" href="migration_04.html">What’s new in SQLAlchemy 0.4?</a></span></li>
+</ul>
+</li>
+</ul>
+
+
+        <h4>Project Versions</h4>
+        <ul class="version-listing">
+            <li><a href="../index.html">2.1.4</a></li>
+        </ul>
+
+        </div>
+
+        </div>
+
+    </div>
+
+    <div id="narrow-index-nav">
+        <form class="search" action="../search.html" method="get">
+            <label>
+                Search terms:
+            <input type="text" placeholder="search..." name="q" size="12" />
+            </label>
+            <input type="submit" value="Search" />
+            <input type="hidden" name="check_keywords" value="yes" />
+            <input type="hidden" name="area" value="default" />
+        </form>
+
+        <p>
+        <a href="../index.html">Home</a>
+        | <a href="//docs.sqlalchemy.org/21/sqlalchemy_21.zip">Download this Documentation</a>
+        </p>
+
+    </div>
+
+
+        <div id="docs-narrow-top-navigation">
+            <ul>
+                <li><b>Previous:</b>
+                <a href="../errors.html" title="previous chapter">Error Messages</a></li>
+                <li><b>Next:</b>
+                <a href="migration_21.html" title="next chapter">What’s New in SQLAlchemy 2.1?</a></li>
+
+            <li><b>Up:</b> <a href="../index.html">Home</a></li>
+
+
+
+            <li><b>On this page:</b></li>
+            <ul>
+<li><a class="reference internal" href="#changes-and-migration">Changes and Migration</a><ul>
+<li><a class="reference internal" href="#current-migration-guide">Current Migration Guide</a></li>
+<li><a class="reference internal" href="#change-logs">Change logs</a></li>
+<li><a class="reference internal" href="#older-migration-guides">Older Migration Guides</a></li>
+</ul>
+</li>
+</ul>
+
+
+            </ul>
+
+        </div>
+
+
+
+    <div id="docs-body" role="main" class="withsidebar changelog-index" >
+        
+<section id="changes-and-migration">
+<span id="changelog-toplevel"></span><h1>Changes and Migration<a class="headerlink" href="#changes-and-migration" title="Link to this heading">¶</a></h1>
+<p>SQLAlchemy changelogs and migration guides are now integrated
+within the main documentation.</p>
+<section id="current-migration-guide">
+<h2>Current Migration Guide<a class="headerlink" href="#current-migration-guide" title="Link to this heading">¶</a></h2>
+<p>For SQLAlchemy 2.0, there are two separate documents; the “Major Migration
+Guide” details how to update a SQLAlchemy 1.4 application to be compatible
+under SQLAlchemy 2.0. The “What’s New?” document details major new features,
+capabilities and behaviors in SQLAlchemy 2.0.</p>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="migration_21.html">What’s New in SQLAlchemy 2.1?</a></li>
+</ul>
+</div>
+</section>
+<section id="change-logs">
+<h2>Change logs<a class="headerlink" href="#change-logs" title="Link to this heading">¶</a></h2>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="changelog_21.html">2.1 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_20.html">2.0 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_14.html">1.4 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_13.html">1.3 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_12.html">1.2 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_11.html">1.1 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_10.html">1.0 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_09.html">0.9 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_08.html">0.8 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_07.html">0.7 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_06.html">0.6 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_05.html">0.5 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_04.html">0.4 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_03.html">0.3 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_02.html">0.2 Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="changelog_01.html">0.1 Changelog</a></li>
+</ul>
+</div>
+</section>
+<section id="older-migration-guides">
+<h2>Older Migration Guides<a class="headerlink" href="#older-migration-guides" title="Link to this heading">¶</a></h2>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="migration_20.html">SQLAlchemy 2.0 - Major Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="whatsnew_20.html">What’s New in SQLAlchemy 2.0?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_14.html">What’s New in SQLAlchemy 1.4?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_13.html">What’s New in SQLAlchemy 1.3?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_12.html">What’s New in SQLAlchemy 1.2?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_11.html">What’s New in SQLAlchemy 1.1?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_10.html">What’s New in SQLAlchemy 1.0?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_09.html">What’s New in SQLAlchemy 0.9?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_08.html">What’s New in SQLAlchemy 0.8?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_07.html">What’s New in SQLAlchemy 0.7?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_06.html">What’s New in SQLAlchemy 0.6?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_05.html">What’s new in SQLAlchemy 0.5?</a></li>
+<li class="toctree-l1"><a class="reference internal" href="migration_04.html">What’s new in SQLAlchemy 0.4?</a></li>
+</ul>
+</div>
+</section>
+</section>
+
+    </div>
+
+</div>
+
+<div id="docs-bottom-navigation" class="docs-navigation-links, withsidebar">
+        Previous:
+        <a href="../errors.html" title="previous chapter">Error Messages</a>
+        Next:
+        <a href="migration_21.html" title="next chapter">What’s New in SQLAlchemy 2.1?</a>
+
+    <div id="docs-copyright">
+        &copy; <a href="../copyright.html">Copyright</a> 2007-2026, the SQLAlchemy authors and contributors.
+
+
+    <p><b>flambé!</b> the dragon and <b><i>The Alchemist</i></b> image designs created and generously donated by <a href="https://github.com/vmalloc">Rotem Yaari</a>.</p>
+
+        Created using <a href="https://www.sphinx-doc.org">Sphinx</a> 9.1.0.
+
+    Documentation last generated: Fri 16 Oct 2026 04:01:19 PM  EDT
+
+    </div>
+</div>
+
+</div>
+
+
+
+
+</div>
+
+</div> <!-- end #main-body -->
+
+
+    
+
+    
+
+<div id="footer" class="footer">
+    <div class="snd-ad">
+    </div>
+    <div class="pypowered">
+        <a href="http://www.python.org/" title="The Python Language Site">
+            <img src="//www.sqlalchemy.org/img/python-logo.gif" width="88" height="30" alt="Python" class="pypowered" />
+        </a>
+    </div>
+
+    <div class="copyright">
+        <p>Website content copyright &copy; by SQLAlchemy authors and contributors.
+            SQLAlchemy and its documentation are licensed under the MIT license.</p>
+        <p>SQLAlchemy is a trademark of Michael Bayer.  mike(&amp;)zzzcomputing.com
+        All rights reserved. </p>
+        <p>Website generation by
+        <a href="https://github.com/sqlalchemyorg/zeekofile/">zeekofile</a>, with
+        huge thanks to the <a href="https://github.com/EnigmaCurry/blogofile">Blogofile</a>
+        project.</p>
+
+        <a rel="me" href="https://hachyderm.io/@zzzeek">Mastodon</a>
+        <a rel="me" href="https://fosstodon.org/@zzzeek">Mastodon</a>
+
+    </div>
+
+    <br clear="all" />
+
+</div>
+
+
+
+     <!-- End original user content -->
+
+    
+
+
+
+
+</div> <!-- end #wrap -->
+
+
+    
+
+    <script type="text/javascript">
+      document.documentElement.dataset.content_root = '../';
+
+    </script>
+
+    <!-- begin iterate through sphinx environment script_files -->
+        <script type="text/javascript" src="../_static/jquery.js"></script>
+        <script type="text/javascript" src="../_static/_sphinx_javascript_frameworks_compat.js"></script>
+        <script type="text/javascript" src="../_static/documentation_options.js"></script>
+        <script type="text/javascript" src="../_static/doctools.js"></script>
+        <script type="text/javascript" src="../_static/sphinx_highlight.js"></script>
+        <script type="text/javascript" src="../_static/clipboard.min.js"></script>
+        <script type="text/javascript" src="../_static/copybutton.js"></script>
+    <!-- end iterate through sphinx environment script_files -->
+
+    <script type="text/javascript" src="../_static/init.js"></script>
+
+
+
+
+<script type="text/javascript" src="//www.sqlalchemy.org/js/bootstrap.bundle.min.js"></script>
+<script type="text/javascript" src="//www.sqlalchemy.org/js/doc_versions.js"></script>
+
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-KWWK46V0YX"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-KWWK46V0YX');
+</script>
+
+
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a4b9e4b168319a22',t:'MTc5MjE4MzM4MA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
+

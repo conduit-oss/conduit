@@ -7,12 +7,10 @@
     "https://raw.githubusercontent.com/openai/openai-openapi/previous/openapi.yaml": "openapi/openai-previous.yaml",
     "https://raw.githubusercontent.com/openai/openai-openapi/latest/openapi.yaml": "openapi/openai-latest.yaml",
     "https://pypi.org/pypi/sqlalchemy/json": "pypi/sqlalchemy.json",
+    "https://github.com/sqlalchemy/sqlalchemy/releases.atom": "github/sqlalchemy-releases.atom",
+    "https://docs.sqlalchemy.org/latest/changelog/index.html": "changelog/sqlalchemy.html",
     "https://pypi.org/pypi/boto3/json": "pypi/boto3.json",
-    "https://pypi.org/pypi/acme-sdk/json": "pypi/acme-sdk.json",
-    "https://pypi.org/pypi/stripe/json": "pypi/stripe.json",
     "https://github.com/boto/boto3/releases.atom": "github/boto3-releases.atom",
-    "https://github.com/stripe/stripe-python/releases.atom": "github/stripe-releases.atom",
-    "https://github.com/boto/boto3/blob/develop/CHANGELOG.rst": "changelog/boto3.txt",
-    "https://docs.stripe.com/changelog": "changelog/stripe.txt"
+    "https://raw.githubusercontent.com/boto/boto3/1.43.114/CHANGELOG.rst": "changelog/boto3.rst"
   }
 }

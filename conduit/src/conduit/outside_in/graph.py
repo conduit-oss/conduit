@@ -415,6 +415,9 @@ class _Scanner(ast.NodeVisitor):
         )
         previous = self.enclosing
         self.enclosing = qual
+        for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+            if arg.annotation is not None:
+                self.unit.annotations[(qual, arg.arg)] = arg.annotation
         for default in list(node.args.defaults) + list(node.args.kw_defaults):
             if default is not None:
                 self.visit(default)
@@ -875,7 +878,7 @@ class _Resolver:
                 ("<module>", name)
             )
             if annotation is not None:
-                typed = self._resolve_expr(annotation, unit, enclosing, stack)
+                typed = self._resolve_annotation(annotation, unit, enclosing)
                 instanced = _as_instance(typed)
                 if instanced.kind != "unknown":
                     return Binding(

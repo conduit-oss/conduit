@@ -170,6 +170,31 @@ def load_api(path: Path, *, include_private: bool = False) -> dict[str, Symbol]:
     return found
 
 
+def public_identifiers(paths: list[Path]) -> set[str]:
+    """Qualnames, class.method pairs, and parameter names from wheels or trees."""
+    found: set[str] = set()
+    for path in paths:
+        if path is None:
+            continue
+        candidate = Path(path)
+        if not candidate.is_file() and not candidate.is_dir():
+            continue
+        try:
+            api = load_api(candidate)
+        except Exception:
+            continue
+        for qual, symbol in api.items():
+            found.add(qual)
+            parts = [part for part in qual.split(".") if part]
+            if parts:
+                found.add(parts[-1])
+            if len(parts) >= 2:
+                found.add(f"{parts[-2]}.{parts[-1]}")
+            found.update(symbol.params)
+            found.update(symbol.kwonly)
+    return found
+
+
 def _signature(old: Symbol, new: Symbol) -> list[ApiChange]:
     old_names = set(old.params) | set(old.kwonly)
     new_names = set(new.params) | set(new.kwonly)

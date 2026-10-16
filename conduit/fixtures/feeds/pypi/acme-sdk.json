@@ -1,7 +1,0 @@
-{
-  "info": {"name": "acme-sdk", "version": "1.2.0"},
-  "releases": {
-    "1.0.0": [{"yanked": false}],
-    "1.2.0": [{"yanked": false}]
-  }
-}

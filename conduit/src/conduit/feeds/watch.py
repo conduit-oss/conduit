@@ -67,9 +67,15 @@ def watch_outside(
                 hits.extend(source.collect(target, client))
             except Exception as exc:
                 client.warnings.append(f"{source.name} {target.service_id}: {exc}")
+    impact_root = _impact_fixtures(client)
+    hits = _ground_renames(
+        hits,
+        targets,
+        fixtures=impact_root,
+        allow_network=client.allow_network,
+    )
     packets, problems = packets_from_hits(hits)
     feed_notes = _unique(note for target in targets for note in target.feeds.notes)
-    impact_root = _impact_fixtures(client)
     impacts: list[dict] = []
     impact_notes: list[str] = []
     if impact_root is not None or client.allow_network:
@@ -106,6 +112,91 @@ def watch_outside(
         packets=packets,
         impacts=impacts,
     )
+
+
+def _ground_renames(
+    hits: list[FeedHit],
+    targets: list[WatchTarget],
+    *,
+    fixtures: Path | None,
+    allow_network: bool,
+) -> list[FeedHit]:
+    """Drop changelog and release-note renames that are not package API names.
+
+    When neither wheel can be loaded, the hits stay. A fixture feed with no
+    recorded library still reports the names the feed itself stated.
+    """
+    sources = {"changelog", "github_releases"}
+    packages = {
+        hit.package
+        for hit in hits
+        if hit.change in {"call_rename", "param_rename"} and hit.source in sources
+    }
+    if not packages:
+        return hits
+    known: dict[str, set[str]] = {}
+    for package in packages:
+        names = _api_names(package, targets, hits, fixtures=fixtures, allow_network=allow_network)
+        if names:
+            known[package.lower()] = names
+    if not known:
+        return hits
+    from conduit.feeds.names import rename_grounded
+
+    kept: list[FeedHit] = []
+    for hit in hits:
+        if hit.change not in {"call_rename", "param_rename"} or hit.source not in sources:
+            kept.append(hit)
+            continue
+        names = known.get(hit.package.lower())
+        if names is None or rename_grounded(hit.old, hit.new, names):
+            kept.append(hit)
+    return kept
+
+
+def _api_names(
+    package: str,
+    targets: list[WatchTarget],
+    hits: list[FeedHit],
+    *,
+    fixtures: Path | None,
+    allow_network: bool,
+) -> set[str]:
+    from conduit.impact.api import public_identifiers
+    from conduit.impact.run import _download_wheel, _load_index
+
+    pin = ""
+    for target in targets:
+        if package.lower() in {target.package.lower(), target.service_id.lower()}:
+            pin = target.pypi_version or pin
+    versions = [pin]
+    for hit in hits:
+        if hit.package.lower() != package.lower() or hit.change != "version":
+            continue
+        if hit.to_version and hit.to_version not in versions:
+            versions.append(hit.to_version)
+        if hit.from_version and hit.from_version not in versions:
+            versions.append(hit.from_version)
+    index = _load_index(fixtures)
+    entry = index.get(package.lower()) or {}
+    wheels = entry.get("wheels") if isinstance(entry.get("wheels"), dict) else {}
+    paths: list[Path] = []
+    for version in versions:
+        if not version:
+            continue
+        path: Path | None = None
+        rel = wheels.get(version)
+        if fixtures is not None and rel:
+            candidate = fixtures / str(rel)
+            if candidate.is_file():
+                path = candidate
+        if path is None and allow_network:
+            path = _download_wheel(package, version)
+        if path is not None:
+            paths.append(path)
+    if not paths:
+        return set()
+    return public_identifiers(paths)
 
 
 def _impact_fixtures(client: FeedClient) -> Path | None:
