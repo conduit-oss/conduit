@@ -279,9 +279,9 @@ def impact_cmd(
     from conduit.impact.report import format_impacts, impacts_to_dicts
     from conduit.impact.run import collect_impacts
     from conduit.outside_in.bridge import build_service_map
-    from conduit.outside_in.catalog import catalog_spec
+    from conduit.outside_in.specs import evidence_spec
 
-    spec = catalog_spec(dep)
+    spec = evidence_spec(dep)
     if spec is None or spec.family:
         console.print(
             f"[red]{dep} is not an outside service.[/red] "

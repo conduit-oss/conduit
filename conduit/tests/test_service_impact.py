@@ -18,7 +18,7 @@ from conduit.impact.run import NO_PIN_NOTE, collect_impacts, service_pins
 from conduit.impact.webhook_schema import diff_webhook_schemas
 from conduit.main import app
 from conduit.outside_in.analyze import analyze_repo
-from conduit.outside_in.catalog import catalog_spec
+from conduit.outside_in.specs import evidence_spec
 
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "examples" / "service-clients"
@@ -54,11 +54,11 @@ def test_pins_ignore_ordinary_libraries():
     assert pins["acme-sdk"] == "1.0.0"
     assert "pydantic" not in pins
     assert "fastapi" not in pins
-    assert catalog_spec("pydantic") is None
-    assert catalog_spec("requests") is None
+    assert evidence_spec("pydantic") is None
+    assert evidence_spec("requests") is None
 
 
-def test_map_finds_catalog_services_and_called_third_party_dists():
+def test_map_finds_evidence_services_and_called_third_party_dists():
     service_map = _map()
     assert set(service_map.services()) >= {"sqlalchemy", "boto3", "stripe", "acme-sdk"}
     from conduit.outside_in.report import format_report

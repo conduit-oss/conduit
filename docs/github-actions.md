@@ -1,96 +1,23 @@
 # GitHub Actions
 
-Conduit ships workflows you can copy into consumer repos, plus a composite action.
+The workflows in this repo call the same commands as the README.
 
-## Workflows in this repo
+| File | What it does |
+|------|----------------|
+| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Tests, then an offline map of `examples/wrapped-openai-fixture`. |
+| [`.github/workflows/conduit-watch-demo.yml`](../.github/workflows/conduit-watch-demo.yml) | `conduit map` and `conduit watch` on recorded copies. |
+| [`.github/workflows/conduit-dependabot.yml`](../.github/workflows/conduit-dependabot.yml) | `conduit map` when a pull request touches a dependency file. |
+| [`.github/workflows/conduit-nightly.yml`](../.github/workflows/conduit-nightly.yml) | `conduit map` on a schedule. |
 
-| File | Trigger | Purpose |
-|------|---------|---------|
-| [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) | Push / PR | Unit tests + offline map of the wrapped client fixture |
-| [`.github/workflows/conduit-watch-demo.yml`](../.github/workflows/conduit-watch-demo.yml) | Push / PR | Map the wrapped client and watch recorded feeds |
-| [`.github/workflows/conduit-dependabot.yml`](../.github/workflows/conduit-dependabot.yml) | PR touching manifests/lockfiles | `conduit map` on the consumer tree |
-| [`.github/workflows/conduit-nightly.yml`](../.github/workflows/conduit-nightly.yml) | Cron `0 0 * * *` | Nightly map |
-
-## Watch
-
-`conduit watch` diffs outside services (wheels, service models, webhook schemas). Release notes are hints. It does not bump lockfiles or announce ordinary library versions, and it does not rewrite the tree.
-
-This repo proves it with ephemeral fixtures in [`.github/workflows/conduit-watch-demo.yml`](../.github/workflows/conduit-watch-demo.yml) (no `OPENAI_API_KEY`, committed demo tree untouched).
-
-Consumer copy pattern:
+A minimal job:
 
 ```yaml
-- uses: conduit-oss/conduit/conduit@main
+- uses: actions/checkout@v4
+- uses: actions/setup-python@v5
   with:
-    mode: watch
-    path: .
-    packet: ./packets/my-hop.json
+    python-version: "3.11"
+- run: pip install -e ./conduit
+- run: conduit map --path .
 ```
 
-Or call the CLI directly:
-
-```bash
-conduit watch --path . --packet ./packets/my-hop.json
-```
-
-## Not a Dependabot intercept
-
-Conduit does not open lockfile bump PRs, scan for CVEs, or send new-version notices. The outside-service path does not watch internal repos.
-
-[`.github/workflows/conduit-dependabot.yml`](../.github/workflows/conduit-dependabot.yml) is an older example of `conduit run --base-ref` on a pull request that already touches a manifest. `--base-ref` limits that packet pipeline to the lockfile diff on the branch. It is not the map / watch / impact product, and it does not turn Conduit into Dependabot.
-
-## Nightly
-
-Runs `conduit run` on a schedule. In *this* monorepo it also exercises the demo consumer with the sample packet. Consumer apps should point `--path` at their application root and supply packets / modules they care about.
-
-## Composite action
-
-[`conduit/action.yml`](../conduit/action.yml) installs Conduit with `[llm,langs,dev]` and runs `conduit run` (default) or `conduit watch` when `mode: watch`.
-
-Inputs:
-
-- `path`, `base-ref`, `package`, `packet` (file path **or** package name), `skip-pr`, `mode` (`run` or `watch`), `python-version`
-
-Pass-through env for LLMs:
-
-- `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
-- `CONDUIT_LLM_PROVIDER`, `CONDUIT_LLM_MODEL`, `CONDUIT_LLM_API_KEY`, `CONDUIT_LLM_BASE_URL`
-- `GH_TOKEN` / `GITHUB_TOKEN`
-
-### Example consumer usage
-
-```yaml
-jobs:
-  migrate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: conduit-oss/conduit/conduit@main
-        with:
-          path: .
-          base-ref: origin/main
-          skip-pr: "false"
-        env:
-          CONDUIT_LLM_PROVIDER: ollama   # or openai / anthropic / custom
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-```
-
-(Pin to a release tag once you publish actions versions.)
-
-## Permissions
-
-For PR creation you typically need:
-
-```yaml
-permissions:
-  contents: write
-  pull-requests: write
-```
-
-## Related docs
-
-- [Pull requests](pull-requests.md)
-- [Detection](detection.md)
-- [LLM configuration](llm.md)
+[`conduit/action.yml`](../conduit/action.yml) installs Conduit and maps the repo. Set `mode` to `watch` to watch instead. `path` is the folder to read. `python-version` defaults to 3.11.
