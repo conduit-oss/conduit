@@ -14,14 +14,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from conduit.outside_in.catalog import (
-    CATALOG,
-    HTTP_CLIENT_ROOTS,
     HTTP_METHOD_TAILS,
     LIMITATIONS,
     ServiceSpec,
+    catalog_spec,
     service_for_host,
     service_for_module,
-    synthesize_package,
 )
 from conduit.outside_in.model import Chain, Entry, Hop, ServiceMap
 from conduit.prune.grep_imports import SKIP_DIRS
@@ -180,6 +178,8 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
         units[rel] = _scan_module(rel, tree)
     index = _ModuleIndex(list(units))
     resolver = _Resolver(units, index)
+    cloud_roots = _cloud_factory_roots(specs)
+    resolver.cloud_roots = cloud_roots
     entries: list[Entry] = []
     directs: list[_Direct] = []
     edges: list[_Edge] = []
@@ -206,7 +206,7 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
                     )
                 continue
             binding, confidence = resolved
-            http = _http_service(binding, call, unit, specs)
+            http = _http_service(binding, call, unit, specs, root)
             if http is not None:
                 spec, method, conf = http
                 direct = _make_direct(
@@ -232,7 +232,7 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
                     )
                 continue
             kind = _sdk_kind(spec, binding)
-            method = _cloud_method(spec, binding, call, unit)
+            method = _cloud_method(spec, binding, call, unit, cloud_roots)
             direct = _make_direct(
                 unit,
                 call,
@@ -252,11 +252,18 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
     entries.extend(_entries_from_directs(directs))
     entries = _dedupe_entries(entries)
     chains = _dedupe_chains(chains)
+    evidence = {spec.service_id: spec.evidence for spec in specs if spec.evidence}
+    for direct in directs:
+        if direct.service not in evidence:
+            matched = next((spec for spec in specs if spec.service_id == direct.service), None)
+            if matched is not None and matched.evidence:
+                evidence[direct.service] = matched.evidence
     return ServiceMap(
         root=str(root),
         entries=tuple(entries),
         chains=tuple(chains),
         limitations=LIMITATIONS,
+        evidence=evidence,
     )
 
 
@@ -566,6 +573,7 @@ class _Resolver:
         self._bindings: dict[str, dict[str, Binding]] = {}
         self._binding_stack: set[str] = set()
         self._returns: dict[str, Binding] = {}
+        self.cloud_roots: frozenset[str] = frozenset()
         self._infer_returns()
 
     def import_entries(self, rel: str, specs: tuple[ServiceSpec, ...]) -> list[Entry]:
@@ -575,7 +583,7 @@ class _Resolver:
         for raw in unit.imports:
             if raw.imported == "*":
                 spec = service_for_module(raw.module, specs) if raw.module else None
-                if spec is not None:
+                if spec is not None and not spec.transport:
                     out.append(
                         Entry(
                             service=spec.service_id,
@@ -725,7 +733,7 @@ class _Resolver:
             if aliased is not None:
                 return aliased
             func = self._resolve_expr(node.func, unit, enclosing, stack)
-            cloud = _factory_service(func, node, unit, enclosing) or func.cloud_service
+            cloud = _factory_service(func, node, unit, enclosing, self.cloud_roots) or func.cloud_service
             result = self._call_result(func, node, unit, enclosing, cloud_service=cloud)
             if result.kind == "unknown":
                 default = self._mapping_get_default(node, unit, enclosing, stack)
@@ -1065,7 +1073,10 @@ def _as_instance(binding: Binding) -> Binding:
 def _service_of(binding: Binding, specs: tuple[ServiceSpec, ...]) -> ServiceSpec | None:
     if binding.kind not in {"external_attr", "external_module", "instance_external"}:
         return None
-    return service_for_module(binding.target, specs)
+    spec = service_for_module(binding.target, specs)
+    if spec is None or spec.transport:
+        return None
+    return spec
 
 
 def _kind_prefix(spec: ServiceSpec) -> str:
@@ -1079,13 +1090,14 @@ def _kind_prefix(spec: ServiceSpec) -> str:
 _FACTORY_TAILS = frozenset({"client", "resource"})
 
 
-def _cloud_factory_roots() -> frozenset[str]:
-    """Import roots of catalogued cloud SDKs (``boto3.client``, and the same shape)."""
+def _cloud_factory_roots(specs: tuple[ServiceSpec, ...]) -> frozenset[str]:
+    """Import roots of cloud SDKs whose code ships a service model."""
     roots: set[str] = set()
-    for spec in CATALOG.values():
-        if spec.kind != "cloud":
+    for spec in specs:
+        if spec.kind != "cloud" or spec.transport:
             continue
         roots.update(spec.modules)
+        roots.update(name.split(".")[0] for name in spec.modules if name)
         roots.update(prefix.split(".")[0] for prefix in spec.module_prefixes if prefix)
     return frozenset(roots)
 
@@ -1095,15 +1107,17 @@ def _factory_service(
     node: ast.Call,
     unit: ModUnit,
     enclosing: str,
+    cloud_roots: frozenset[str] | None = None,
 ) -> str:
-    """Literal AWS service passed to ``boto3.client`` / ``resource``."""
+    """Literal service name passed to a cloud ``client`` / ``resource`` factory."""
     if func.kind not in {"external_attr", "external_module", "instance_external"}:
         return ""
     parts = func.target.split(".")
     if not parts or parts[-1] not in _FACTORY_TAILS:
         return ""
     root = parts[0]
-    if root not in _cloud_factory_roots() and "Session" not in func.target:
+    roots = cloud_roots or frozenset()
+    if root not in roots and "Session" not in func.target:
         return ""
     if not node.args:
         return ""
@@ -1133,8 +1147,16 @@ def _sdk_kind(spec: ServiceSpec, binding: Binding) -> str:
     return f"{prefix}_call"
 
 
-def _cloud_method(spec: ServiceSpec, binding: Binding, call: CallRec, unit: ModUnit) -> str:
-    cloud = binding.cloud_service or _factory_service(binding, call.node, unit, call.enclosing)
+def _cloud_method(
+    spec: ServiceSpec,
+    binding: Binding,
+    call: CallRec,
+    unit: ModUnit,
+    cloud_roots: frozenset[str],
+) -> str:
+    cloud = binding.cloud_service or _factory_service(
+        binding, call.node, unit, call.enclosing, cloud_roots
+    )
     if spec.kind == "cloud" and cloud:
         tail = binding.target.split(".")[-1]
         return f"{cloud}.{tail}"
@@ -1279,24 +1301,65 @@ def _pick_host(hosts: list[str]) -> str:
     return unique[0]
 
 
+_RESERVED_HOST_TAILS = frozenset({"example", "invalid", "test", "localhost"})
+
+
+def _package_label(host: str) -> str:
+    """Label immediately before the TLD of a hostname."""
+    labels = [part for part in (host or "").lower().split(".") if part]
+    if len(labels) < 2 or labels[-1] in _RESERVED_HOST_TAILS:
+        return ""
+    return labels[-2]
+
+
+def _spec_for_literal_host(
+    host: str,
+    specs: tuple[ServiceSpec, ...],
+    root: Path,
+) -> ServiceSpec | None:
+    """Attribute a URL host to the distribution whose own code names it.
+
+    The label before the TLD is classified. It is used only when that
+    distribution's hosts actually contain this host. Otherwise the host is
+    its own service, so the call is still mapped. Reserved TLDs are dropped.
+    """
+    found = service_for_host(host, specs)
+    if found is not None:
+        return found
+    label = _package_label(host)
+    if label:
+        spec = catalog_spec(label, root=root)
+        if spec is not None and service_for_host(host, (spec,)):
+            return spec
+    # A two-label host such as a documentation or health URL is not a service.
+    # Three or more labels match the same bar used when reading hosts out of a wheel.
+    labels = [part for part in host.lower().split(".") if part]
+    if len(labels) < 3 or labels[-1] in _RESERVED_HOST_TAILS:
+        return None
+    return ServiceSpec(service_id=host, package=host, modules=(), hosts=(host,))
+
+
 def _http_service(
     binding: Binding,
     call: CallRec,
     unit: ModUnit,
     specs: tuple[ServiceSpec, ...],
+    root: Path,
 ) -> tuple[ServiceSpec, str, str] | None:
     if binding.kind not in {"external_attr", "instance_external"}:
         return None
     parts = binding.target.split(".")
     if not parts:
         return None
-    # requests / httpx / aiohttp / urllib. A literal URL still needs a
-    # catalogued host. A host named only by a guard (``endswith``, ``==``,
-    # ``in``) is its own service when the catalog does not already claim it.
+    # A generic HTTP library, or the stdlib URL stack. A literal URL still
+    # needs a service that names that host. A host named only by a guard
+    # (``endswith``, ``==``, ``in``) is its own service when none does.
+    http_spec = service_for_module(binding.target, specs)
+    stdlib_http = parts[0] in {"urllib", "http"}
     if (
         binding.kind == "external_attr"
-        and parts[0] in HTTP_CLIENT_ROOTS
         and parts[-1] in HTTP_METHOD_TAILS
+        and (stdlib_http or (http_spec is not None and http_spec.transport))
     ):
         verb = parts[-1].upper()
         if verb == "REQUEST":
@@ -1305,8 +1368,8 @@ def _http_service(
             verb = "GET"
         url = _call_url(call.node, unit, call.enclosing, binding.base_url)
         if url:
-            host = urlparse(url).hostname or ""
-            spec = service_for_host(host, specs)
+            host = (urlparse(url).hostname or "").lower()
+            spec = _spec_for_literal_host(host, specs, root)
             if spec is None:
                 return None
             return spec, f"{verb} {url}", "high"
@@ -1361,13 +1424,19 @@ def _module_path_request(
         return None
     if not unit.rel:
         return None
-    spec = service_for_module(_dotted(unit.rel), specs)
-    if spec is None or not spec.hosts:
-        return None
     verb, path = _sdk_request_verb_path(call.node, unit, call.enclosing)
     if not verb or not path:
         return None
-    host = spec.hosts[0]
+    spec = service_for_module(_dotted(unit.rel), specs)
+    if spec is not None and spec.hosts:
+        host = spec.hosts[0]
+    else:
+        # Generated clients call param_serialize without a classified spec.
+        # The enclosing package is the service; the path is the evidence.
+        top = _dotted(unit.rel).split(".", 1)[0]
+        if spec is None:
+            spec = ServiceSpec(service_id=top, package=top.replace("_", "-"), modules=(top,))
+        host = spec.hosts[0] if spec.hosts else top
     url = f"https://{host}{path}" if path.startswith("/") else f"https://{host}/{path}"
     return spec, f"{verb} {url}", "high"
 
@@ -2564,9 +2633,6 @@ def _spec_named(name: str, specs: tuple[ServiceSpec, ...]) -> ServiceSpec | None
         for item in names:
             if item.lower() == token.lower() or item.lower().replace("_", "-") == folded:
                 return spec
-    synthesized = synthesize_package(token)
-    if synthesized is not None:
-        return synthesized
     return service_for_module(token, specs)
 
 

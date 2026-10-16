@@ -12,6 +12,40 @@ from conduit.main import app
 from conduit.outside_in.analyze import analyze_repo
 
 
+def _install_client(root: Path, dist: str, import_name: str, version: str = "1.0.0") -> None:
+    """Put a real HTTP client on the repo's site-packages for one distribution."""
+    site = root / ".venv" / "lib" / "python3.12" / "site-packages"
+    info = site / f"{dist.replace('-', '_')}-{version}.dist-info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "METADATA").write_text(f"Name: {dist}\nVersion: {version}\n", encoding="utf-8")
+    (info / "top_level.txt").write_text(f"{import_name}\n", encoding="utf-8")
+    package = site / import_name
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(
+        "import http.client\n"
+        "\n"
+        "class Client:\n"
+        "    def __init__(self, token=None):\n"
+        "        self._conn = http.client.HTTPSConnection('api.invalid.invalid')\n"
+        "\n"
+        "    def chat_postMessage(self, channel, text):\n"
+        "        self._conn.request('POST', '/chat')\n"
+        "        return channel\n"
+        "\n"
+        "    def go(self):\n"
+        "        self._conn.request('POST', '/go')\n"
+        "        return 1\n"
+        "\n"
+        "    def ping(self):\n"
+        "        self._conn.request('POST', '/ping')\n"
+        "        return 1\n"
+        "\n"
+        "class WebClient(Client):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+
 def _write(root: Path, rel: str, source: str) -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,6 +225,7 @@ def test_hyphenated_distribution_matches_the_import_root(tmp_path: Path):
 
 def test_annotated_instance_attribute_reaches_other_methods(tmp_path: Path):
     _write(tmp_path, "requirements.txt", "widget-sdk\n")
+    _install_client(tmp_path, "widget-sdk", "widget_sdk")
     _write(
         tmp_path,
         "box.py",
@@ -228,6 +263,7 @@ def test_annotated_instance_attribute_reaches_other_methods(tmp_path: Path):
 
 
 def test_lockfile_names_a_distribution_the_import_root_differs_from(tmp_path: Path):
+    _install_client(tmp_path, "cool-thing", "cool_thing", version="1.2.3")
     _write(
         tmp_path,
         "poetry.lock",
@@ -257,6 +293,7 @@ def test_installed_top_level_maps_an_unrelated_import_name(tmp_path: Path):
     info.mkdir(parents=True)
     (info / "METADATA").write_text("Name: weirdpkg\nVersion: 1.0.0\n", encoding="utf-8")
     (info / "top_level.txt").write_text("not_the_dist_name\n", encoding="utf-8")
+    _install_client(tmp_path, "weirdpkg", "not_the_dist_name")
     _write(
         tmp_path,
         "app.py",

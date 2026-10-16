@@ -91,8 +91,7 @@ def import_roots_for(root: Path, distribution: str) -> tuple[str, ...]:
 
     Installed metadata wins when the import name is not the distribution
     name (``PIL`` for ``pillow``). Otherwise the normalized name with
-    hyphens turned into underscores is the import root (``slack-sdk`` →
-    ``slack_sdk``). Stdlib roots are dropped.
+    hyphens turned into underscores is the import root. Stdlib roots are dropped.
     """
     norm = normalize_dist(distribution)
     if not norm:
@@ -148,8 +147,8 @@ def merge_declared_specs(
 def expand_unknown_spec(root: Path, spec: ServiceSpec) -> ServiceSpec:
     """Fill import roots for an explicit service the catalog does not know.
 
-    ``--service slack-sdk`` has to see ``import slack_sdk``. Catalog specs
-    keep the modules they already declare.
+    ``--service some-dist`` has to see ``import some_dist``. Specs that
+    already name their modules keep those modules.
     """
     if spec.family or spec.module_prefixes:
         return spec

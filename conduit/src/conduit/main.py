@@ -819,7 +819,7 @@ def impact_cmd(
     dep: str = typer.Option(
         ...,
         "--dep",
-        help="Outside service or its client (sqlalchemy, boto3, stripe, acme-sdk)",
+        help="Outside service or its client package",
     ),
     to: Optional[str] = typer.Option(
         None,

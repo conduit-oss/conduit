@@ -1,13 +1,15 @@
-"""Which public feeds each catalogued outside service publishes.
+"""Public feeds for an outside service.
 
-OpenAPI previous/latest URLs are optional. The openai pair is the recorded
-fixture used by offline watch (those raw paths are not a live branch). A
-live fetch that 404s is skipped.
+PyPI is ``https://pypi.org/pypi/{package}/json``. GitHub, npm, changelog,
+and OpenAPI URLs are taken from a recorded fixture index or, when that
+index is absent, left for a live fetch of the PyPI URL only. Nothing here
+is a table of product names.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -37,92 +39,76 @@ class ServiceFeeds:
         return f"https://registry.npmjs.org/{self.npm}"
 
 
-FEEDS: dict[str, ServiceFeeds] = {
-    "openai": ServiceFeeds(
-        service_id="openai",
-        package="openai",
-        github_repo="openai/openai-python",
-        pypi="openai",
-        npm="openai",
-        changelog_url="https://platform.openai.com/docs/deprecations",
-        openapi_previous_url=(
-            "https://raw.githubusercontent.com/openai/openai-openapi/previous/openapi.yaml"
-        ),
-        openapi_latest_url=(
-            "https://raw.githubusercontent.com/openai/openai-openapi/latest/openapi.yaml"
-        ),
-    ),
-    "anthropic": ServiceFeeds(
-        service_id="anthropic",
-        package="anthropic",
-        github_repo="anthropics/anthropic-sdk-python",
-        pypi="anthropic",
-        npm="@anthropic-ai/sdk",
-        changelog_url="https://docs.anthropic.com/en/release-notes/api",
-    ),
-    "stripe": ServiceFeeds(
-        service_id="stripe",
-        package="stripe",
-        github_repo="stripe/stripe-python",
-        pypi="stripe",
-        npm="stripe",
-        changelog_url="https://docs.stripe.com/changelog",
-    ),
-    "twilio": ServiceFeeds(
-        service_id="twilio",
-        package="twilio",
-        github_repo="twilio/twilio-python",
-        pypi="twilio",
-        npm="twilio",
-    ),
-    "boto3": ServiceFeeds(
-        service_id="boto3",
-        package="boto3",
-        github_repo="boto/boto3",
-        pypi="boto3",
-        changelog_url="https://github.com/boto/boto3/blob/develop/CHANGELOG.rst",
-    ),
-    "sqlalchemy": ServiceFeeds(
-        service_id="sqlalchemy",
-        package="sqlalchemy",
-        pypi="sqlalchemy",
-    ),
-    "psycopg": ServiceFeeds(
-        service_id="psycopg",
-        package="psycopg",
-        pypi="psycopg",
-    ),
-    "psycopg2": ServiceFeeds(
-        service_id="psycopg2",
-        package="psycopg2",
-        pypi="psycopg2",
-    ),
-    "pymongo": ServiceFeeds(
-        service_id="pymongo",
-        package="pymongo",
-        pypi="pymongo",
-    ),
-    "redis": ServiceFeeds(
-        service_id="redis",
-        package="redis",
-        pypi="redis",
-    ),
-    "asyncpg": ServiceFeeds(
-        service_id="asyncpg",
-        package="asyncpg",
-        pypi="asyncpg",
-    ),
-    "acme": ServiceFeeds(
-        service_id="acme",
-        package="acme-sdk",
-        pypi="acme-sdk",
-    ),
-    "github": ServiceFeeds(
-        service_id="github",
-        package="github",
-    ),
-}
+def feeds_for(
+    service_id: str,
+    package: str = "",
+    *,
+    urls: dict[str, str] | None = None,
+) -> ServiceFeeds | None:
+    """Feeds whose URLs are known.
+
+    ``urls`` is a fixture index (URL → file). Only URLs in that index are
+    attached, so an offline run does not request anything it cannot read.
+    Without an index, the PyPI JSON URL is the one feed that needs no
+    per-product configuration.
+    """
+    token = (service_id or "").strip()
+    dist = (package or token).strip()
+    if not token or not dist:
+        return None
+    if urls is None:
+        return ServiceFeeds(service_id=token, package=dist, pypi=dist)
+    matched = [url for url in urls if _mentions(url, dist) or _mentions(url, token)]
+    github = ""
+    pypi = ""
+    npm = ""
+    previous = ""
+    latest = ""
+    changelog = ""
+    pypi_url = f"https://pypi.org/pypi/{dist}/json"
+    if pypi_url in urls:
+        pypi = dist
+    for url in matched:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path or ""
+        lowered = url.lower()
+        if host == "github.com" and path.endswith("/releases.atom"):
+            parts = [part for part in path.split("/") if part]
+            if len(parts) >= 3:
+                github = f"{parts[0]}/{parts[1]}"
+            continue
+        if "registry.npmjs.org" in host:
+            name = path.strip("/")
+            if name:
+                npm = name
+            continue
+        if path.endswith("openapi.yaml") or path.endswith("openapi.yml") or "openapi" in lowered:
+            if "previous" in lowered and not previous:
+                previous = url
+            elif "latest" in lowered and not latest:
+                latest = url
+            continue
+        if url == pypi_url:
+            continue
+        if not changelog:
+            changelog = url
+    if not any((github, pypi, npm, previous, latest, changelog)):
+        return None
+    return ServiceFeeds(
+        service_id=token,
+        package=dist,
+        github_repo=github,
+        pypi=pypi,
+        npm=npm,
+        changelog_url=changelog,
+        openapi_previous_url=previous,
+        openapi_latest_url=latest,
+    )
 
 
-def feeds_for(service_id: str) -> ServiceFeeds | None:
-    return FEEDS.get((service_id or "").strip().lower())
+def _mentions(url: str, name: str) -> bool:
+    needle = (name or "").strip().lower()
+    if len(needle) < 2:
+        return False
+    return needle in url.lower()

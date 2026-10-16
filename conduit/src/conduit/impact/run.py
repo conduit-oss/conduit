@@ -17,28 +17,30 @@ from conduit.impact.openapi_rest import PUBLIC_SPEC_URLS, diff_openapi, split_ht
 from conduit.impact.openapi_sources import resolve_spec_pair, spec_source_for
 from conduit.impact.versions import pypi_latest, resolve_client_version
 from conduit.impact.webhook_schema import diff_webhook_schemas
-from conduit.outside_in.catalog import CATALOG, catalog_spec
+from conduit.outside_in.catalog import catalog_spec, normalize_dist
 from conduit.outside_in.model import Chain, ServiceMap
 
 if TYPE_CHECKING:
     from conduit.feeds.model import FeedHit
 
 
-def service_pins(root: Path) -> dict[str, str]:
+def service_pins(root: Path, *, only: set[str] | None = None) -> dict[str, str]:
     """Pinned versions of outside-service clients only.
 
     Ordinary libraries in the same requirements file are ignored.
+    ``only`` limits classification to packages the map already reached.
     """
     installed = read_installed(root)
-    wanted = {
-        spec.package.lower()
-        for spec in CATALOG.values()
-        if spec.package and not spec.family
-    }
+    allowed = {normalize_dist(name) for name in only} if only is not None else None
     pins: dict[str, str] = {}
     for name, version in installed.items():
-        if name in wanted or name.startswith("google-cloud-") or name.startswith("azure-"):
-            pins[name] = version
+        norm = normalize_dist(name)
+        if allowed is not None and norm not in allowed:
+            continue
+        spec = catalog_spec(name, version, root=root)
+        if spec is None or spec.transport or spec.family:
+            continue
+        pins[normalize_dist(spec.package or name)] = version
     return pins
 
 
@@ -70,8 +72,11 @@ def collect_impacts(
     """
     index = _load_index(fixtures)
     explicit = bool(dep)
-    targets = _targets(service_map, dep)
-    pins = service_pins(root)
+    targets = _targets(service_map, dep, root=root)
+    names = {package for package, _service in targets}
+    if dep:
+        names.add(dep)
+    pins = service_pins(root, only=names)
     impacts: list[Impact] = []
     diffed: set[str] = set()
     notes: list[str] = []
@@ -160,22 +165,27 @@ def collect_impacts(
     return impacts, diffed, notes
 
 
-def _targets(service_map: ServiceMap, dep: str | None) -> list[tuple[str, str]]:
+def _targets(
+    service_map: ServiceMap,
+    dep: str | None,
+    *,
+    root: Path | None = None,
+) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
     wanted = (dep or "").strip().lower()
+    wanted_spec = catalog_spec(wanted, root=root) if wanted else None
     for chain in service_map.chains:
         package = chain.package or chain.service
         if not package or package.lower() in seen:
             continue
         if wanted and wanted not in {package.lower(), chain.service.lower()}:
-            spec = catalog_spec(wanted)
-            if spec is None or spec.package.lower() != package.lower():
+            if wanted_spec is None or wanted_spec.package.lower() != package.lower():
                 continue
         seen.add(package.lower())
         found.append((package, chain.service))
     if wanted and not found:
-        spec = catalog_spec(wanted)
+        spec = catalog_spec(wanted, root=root)
         if spec is not None and not spec.family:
             found.append((spec.package, spec.service_id))
     return found

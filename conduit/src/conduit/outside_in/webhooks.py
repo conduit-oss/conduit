@@ -1,15 +1,17 @@
-"""Incoming third-party webhook handlers.
+"""Incoming webhook handlers.
 
-FastAPI, Flask, and Django routes that receive a Stripe, GitHub, or Twilio
-payload. The fields recorded are the ones the handler reads (and a helper
-in the same file that the handler passes the payload to).
+Routes that receive a payload from a classified outside service. The fields
+recorded are the ones the handler reads (and a helper in the same file that
+the handler passes the payload to). The service id comes from a path or
+header token that matches a classified distribution, not from a provider list.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 
-from conduit.outside_in.catalog import ServiceSpec
+from conduit.outside_in.catalog import ServiceSpec, normalize_dist
 from conduit.outside_in.graph import ModUnit, _Direct
 
 _ROUTE_TAILS = frozenset(
@@ -18,11 +20,29 @@ _ROUTE_TAILS = frozenset(
 _JSON_TAILS = frozenset({"json", "get_json"})
 _BODY_TAILS = frozenset({"body", "data", "get_data"})
 
-# (service id, needles in the path, function name, or string constants)
-_PROVIDERS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("stripe", ("stripe", "stripe-signature")),
-    ("github", ("github", "x-hub-signature", "x-github-event")),
-    ("twilio", ("twilio", "x-twilio-signature")),
+_STOP = frozenset(
+    {
+        "api",
+        "app",
+        "callback",
+        "data",
+        "event",
+        "events",
+        "hook",
+        "hooks",
+        "http",
+        "https",
+        "incoming",
+        "object",
+        "post",
+        "request",
+        "signature",
+        "type",
+        "v1",
+        "v2",
+        "v3",
+        "webhook",
+    }
 )
 
 
@@ -36,7 +56,7 @@ def webhook_directs(
     for rel, unit in units.items():
         functions = _functions(unit.tree)
         for node in functions.values():
-            provider, confidence = _provider(node)
+            provider, confidence = _provider(node, specs)
             if provider is None or provider not in allowed:
                 continue
             spec = by_id[provider]
@@ -96,28 +116,49 @@ def _functions(tree: ast.AST) -> dict[str, ast.AST]:
     return found
 
 
-def _provider(node: ast.AST) -> tuple[str | None, str]:
+def _provider(node: ast.AST, specs: tuple[ServiceSpec, ...]) -> tuple[str | None, str]:
     assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     paths = _route_paths(node)
     constants = _string_constants(node)
     blob = " ".join([*paths, node.name, *constants]).lower()
-    hooked = any("webhook" in item or item.endswith("/hook") or "/hook" in item for item in (*paths, node.name.lower()))
-    header = any(
-        needle in blob
-        for needle in (
-            "stripe-signature",
-            "x-hub-signature",
-            "x-github-event",
-            "x-twilio-signature",
-        )
+    hooked = any(
+        "webhook" in item or item.endswith("/hook") or "/hook" in item
+        for item in (*paths, node.name.lower())
     )
+    header = "signature" in blob or blob.startswith("x-") or " x-" in blob
     if not hooked and not header and "webhook" not in node.name.lower():
         return None, "low"
-    for service, needles in _PROVIDERS:
-        if any(needle in blob for needle in needles):
+    tokens = _tokens(blob)
+    for spec in specs:
+        if spec.transport or spec.family:
+            continue
+        names = _spec_tokens(spec)
+        if tokens & names:
             confidence = "high" if paths or header else "medium"
-            return service, confidence
+            return spec.service_id, confidence
     return None, "low"
+
+
+def _tokens(blob: str) -> set[str]:
+    found: set[str] = set()
+    for part in re.split(r"[^a-z0-9]+", blob.lower()):
+        if len(part) < 3 or part in _STOP:
+            continue
+        found.add(part)
+    return found
+
+
+def _spec_tokens(spec: ServiceSpec) -> set[str]:
+    raw = [spec.service_id, spec.package, *spec.modules]
+    found: set[str] = set()
+    for item in raw:
+        token = normalize_dist(item).replace("-", "")
+        if len(token) >= 3 and token not in _STOP:
+            found.add(token)
+        head = normalize_dist(item.split(".", 1)[0]).replace("-", "")
+        if len(head) >= 3 and head not in _STOP:
+            found.add(head)
+    return found
 
 
 def _route_paths(node: ast.AST) -> list[str]:

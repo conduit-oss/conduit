@@ -60,11 +60,14 @@ def test_pins_ignore_ordinary_libraries():
 
 def test_map_finds_catalog_services_and_called_third_party_dists():
     service_map = _map()
-    assert set(service_map.services()) >= {"sqlalchemy", "boto3", "stripe", "acme"}
-    # pydantic is declared and called, so the map includes it. requests is
-    # not declared, and example.com is not a catalogued host.
-    assert "pydantic" in service_map.services()
-    assert any(chain.call_rel == "unrelated.py" and chain.package == "pydantic" for chain in service_map.chains)
+    assert set(service_map.services()) >= {"sqlalchemy", "boto3", "stripe", "acme-sdk"}
+    from conduit.outside_in.report import format_report
+
+    rendered = format_report(service_map, markdown=True)
+    assert "evidence: `" in rendered
+    assert "->" in rendered
+    assert "pydantic" not in service_map.services()
+    assert "fastapi" not in service_map.services()
     assert not any(chain.package == "requests" or "example.com" in chain.sdk_method for chain in service_map.chains)
 
     query_get = [

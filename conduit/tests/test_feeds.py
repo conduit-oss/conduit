@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from conduit.feeds.catalog import FEEDS
+from conduit.feeds.catalog import feeds_for
 from conduit.feeds.client import FeedClient, FeedOfflineError
 from conduit.feeds.model import FeedHit
 from conduit.feeds.packet import packets_from_hits
@@ -303,4 +303,7 @@ def test_packets_from_hits_keeps_highest_confidence_rule():
     assert problems == []
     rule = next(item for item in packets[0]["rules"] if item["type"] == "AST_CALL_REWRITE" and "openai.Chat" in item["old_callee"])
     assert rule["reason"].startswith("github_releases (medium)")
-    assert FEEDS["openai"].github_repo == "openai/openai-python"
+    recorded = json.loads((FEEDS_DIR / "index.json").read_text(encoding="utf-8"))["files"]
+    feeds = feeds_for("openai", "openai", urls=recorded)
+    assert feeds is not None
+    assert feeds.github_repo == "openai/openai-python"

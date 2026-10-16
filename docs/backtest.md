@@ -189,16 +189,24 @@ git-workflow deletes both `requests.post('https://api.github.com/authorizations'
 
 Stripe REST pair re-run: still 2/2. OpenAI large/small and non-OpenAI wheel sets were re-run after this change. Call-site recall, edit coverage, and primary counts are unchanged: large 13/13, 43/79 (54%), 43/117; small 6/6 on the call filter, 13/22 (59%), 13/20; non-OpenAI 38/43 (88%), 38/52 (73%).
 
-## Declared distributions
+## Evidence classifier
 
-`conduit map` used to inventory only the service catalog. A tree that called Supabase (`supabase: Client = create_client(...)`, the local name shadowing the package) and Slack (`WebClient` stored on `self.client`, plus `host.endswith("hooks.slack.com")` before `requests` / `httpx`) reported `psycopg2` and nothing else. `psycopg2` is catalogued. `supabase` and `slack_sdk` are not, and `slack-sdk` does not equal the import root `slack_sdk`.
+The hand-written service catalog is gone. A distribution is an outside service only when its own wheel, sdist, or installed files show I/O, followed a bounded number of dependency levels:
 
-Declared distributions now come from requirements (pinned or not), pyproject, lockfiles, and installed metadata. Import roots come from that metadata when the import name differs, otherwise from the normalized distribution name (`slack-sdk` → `slack_sdk`). A declared distribution is an outside service when a call reaches it. The standard library and the repo's own modules are not, even if a requirements line names them. An import with no call is not usage. Annotated assignments bind the same way as plain assignments, including `self.client: WebClient = WebClient(...)`. Callers of that class are wrapper callers. No SDK name was added to the catalog for this.
+- network: the code calls `socket`, `ssl`, `http.client`, or `urllib.request`, or it depends on a distribution that does;
+- database: the code implements DB-API 2.0 (`connect` / `cursor` / `execute` / `commit`), or it depends on a distribution that does;
+- spec: the wheel ships a versioned API model (`service-2.json` or an OpenAPI document).
 
-Impact on the scored migrations was re-run here and on the previous matcher (`main` at `1ed1106`). Primary lines (`via_wrapper` false) are identical on every repo, so recall and strict precision do not move.
+A client, session, or connection class has to be what the caller constructs. An incidental download helper is not a service. Generic HTTP libraries stay transports: they are used to attribute URL calls and are not map services. Kind (`api`, `database`, `cloud`) and constructor names come from that evidence. `--markdown` prints the path, for example `supabase -> supabase-auth -> httpx -> httpcore -> http.client`.
 
-| Set | Before | After |
-|-----|--------|-------|
+Pure-compute libraries are not services. `pydantic`, `pandas`, `numpy`, and `attrs` stay out. `requests`, `httpx`, `aiohttp`, `urllib3`, `fastapi`, `starlette`, `anyio`, and `websockets` are transports. These are services, from the wheel alone: `supabase` (api), `slack-sdk` (api, host `api.slack.com`), `psycopg2` (database), `stripe` (api), `boto3` (cloud, via a service model), `sqlalchemy` (database), `openai` (api, host `api.openai.com`). A requirement range such as `>=1.4.0,<2.0.0` is not a wheel version; classification uses a concrete release.
+
+Paths follow the constructor the wheel actually runs. `supabase` builds its auth client, so the path is `supabase -> supabase-auth -> httpx -> httpcore -> http.client` rather than a lazy query client. Current `openai` releases depend on `httpx2`, so that name appears in the path. `pymongo` is `api` via `socket` because it does not implement DB-API; the PaintOmics lines still match. `azure-core` is a product client over `requests`, not a transport. A two-label host such as a health-check URL is not a service. A signature header that does not carry a package token does not name one either.
+
+No scored migration changed classification. Impact was re-run here and on `main` at `1ed1106`. Primary lines (`via_wrapper` false) are identical on every repo, so recall and strict precision do not move.
+
+| Set | Before (`main` `1ed1106`) | After |
+|-----|---------------------------|-------|
 | OpenAI large | 13/13 call sites, 43/79 strict (54%), 43/117 edit coverage | same |
 | OpenAI small | 6/6 on the call filter, 13/22 strict (59%), 13/20 edit coverage | same |
 | Non-OpenAI | 38/43 caught (88%), 38/52 strict (73%) | same |

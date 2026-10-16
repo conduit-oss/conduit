@@ -212,8 +212,8 @@ _CONF_RANK = {"high": 3, "medium": 2, "low": 1}
 def _dedupe_breaks(items: list[Break]) -> list[Break]:
     """One line per distinct change at this call site.
 
-    Packets often spell one callee twice (``openai.ChatCompletion.create`` and
-    ``ChatCompletion.create``, or the same pair matched to one REST path).
+    Packets often spell one callee twice (``package.Resource.create`` and
+    ``Resource.create``, or the same pair matched to one REST path).
     Same kind and same destination are one rename; keep the more specific
     callee. A different destination stays its own line.
     """
