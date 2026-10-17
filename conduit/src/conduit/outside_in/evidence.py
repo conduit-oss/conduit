@@ -1441,7 +1441,7 @@ def _imported_modules(root: Path) -> set[str]:
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 found.add(node.module)
                 for alias in node.names:
-                    # ``from google.cloud import storage`` is the storage submodule.
+                    # ``from parent.child import name`` is the child submodule.
                     if alias.name and alias.name.isidentifier() and alias.name[:1].islower():
                         found.add(f"{node.module}.{alias.name}")
     return found

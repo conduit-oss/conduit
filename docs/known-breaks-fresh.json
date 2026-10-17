@@ -1,0 +1,940 @@
+{
+  "note": "Expected breaks were written before any conduit watch or impact run on these commits. These three repositories were chosen after the call-type and deprecation changes. Do not add sites after seeing a run.",
+  "scoring": {
+    "catch": "A non-wrapper impact site whose path ends with the expected file and whose line equals the expected line.",
+    "miss": "An expected site with no such impact site.",
+    "false_positive": "A non-wrapper impact site that is not one of the expected file:line pairs. Extra sites are not folded back into this file. Deprecations are not breaks and are not false positives."
+  },
+  "repos": [
+    {
+      "repo": "WebODM/WebODM",
+      "url": "https://github.com/WebODM/WebODM",
+      "commit": "51c8f98b35de920d347631bcb99ed06180a6cafd",
+      "subdir": "",
+      "service": "django",
+      "pin": "Django==2.2.27",
+      "pin_file": "requirements.txt",
+      "removed_in": "4.0.0",
+      "expected": [
+        {
+          "file": "app/admin.py",
+          "line": 253,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/admin.py",
+          "line": 258,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/admin.py",
+          "line": 263,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/admin.py",
+          "line": 268,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 35,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 40,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 44,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 52,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 60,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 62,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 39,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 41,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 42,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 43,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 45,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 46,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 47,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 48,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 49,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 50,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 52,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 53,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 54,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 55,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 56,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 57,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 58,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 59,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 60,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 61,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 63,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 64,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 65,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 66,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 68,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 69,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 70,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 71,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 72,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 74,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 75,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 76,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 78,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 79,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 80,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 81,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 83,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 84,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 86,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 87,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 89,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 90,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 91,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 94,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 96,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 97,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 100,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 102,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 106,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 107,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 110,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0001_initial.py",
+          "line": 76,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0008_preset.py",
+          "line": 26,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0009_auto_20170721_1332.py",
+          "line": 20,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0020_plugindatum.py",
+          "line": 24,
+          "symbol": "NullBooleanField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0020_plugindatum.py",
+          "line": 26,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0025_auto_20190220_1854.py",
+          "line": 26,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0025_auto_20190220_1854.py",
+          "line": 41,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0031_auto_20210610_1850.py",
+          "line": 58,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0031_auto_20210610_1850.py",
+          "line": 83,
+          "symbol": "NullBooleanField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0031_auto_20210610_1850.py",
+          "line": 98,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0031_auto_20210610_1850.py",
+          "line": 128,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0031_auto_20210610_1850.py",
+          "line": 248,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0035_task_orthophoto_bands.py",
+          "line": 40,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/migrations/0048_task_media.py",
+          "line": 15,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/models/plugin_datum.py",
+          "line": 11,
+          "symbol": "NullBooleanField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/models/plugin_datum.py",
+          "line": 13,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/models/preset.py",
+          "line": 11,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/models/task.py",
+          "line": 254,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/models/task.py",
+          "line": 285,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/models/task.py",
+          "line": 289,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/models/task.py",
+          "line": 293,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/plugins/views.py",
+          "line": 30,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/plugins/views.py",
+          "line": 39,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/plugins/views.py",
+          "line": 54,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/plugins/views.py",
+          "line": 68,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 23,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 24,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 25,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 26,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 27,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 28,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 30,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 31,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 32,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 33,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 34,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 36,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 38,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 40,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 42,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 43,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 45,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 46,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 49,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 50,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 58,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 60,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 74,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 108,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 133,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 141,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 145,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 149,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 183,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/dev.py",
+          "line": 59,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/dev.py",
+          "line": 71,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/dev.py",
+          "line": 75,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/dev.py",
+          "line": 78,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 38,
+          "symbol": "is_safe_url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 53,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 90,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 95,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 101,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 106,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 128,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 134,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 150,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 157,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 174,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 186,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 190,
+          "symbol": "ugettext",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "nodeodm/migrations/0001_initial.py",
+          "line": 30,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "nodeodm/migrations/0006_auto_20190220_1842.py",
+          "line": 17,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "nodeodm/migrations/0009_auto_20210610_1850.py",
+          "line": 26,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "nodeodm/models.py",
+          "line": 29,
+          "symbol": "JSONField",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "webodm/urls.py",
+          "line": 43,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "webodm/urls.py",
+          "line": 44,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "webodm/urls.py",
+          "line": 45,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "webodm/urls.py",
+          "line": 54,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        },
+        {
+          "file": "webodm/urls.py",
+          "line": 57,
+          "symbol": "url",
+          "upstream": "https://docs.djangoproject.com/en/4.0/releases/4.0/#features-removed-in-4-0"
+        }
+      ]
+    },
+    {
+      "repo": "phasehq/console",
+      "url": "https://github.com/phasehq/console",
+      "commit": "c99ea21252ac6587b45460a2ae6d8a3c1a9761ad",
+      "subdir": "backend",
+      "service": "stripe",
+      "pin": "stripe==10.5.0",
+      "pin_file": "backend/requirements.txt",
+      "removed_in": "12.0.0",
+      "expected": [
+        {
+          "file": "ee/billing/graphene/queries/stripe.py",
+          "line": 145,
+          "symbol": "Invoice.upcoming",
+          "upstream": "https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0"
+        }
+      ]
+    },
+    {
+      "repo": "samuelclay/NewsBlur",
+      "url": "https://github.com/samuelclay/NewsBlur",
+      "commit": "dae86cde1a584c19a2642d74f3118f38fcf41fef",
+      "subdir": "",
+      "service": "pymongo",
+      "pin": "pymongo>=3,<4",
+      "pin_file": "config/requirements.txt",
+      "removed_in": "4.0.0",
+      "expected": [
+        {
+          "file": "utils/backups/copy_mongo_serialized.py",
+          "line": 35,
+          "symbol": "Collection.count",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-count-and-cursor-count-is-removed"
+        },
+        {
+          "file": "utils/backups/copy_mongo_serialized.py",
+          "line": 45,
+          "symbol": "Collection.insert",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-insert-is-removed"
+        },
+        {
+          "file": "utils/backups/copy_mongo_serialized.py",
+          "line": 59,
+          "symbol": "Collection.insert",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-insert-is-removed"
+        },
+        {
+          "file": "utils/archive/bootstrap_story_hash.py",
+          "line": 27,
+          "symbol": "Collection.update",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-update-is-removed"
+        },
+        {
+          "file": "utils/archive/bootstrap_mongo.py",
+          "line": 261,
+          "symbol": "Collection.remove",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-remove-is-removed"
+        },
+        {
+          "file": "flask_monitor/db_monitor.py",
+          "line": 170,
+          "symbol": "NotMasterError",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#notmastererror-is-removed"
+        },
+        {
+          "file": "flask_monitor/db_monitor.py",
+          "line": 200,
+          "symbol": "NotMasterError",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#notmastererror-is-removed"
+        }
+      ]
+    }
+  ]
+}

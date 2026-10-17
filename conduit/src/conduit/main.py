@@ -79,7 +79,7 @@ def _watch_feeds(
             name = str(packet.get("packet_id") or "packet") + ".json"
             (dest / name).write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8")
     if json_out:
-        console.print_json(data=result.to_dict())
+        console.print_json(data=result.to_dict(), highlight=False)
     else:
         if not result.packets and not result.impacts:
             console.print("No released changes hit call sites on this map.")
@@ -112,6 +112,7 @@ def _watch_feeds(
                     change=str(item.get("change") or ""),
                     confidence=str(item.get("confidence") or ""),
                     source=str(item.get("source") or ""),
+                    kind=str(item.get("kind") or ""),
                     sites=tuple(
                         SiteHit(
                             path=str(site.get("path") or ""),
@@ -223,7 +224,7 @@ def map_cmd(
 
     service_map, blast = build_service_map(root, service=service, packet=data)
     if json_out:
-        console.print_json(data=service_map_to_dict(service_map, blast))
+        console.print_json(data=service_map_to_dict(service_map, blast), highlight=False)
     else:
         console.print(
             format_report(service_map, blast, markdown=markdown),
@@ -305,8 +306,16 @@ def impact_cmd(
         allow_network=fixture_root is None,
     )
     if json_out:
+        breaks = [item for item in impacts if item.kind != "deprecated"]
+        deprecations = [item for item in impacts if item.kind == "deprecated"]
         console.print_json(
-            data={"dependency": dep, "impacts": impacts_to_dicts(impacts), "notes": notes}
+            data={
+                "dependency": dep,
+                "impacts": impacts_to_dicts(breaks),
+                "deprecations": impacts_to_dicts(deprecations),
+                "notes": notes,
+            },
+            highlight=False,
         )
     else:
         if notes and not impacts:

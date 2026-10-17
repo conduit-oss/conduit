@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from conduit.deps.manifests import read_installed
 from conduit.feeds.versions import is_newer, parse_version
 from conduit.impact.api import diff_wheels, public_identifiers
-from conduit.impact.botocore import diff_service_models
+from conduit.impact.service_model import diff_service_models
 from conduit.impact.shipped_specs import diff_shipped_specs
 from conduit.impact.intersect import intersect
 from conduit.impact.model import ApiChange, Impact, SiteHit

@@ -354,7 +354,7 @@ def _diff_pair(
         old_path.write_bytes(previous[2])
         new_path.write_bytes(latest[2])
         if old_kind == "service-model":
-            from conduit.impact.botocore import diff_service_models
+            from conduit.impact.service_model import diff_service_models
 
             return diff_service_models(old_path, new_path, service=service)
         from conduit.impact.openapi_rest import diff_openapi

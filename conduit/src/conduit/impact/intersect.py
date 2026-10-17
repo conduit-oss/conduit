@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conduit.impact.botocore import operation_matches
+from conduit.impact.service_model import operation_matches
 from conduit.impact.model import ApiChange, Impact, SiteHit
 from conduit.outside_in.graph import min_confidence
 from conduit.outside_in.model import Chain
@@ -48,6 +48,7 @@ def intersect(
                 confidence=_impact_confidence(change, sites),
                 source=change.source,
                 sites=tuple(sites),
+                kind=change.kind,
             )
         )
     return impacts
@@ -143,7 +144,7 @@ def _match(
     if change.source == "webhook":
         return _webhook_match(change, chain)
     if change.source == "service-model":
-        return _botocore_match(change, chain)
+        return _service_model_match(change, chain)
     if change.source == "openapi" or change.kind in {"endpoint_removed", "endpoint_renamed"}:
         return _http_match(change, chain)
     if chain.kind in {"version_gate", "http_call", "http_response"}:
@@ -205,7 +206,7 @@ def _webhook_match(change: ApiChange, chain: Chain) -> str | None:
     return None
 
 
-def _botocore_match(change: ApiChange, chain: Chain) -> str | None:
+def _service_model_match(change: ApiChange, chain: Chain) -> str | None:
     if chain.kind not in {"cloud_call", "cloud_constructor"}:
         return None
     operation = change.symbol.split(".", 1)[-1]

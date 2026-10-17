@@ -1,0 +1,1098 @@
+{
+  "rows": [
+    {
+      "repo": "WebODM/WebODM",
+      "service": "django",
+      "pin": "Django==2.2.27",
+      "versions": "2.2.27 -> 6.1.2",
+      "expected": 141,
+      "caught": 123,
+      "missed": 18,
+      "false_positives": 5,
+      "recall": "123/141",
+      "precision": "123/128",
+      "caught_sites": [
+        {
+          "file": "app/admin.py",
+          "line": 253,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/admin.py",
+          "line": 258,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/admin.py",
+          "line": 263,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/admin.py",
+          "line": 268,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 35,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 40,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 44,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 52,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 60,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/api/jwt.py",
+          "line": 62,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 39,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 41,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 42,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 43,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 45,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 46,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 47,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 48,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 49,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 50,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 52,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 53,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 54,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 55,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 56,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 57,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 58,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 59,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 60,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 61,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 63,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 64,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 65,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 66,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 68,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 69,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 70,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 71,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 72,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 74,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 75,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 76,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 78,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 79,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 80,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 81,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 83,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 84,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 86,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 87,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 89,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 90,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 91,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 94,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 96,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 97,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 100,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 102,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 106,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 107,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/api/urls.py",
+          "line": 110,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/migrations/0031_auto_20210610_1850.py",
+          "line": 58,
+          "symbol": "JSONField",
+          "change": "parameter verbose_name removed from jsonb.JSONField",
+          "expr": "django.contrib.postgres.fields.jsonb.JSONField"
+        },
+        {
+          "file": "app/migrations/0031_auto_20210610_1850.py",
+          "line": 98,
+          "symbol": "JSONField",
+          "change": "parameter verbose_name removed from jsonb.JSONField",
+          "expr": "django.contrib.postgres.fields.jsonb.JSONField"
+        },
+        {
+          "file": "app/migrations/0031_auto_20210610_1850.py",
+          "line": 128,
+          "symbol": "JSONField",
+          "change": "parameter verbose_name removed from jsonb.JSONField",
+          "expr": "django.contrib.postgres.fields.jsonb.JSONField"
+        },
+        {
+          "file": "app/migrations/0031_auto_20210610_1850.py",
+          "line": 248,
+          "symbol": "JSONField",
+          "change": "parameter verbose_name removed from jsonb.JSONField",
+          "expr": "django.contrib.postgres.fields.jsonb.JSONField"
+        },
+        {
+          "file": "app/migrations/0035_task_orthophoto_bands.py",
+          "line": 40,
+          "symbol": "JSONField",
+          "change": "parameter verbose_name removed from jsonb.JSONField",
+          "expr": "django.contrib.postgres.fields.jsonb.JSONField"
+        },
+        {
+          "file": "app/migrations/0048_task_media.py",
+          "line": 15,
+          "symbol": "JSONField",
+          "change": "parameter verbose_name removed from jsonb.JSONField",
+          "expr": "django.contrib.postgres.fields.jsonb.JSONField"
+        },
+        {
+          "file": "app/plugins/views.py",
+          "line": 30,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/plugins/views.py",
+          "line": 39,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/plugins/views.py",
+          "line": 54,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/plugins/views.py",
+          "line": 68,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 23,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 24,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 25,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 26,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 27,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 28,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 30,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 31,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 32,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 33,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 34,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 36,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 38,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 40,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 42,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 43,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 45,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 46,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 49,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/urls.py",
+          "line": 50,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 58,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 60,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 74,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 108,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 133,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 141,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 145,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 149,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/app.py",
+          "line": 183,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/dev.py",
+          "line": 59,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/dev.py",
+          "line": 71,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/dev.py",
+          "line": 75,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/dev.py",
+          "line": 78,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 38,
+          "symbol": "is_safe_url",
+          "change": "http.is_safe_url removed",
+          "expr": "is_safe_url"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 53,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 90,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 95,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 101,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 106,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 128,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 134,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 150,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 157,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 174,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 186,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "app/views/oidc.py",
+          "line": 190,
+          "symbol": "ugettext",
+          "change": "translation.ugettext removed",
+          "expr": "_"
+        },
+        {
+          "file": "nodeodm/migrations/0009_auto_20210610_1850.py",
+          "line": 26,
+          "symbol": "JSONField",
+          "change": "parameter verbose_name removed from jsonb.JSONField",
+          "expr": "django.contrib.postgres.fields.jsonb.JSONField"
+        },
+        {
+          "file": "webodm/urls.py",
+          "line": 43,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "webodm/urls.py",
+          "line": 44,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "webodm/urls.py",
+          "line": 45,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "webodm/urls.py",
+          "line": 54,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        },
+        {
+          "file": "webodm/urls.py",
+          "line": 57,
+          "symbol": "url",
+          "change": "urls.url removed",
+          "expr": "url"
+        }
+      ],
+      "missed_sites": [
+        {
+          "file": "app/migrations/0001_initial.py",
+          "line": 76,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/migrations/0008_preset.py",
+          "line": 26,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/migrations/0009_auto_20170721_1332.py",
+          "line": 20,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/migrations/0020_plugindatum.py",
+          "line": 24,
+          "symbol": "NullBooleanField"
+        },
+        {
+          "file": "app/migrations/0020_plugindatum.py",
+          "line": 26,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/migrations/0025_auto_20190220_1854.py",
+          "line": 26,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/migrations/0025_auto_20190220_1854.py",
+          "line": 41,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/migrations/0031_auto_20210610_1850.py",
+          "line": 83,
+          "symbol": "NullBooleanField"
+        },
+        {
+          "file": "app/models/plugin_datum.py",
+          "line": 11,
+          "symbol": "NullBooleanField"
+        },
+        {
+          "file": "app/models/plugin_datum.py",
+          "line": 13,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/models/preset.py",
+          "line": 11,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/models/task.py",
+          "line": 254,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/models/task.py",
+          "line": 285,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/models/task.py",
+          "line": 289,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "app/models/task.py",
+          "line": 293,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "nodeodm/migrations/0001_initial.py",
+          "line": 30,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "nodeodm/migrations/0006_auto_20190220_1842.py",
+          "line": 17,
+          "symbol": "JSONField"
+        },
+        {
+          "file": "nodeodm/models.py",
+          "line": 29,
+          "symbol": "JSONField"
+        }
+      ],
+      "false_positive_sites": [
+        {
+          "path": "nodeodm/tests.py",
+          "line": 47,
+          "expr": "six.string_types",
+          "change": "six.string_types removed",
+          "from_version": "2.2.27",
+          "to_version": "6.1.2"
+        },
+        {
+          "path": "nodeodm/tests.py",
+          "line": 70,
+          "expr": "six.string_types",
+          "change": "six.string_types removed",
+          "from_version": "2.2.27",
+          "to_version": "6.1.2"
+        },
+        {
+          "path": "nodeodm/tests.py",
+          "line": 71,
+          "expr": "six.string_types",
+          "change": "six.string_types removed",
+          "from_version": "2.2.27",
+          "to_version": "6.1.2"
+        },
+        {
+          "path": "app/models/task.py",
+          "line": 521,
+          "expr": "timezone.utc",
+          "change": "timezone.utc removed",
+          "from_version": "2.2.27",
+          "to_version": "6.1.2"
+        },
+        {
+          "path": "app/models/task.py",
+          "line": 540,
+          "expr": "timezone.utc",
+          "change": "timezone.utc removed",
+          "from_version": "2.2.27",
+          "to_version": "6.1.2"
+        }
+      ],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "phasehq/console",
+      "service": "stripe",
+      "pin": "stripe==10.5.0",
+      "versions": "10.5.0 -> 16.0.0",
+      "expected": 1,
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "1/1",
+      "precision": "1/1",
+      "caught_sites": [
+        {
+          "file": "ee/billing/graphene/queries/stripe.py",
+          "line": 145,
+          "symbol": "Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "expr": "stripe.Invoice.upcoming"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "samuelclay/NewsBlur",
+      "service": "pymongo",
+      "pin": "pymongo>=3,<4",
+      "versions": "3.13.0 -> 4.19.0",
+      "expected": 7,
+      "caught": 2,
+      "missed": 5,
+      "false_positives": 0,
+      "recall": "2/7",
+      "precision": "2/2",
+      "caught_sites": [
+        {
+          "file": "flask_monitor/db_monitor.py",
+          "line": 170,
+          "symbol": "NotMasterError",
+          "change": "errors.NotMasterError removed",
+          "expr": "pymongo.errors.NotMasterError"
+        },
+        {
+          "file": "flask_monitor/db_monitor.py",
+          "line": 200,
+          "symbol": "NotMasterError",
+          "change": "errors.NotMasterError removed",
+          "expr": "pymongo.errors.NotMasterError"
+        }
+      ],
+      "missed_sites": [
+        {
+          "file": "utils/backups/copy_mongo_serialized.py",
+          "line": 35,
+          "symbol": "Collection.count"
+        },
+        {
+          "file": "utils/backups/copy_mongo_serialized.py",
+          "line": 45,
+          "symbol": "Collection.insert"
+        },
+        {
+          "file": "utils/backups/copy_mongo_serialized.py",
+          "line": 59,
+          "symbol": "Collection.insert"
+        },
+        {
+          "file": "utils/archive/bootstrap_story_hash.py",
+          "line": 27,
+          "symbol": "Collection.update"
+        },
+        {
+          "file": "utils/archive/bootstrap_mongo.py",
+          "line": 261,
+          "symbol": "Collection.remove"
+        }
+      ],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    }
+  ]
+}

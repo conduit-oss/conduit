@@ -141,6 +141,8 @@ def _score(repo: dict, payload: dict) -> dict:
     impacts = payload.get("impacts") or []
     primary: list[dict] = []
     for impact in impacts:
+        if str(impact.get("kind") or "") == "deprecated":
+            continue
         for site in impact.get("sites") or []:
             if site.get("via_wrapper"):
                 continue

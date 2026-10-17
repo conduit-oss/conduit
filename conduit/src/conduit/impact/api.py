@@ -147,27 +147,134 @@ class _WheelDiff(list):
 def load_api(path: Path, *, include_private: bool = False) -> dict[str, Symbol]:
     root = _materialize(path)
     found: dict[str, Symbol] = {}
+    hidden: dict[str, Symbol] = {}
+    trees: list[tuple[str, ast.AST]] = []
     for py in sorted(root.rglob("*.py")):
         if not py.is_file() or _skipped(py, root):
             continue
         module = _module_name(py, root)
-        leaf = module.split(".")[-1] if module else ""
-        if not module or leaf.startswith("_") and py.name != "__init__.py" and not include_private:
+        if not module:
             continue
+        leaf = module.split(".")[-1]
+        private_mod = leaf.startswith("_") and py.name != "__init__.py"
         try:
             tree = ast.parse(py.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeDecodeError, SyntaxError):
             continue
+        trees.append((module, tree))
+        bucket = found if include_private or not private_mod else hidden
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(node.name):
-                found[f"{module}.{node.name}"] = _symbol(f"{module}.{node.name}", node)
+                bucket[f"{module}.{node.name}"] = _symbol(f"{module}.{node.name}", node)
             elif isinstance(node, ast.ClassDef) and _public(node.name):
-                found[f"{module}.{node.name}"] = _symbol(f"{module}.{node.name}", node)
+                bucket[f"{module}.{node.name}"] = _symbol(f"{module}.{node.name}", node)
                 for child in node.body:
                     if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(child.name):
                         qual = f"{module}.{node.name}.{child.name}"
-                        found[qual] = _symbol(qual, child)
+                        bucket[qual] = _symbol(qual, child)
+    _apply_lazy_reexports(found, {**hidden, **found}, trees)
     return found
+
+
+def _apply_lazy_reexports(
+    found: dict[str, Symbol],
+    all_symbols: dict[str, Symbol],
+    trees: list[tuple[str, ast.AST]],
+) -> None:
+    """Copy symbols a module ``__getattr__`` loads from an import map.
+
+    A map entry ``name -> (module, True)`` means ``pkg.name.Rest`` is
+    ``module.Rest``. ``name -> (module, False)`` means ``pkg.name`` is
+    ``module.name``. The public name is still exported.
+    """
+    for module, tree in trees:
+        for name, (target, is_submodule) in _lazy_import_map(tree).items():
+            if not _public(name) or not target:
+                continue
+            if is_submodule:
+                prefix = target + "."
+                for qual, sym in all_symbols.items():
+                    if qual != target and not qual.startswith(prefix):
+                        continue
+                    rest = qual[len(target) :] if qual.startswith(prefix) else ""
+                    if rest and any(part.startswith("_") for part in rest.split(".") if part):
+                        continue
+                    public = f"{module}.{name}{rest}"
+                    if any(part.startswith("_") for part in public.split(".")):
+                        continue
+                    found.setdefault(
+                        public,
+                        Symbol(public, sym.params, sym.kwonly, sym.required, sym.deprecated),
+                    )
+                continue
+            qual = f"{target}.{name}"
+            sym = all_symbols.get(qual)
+            public = f"{module}.{name}"
+            if sym is None:
+                found.setdefault(public, Symbol(public, (), (), (), False))
+            else:
+                found.setdefault(
+                    public,
+                    Symbol(public, sym.params, sym.kwonly, sym.required, sym.deprecated),
+                )
+
+
+def _lazy_import_map(tree: ast.AST) -> dict[str, tuple[str, bool]]:
+    """``name -> (module, is_submodule)`` read by module ``__getattr__``."""
+    maps: dict[str, dict[str, tuple[str, bool]]] = {}
+    for node in _module_level(tree):
+        value: ast.AST | None = None
+        names: list[str] = []
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
+            value = node.value
+            names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.value, ast.Dict)
+            and isinstance(node.target, ast.Name)
+        ):
+            value = node.value
+            names = [node.target.id]
+        if value is None or not isinstance(value, ast.Dict):
+            continue
+        parsed = _parse_lazy_map(value)
+        if not parsed:
+            continue
+        for name in names:
+            maps[name] = parsed
+    if not maps:
+        return {}
+    used: set[str] = set()
+    for node in _module_level(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != "__getattr__":
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and child.id in maps:
+                used.add(child.id)
+            elif isinstance(child, ast.Attribute) and child.attr in maps:
+                used.add(child.attr)
+    merged: dict[str, tuple[str, bool]] = {}
+    for name in used:
+        merged.update(maps[name])
+    return merged
+
+
+def _parse_lazy_map(node: ast.Dict) -> dict[str, tuple[str, bool]] | None:
+    if not node.keys or not node.values:
+        return None
+    found: dict[str, tuple[str, bool]] = {}
+    for key, value in zip(node.keys, node.values):
+        if not isinstance(key, ast.Constant) or not isinstance(key.value, str) or not key.value:
+            return None
+        if not isinstance(value, ast.Tuple) or len(value.elts) != 2:
+            return None
+        module, flag = value.elts
+        if not isinstance(module, ast.Constant) or not isinstance(module.value, str) or not module.value:
+            return None
+        if not isinstance(flag, ast.Constant) or not isinstance(flag.value, bool):
+            return None
+        found[key.value] = (module.value, flag.value)
+    return found or None
 
 
 def public_identifiers(paths: list[Path]) -> set[str]:
@@ -396,7 +503,7 @@ def _response_shape_changed(
     removed: bool,
     new_models: bool,
 ) -> bool:
-    """Dict subclass then pydantic ``BaseModel``."""
+    """Dict subclass then a typed ``BaseModel``."""
     if old_returns.get(name) != "dict":
         return False
     if removed:
@@ -925,11 +1032,7 @@ def _class_kinds(mods: dict[str, _Mod]) -> dict[str, str]:
 
 
 def _is_model_base(base: str) -> bool:
-    tail = base.split(".")[-1]
-    if tail != "BaseModel":
-        return False
-    lowered = base.lower()
-    return "pydantic" in lowered or "_models" in lowered or lowered.endswith(".models.basemodel") or base == "pydantic.BaseModel"
+    return base.split(".")[-1] == "BaseModel"
 
 
 def _base_name(mod: _Mod, node: ast.AST) -> str:
@@ -1158,7 +1261,7 @@ def _expr_kinds(
         return _named_kind(mod, _dotted(mod, node), classes)
     if isinstance(node, ast.Call):
         found = _expr_kinds(mod, node.func, assigns, classes)
-        # ``klass = OpenAIObject; return klass.construct_from(...)``
+        # ``klass = SomeObject; return klass.construct_from(...)``
         if isinstance(node.func, ast.Attribute):
             found |= _expr_kinds(mod, node.func.value, assigns, classes)
         for arg in list(node.args) + [kw.value for kw in node.keywords]:

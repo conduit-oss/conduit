@@ -4,26 +4,26 @@
       "repo": "PaddlePaddle/PaddleNLP",
       "service": "sqlalchemy",
       "pin": "sqlalchemy>=1.4.2,<2",
-      "versions": "",
+      "versions": "1.4.54 -> 2.1.5",
       "expected": 1,
-      "caught": 0,
-      "missed": 1,
+      "caught": 1,
+      "missed": 0,
       "false_positives": 0,
-      "recall": "0/1",
-      "precision": "n/a",
-      "caught_sites": [],
-      "missed_sites": [
+      "recall": "1/1",
+      "precision": "1/1",
+      "caught_sites": [
         {
           "file": "pipelines/document_stores/sql.py",
           "line": 755,
-          "symbol": "Query.from_self"
+          "symbol": "Query.from_self",
+          "change": "Query.from_self removed",
+          "expr": "session.query(column, func.row_number().over(order_by=column).label('rownum')).from_self"
         }
       ],
+      "missed_sites": [],
       "false_positive_sites": [],
-      "notes": [
-        "     \u2502\n\u2502 _resolve_annotation                                                          \u2502\n\u2502                                                                              \u2502\n\u2502    770 \u2502   \u2502   \u2502   return self._resolve_dotted_text(node.value, unit,        \u2502\n\u2502        enclosing, set())                                                     \u2502\n\u2502    771 \u2502   \u2502   if isinstance(node, ast.Subscript):                           \u2502\n\u2502    772 \u2502   \u2502   \u2502   return self._resolve_annotation(node.slice, unit,         \u2502\n\u2502        enclosing)                                                            \u2502\n\u2502 \u2771  773 \u2502   \u2502   return self._resolve_expr(node, unit, enclosing, set())       \u2502\n\u2502    774 \u2502                                                                     \u2502\n\u2502    775 \u2502   def _resolve_dotted_text(                                         \u2502\n\u2502    776 \u2502   \u2502   self,                                                         \u2502\n\u2502                                                                              \u2502\n\u2502 /workspace/conduit/src/conduit/outside_in/graph.py:730 in _resolve_expr      \u2502\n\u2502                                                                              \u2502\n\u2502    727 \u2502   \u2502   if node is None:                                              \u2502\n\u2502    728 \u2502   \u2502   \u2502   return UNKNOWN                                            \u2502\n\u2502    729 \u2502   \u2502   if isinstance(node, ast.Name):                                \u2502\n\u2502 \u2771  730 \u2502   \u2502   \u2502   return self._resolve_name(node.id, unit, enclosing,       \u2502\n\u2502        stack)                                                                \u2502\n\u2502    731 \u2502   \u2502   if isinstance(node, ast.Attribute):                           \u2502\n\u2502    732 \u2502   \u2502   \u2502   base = self._resolve_expr(node.value, unit, enclosing,    \u2502\n\u2502        stack)                                                                \u2502\n\u2502    733 \u2502   \u2502   \u2502   return self._attribute(base, node.attr, stack)            \u2502\n\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\nRecursionError: maximum recursion depth exceeded\n"
-      ],
-      "exit": 1
+      "notes": [],
+      "exit": 0
     },
     {
       "repo": "diffgram/diffgram",
@@ -31,77 +31,22 @@
       "pin": "sqlalchemy==1.3.23",
       "versions": "1.3.23 -> 2.1.5",
       "expected": 1,
-      "caught": 0,
-      "missed": 1,
-      "false_positives": 7,
-      "recall": "0/1",
-      "precision": "0/7",
-      "caught_sites": [],
-      "missed_sites": [
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "1/1",
+      "precision": "1/1",
+      "caught_sites": [
         {
           "file": "shared/database/task/task.py",
           "line": 247,
-          "symbol": "Query.select_entity_from"
+          "symbol": "Query.select_entity_from",
+          "change": "Query.select_entity_from removed",
+          "expr": "session.query(Task).select_entity_from"
         }
       ],
-      "false_positive_sites": [
-        {
-          "path": "default/methods/source_control/file/compound_file_new.py",
-          "line": 176,
-          "expr": "session.flush",
-          "change": "Session.flush deprecated",
-          "from_version": "1.3.23",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "shared/database/labels/label_schema.py",
-          "line": 76,
-          "expr": "session.flush",
-          "change": "Session.flush deprecated",
-          "from_version": "1.3.23",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "shared/database/labels/label_schema.py",
-          "line": 206,
-          "expr": "session.flush",
-          "change": "Session.flush deprecated",
-          "from_version": "1.3.23",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "shared/database/labels/label_schema.py",
-          "line": 226,
-          "expr": "session.flush",
-          "change": "Session.flush deprecated",
-          "from_version": "1.3.23",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "shared/database/labels/label_schema.py",
-          "line": 246,
-          "expr": "session.flush",
-          "change": "Session.flush deprecated",
-          "from_version": "1.3.23",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "shared/database/source_control/file_stats.py",
-          "line": 140,
-          "expr": "session.flush",
-          "change": "Session.flush deprecated",
-          "from_version": "1.3.23",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "shared/utils/source_control/file/file_transfer_core.py",
-          "line": 166,
-          "expr": "session.flush",
-          "change": "Session.flush deprecated",
-          "from_version": "1.3.23",
-          "to_version": "2.1.5"
-        }
-      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
       "notes": [],
       "exit": 0
     },
@@ -109,26 +54,30 @@
       "repo": "LAION-AI/Open-Assistant",
       "service": "sqlalchemy",
       "pin": "SQLAlchemy==1.4.41",
-      "versions": "",
+      "versions": "1.4.41 -> 2.1.5",
       "expected": 2,
-      "caught": 0,
-      "missed": 2,
+      "caught": 2,
+      "missed": 0,
       "false_positives": 0,
-      "recall": "0/2",
-      "precision": "n/a",
-      "caught_sites": [],
-      "missed_sites": [
+      "recall": "2/2",
+      "precision": "2/2",
+      "caught_sites": [
         {
           "file": "oasst_backend/tree_manager.py",
           "line": 1075,
-          "symbol": "Query.select_entity_from"
+          "symbol": "Query.select_entity_from",
+          "change": "Query.select_entity_from removed",
+          "expr": "self.db.query(Message).select_entity_from"
         },
         {
           "file": "oasst_backend/prompt_repository.py",
           "line": 985,
-          "symbol": "Query.select_entity_from"
+          "symbol": "Query.select_entity_from",
+          "change": "Query.select_entity_from removed",
+          "expr": "self.db.query(*select_entities).select_entity_from"
         }
       ],
+      "missed_sites": [],
       "false_positive_sites": [],
       "notes": [],
       "exit": 0
@@ -219,9 +168,9 @@
       "expected": 1,
       "caught": 1,
       "missed": 0,
-      "false_positives": 2,
+      "false_positives": 1,
       "recall": "1/1",
-      "precision": "1/3",
+      "precision": "1/2",
       "caught_sites": [
         {
           "file": "web_api/models.py",
@@ -238,14 +187,6 @@
           "line": 549,
           "expr": "stripe.Invoice.upcoming",
           "change": "Invoice.upcoming removed",
-          "from_version": "2.46.0",
-          "to_version": "16.0.0"
-        },
-        {
-          "path": "web_api/views.py",
-          "line": 557,
-          "expr": "stripe.error.SignatureVerificationError",
-          "change": "error.SignatureVerificationError removed",
           "from_version": "2.46.0",
           "to_version": "16.0.0"
         }

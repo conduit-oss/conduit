@@ -6,11 +6,27 @@ from conduit.impact.model import Impact
 
 
 def format_impacts(impacts: list[Impact], *, show_callers: bool = False) -> str:
-    if not impacts:
+    breaks = [item for item in impacts if item.kind != "deprecated"]
+    deprecations = [item for item in impacts if item.kind == "deprecated"]
+    if not breaks and not deprecations:
         return (
             "No call sites in this repo are hit by the released change.\n"
             "Ordinary library bumps are not reported.\n"
         )
+    parts: list[str] = []
+    if breaks:
+        parts.append(_format_groups(breaks, show_callers=show_callers))
+    else:
+        parts.append(
+            "No call sites in this repo are hit by a breaking change.\n"
+            "Ordinary library bumps are not reported.\n"
+        )
+    if deprecations:
+        parts.append("Deprecations\n" + _format_groups(deprecations, show_callers=show_callers))
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def _format_groups(impacts: list[Impact], *, show_callers: bool) -> str:
     lines: list[str] = []
     groups: list[tuple[str, str, str, list[Impact]]] = []
     index: dict[tuple[str, str, str], list[Impact]] = {}

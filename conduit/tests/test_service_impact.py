@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from conduit.feeds.client import FeedClient
 from conduit.feeds.watch import watch_outside
 from conduit.impact.api import diff_wheels, load_api
-from conduit.impact.botocore import diff_service_models
+from conduit.impact.service_model import diff_service_models
 from conduit.impact.intersect import _method_match
 from conduit.impact.model import ApiChange
 from conduit.impact.run import NO_PIN_NOTE, collect_impacts, service_pins

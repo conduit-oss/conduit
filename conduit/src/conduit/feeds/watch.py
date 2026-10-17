@@ -48,8 +48,8 @@ def watch_outside(
 ) -> FeedWatch:
     """Poll public feeds for outside services on ``root``'s map.
 
-    Modules that are not outside services (local packages, pydantic, anything
-    Pact / Optic / Backstage would cover) are skipped. ``sources`` replaces
+    Modules that are not outside services (local packages, typed-model
+    libraries, anything Pact / Optic / Backstage would cover) are skipped. ``sources`` replaces
     the built-in list when a caller wants a different plug-in set.
     """
     service_map, _blast = build_service_map(root, service=service)
