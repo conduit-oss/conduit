@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 from conduit.outside_in.specs import ServiceSpec, normalize_dist
 
-_SCHEMA = 23
+_SCHEMA = 24
 _MAX_DEPTH = 4
 _MAX_BYTES = 40_000_000
 # Verb names on an HTTP client. ``close`` is not one: connection objects
@@ -667,6 +667,7 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
     direct.hosts.update(_assigned_hosts(tree))
     local_funcs: set[str] = set()
     class_methods: dict[str, set[str]] = {}
+    class_nodes: list[ast.ClassDef] = []
     func_calls: dict[str, set[str]] = {}
     func_strong: set[str] = set()
     func_deps: dict[str, set[str]] = {}
@@ -680,6 +681,7 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
         elif isinstance(node, ast.ClassDef):
             methods = _method_names(node)
             class_methods[node.name] = methods
+            class_nodes.append(node)
             for method in methods:
                 local_funcs.add(f"{node.name}.{method}")
 
@@ -813,9 +815,13 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
         if strong_here:
             direct.domain_strong.add(class_name)
     if not _incidental_module(name):
-        for class_name, methods in class_methods.items():
-            # A class that both borrows a socket and opens one is a pool.
-            if {"get_socket", "connect"} <= methods:
+        for node in class_nodes:
+            class_name = node.name
+            methods = class_methods[class_name]
+            # A class that both borrows a connection and opens one is a pool.
+            # One shape names get_socket and connect. The other takes an item
+            # off an instance collection and puts one back, and still opens it.
+            if {"get_socket", "connect"} <= methods or _lends_connections(node):
                 direct.pool = True
             if "next" in methods and ({"__iter__", "__next__", "__anext__", "__aiter__"} & methods):
                 direct.cursor = True
@@ -829,6 +835,63 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
         direct.wire = True
     _note_caller_hits(direct, class_methods, func_calls, func_constructed)
     _note_db_delegates(direct, func_calls, func_deps)
+
+
+def _lends_connections(node: ast.ClassDef) -> bool:
+    """True when the class opens a connection and also lends one out.
+
+    Lending is taking an item off an instance collection and putting one back
+    on the same collection. The method names of those two steps are not the
+    signal. ``connect`` or ``get_socket`` is what opens the connection.
+    """
+    if not ({"connect", "get_socket"} & _method_names(node)):
+        return False
+    taken: set[str] = set()
+    returned: set[str] = set()
+    for method in _iter_methods(node):
+        for child in ast.walk(method):
+            if not isinstance(child, ast.Call) or not isinstance(child.func, ast.Attribute):
+                continue
+            collection = _self_collection(child.func.value)
+            if not collection:
+                continue
+            if child.func.attr in {"pop", "popleft"}:
+                taken.add(collection)
+            elif child.func.attr in {"append", "appendleft", "put"}:
+                returned.add(collection)
+    return bool(taken & returned)
+
+
+def _self_collection(node: ast.AST) -> str:
+    """``self.name`` when that is the collection a call operates on."""
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    ):
+        return node.attr
+    return ""
+
+
+def _iter_methods(node: ast.ClassDef) -> list[ast.AST]:
+    found: list[ast.AST] = []
+
+    def walk(body: list[ast.stmt]) -> None:
+        for child in body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                found.append(child)
+            elif isinstance(child, ast.If):
+                walk(child.body)
+                walk(child.orelse)
+            elif isinstance(child, ast.Try):
+                walk(child.body)
+                walk(child.orelse)
+                walk(child.finalbody)
+                for handler in child.handlers:
+                    walk(handler.body)
+
+    walk(node.body)
+    return found
 
 
 def _method_names(node: ast.ClassDef) -> set[str]:
