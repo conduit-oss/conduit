@@ -128,6 +128,21 @@ class LibraryTypes:
         self._attrs[key] = found
         return found
 
+    def has_member(self, qualname: str, name: str) -> bool:
+        """True when this class defines ``name`` as a method or a data attribute.
+
+        A method the class does not define is taken from a base. A missing
+        name that ``__getattr__`` would answer counts too, because that is
+        the library's own code.
+        """
+        qualname = _clean(qualname)
+        name = (name or "").strip()
+        if not qualname or not name or not name.isidentifier():
+            return False
+        if self._define(f"{qualname}.{name}"):
+            return True
+        return bool(self.instance_attribute(qualname, name))
+
     def _delegated_calls(self, qualname: str, seen: set[str]) -> list[str]:
         if not qualname or qualname in seen or len(seen) > 8:
             return []

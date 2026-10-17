@@ -611,3 +611,116 @@ def test_subscript_getattr_and_untyped_fields_follow_the_library(tmp_path: Path)
         )
     finally:
         sys.path.remove(str(site))
+
+
+def test_instance_fields_follow_the_assignment_that_reaches_the_read(tmp_path: Path):
+    """A later ``self.field = self.field[key]`` is the type later reads see.
+
+    Inside one method the write before the read wins. Across methods every
+    method's final type is possible, and the latest write in ``__init__`` is
+    preferred.
+    """
+    version = "0.0.10"
+    site = _install_package(
+        tmp_path,
+        "zzflow",
+        "zzflow",
+        version,
+        """
+        import socket
+
+        class Record:
+            def fetch(self):
+                return socket.create_connection(("db.invalid", 9))
+
+            def ping(self):
+                return socket.create_connection(("db.invalid", 9))
+
+        class Shelf:
+            def __getitem__(self, key):
+                return Record()
+
+        class Lane:
+            def __getitem__(self, key):
+                return Shelf()
+
+            def ping(self):
+                return socket.create_connection(("db.invalid", 9))
+
+        def connect(dsn):
+            socket.create_connection(("db.invalid", 9))
+            return Lane()
+
+        def cursor():
+            return connect("")
+
+        def execute(query):
+            return cursor()
+
+        def commit():
+            return None
+        """,
+    )
+    _write(tmp_path, "requirements.txt", f"zzflow=={version}\n")
+    sys.path.insert(0, str(site))
+    try:
+        _write(
+            tmp_path,
+            "use.py",
+            """
+            import zzflow
+
+            class Store:
+                def __init__(self):
+                    self.lane = zzflow.Lane()
+                    self.lane = self.lane["main"]
+                    self.record = self.lane["job"]
+
+                def read(self):
+                    return self.record.fetch()
+
+                def staged(self):
+                    self.box = zzflow.Lane()
+                    self.box.ping()
+                    self.box = self.box["main"]
+                    return self.box["job"].fetch()
+
+            class Split:
+                def __init__(self):
+                    self.handle = zzflow.Lane()
+
+                def swap(self):
+                    self.handle = zzflow.Record()
+
+                def read(self):
+                    return self.handle.fetch()
+
+                def ping(self):
+                    return self.handle.ping()
+            """,
+        )
+        chains = [
+            chain
+            for chain in analyze_repo(tmp_path).chains
+            if chain.call_rel == "use.py" and not chain.via_wrapper
+        ]
+
+        def methods(symbol: str) -> set[str]:
+            return {chain.sdk_method for chain in chains if chain.call_symbol == symbol}
+
+        read = methods("Store.read")
+        assert any(item.endswith("Record.fetch") for item in read), read
+        assert not any(item.endswith("Lane.fetch") or item.endswith("Shelf.fetch") for item in read)
+
+        staged = methods("Store.staged")
+        assert any(item.endswith("Lane.ping") for item in staged), staged
+        assert any(item.endswith("Record.fetch") for item in staged), staged
+
+        split_read = methods("Split.read")
+        assert any(item.endswith("Record.fetch") for item in split_read), split_read
+
+        split_ping = methods("Split.ping")
+        assert any(item.endswith("Lane.ping") for item in split_ping), split_ping
+        assert any(item.endswith("Record.ping") for item in split_ping), split_ping
+    finally:
+        sys.path.remove(str(site))

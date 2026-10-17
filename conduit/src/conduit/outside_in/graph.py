@@ -48,6 +48,8 @@ class Binding:
     base_url: str = ""
     #: Dotted path before a return type from another distribution was substituted.
     fallback: str = ""
+    #: Other types that can reach this value, after the preferred one in ``target``.
+    alternatives: tuple[str, ...] = ()
 
 
 UNKNOWN = Binding("unknown")
@@ -99,7 +101,11 @@ class ModUnit:
     #: Yield expressions, used when the function is a context manager.
     yields: dict[str, list[ast.expr]] = field(default_factory=dict)
     #: ``self.engine = factory(...)`` keyed by ``(class qualname, attr)``.
-    instance_assigns: dict[tuple[str, str], list[tuple[ast.expr, str]]] = field(default_factory=dict)
+    #: Each write is ``(end_line, end_col, expr, scope)`` in source order.
+    #: A read in that scope sees the latest write whose end is at or before the read.
+    instance_assigns: dict[tuple[str, str], list[tuple[int, int, ast.expr, str]]] = field(
+        default_factory=dict
+    )
     #: Base expressions of each class, so a subclass can see fields assigned above it.
     class_bases: dict[str, list[ast.expr]] = field(default_factory=dict)
     #: ``kwargs["temperature"] = 0.3`` keyed by ``(function, dict name)``.
@@ -216,63 +222,65 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
                         )
                     )
                 continue
-            binding, confidence = resolved
-            http = _http_service(binding, call, unit, specs, root)
-            if http is not None:
-                spec, method, conf = http
+            _binding, _confidence = resolved
+            for binding in _call_bindings(_binding):
+                confidence = binding.confidence
+                http = _http_service(binding, call, unit, specs, root)
+                if http is not None:
+                    spec, method, conf = http
+                    direct = _make_direct(
+                        unit,
+                        call,
+                        spec=spec,
+                        sdk_method=method,
+                        kind="http_call",
+                        confidence=min_confidence(confidence, conf),
+                    )
+                    extra = _http_payload_keys(call.node, unit, call.enclosing)
+                    if extra:
+                        direct.params = tuple(dict.fromkeys((*extra, *direct.params)))
+                    directs.append(direct)
+                    directs.extend(_response_directs(unit, call, direct))
+                    continue
+                spec = _service_of(binding, specs)
+                if spec is None:
+                    delegated = _delegated_binding(resolver, binding, specs)
+                    if delegated is not None:
+                        binding = delegated
+                        spec = _service_of(binding, specs)
+                        confidence = min_confidence(confidence, "medium")
+                if binding.fallback:
+                    fluent = Binding(
+                        binding.kind,
+                        binding.fallback,
+                        confidence=binding.confidence,
+                        cloud_service=binding.cloud_service,
+                        base_url=binding.base_url,
+                    )
+                    fluent_spec = _service_of(fluent, specs)
+                    if spec is None and fluent_spec is not None:
+                        binding = fluent
+                        spec = fluent_spec
+                        confidence = binding.confidence
+                if spec is None:
+                    symbol = _symbol_target(binding, units)
+                    if symbol is not None:
+                        edges.append(
+                            _make_edge(unit, call, symbol[0], symbol[1], confidence)
+                        )
+                    continue
+                kind = _sdk_kind(spec, binding)
+                method = _cloud_method(spec, binding, call, unit, cloud_roots)
                 direct = _make_direct(
                     unit,
                     call,
                     spec=spec,
                     sdk_method=method,
-                    kind="http_call",
-                    confidence=min_confidence(confidence, conf),
+                    kind=kind,
+                    confidence=confidence,
                 )
-                extra = _http_payload_keys(call.node, unit, call.enclosing)
-                if extra:
-                    direct.params = tuple(dict.fromkeys((*extra, *direct.params)))
                 directs.append(direct)
                 directs.extend(_response_directs(unit, call, direct))
-                continue
-            spec = _service_of(binding, specs)
-            if spec is None:
-                delegated = _delegated_binding(resolver, binding, specs)
-                if delegated is not None:
-                    binding = delegated
-                    spec = _service_of(binding, specs)
-                    confidence = min_confidence(confidence, "medium")
-            if binding.fallback:
-                fluent = Binding(
-                    binding.kind,
-                    binding.fallback,
-                    confidence=binding.confidence,
-                    cloud_service=binding.cloud_service,
-                    base_url=binding.base_url,
-                )
-                fluent_spec = _service_of(fluent, specs)
-                if spec is None and fluent_spec is not None:
-                    binding = fluent
-                    spec = fluent_spec
-                    confidence = binding.confidence
-            if spec is None:
-                symbol = _symbol_target(binding, units)
-                if symbol is not None:
-                    edges.append(
-                        _make_edge(unit, call, symbol[0], symbol[1], confidence)
-                    )
-                continue
-            kind = _sdk_kind(spec, binding)
-            method = _cloud_method(spec, binding, call, unit, cloud_roots)
-            direct = _make_direct(
-                unit,
-                call,
-                spec=spec,
-                sdk_method=method,
-                kind=kind,
-                confidence=confidence,
-            )
-            directs.append(direct)
-            directs.extend(_response_directs(unit, call, direct))
     from conduit.outside_in.webhooks import webhook_directs
 
     directs.extend(webhook_directs(units, specs))
@@ -478,8 +486,9 @@ class _Scanner(ast.NodeVisitor):
             and target.value.id in {"self", "cls"}
             and self.class_name
         ):
+            end_line, end_col = _end_pos(value)
             self.unit.instance_assigns.setdefault((self.class_name, target.attr), []).append(
-                (value, self.enclosing)
+                (end_line, end_col, value, self.enclosing)
             )
 
     def _record_dict_key(self, target: ast.AST, lineno: int) -> None:
@@ -916,7 +925,9 @@ class _Resolver:
             return self._resolve_name(node.id, unit, enclosing, stack, nxt, use)
         if isinstance(node, ast.Attribute):
             base = self._resolve_expr(node.value, unit, enclosing, stack, nxt)
-            return self._attribute(base, node.attr, stack, nxt)
+            lineno = getattr(node, "lineno", 0) or 0
+            use = (lineno, getattr(node, "col_offset", 0) or 0) if lineno else None
+            return self._attribute(base, node.attr, stack, nxt, enclosing=enclosing, use=use)
         if isinstance(node, ast.Call):
             aliased = self._alias_call(node, unit, enclosing, stack, nxt)
             if aliased is not None:
@@ -932,23 +943,9 @@ class _Resolver:
         if isinstance(node, ast.Subscript):
             base = self._resolve_expr(node.value, unit, enclosing, stack, nxt)
             if base.kind in {"instance_external", "external_attr"} and base.target:
-                classes = self._library().call_return(f"{base.target}.__getitem__")
-                if classes:
-                    return Binding(
-                        "instance_external",
-                        classes[0],
-                        confidence=min_confidence(base.confidence, "medium"),
-                        cloud_service=base.cloud_service,
-                        base_url=base.base_url,
-                        fallback=_fluent(base, "__getitem__"),
-                    )
-                return Binding(
-                    "instance_external",
-                    f"{base.target}.__getitem__",
-                    confidence=min_confidence(base.confidence, "medium"),
-                    cloud_service=base.cloud_service,
-                    base_url=base.base_url,
-                )
+                found = self._subscript_binding(base)
+                if found is not None:
+                    return found
             return UNKNOWN
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and "." in node.value:
             return self._resolve_dotted_text(node.value, unit, enclosing, stack, nxt)
@@ -1155,11 +1152,20 @@ class _Resolver:
         attr: str,
         stack: set[tuple[str, str, str]] | None = None,
         depth: int = 0,
+        *,
+        enclosing: str = "",
+        use: tuple[int, int] | None = None,
     ) -> Binding:
         if depth > _RESOLVE_DEPTH:
             return UNKNOWN
         if base.kind == "instance_external" and base.target:
-            typed = self._library().instance_attribute(base.target, attr)
+            chosen, rest = self._types_defining(base, attr)
+            typed = self._library().instance_attribute(chosen, attr)
+            alt_types = []
+            for target in rest:
+                other = self._library().instance_attribute(target, attr)
+                if other and other != typed:
+                    alt_types.append(other)
             if typed:
                 return Binding(
                     "instance_external",
@@ -1168,8 +1174,18 @@ class _Resolver:
                     cloud_service=base.cloud_service,
                     base_url=base.base_url,
                     fallback=_fluent(base, attr),
+                    alternatives=tuple(dict.fromkeys(alt_types)),
                 )
-        if base.kind in {"external_module", "external_attr", "instance_external"}:
+            return Binding(
+                "external_attr",
+                f"{chosen}.{attr}",
+                confidence=base.confidence,
+                cloud_service=base.cloud_service,
+                base_url=base.base_url,
+                fallback=_fluent(base, attr),
+                alternatives=tuple(f"{target}.{attr}" for target in rest),
+            )
+        if base.kind in {"external_module", "external_attr"}:
             return Binding(
                 "external_attr",
                 f"{base.target}.{attr}",
@@ -1177,13 +1193,23 @@ class _Resolver:
                 cloud_service=base.cloud_service,
                 base_url=base.base_url,
                 fallback=_fluent(base, attr),
+                alternatives=tuple(
+                    f"{target}.{attr}" for target in base.alternatives if target and target != base.target
+                ),
             )
         if base.kind == "instance_local":
             method = f"{base.qualname}.{attr}"
             unit = self.units.get(base.target)
             if unit is not None and method in unit.defs:
                 return Binding("symbol", base.target, method, confidence=base.confidence)
-            found = self._instance_field(base, attr, stack if stack is not None else set(), depth + 1)
+            found = self._instance_field(
+                base,
+                attr,
+                stack if stack is not None else set(),
+                depth + 1,
+                enclosing=enclosing,
+                use=use,
+            )
             if found is not None:
                 return found
             return UNKNOWN
@@ -1206,14 +1232,72 @@ class _Resolver:
             return UNKNOWN
         return UNKNOWN
 
+    def _types_defining(self, base: Binding, attr: str) -> tuple[str, list[str]]:
+        """The preferred type, then the other types that also define ``attr``.
+
+        With one type this is that type and an empty rest, which is what a
+        call resolved to before alternatives existed. A later type is used
+        only when the preferred one does not define the attribute.
+        """
+        if not base.alternatives:
+            return base.target, []
+        targets = [base.target, *[item for item in base.alternatives if item and item != base.target]]
+        library = self._library()
+        defined = [target for target in targets if library.has_member(target, attr)]
+        if not defined:
+            return base.target, []
+        chosen = base.target if base.target in defined else defined[0]
+        return chosen, [target for target in defined if target != chosen]
+
+    def _subscript_binding(self, base: Binding) -> Binding | None:
+        """What ``base[key]`` produces, trying each type that can reach ``base``."""
+        targets = [base.target, *[item for item in base.alternatives if item and item != base.target]]
+        chosen = ""
+        classes: tuple[str, ...] = ()
+        alt_classes: list[str] = []
+        library = self._library()
+        for target in targets:
+            found = library.call_return(f"{target}.__getitem__")
+            if not found:
+                continue
+            if not chosen:
+                chosen = target
+                classes = found
+            elif found[0] not in classes and found[0] not in alt_classes:
+                alt_classes.append(found[0])
+        if classes:
+            return Binding(
+                "instance_external",
+                classes[0],
+                confidence=min_confidence(base.confidence, "medium"),
+                cloud_service=base.cloud_service,
+                base_url=base.base_url,
+                fallback=_fluent(base, "__getitem__"),
+                alternatives=tuple(alt_classes),
+            )
+        return Binding(
+            "instance_external",
+            f"{base.target}.__getitem__",
+            confidence=min_confidence(base.confidence, "medium"),
+            cloud_service=base.cloud_service,
+            base_url=base.base_url,
+        )
+
     def _instance_field(
         self,
         base: Binding,
         attr: str,
         stack: set[tuple[str, str, str]],
         depth: int = 0,
+        *,
+        enclosing: str = "",
+        use: tuple[int, int] | None = None,
     ) -> Binding | None:
-        """A field assigned on this class or one of its bases."""
+        """A field assigned on this class or one of its bases.
+
+        The use position picks the assignment that reaches a read in the same
+        method. A read in another method sees every method's final assignment.
+        """
         if depth > _RESOLVE_DEPTH:
             return None
         queue = [(base.target, base.qualname)]
@@ -1226,16 +1310,25 @@ class _Resolver:
             unit = self.units.get(rel)
             if unit is None:
                 continue
-            token = ("field", qual, attr)
+            position = "" if use is None else f"{use[0]}:{use[1]}"
+            token = ("field", rel, qual, attr, position)
             if token not in stack:
                 stack.add(token)
                 try:
-                    for expr, scope in unit.instance_assigns.get((qual, attr), []):
-                        resolved = self._resolve_expr(expr, unit, scope, stack, depth + 1)
-                        if resolved.kind == "external_attr":
-                            resolved = _as_instance(resolved)
-                        if resolved.kind != "unknown":
-                            return resolved
+                    chosen = _reaching_instance_exprs(unit, qual, attr, enclosing, use)
+                    if chosen is not None:
+                        if not chosen:
+                            return None
+                        found: list[Binding] = []
+                        for expr, scope in chosen:
+                            resolved = self._resolve_expr(expr, unit, scope, stack, depth + 1)
+                            if resolved.kind == "external_attr":
+                                resolved = _as_instance(resolved)
+                            if resolved.kind != "unknown" and resolved.target:
+                                found.append(resolved)
+                        merged = _merge_bindings(found)
+                        if merged is not None:
+                            return merged
                     announced = self._annotated_binding(unit, qual, attr, stack, depth)
                     if announced is not None:
                         return announced
@@ -1430,6 +1523,71 @@ def _end_pos(node: ast.AST) -> tuple[int, int]:
     return end_line, int(end_col)
 
 
+# Language construction hooks, in the order they run. Not a package API.
+_SETUP_METHODS = ("__new__", "__init__", "__post_init__")
+
+
+def _method_name(scope: str) -> str:
+    if not scope or scope == "<module>":
+        return scope
+    return scope.rsplit(".", 1)[-1]
+
+
+def _reaching_instance_exprs(
+    unit: ModUnit,
+    qual: str,
+    attr: str,
+    enclosing: str,
+    use: tuple[int, int] | None,
+) -> list[tuple[ast.expr, str]] | None:
+    """Assignments that reach a read of this field.
+
+    ``None`` means this class never writes the field. An empty list means the
+    write that reaches the read is ``None``. Otherwise the first item is the
+    preferred type: inside the reading method, the latest write at or before
+    the read; across methods, the latest write in ``__new__``, ``__init__``,
+    or ``__post_init__``. Each other method contributes the value it leaves.
+    """
+    sites = list(unit.instance_assigns.get((qual, attr), []))
+    if not sites:
+        return None
+    if use is not None and enclosing:
+        prior = [item for item in sites if item[3] == enclosing and (item[0], item[1]) <= use]
+        if prior:
+            expr = prior[-1][2]
+            if _is_none(expr):
+                return []
+            return [(expr, prior[-1][3])]
+        # This method has not written the field yet, so its later writes do not reach here.
+        sites = [item for item in sites if item[3] != enclosing]
+        if not sites:
+            return None
+    by_scope: dict[str, tuple[int, int, ast.expr, str]] = {}
+    for item in sites:
+        if _is_none(item[2]):
+            continue
+        by_scope[item[3]] = item
+    if not by_scope:
+        return []
+    preferred: tuple[int, int, ast.expr, str] | None = None
+    for name in _SETUP_METHODS:
+        item = by_scope.get(f"{qual}.{name}")
+        if item is not None:
+            preferred = item
+    ordered: list[tuple[ast.expr, str]] = []
+    if preferred is not None:
+        ordered.append((preferred[2], preferred[3]))
+    for scope, item in by_scope.items():
+        if preferred is not None and scope == preferred[3]:
+            continue
+        if _method_name(scope) in _SETUP_METHODS:
+            continue
+        ordered.append((item[2], item[3]))
+    if not ordered:
+        return []
+    return ordered
+
+
 def _visible_assign(
     unit: ModUnit,
     enclosing: str,
@@ -1485,6 +1643,7 @@ def _as_instance(binding: Binding) -> Binding:
             confidence=binding.confidence,
             cloud_service=binding.cloud_service,
             fallback=binding.fallback,
+            alternatives=binding.alternatives,
         )
     if binding.kind == "symbol":
         return Binding(
@@ -1497,6 +1656,98 @@ def _as_instance(binding: Binding) -> Binding:
     if binding.kind in {"instance_external", "instance_local"}:
         return binding
     return UNKNOWN
+
+
+def _call_bindings(binding: Binding) -> list[Binding]:
+    """One binding per type that can reach this call.
+
+    The preferred type stays first. The others are the rest of the union.
+    """
+    if not binding.alternatives:
+        return [binding]
+    found: list[Binding] = []
+    seen: set[str] = set()
+    for index, target in enumerate((binding.target, *binding.alternatives)):
+        if not target or target in seen:
+            continue
+        seen.add(target)
+        if index == 0:
+            found.append(
+                Binding(
+                    binding.kind,
+                    binding.target,
+                    binding.qualname,
+                    confidence=binding.confidence,
+                    cloud_service=binding.cloud_service,
+                    base_url=binding.base_url,
+                    fallback=binding.fallback,
+                )
+            )
+        else:
+            found.append(
+                Binding(
+                    binding.kind,
+                    target,
+                    confidence=min_confidence(binding.confidence, "medium"),
+                    cloud_service=binding.cloud_service,
+                    base_url=binding.base_url,
+                    fallback=binding.fallback,
+                )
+            )
+    return found or [binding]
+
+
+def _merge_bindings(found: list[Binding]) -> Binding | None:
+    """First binding wins. Later targets of the same kind are alternatives."""
+    flat: list[Binding] = []
+    for binding in found:
+        if binding.kind == "unknown" or not binding.target:
+            continue
+        pieces = [binding]
+        if binding.alternatives:
+            pieces = [
+                Binding(
+                    binding.kind,
+                    binding.target,
+                    binding.qualname,
+                    confidence=binding.confidence,
+                    cloud_service=binding.cloud_service,
+                    base_url=binding.base_url,
+                    fallback=binding.fallback,
+                ),
+                *[
+                    Binding(
+                        binding.kind,
+                        alt,
+                        confidence=min_confidence(binding.confidence, "medium"),
+                        cloud_service=binding.cloud_service,
+                        base_url=binding.base_url,
+                        fallback=binding.fallback,
+                    )
+                    for alt in binding.alternatives
+                    if alt and alt != binding.target
+                ],
+            ]
+        for item in pieces:
+            if any(prev.kind == item.kind and prev.target == item.target for prev in flat):
+                continue
+            flat.append(item)
+    if not flat:
+        return None
+    primary = flat[0]
+    alts = tuple(item.target for item in flat[1:] if item.kind == primary.kind)
+    if not alts:
+        return primary
+    return Binding(
+        primary.kind,
+        primary.target,
+        primary.qualname,
+        confidence=primary.confidence,
+        cloud_service=primary.cloud_service,
+        base_url=primary.base_url,
+        fallback=primary.fallback,
+        alternatives=alts,
+    )
 
 
 def _delegated_binding(

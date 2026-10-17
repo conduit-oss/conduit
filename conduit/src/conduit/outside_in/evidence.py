@@ -158,7 +158,7 @@ class _Direct:
     strong_tails: set[str] = field(default_factory=set)
     #: A DB-API method, or a method it reaches, is what opens the socket.
     db_strong: bool = False
-    #: struct pack/unpack beside a socket, a checkout/checkin pool, and a cursor.
+    #: struct pack/unpack beside a socket, a pooled socket, and a cursor.
     wire: bool = False
     pool: bool = False
     cursor: bool = False
@@ -814,9 +814,8 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
             direct.domain_strong.add(class_name)
     if not _incidental_module(name):
         for class_name, methods in class_methods.items():
-            # checkout/checkin is one pool. get_socket plus connect is the
-            # same shape when the driver checks a socket out of the pool.
-            if {"checkout", "checkin"} <= methods or {"get_socket", "connect"} <= methods:
+            # A class that both borrows a socket and opens one is a pool.
+            if {"get_socket", "connect"} <= methods:
                 direct.pool = True
             if "next" in methods and ({"__iter__", "__next__", "__anext__", "__aiter__"} & methods):
                 direct.cursor = True

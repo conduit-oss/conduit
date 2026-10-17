@@ -29,26 +29,30 @@
       "repo": "d-Rickyy-b/pastepwn",
       "service": "pymongo",
       "pin": "pymongo>=3.11.3",
-      "versions": "",
+      "versions": "3.11.3 -> 4.19.0",
       "expected": 2,
-      "caught": 0,
-      "missed": 2,
+      "caught": 2,
+      "missed": 0,
       "false_positives": 0,
-      "recall": "0/2",
-      "precision": "n/a",
-      "caught_sites": [],
-      "missed_sites": [
+      "recall": "2/2",
+      "precision": "2/2",
+      "caught_sites": [
         {
           "file": "pastepwn/database/mongodb.py",
           "line": 40,
-          "symbol": "Cursor.count"
+          "symbol": "Cursor.count",
+          "change": "Cursor.count removed",
+          "expr": "self.collection.find({key: value}).count"
         },
         {
           "file": "pastepwn/database/mongodb.py",
           "line": 43,
-          "symbol": "Collection.count"
+          "symbol": "Collection.count",
+          "change": "Collection.count removed",
+          "expr": "self.collection.count"
         }
       ],
+      "missed_sites": [],
       "false_positive_sites": [],
       "notes": [],
       "exit": 0

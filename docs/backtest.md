@@ -132,7 +132,7 @@ The pin `sqlalchemy>=1.4.2,<2` resolves to 1.4.54. These live comparisons use SQ
 
 Across the six repositories: 11 expected sites, 11 caught, 0 missed, 1 false-positive site. Recall 11/11. Precision 11/12.
 
-A later rerun, after wrapper demotion and subscript tracking, scored the same six commits again. The table did not move.
+A later rerun, after wrapper demotion and subscript tracking, scored the same six commits again. The table did not move. A rerun after flow-sensitive instance fields scored the same six commits again. The table did not move.
 
 ## Fresh repositories
 
@@ -146,7 +146,7 @@ Django is not an outside service on this rerun. It only reaches a database throu
 | [phasehq/console](https://github.com/phasehq/console/commit/c99ea21252ac6587b45460a2ae6d8a3c1a9761ad) `backend` | stripe `==10.5.0` | 10.5.0 → 16.0.0 | 1 — `ee/billing/graphene/queries/stripe.py:145` `Invoice.upcoming` ([stripe-python 12.0.0](https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0)) | 1 | 0 | 0 | |
 | [samuelclay/NewsBlur](https://github.com/samuelclay/NewsBlur/commit/dae86cde1a584c19a2642d74f3118f38fcf41fef) | pymongo `>=3,<4` | 3.13.0 → 4.19.0 | 7 — `Collection.count` / `insert` in `utils/backups/copy_mongo_serialized.py`, `Collection.update` at `utils/archive/bootstrap_story_hash.py:27`, `Collection.remove` at `utils/archive/bootstrap_mongo.py:261`, `NotMasterError` at `flask_monitor/db_monitor.py:170` and `:200` | 2 | 5 | 0 | Both `NotMasterError` handlers were caught. The five collection calls were not. They go through a subscript (`db.newsblur[name].count`) or an untyped database attribute. |
 
-phasehq and NewsBlur are the two repos whose dependency is still an outside service. Across those two: 8 expected sites, 3 caught, 5 missed, 0 false-positive sites. Recall 3/8. Precision 3/3. The five NewsBlur misses are unchanged: `pymongo.Connection` is not defined by the pinned release (only `MongoClient` is), and `settings.MONGODB` / `mongoengine.connect` are assignments the call site does not resolve to a library class. Detection was not changed to catch them.
+phasehq and NewsBlur are the two repos whose dependency is still an outside service. Across those two: 8 expected sites, 3 caught, 5 missed, 0 false-positive sites. Recall 3/8. Precision 3/3. The five NewsBlur misses are unchanged: `pymongo.Connection` is not defined by the pinned release (only `MongoClient` is), and `settings.MONGODB` / `mongoengine.connect` are assignments the call site does not resolve to a library class. Detection was not changed to catch them. A rerun after flow-sensitive instance fields scored the same three commits again. That table did not move.
 
 ## Third set
 
@@ -155,7 +155,21 @@ These three were chosen after wrapper demotion and subscript tracking. Each scor
 | Repo | Service | Versions | Expected | Caught | Missed | False positives | Notes |
 |------|---------|----------|----------|--------|--------|-----------------|-------|
 | [ckan/ckan](https://github.com/ckan/ckan/commit/f2d47c8f87bc5f224ebff93b23d0f6fda8fb81b4) | sqlalchemy `==1.3.5` | not compared | 1 — `ckan/model/activity.py:121` `Query.select_entity_from` | 0 | 1 | 0 | PyPI publishes 1.3.5 as an sdist only. Impact compares wheels, so the note is `not compared: could not fetch sqlalchemy wheel(s) 1.3.5`. The call was not scored. |
-| [d-Rickyy-b/pastepwn](https://github.com/d-Rickyy-b/pastepwn/commit/0239d71b005c87cf0b982db5a20c1173c1362587) | pymongo `>=3.11.3` | impact row has no version pair | 2 — `pastepwn/database/mongodb.py:40` `Cursor.count`, `:43` `Collection.count` | 0 | 2 | 0 | The pin floor is 3.11.3. A wheel diff of that release against 4.19.0 removes both methods. Neither call site was tied to them. `self.db` is assigned twice, first from the client and then from a subscript, and the field resolver keeps the first type it can resolve. |
+| [d-Rickyy-b/pastepwn](https://github.com/d-Rickyy-b/pastepwn/commit/0239d71b005c87cf0b982db5a20c1173c1362587) | pymongo `>=3.11.3` | 3.11.3 → 4.19.0 | 2 — `pastepwn/database/mongodb.py:40` `Cursor.count`, `:43` `Collection.count` | 2 | 0 | 0 | `self.db` is assigned from the client and then from `self.db[dbname]`. The read of `self.collection` uses that later subscript. Both `count` calls are caught. |
 | [Dataherald/dataherald](https://github.com/Dataherald/dataherald/commit/f8946182e6db55522b88cd5a831c788339b8fc42) `services/enterprise` | stripe `==8.0.0` | 8.0.0 → 16.0.0 | 2 — `utils/billing.py:16` `Invoice.upcoming`, `scripts/record_usage.py:91` `SubscriptionItem.create_usage_record` ([stripe-python 12.0.0](https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0)) | 2 | 0 | 0 | Both removed methods were caught. A webhook schema for this client was not fetched; that note is not a call-site miss. |
 
-The first pass on Dataherald said stripe was not an outside service. The package names `api.stripe.com`, and the evidence string stayed empty because no transport call was attributed. A declared host is now enough evidence. That repo was scored again after that change. CKAN and pastepwn were not re-run. Their call matcher was not changed after these scores.
+The first pass on Dataherald said stripe was not an outside service. The package names `api.stripe.com`, and the evidence string stayed empty because no transport call was attributed. A declared host is now enough evidence. That repo was scored again after that change. CKAN is still not compared, because 1.3.5 has no wheel. pastepwn was 0/2 before instance fields followed the assignment that reaches the read. This rerun is 2/2, with no extra sites. Dataherald stayed 2/2.
+
+Across the two repositories whose dependency was compared: 4 expected sites, 4 caught, 0 missed, 0 false-positive sites. Recall 4/4. Precision 4/4. CKAN's expected line stays in the ground-truth file and is not a compared miss.
+
+## Fourth set
+
+These three were chosen after instance fields became flow-sensitive. The expected lines were written to [`docs/known-breaks-fourth.json`](known-breaks-fourth.json) from the call sites and the upstream removal notes, before `conduit impact` on these commits. That file was not edited after the run. The machine score is [`docs/known-breaks-fourth-results.json`](known-breaks-fourth-results.json). The scored services are PyMongo and stripe-python. None is OpenAI. ARTIF reaches PyMongo through subscript (`client[database].collection.method`).
+
+| Repo | Service | Versions | Expected | Caught | Missed | False positives | Notes |
+|------|---------|----------|----------|--------|--------|-----------------|-------|
+| [CRED-CLUB/ARTIF](https://github.com/CRED-CLUB/ARTIF/commit/cc744deafe0781b9c5730339ead299c967d88dfd) | pymongo `==3.11.0` | 3.11.0 → 4.19.0 | 4 — `pre_scorer.py:695` and `:712` `Collection.insert`, `mongo_update.py:299` and `cron.py:42` `Collection.remove` ([insert](https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-insert-is-removed), [remove](https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-remove-is-removed)) | 4 | 0 | 9 | All four pre-written calls were caught. The nine extra sites are `Cursor.skip` and `Cursor.limit` on `find()` chains. Those calls were not in the pre-written list, and they were not added after the run. |
+| [justdjango/facial-recognition-saas](https://github.com/justdjango/facial-recognition-saas/commit/8af024e02ade8d84997537a6220f327021f050a2) | stripe `==2.28.1` | 2.28.1 → 16.0.0 | 2 — `core/views.py:118` `Invoice.upcoming`, `:229` `UsageRecord.create` ([stripe-python 12.0.0](https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0)) | 2 | 0 | 0 | |
+| [makerspace/makeradmin](https://github.com/makerspace/makeradmin/commit/be643c45781bc75219bc88f0f9d6e338d7a1d95a) `api` | stripe `==7.8.2` | 7.8.2 → 16.0.0 | 2 — `src/shop/stripe_subscriptions.py:484` and `:486` `Invoice.upcoming` (same stripe-python note) | 2 | 0 | 0 | A webhook schema for this client was not fetched; that note is not a call-site miss. |
+
+Across the three repositories: 8 expected sites, 8 caught, 0 missed, 9 false-positive sites. Recall 8/8. Precision 8/17.

@@ -332,13 +332,16 @@ def _stdlib_identifiers() -> frozenset[str]:
     return frozenset(found)
 
 
-def _public_api_tokens() -> dict[str, set[str]]:
+def _public_api_tokens() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """Class and method names from fixture wheels and the known-break files.
 
     A name is guarded when only one distribution exposes it, so a word shared
     by several public APIs (a method both of them spell the same way) is not
     treated as a vendor fingerprint. Builtins and typing wrappers are not
     either. The set is built from those files, not written out by hand.
+
+    The first dict is distinctive tokens, matched as whole words. The second
+    is short names, matched only as string literals and attribute names.
     """
     by_dist: dict[str, set[str]] = {}
 
@@ -407,22 +410,29 @@ def _public_api_tokens() -> dict[str, set[str]]:
     for dist, names in by_dist.items():
         for name in names:
             counts.setdefault(name, set()).add(dist)
-    guarded: dict[str, set[str]] = {}
+    words: dict[str, set[str]] = {}
+    short: dict[str, set[str]] = {}
     for name, dists in counts.items():
         if len(dists) != 1:
             continue
         if name in builtins or name in stdlib or name.lower() in wrappers:
             continue
-        interior = any(char.isupper() for char in name[1:])
-        if not (
-            ("_" in name and len(name) >= 5)
-            or (interior and len(name) >= 8)
-            or (name[:1].isupper() and len(name) >= 10)
-            or len(name) >= 12
-        ):
-            continue
-        guarded[name] = dists
-    return guarded
+        if _distinctive_api_name(name):
+            words[name] = dists
+        else:
+            short[name] = dists
+    return words, short
+
+
+def _distinctive_api_name(name: str) -> bool:
+    """A name shaped like a coined API token rather than an ordinary word."""
+    interior = any(char.isupper() for char in name[1:])
+    return (
+        ("_" in name and len(name) >= 5)
+        or (interior and len(name) >= 8)
+        or (name[:1].isupper() and len(name) >= 10)
+        or len(name) >= 12
+    )
 
 
 def _api_leaks(root: Path, tokens: dict[str, set[str]]) -> list[str]:
@@ -440,15 +450,70 @@ def _api_leaks(root: Path, tokens: dict[str, set[str]]) -> list[str]:
     return leaks
 
 
+_DOTTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+
+
+def _literal_api_names(value: str) -> set[str]:
+    """Identifier tokens a string uses as a name, not words inside a sentence."""
+    text = value.strip()
+    if text.isidentifier():
+        return {text}
+    if _DOTTED.fullmatch(text):
+        return set(text.split("."))
+    return set()
+
+
+def _short_api_leaks(root: Path, tokens: dict[str, set[str]]) -> list[str]:
+    """Short public names, only as string literals or attribute names.
+
+    A comment or a docstring sentence can use the same word. Those are not
+    attribute loads and not a string whose value is the name.
+    """
+    leaks: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in tokens:
+                found.add(node.attr)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                found.update(name for name in _literal_api_names(node.value) if name in tokens)
+        rel = path.relative_to(root).as_posix()
+        for name in sorted(found):
+            leaks.append(f"{rel}: {name}")
+    return leaks
+
+
 def test_classifier_sources_have_no_public_api_names():
     """Class and method names from the eval and fixture APIs fail the build.
 
     The names are read from the wheels and the known-break files. A name that
     several distributions share is not specific enough to be a fingerprint.
+    A short name is checked when it is a string literal or an attribute, and
+    not when it is only an English word in a comment.
     """
-    tokens = _public_api_tokens()
-    assert tokens
-    assert _api_leaks(SRC, tokens) == []
+    words, short = _public_api_tokens()
+    assert words or short
+    assert short, "short public names have to be guarded, not dropped"
+    assert _api_leaks(SRC, words) == []
+    assert _short_api_leaks(SRC, short) == []
+
+
+def test_short_api_names_match_literals_and_attributes_only(tmp_path: Path):
+    """``count`` as ``.count`` or ``"count"`` fails. The same word in prose does not."""
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "attr.py").write_text("x = obj.count\n", encoding="utf-8")
+    (package / "literal.py").write_text("name = 'count'\n", encoding="utf-8")
+    (package / "prose.py").write_text(
+        '"""count the rows"""\n# count is a word\ndef count():\n    return 1\n',
+        encoding="utf-8",
+    )
+    leaks = _short_api_leaks(package, {"count": {"zzflow"}})
+    assert leaks == ["attr.py: count", "literal.py: count"]
 
 
 def test_resolver_has_no_name_to_type_literals():
