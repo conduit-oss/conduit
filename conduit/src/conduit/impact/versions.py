@@ -64,6 +64,55 @@ def resolve_client_version(
     )
 
 
+def wheel_backed_version(package: str, version: str, *, max_bytes: int = 32_000_000) -> str:
+    """``version`` when that release has a wheel, else the newest release that does.
+
+    A project page can advertise a release that only published an sdist.
+    There is no library surface to diff until a wheel exists.
+    """
+    meta = _pypi_json(package)
+    releases = meta.get("releases") if isinstance(meta, dict) else None
+    if not isinstance(releases, dict):
+        return version
+    if version and _release_has_wheel(releases.get(version), max_bytes=max_bytes):
+        return version
+    from packaging.version import InvalidVersion, Version
+
+    best: Version | None = None
+    best_text = ""
+    for raw, files in releases.items():
+        if not _release_has_wheel(files, max_bytes=max_bytes):
+            continue
+        try:
+            parsed = Version(str(raw))
+        except InvalidVersion:
+            continue
+        if parsed.is_prerelease:
+            continue
+        if best is None or parsed > best:
+            best = parsed
+            best_text = str(raw)
+    return best_text or version
+
+
+def _release_has_wheel(files: object, *, max_bytes: int) -> bool:
+    if not isinstance(files, list):
+        return False
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        if item.get("packagetype") != "bdist_wheel" or item.get("yanked"):
+            continue
+        try:
+            size = int(item.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size > max_bytes:
+            continue
+        return True
+    return False
+
+
 def pypi_latest(package: str) -> str:
     """Current version PyPI publishes for ``package``, or empty."""
     meta = _pypi_json(package)
@@ -76,13 +125,43 @@ def pypi_latest(package: str) -> str:
 
 
 def highest_on_pypi(package: str, spec: str) -> str:
+    found = _matching_versions(package, spec)
+    if not found:
+        return ""
+    return str(max(found))
+
+
+def lowest_on_pypi(package: str, spec: str) -> str:
+    """Oldest published version that satisfies ``spec``, or empty."""
+    found = _matching_versions(package, spec)
+    if not found:
+        return ""
+    return str(min(found))
+
+
+def unbounded_lower_spec(root: Path, package: str) -> str:
+    """A ``>=`` / ``>`` requirement with no upper bound, or empty.
+
+    A lockfile or an exact pin already names one version. A range that
+    also has an upper bound is resolved to its highest match instead.
+    """
+    exact, ranges = _declared_specs(root, package)
+    if exact or _lock_version(root, package):
+        return ""
+    for spec in ranges:
+        if _is_unbounded_lower(spec):
+            return spec
+    return ""
+
+
+def _matching_versions(package: str, spec: str) -> list:
     from packaging.specifiers import InvalidSpecifier, SpecifierSet
     from packaging.version import InvalidVersion, Version
 
     try:
         wanted = SpecifierSet(spec)
     except InvalidSpecifier:
-        return ""
+        return []
     found: list[Version] = []
     for raw in _pypi_versions(package):
         try:
@@ -91,9 +170,24 @@ def highest_on_pypi(package: str, spec: str) -> str:
             continue
         if parsed in wanted:
             found.append(parsed)
-    if not found:
-        return ""
-    return str(max(found))
+    return found
+
+
+def _is_unbounded_lower(spec: str) -> bool:
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+
+    try:
+        parsed = SpecifierSet(spec)
+    except InvalidSpecifier:
+        return False
+    has_lower = False
+    for item in parsed:
+        if item.operator in {">=", ">"}:
+            has_lower = True
+            continue
+        if item.operator in {"==", "===", "~=", "<", "<=", "!="}:
+            return False
+    return has_lower
 
 
 def installed_version(package: str) -> str:

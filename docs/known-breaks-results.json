@@ -1,0 +1,206 @@
+{
+  "rows": [
+    {
+      "repo": "PaddlePaddle/PaddleNLP",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy>=1.4.2,<2",
+      "versions": "1.4.54 -> 2.1.5",
+      "expected": 1,
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "1/1",
+      "precision": "1/1",
+      "caught_sites": [
+        {
+          "file": "pipelines/document_stores/sql.py",
+          "line": 755,
+          "symbol": "Query.from_self",
+          "change": "Query.from_self removed",
+          "expr": "session.query(column, func.row_number().over(order_by=column).label('rownum')).from_self"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "diffgram/diffgram",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy==1.3.23",
+      "versions": "1.3.23 -> 2.1.5",
+      "expected": 1,
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "1/1",
+      "precision": "1/1",
+      "caught_sites": [
+        {
+          "file": "shared/database/task/task.py",
+          "line": 247,
+          "symbol": "Query.select_entity_from",
+          "change": "Query.select_entity_from removed",
+          "expr": "session.query(Task).select_entity_from"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "LAION-AI/Open-Assistant",
+      "service": "sqlalchemy",
+      "pin": "SQLAlchemy==1.4.41",
+      "versions": "1.4.41 -> 2.1.5",
+      "expected": 2,
+      "caught": 2,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "2/2",
+      "precision": "2/2",
+      "caught_sites": [
+        {
+          "file": "oasst_backend/tree_manager.py",
+          "line": 1075,
+          "symbol": "Query.select_entity_from",
+          "change": "Query.select_entity_from removed",
+          "expr": "self.db.query(Message).select_entity_from"
+        },
+        {
+          "file": "oasst_backend/prompt_repository.py",
+          "line": 985,
+          "symbol": "Query.select_entity_from",
+          "change": "Query.select_entity_from removed",
+          "expr": "self.db.query(*select_entities).select_entity_from"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "Sniper970119/dianping_spider",
+      "service": "pymongo",
+      "pin": "pymongo==3.11.3",
+      "versions": "3.11.3 -> 4.19.0",
+      "expected": 5,
+      "caught": 5,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "5/5",
+      "precision": "5/5",
+      "caught_sites": [
+        {
+          "file": "utils/saver/mongo_saver.py",
+          "line": 66,
+          "symbol": "Collection.insert",
+          "change": "Collection.insert removed",
+          "expr": "col.insert"
+        },
+        {
+          "file": "utils/saver/mongo_saver.py",
+          "line": 77,
+          "symbol": "Collection.insert",
+          "change": "Collection.insert removed",
+          "expr": "col.insert"
+        },
+        {
+          "file": "utils/saver/mongo_saver.py",
+          "line": 88,
+          "symbol": "Collection.insert",
+          "change": "Collection.insert removed",
+          "expr": "col.insert"
+        },
+        {
+          "file": "utils/database_utils.py",
+          "line": 57,
+          "symbol": "Collection.update",
+          "change": "Collection.update removed",
+          "expr": "self.col.update"
+        },
+        {
+          "file": "utils/database_utils.py",
+          "line": 76,
+          "symbol": "Collection.update",
+          "change": "Collection.update removed",
+          "expr": "self.col.update"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "TencentBlueKing/bk-chatbot",
+      "service": "pymongo",
+      "pin": "pymongo==3.11.0",
+      "versions": "3.11.0 -> 4.19.0",
+      "expected": 1,
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "1/1",
+      "precision": "1/1",
+      "caught_sites": [
+        {
+          "file": "common/mongodb/client.py",
+          "line": 69,
+          "symbol": "Collection.update",
+          "change": "Collection.update removed",
+          "expr": "collection.update"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "chdsbd/kodiak",
+      "service": "stripe",
+      "pin": "stripe==2.46.0",
+      "versions": "2.46.0 -> 16.0.0",
+      "expected": 1,
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 2,
+      "recall": "1/1",
+      "precision": "1/3",
+      "caught_sites": [
+        {
+          "file": "web_api/models.py",
+          "line": 1135,
+          "symbol": "Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "expr": "stripe.Invoice.upcoming"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [
+        {
+          "path": "web_api/test_views.py",
+          "line": 549,
+          "expr": "stripe.Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "from_version": "2.46.0",
+          "to_version": "16.0.0"
+        },
+        {
+          "path": "web_api/test_views.py",
+          "line": 549,
+          "expr": "stripe.Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "from_version": "2.46.0",
+          "to_version": "16.0.0"
+        }
+      ],
+      "notes": [],
+      "exit": 0
+    }
+  ]
+}

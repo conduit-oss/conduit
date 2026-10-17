@@ -182,7 +182,7 @@ def flatten_installed(by_eco: dict[str, dict[str, str]]) -> dict[str, str]:
 
 
 def read_installed(root: Path) -> dict[str, str]:
-    """Return package -> version from manifests (including nested pip requirements)."""
+    """Return package -> version from manifests, including nested requirement files."""
     return flatten_installed(read_installed_by_ecosystem(root))
 
 

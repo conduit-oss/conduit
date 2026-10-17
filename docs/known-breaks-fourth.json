@@ -1,0 +1,94 @@
+{
+  "note": "Expected breaks were written before any conduit watch or impact run on these commits. The three repositories were chosen after instance fields became flow-sensitive. Each scored dependency is an outside service. The services are PyMongo and stripe-python. None is OpenAI. One repository reaches PyMongo through subscript, client[database].collection.method. Do not add sites after seeing a run.",
+  "scoring": {
+    "catch": "A non-wrapper impact site whose path ends with the expected file and whose line equals the expected line.",
+    "miss": "An expected site with no such impact site.",
+    "false_positive": "A non-wrapper impact site that is not one of the expected file:line pairs. Extra sites are not folded back into this file. Deprecations are not breaks and are not false positives."
+  },
+  "repos": [
+    {
+      "repo": "CRED-CLUB/ARTIF",
+      "url": "https://github.com/CRED-CLUB/ARTIF",
+      "commit": "cc744deafe0781b9c5730339ead299c967d88dfd",
+      "subdir": "",
+      "service": "pymongo",
+      "pin": "pymongo==3.11.0",
+      "pin_file": "requirements.txt",
+      "removed_in": "4.0.0",
+      "expected": [
+        {
+          "file": "ip_rep/front_end_scorer/pre_scorer.py",
+          "line": 695,
+          "symbol": "Collection.insert",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-insert-is-removed"
+        },
+        {
+          "file": "ip_rep/front_end_scorer/pre_scorer.py",
+          "line": 712,
+          "symbol": "Collection.insert",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-insert-is-removed"
+        },
+        {
+          "file": "ip_rep/database_connector/mongo_update.py",
+          "line": 299,
+          "symbol": "Collection.remove",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-remove-is-removed"
+        },
+        {
+          "file": "ip_rep/feed_ingestor/cron.py",
+          "line": 42,
+          "symbol": "Collection.remove",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-remove-is-removed"
+        }
+      ]
+    },
+    {
+      "repo": "justdjango/facial-recognition-saas",
+      "url": "https://github.com/justdjango/facial-recognition-saas",
+      "commit": "8af024e02ade8d84997537a6220f327021f050a2",
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==2.28.1",
+      "pin_file": "requirements.txt",
+      "removed_in": "12.0.0",
+      "expected": [
+        {
+          "file": "core/views.py",
+          "line": 118,
+          "symbol": "Invoice.upcoming",
+          "upstream": "https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0"
+        },
+        {
+          "file": "core/views.py",
+          "line": 229,
+          "symbol": "UsageRecord.create",
+          "upstream": "https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0"
+        }
+      ]
+    },
+    {
+      "repo": "makerspace/makeradmin",
+      "url": "https://github.com/makerspace/makeradmin",
+      "commit": "be643c45781bc75219bc88f0f9d6e338d7a1d95a",
+      "subdir": "api",
+      "service": "stripe",
+      "pin": "stripe==7.8.2",
+      "pin_file": "api/requirements.txt",
+      "removed_in": "12.0.0",
+      "expected": [
+        {
+          "file": "src/shop/stripe_subscriptions.py",
+          "line": 484,
+          "symbol": "Invoice.upcoming",
+          "upstream": "https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0"
+        },
+        {
+          "file": "src/shop/stripe_subscriptions.py",
+          "line": 486,
+          "symbol": "Invoice.upcoming",
+          "upstream": "https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0"
+        }
+      ]
+    }
+  ]
+}

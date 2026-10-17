@@ -14,3 +14,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 _root = str(_ROOT)
 if _root not in sys.path:
     sys.path.insert(0, _root)
+
+
+def pytest_configure(config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "network: tests that call the public internet",
+    )

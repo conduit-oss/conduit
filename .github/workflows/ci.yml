@@ -24,7 +24,25 @@ jobs:
           # Authenticated GitHub API (5k/hr) for live OpenAPI commit-by-date
           # resolution; without this, unauthenticated 60/hr is exhausted mid-suite.
           GITHUB_TOKEN: ${{ github.token }}
-        run: python -m pytest -q conduit/tests
+        run: python -m pytest -q conduit/tests -m "not network"
       - name: Offline map
         run: |
           python -c "from pathlib import Path; from conduit.outside_in.analyze import analyze_repo; mapped = analyze_repo(Path('examples/wrapped-openai-fixture')); assert mapped.chains, 'map produced no chains'"
+
+  feed-parity:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          pip install -e "./conduit[dev]"
+          pip install pytest
+      - name: Live feed parity
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -m pytest -q conduit/tests -m network

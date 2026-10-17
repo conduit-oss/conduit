@@ -124,13 +124,13 @@ def load_openapi(path: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict):
         return None
-    if _is_google_discovery(data):
+    if _is_discovery_document(data):
         return _discovery_as_openapi(data)
     return data
 
 
 def operations(document: dict[str, Any]) -> list[Operation]:
-    if _is_google_discovery(document):
+    if _is_discovery_document(document):
         document = _discovery_as_openapi(document)
     paths = document.get("paths")
     if not isinstance(paths, dict):
@@ -179,8 +179,8 @@ def operations(document: dict[str, Any]) -> list[Operation]:
     return found
 
 
-def _is_google_discovery(document: dict[str, Any]) -> bool:
-    """Google API Discovery documents use ``resources`` / ``methods``, not ``paths``."""
+def _is_discovery_document(document: dict[str, Any]) -> bool:
+    """Discovery documents use ``resources`` / ``methods``, not ``paths``."""
     if document.get("discoveryVersion") or document.get("discovery_version"):
         return True
     if "paths" in document:

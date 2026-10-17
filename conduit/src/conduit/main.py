@@ -79,7 +79,7 @@ def _watch_feeds(
             name = str(packet.get("packet_id") or "packet") + ".json"
             (dest / name).write_text(json.dumps(packet, indent=2) + "\n", encoding="utf-8")
     if json_out:
-        console.print_json(data=result.to_dict())
+        console.print_json(data=result.to_dict(), highlight=False)
     else:
         if not result.packets and not result.impacts:
             console.print("No released changes hit call sites on this map.")
@@ -112,6 +112,7 @@ def _watch_feeds(
                     change=str(item.get("change") or ""),
                     confidence=str(item.get("confidence") or ""),
                     source=str(item.get("source") or ""),
+                    kind=str(item.get("kind") or ""),
                     sites=tuple(
                         SiteHit(
                             path=str(site.get("path") or ""),
@@ -223,7 +224,7 @@ def map_cmd(
 
     service_map, blast = build_service_map(root, service=service, packet=data)
     if json_out:
-        console.print_json(data=service_map_to_dict(service_map, blast))
+        console.print_json(data=service_map_to_dict(service_map, blast), highlight=False)
     else:
         console.print(
             format_report(service_map, blast, markdown=markdown),
@@ -281,7 +282,14 @@ def impact_cmd(
     from conduit.outside_in.bridge import build_service_map
     from conduit.outside_in.specs import evidence_spec
 
-    spec = evidence_spec(dep)
+    from conduit.deps.manifests import read_installed
+
+    pins = read_installed(root)
+    pinned = (from_version or "").strip() or pins.get(dep.lower()) or ""
+    # The distribution under analysis is the one this repo pins, not whichever
+    # release is newest. A newer release that grew its own I/O does not make
+    # the pinned release a service, and the reverse is true too.
+    spec = evidence_spec(dep, pinned or None)
     if spec is None or spec.family:
         console.print(
             f"[red]{dep} is not an outside service.[/red] "
@@ -305,8 +313,16 @@ def impact_cmd(
         allow_network=fixture_root is None,
     )
     if json_out:
+        breaks = [item for item in impacts if item.kind != "deprecated"]
+        deprecations = [item for item in impacts if item.kind == "deprecated"]
         console.print_json(
-            data={"dependency": dep, "impacts": impacts_to_dicts(impacts), "notes": notes}
+            data={
+                "dependency": dep,
+                "impacts": impacts_to_dicts(breaks),
+                "deprecations": impacts_to_dicts(deprecations),
+                "notes": notes,
+            },
+            highlight=False,
         )
     else:
         if notes and not impacts:

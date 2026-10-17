@@ -151,22 +151,10 @@ def resolve_sdk_package_pair(
     return old, new, ""
 
 
-def pypi_source_repo(package: str) -> str | None:
-    """Return ``owner/repo`` from PyPI ``project_urls`` / home_page when GitHub."""
-    if not package:
-        return None
-    meta_url = f"https://pypi.org/pypi/{package}/json"
-    try:
-        with httpx.Client(timeout=20.0, follow_redirects=True) as client:
-            response = client.get(meta_url)
-            if response.status_code != 200:
-                return None
-            meta = response.json()
-    except Exception:
-        return None
-    info = meta.get("info") if isinstance(meta, dict) else None
+def project_links(info: dict) -> list[str]:
+    """Project page URLs, source keys first, then ``home_page``."""
     if not isinstance(info, dict):
-        return None
+        return []
     urls: list[str] = []
     project_urls = info.get("project_urls")
     if isinstance(project_urls, dict):
@@ -192,11 +180,35 @@ def pypi_source_repo(package: str) -> str | None:
     home = info.get("home_page")
     if isinstance(home, str) and home.strip():
         urls.append(home.strip())
-    for url in urls:
+    return urls
+
+
+def github_repo_from_project_info(info: dict) -> str | None:
+    """Return ``owner/repo`` when a project link points at GitHub."""
+    for url in project_links(info):
         repo = _github_owner_repo(url)
         if repo:
             return repo
     return None
+
+
+def pypi_source_repo(package: str) -> str | None:
+    """Return ``owner/repo`` from PyPI ``project_urls`` / home_page when GitHub."""
+    if not package:
+        return None
+    meta_url = f"https://pypi.org/pypi/{package}/json"
+    try:
+        with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+            response = client.get(meta_url)
+            if response.status_code != 200:
+                return None
+            meta = response.json()
+    except Exception:
+        return None
+    info = meta.get("info") if isinstance(meta, dict) else None
+    if not isinstance(info, dict):
+        return None
+    return github_repo_from_project_info(info)
 
 
 def discover_spec_at_ref(repo: str, ref: str) -> tuple[str | None, str]:
@@ -483,6 +495,26 @@ def _materialize_location(location: str, *, prefix: str) -> Path | None:
             return None
         return _download_raw(repo_part, ref, path)
     return None
+
+
+def spec_location_to_url(location: str) -> str:
+    """Turn a ``raw:`` or ``url:`` spec location into an https URL."""
+    text = (location or "").strip()
+    if text.startswith("url:"):
+        return text[4:]
+    if not text.startswith("raw:"):
+        return ""
+    body = text[4:]
+    if "@" not in body:
+        return ""
+    repo_part, _, rest = body.partition("@")
+    ref, path = _split_ref_path(rest)
+    if not repo_part or not ref or not path:
+        return ""
+    return (
+        f"https://raw.githubusercontent.com/{repo_part}/"
+        f"{quote(ref, safe='')}/{path.lstrip('/')}"
+    )
 
 
 def _split_ref_path(rest: str) -> tuple[str, str]:

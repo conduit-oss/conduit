@@ -48,8 +48,8 @@ def watch_outside(
 ) -> FeedWatch:
     """Poll public feeds for outside services on ``root``'s map.
 
-    Modules that are not outside services (local packages, pydantic, anything
-    Pact / Optic / Backstage would cover) are skipped. ``sources`` replaces
+    Modules that are not outside services (local packages, typed-model
+    libraries, anything Pact / Optic / Backstage would cover) are skipped. ``sources`` replaces
     the built-in list when a caller wants a different plug-in set.
     """
     service_map, _blast = build_service_map(root, service=service)
@@ -67,14 +67,22 @@ def watch_outside(
                 hits.extend(source.collect(target, client))
             except Exception as exc:
                 client.warnings.append(f"{source.name} {target.service_id}: {exc}")
-    packets, problems = packets_from_hits(hits)
     impact_root = _impact_fixtures(client)
+    hits = _ground_renames(
+        hits,
+        targets,
+        fixtures=impact_root,
+        allow_network=client.allow_network,
+    )
+    packets, problems = packets_from_hits(hits)
+    feed_notes = _unique(note for target in targets for note in target.feeds.notes)
     impacts: list[dict] = []
-    if impact_root is not None:
+    impact_notes: list[str] = []
+    if impact_root is not None or client.allow_network:
         from conduit.impact.report import impacts_to_dicts
         from conduit.impact.run import collect_impacts
 
-        found, diffed, _notes = collect_impacts(
+        found, diffed, impact_notes = collect_impacts(
             root,
             service_map,
             fixtures=impact_root,
@@ -92,11 +100,103 @@ def watch_outside(
     return FeedWatch(
         services=[target.service_id for target in targets],
         skipped=skipped,
-        warnings=[*client.warnings, *problems],
+        warnings=_unique(
+            [
+                *feed_notes,
+                *(impact_notes if client.allow_network else []),
+                *client.warnings,
+                *problems,
+            ]
+        ),
         hits=hits,
         packets=packets,
         impacts=impacts,
     )
+
+
+def _ground_renames(
+    hits: list[FeedHit],
+    targets: list[WatchTarget],
+    *,
+    fixtures: Path | None,
+    allow_network: bool,
+) -> list[FeedHit]:
+    """Drop changelog and release-note renames that are not package API names.
+
+    When neither wheel can be loaded, the hits stay. A fixture feed with no
+    recorded library still reports the names the feed itself stated.
+    """
+    sources = {"changelog", "github_releases"}
+    packages = {
+        hit.package
+        for hit in hits
+        if hit.change in {"call_rename", "param_rename"} and hit.source in sources
+    }
+    if not packages:
+        return hits
+    known: dict[str, set[str]] = {}
+    for package in packages:
+        names = _api_names(package, targets, hits, fixtures=fixtures, allow_network=allow_network)
+        if names:
+            known[package.lower()] = names
+    if not known:
+        return hits
+    from conduit.feeds.names import rename_grounded
+
+    kept: list[FeedHit] = []
+    for hit in hits:
+        if hit.change not in {"call_rename", "param_rename"} or hit.source not in sources:
+            kept.append(hit)
+            continue
+        names = known.get(hit.package.lower())
+        if names is None or rename_grounded(hit.old, hit.new, names):
+            kept.append(hit)
+    return kept
+
+
+def _api_names(
+    package: str,
+    targets: list[WatchTarget],
+    hits: list[FeedHit],
+    *,
+    fixtures: Path | None,
+    allow_network: bool,
+) -> set[str]:
+    from conduit.impact.api import public_identifiers
+    from conduit.impact.run import _download_wheel, _load_index
+
+    pin = ""
+    for target in targets:
+        if package.lower() in {target.package.lower(), target.service_id.lower()}:
+            pin = target.pypi_version or pin
+    versions = [pin]
+    for hit in hits:
+        if hit.package.lower() != package.lower() or hit.change != "version":
+            continue
+        if hit.to_version and hit.to_version not in versions:
+            versions.append(hit.to_version)
+        if hit.from_version and hit.from_version not in versions:
+            versions.append(hit.from_version)
+    index = _load_index(fixtures)
+    entry = index.get(package.lower()) or {}
+    wheels = entry.get("wheels") if isinstance(entry.get("wheels"), dict) else {}
+    paths: list[Path] = []
+    for version in versions:
+        if not version:
+            continue
+        path: Path | None = None
+        rel = wheels.get(version)
+        if fixtures is not None and rel:
+            candidate = fixtures / str(rel)
+            if candidate.is_file():
+                path = candidate
+        if path is None and allow_network:
+            path = _download_wheel(package, version)
+        if path is not None:
+            paths.append(path)
+    if not paths:
+        return set()
+    return public_identifiers(paths)
 
 
 def _impact_fixtures(client: FeedClient) -> Path | None:
@@ -107,6 +207,15 @@ def _impact_fixtures(client: FeedClient) -> Path | None:
         if (candidate / "index.json").is_file():
             return candidate
     return None
+
+
+def _unique(items) -> list[str]:
+    found: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in found:
+            found.append(text)
+    return found
 
 
 def _bump_only(packet: dict) -> bool:
@@ -147,7 +256,8 @@ def targets_for_map(
                 "repo-to-repo contracts are not watched"
             )
             continue
-        feeds = feeds_for(spec.service_id, spec.package, urls=urls)
+        pinned = pins.get((spec.package or "").lower()) or pins.get(name.lower()) or ""
+        feeds = feeds_for(spec.service_id, spec.package, urls=urls, from_version=pinned)
         if feeds is None:
             skipped.append(f"{spec.service_id}: no public feeds configured")
             continue

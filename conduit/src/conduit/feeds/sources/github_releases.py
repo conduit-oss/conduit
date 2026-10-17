@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import feedparser
 
 from conduit.feeds.client import FeedClient
@@ -17,14 +19,31 @@ class GitHubReleasesSource:
     confidence = "high"
 
     def collect(self, target: WatchTarget, client: FeedClient) -> list[FeedHit]:
+        package = target.feeds.pypi or target.package
         url = target.feeds.github_atom_url()
-        text = read_or_empty(client, url)
-        if not text:
+        text = read_or_empty(client, url) if url else ""
+        hits = (
+            parse_github_atom(
+                text,
+                url=url,
+                package=package,
+                installed=target.pypi_version,
+            )
+            if text
+            else []
+        )
+        if hits or not client.allow_network:
+            return hits
+        api = (target.feeds.releases_api or "").strip()
+        if not api:
             return []
-        return parse_github_atom(
-            text,
-            url=url,
-            package=target.feeds.pypi or target.package,
+        raw = read_or_empty(client, api)
+        if not raw:
+            return []
+        return parse_github_releases_api(
+            raw,
+            url=api,
+            package=package,
             installed=target.pypi_version,
         )
 
@@ -82,6 +101,75 @@ def parse_github_atom(
             from_version=from_version,
             to_version=to_version,
             url=str(newest.get("link") or url),
+        )
+    )
+    return hits
+
+
+def parse_github_releases_api(
+    text: str,
+    *,
+    url: str,
+    package: str,
+    installed: str | None,
+) -> list[FeedHit]:
+    """Same hits as the Atom feed, from the releases API JSON."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(payload, dict):
+        payload = [payload] if payload.get("tag_name") or payload.get("name") else []
+    if not isinstance(payload, list):
+        return []
+    tagged: list[tuple[object, object]] = []
+    for entry in payload:
+        if not isinstance(entry, dict) or entry.get("draft") or entry.get("prerelease"):
+            continue
+        title = str(entry.get("tag_name") or entry.get("name") or "")
+        version = parse_version(title)
+        if version is None:
+            continue
+        tagged.append((entry, version))
+    if not tagged:
+        return []
+    latest = latest_stable([version for _entry, version in tagged])
+    if latest is None:
+        return []
+    newest = next(entry for entry, version in tagged if version == latest)
+    from_version = _from_version(installed, tagged, latest)
+    if not from_version:
+        return []
+    if installed and not is_newer(latest, installed):
+        return []
+    if not installed and parse_version(from_version) is not None:
+        if not is_newer(latest, from_version):
+            return []
+    to_version = version_text(latest)
+    link = str(newest.get("html_url") or url)
+    hits = [
+        FeedHit(
+            source="github_releases",
+            confidence="high",
+            package=package,
+            ecosystem="pypi",
+            from_version=from_version,
+            to_version=to_version,
+            change="version",
+            old=from_version,
+            new=to_version,
+            detail=f"GitHub release {to_version} on {url}",
+            url=link,
+        )
+    ]
+    body = plain_text("\n".join([str(newest.get("name") or ""), str(newest.get("body") or "")]))
+    hits.extend(
+        _rename_hits(
+            body,
+            package=package,
+            from_version=from_version,
+            to_version=to_version,
+            url=link,
         )
     )
     return hits
