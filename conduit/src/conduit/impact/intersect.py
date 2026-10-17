@@ -22,6 +22,9 @@ def intersect(
     relevant = [chain for chain in chains if _same_dependency(chain, dependency)]
     impacts: list[Impact] = []
     covered: list[tuple[str, str]] = []
+    # Two removed symbols can share one detail and one call. Emit that
+    # file:line once per change text. A different change on the same line stays.
+    emitted: set[tuple[str, int, str]] = set()
     ordered = sorted(changes, key=lambda item: (0 if item.confidence != "low" else 1, item.detail))
     for change in ordered:
         if change.confidence == "low" and any(change.old and change.old == old for old, _site in covered):
@@ -34,6 +37,14 @@ def intersect(
             surviving or set(),
             methods or {},
         )
+        fresh: list[SiteHit] = []
+        for site in sites:
+            key = (site.path, site.line, change.detail)
+            if key in emitted:
+                continue
+            emitted.add(key)
+            fresh.append(site)
+        sites = fresh
         if not sites:
             continue
         for site in sites:

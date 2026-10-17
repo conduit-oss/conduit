@@ -468,6 +468,227 @@ def test_inherited_reexported_method_is_not_removed(tmp_path: Path):
     assert "pkg.Missing" not in removed
 
 
+def test_subclass_field_read_through_super_is_the_base_value(tmp_path: Path):
+    """``cls.field = super().field[key]`` is the subscript result, not the base class.
+
+    The base stores a client subscript. A missing attribute on that type is
+    another class, and that class name is also a constructor tail. The call on
+    the subclass field is that class's method.
+    """
+    lib = tmp_path / "lib"
+    _write(
+        lib / "shelf" / "__init__.py",
+        """
+        from .client import Bin, Client, Database
+        """,
+    )
+    _write(
+        lib / "shelf" / "client.py",
+        """
+        class Bin:
+            def insert(self, record, info=None):
+                return record
+
+            def update(self, key, record, info=None):
+                return record
+
+        class Database:
+            def __getitem__(self, name):
+                return Bin()
+
+            def __getattr__(self, name):
+                return Bin()
+
+        class Client:
+            def __getitem__(self, name):
+                return Database()
+        """,
+    )
+    _write(
+        tmp_path / "app" / "tables.py",
+        """
+        from shelf.client import Client
+
+        class Store:
+            @classmethod
+            def initialize(cls):
+                cls._client = Client()
+                cls._database = cls._client["main"]
+
+        class Child(Store):
+            @classmethod
+            def initialize(cls):
+                cls._database = super()._database["files"]
+
+            @classmethod
+            def write(cls, record, info):
+                cls._database.insert(record, info)
+
+            @classmethod
+            def revise(cls, key, record, info):
+                cls._database.update(key, record, info)
+        """,
+    )
+    spec = ServiceSpec(
+        service_id="shelf",
+        package="shelf",
+        modules=("shelf",),
+        kind="database",
+        constructor_tails=("Bin",),
+    )
+    sys.path.insert(0, str(lib))
+    try:
+        mapped = analyze_python(tmp_path / "app", (spec,))
+    finally:
+        sys.path.remove(str(lib))
+    found = {
+        (chain.call_rel, chain.call_lineno): (chain.sdk_method, chain.kind)
+        for chain in mapped.chains
+        if not chain.via_wrapper
+    }
+    text = (tmp_path / "app" / "tables.py").read_text(encoding="utf-8")
+    insert_line = next(index for index, line in enumerate(text.splitlines(), start=1) if ".insert(" in line)
+    update_line = next(index for index, line in enumerate(text.splitlines(), start=1) if ".update(" in line)
+    assert found[("tables.py", insert_line)] == ("shelf.client.Bin.insert", "db_call")
+    assert found[("tables.py", update_line)] == ("shelf.client.Bin.update", "db_call")
+
+
+def test_same_file_line_and_change_is_emitted_once():
+    from conduit.outside_in.model import Chain
+
+    chain = Chain(
+        service="shelf",
+        package="shelf",
+        call_rel="views.py",
+        call_lineno=549,
+        call_symbol="write",
+        call_expr="Invoice.upcoming",
+        hops=(),
+        sdk_method="shelf.billing.Invoice.upcoming",
+        kind="sdk_call",
+        params=(),
+        site_keywords=(),
+        response_fields=(),
+        confidence="high",
+        via_wrapper=False,
+    )
+    removed = ApiChange(
+        kind="removed",
+        symbol="billing.Invoice.upcoming",
+        old="upcoming",
+        new="",
+        detail="Invoice.upcoming removed",
+        confidence="high",
+        source="wheel",
+    )
+    alias = ApiChange(
+        kind="removed",
+        symbol="shelf.billing.Invoice.upcoming",
+        old="upcoming",
+        new="",
+        detail="Invoice.upcoming removed",
+        confidence="high",
+        source="wheel",
+    )
+    renamed = ApiChange(
+        kind="renamed",
+        symbol="shelf.billing.Invoice.upcoming",
+        old="upcoming",
+        new="preview",
+        detail="Invoice.upcoming renamed",
+        confidence="high",
+        source="wheel",
+    )
+    impacts = intersect(
+        [removed, alias, renamed],
+        [chain],
+        dependency="shelf",
+        from_version="1",
+        to_version="2",
+    )
+    details = [item.change for item in impacts]
+    assert details.count("Invoice.upcoming removed") == 1
+    assert "Invoice.upcoming renamed" in details
+    removed_impact = next(item for item in impacts if item.change == "Invoice.upcoming removed")
+    assert len(removed_impact.sites) == 1
+    assert removed_impact.sites[0].line == 549
+
+
+def test_type_checker_class_replaces_the_receiver_when_it_is_concrete(tmp_path: Path, monkeypatch):
+    _write(
+        tmp_path / "app" / "tables.py",
+        """
+        from shelf.client import Client
+
+        class Store:
+            def __init__(self):
+                self.db = Client()
+
+            def write(self, record):
+                self.db.insert(record)
+        """,
+    )
+
+    class _Fake:
+        def classes_at(self, path, line, col):
+            return ("shelf.client.Bin",)
+
+        def close(self):
+            pass
+
+    monkeypatch.setenv("CONDUIT_TYPES", "pyright")
+    monkeypatch.setattr("conduit.outside_in.typecheck.open_session", lambda root: _Fake())
+    spec = ServiceSpec(
+        service_id="shelf",
+        package="shelf",
+        modules=("shelf",),
+        kind="database",
+        constructor_tails=("Bin",),
+    )
+    mapped = analyze_python(tmp_path / "app", (spec,))
+    methods = [chain.sdk_method for chain in mapped.chains if not chain.via_wrapper]
+    assert "shelf.client.Bin.insert" in methods
+
+
+def test_type_checker_unknown_keeps_the_hand_written_resolver(tmp_path: Path, monkeypatch):
+    _write(
+        tmp_path / "app" / "repo.py",
+        """
+        from ledger.orm import Session
+
+        class Item:
+            pass
+
+        def listed(db: Session):
+            return db.query(Item).select_entity_from(Item)
+        """,
+    )
+
+    class _Fake:
+        def classes_at(self, path, line, col):
+            return ()
+
+        def close(self):
+            pass
+
+    monkeypatch.setenv("CONDUIT_TYPES", "pyright")
+    monkeypatch.setattr("conduit.outside_in.typecheck.open_session", lambda root: _Fake())
+    methods = set(_methods(tmp_path).values())
+    assert any(method.endswith("Query.select_entity_from") for method in methods)
+
+
+def test_qualname_comes_from_an_installed_class_file():
+    from conduit.outside_in.typecheck import hover_is_only_unknown, qualname_from_uri
+
+    uri = "file:///tmp/venvs/spike/lib/python3.12/site-packages/shelf/client.py"
+    assert qualname_from_uri(uri, "Bin") == "shelf.client.Bin"
+    assert qualname_from_uri("file:///tmp/app/tables.py", "Bin") is None
+    assert hover_is_only_unknown("(variable) field: Unknown")
+    assert hover_is_only_unknown("(variable) field: Any | None")
+    assert not hover_is_only_unknown("(variable) field: Bin | Unknown")
+    assert not hover_is_only_unknown("")
+
+
 def test_dynamically_added_attribute_is_not_removed(tmp_path: Path):
     _write(
         tmp_path / "old" / "pkg" / "__init__.py",

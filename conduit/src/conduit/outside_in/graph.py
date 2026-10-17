@@ -197,6 +197,19 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
     resolver = _Resolver(units, index, root=root)
     cloud_roots = _cloud_factory_roots(specs)
     resolver.cloud_roots = cloud_roots
+    try:
+        return _analyze_units(root, specs, units, resolver, cloud_roots)
+    finally:
+        resolver.close()
+
+
+def _analyze_units(
+    root: Path,
+    specs: tuple[ServiceSpec, ...],
+    units: dict[str, ModUnit],
+    resolver: _Resolver,
+    cloud_roots: frozenset[str],
+) -> ServiceMap:
     entries: list[Entry] = []
     directs: list[_Direct] = []
     edges: list[_Edge] = []
@@ -647,7 +660,17 @@ class _Resolver:
         self._param_types: dict[tuple[str, str, str], Binding] = {}
         self._libraries: LibraryTypes | None = None
         self.cloud_roots: frozenset[str] = frozenset()
+        self._type_session: object | None = None
+        self._type_session_off = False
         self._infer_returns()
+
+    def close(self) -> None:
+        session = self._type_session
+        self._type_session = None
+        self._type_session_off = True
+        close = getattr(session, "close", None)
+        if close is not None:
+            close()
 
     def import_entries(self, rel: str, specs: tuple[ServiceSpec, ...]) -> list[Entry]:
         unit = self.units[rel]
@@ -697,10 +720,65 @@ class _Resolver:
     def resolve_call(
         self, unit: ModUnit, call: CallRec
     ) -> tuple[Binding, str] | None:
-        binding = self._resolve_expr(call.node.func, unit, call.enclosing, set())
+        checked = self._checked_receiver(unit, call)
+        binding = checked or self._resolve_expr(call.node.func, unit, call.enclosing, set())
         if binding.kind == "unknown":
             return None
         return binding, binding.confidence
+
+    def _type_session_get(self) -> object | None:
+        if self._type_session_off:
+            return None
+        if self._type_session is not None:
+            return self._type_session
+        if self.root is None:
+            self._type_session_off = True
+            return None
+        from conduit.outside_in.typecheck import open_session
+
+        session = open_session(self.root)
+        if session is None:
+            self._type_session_off = True
+            return None
+        self._type_session = session
+        return session
+
+    def _checked_receiver(self, unit: ModUnit, call: CallRec) -> Binding | None:
+        """Concrete class of an attribute call's receiver, from a type checker.
+
+        Only a class that lives in an installed distribution is used. Any,
+        Unknown, and a missing answer leave the hand-written resolver in place.
+        """
+        func = call.node.func
+        if not isinstance(func, ast.Attribute):
+            return None
+        session = self._type_session_get()
+        if session is None or self.root is None:
+            return None
+        path = self.root / unit.rel
+        if not path.is_file():
+            return None
+        line = int(getattr(func.value, "end_lineno", 0) or getattr(func.value, "lineno", 0) or 0)
+        col = getattr(func.value, "end_col_offset", None)
+        if not line or col is None:
+            return None
+        query = getattr(session, "classes_at", None)
+        if query is None:
+            return None
+        try:
+            classes = query(path, line, max(int(col) - 1, 0))
+        except Exception:
+            self.close()
+            return None
+        if not classes:
+            return None
+        primary, *rest = classes
+        return Binding(
+            "external_attr",
+            f"{primary}.{func.attr}",
+            confidence="medium",
+            alternatives=tuple(f"{item}.{func.attr}" for item in rest),
+        )
 
     def _library(self) -> LibraryTypes:
         if self._libraries is None:
@@ -928,6 +1006,9 @@ class _Resolver:
             use = (lineno, getattr(node, "col_offset", 0) or 0) if lineno else None
             return self._attribute(base, node.attr, stack, nxt, enclosing=enclosing, use=use)
         if isinstance(node, ast.Call):
+            super_inst = self._super_instance(node, unit, enclosing, stack, nxt)
+            if super_inst is not None:
+                return super_inst
             aliased = self._alias_call(node, unit, enclosing, stack, nxt)
             if aliased is not None:
                 return aliased
@@ -1030,6 +1111,68 @@ class _Resolver:
         if default.kind == "unknown":
             return None
         return default
+
+    def _super_instance(
+        self,
+        node: ast.Call,
+        unit: ModUnit,
+        enclosing: str,
+        stack: set[tuple[str, str, str]],
+        depth: int,
+    ) -> Binding | None:
+        """Zero-argument ``super()`` is an instance of the next base class.
+
+        A name bound in this scope is that binding, not the builtin. The first
+        base that resolves to a class is the instance. ``super(Explicit, obj)``
+        starts after ``Explicit`` when that class is one of the bases.
+        """
+        if not isinstance(node.func, ast.Name) or node.func.id != "super":
+            return None
+        bound = self._resolve_name("super", unit, enclosing, stack, depth + 1)
+        if bound.kind != "unknown":
+            return None
+        defn = unit.defs.get(enclosing)
+        class_name = defn.class_name if defn is not None else None
+        if not class_name:
+            return None
+        bases = self._class_symbols(unit, class_name, stack, depth)
+        if not bases:
+            return None
+        start = 0
+        if node.args:
+            explicit = self._resolve_expr(node.args[0], unit, enclosing, stack, depth + 1)
+            if explicit.kind == "symbol" and explicit.qualname and explicit.qualname != class_name:
+                for index, parent in enumerate(bases):
+                    if parent.target == explicit.target and parent.qualname == explicit.qualname:
+                        start = index + 1
+                        break
+                else:
+                    return None
+        if start >= len(bases):
+            return None
+        parent = bases[start]
+        return Binding(
+            "instance_local",
+            parent.target,
+            parent.qualname,
+            confidence=min_confidence(parent.confidence, "medium"),
+        )
+
+    def _class_symbols(
+        self,
+        unit: ModUnit,
+        class_name: str,
+        stack: set[tuple[str, str, str]],
+        depth: int,
+    ) -> list[Binding]:
+        found: list[Binding] = []
+        for base_expr in unit.class_bases.get(class_name, []):
+            while isinstance(base_expr, ast.Subscript):
+                base_expr = base_expr.value
+            parent = self._resolve_expr(base_expr, unit, class_name, stack, depth + 1)
+            if parent.kind == "symbol" and parent.qualname:
+                found.append(parent)
+        return found
 
     def _alias_call(
         self,
