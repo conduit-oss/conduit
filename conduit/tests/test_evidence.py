@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from conduit.outside_in.evidence import classify_distribution, spec_for_distribution
+from conduit.outside_in.evidence import _Code, _scan, classify_distribution, spec_for_distribution
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 REPO = Path(__file__).resolve().parents[2]
@@ -295,6 +295,70 @@ def test_wire_pool_cursor_driver_is_a_database(version: str):
     assert found.evidence.split(" -> ")[-1] in {"socket", "ssl", "db-api"}
 
 
+def test_pool_is_opening_a_connection_and_lending_it_back():
+    """A pool opens a socket, takes one off a collection, and puts one back.
+
+    Two method names side by side are not that behavior.
+    """
+    lending = _scan(
+        _Code(
+            package="zzpool",
+            version="0",
+            files=[
+                (
+                    "zzpool.py",
+                    b"""
+import socket
+
+class Lane:
+    def __init__(self):
+        self.items = []
+
+    def open_one(self):
+        return socket.create_connection(("127.0.0.1", 9))
+
+    def borrow(self):
+        try:
+            return self.items.pop()
+        except IndexError:
+            return self.open_one()
+
+    def give(self, item):
+        self.items.append(item)
+""",
+                )
+            ],
+            requires=[],
+            modules=("zzpool",),
+        )
+    )
+    named = _scan(
+        _Code(
+            package="zzpool",
+            version="0",
+            files=[
+                (
+                    "zzpool.py",
+                    b"""
+import socket
+
+class Lane:
+    def get_socket(self):
+        return socket.create_connection(("127.0.0.1", 9))
+
+    def connect(self):
+        return self.get_socket()
+""",
+                )
+            ],
+            requires=[],
+            modules=("zzpool",),
+        )
+    )
+    assert lending.pool is True
+    assert named.pool is False
+
+
 def test_http_core_without_a_product_client_is_a_transport():
     core = classify_distribution("azure-core")
     assert core.loaded
@@ -309,15 +373,70 @@ def test_http_core_without_a_product_client_is_a_transport():
     assert spec_for_distribution("azure-storage-blob") is not None
 
 
-@functools.lru_cache(maxsize=1)
-def _stdlib_identifiers() -> frozenset[str]:
-    """Identifiers the installed standard library already uses.
+def _wheel_dist_name(archive: zipfile.ZipFile) -> str:
+    metas = [name for name in archive.namelist() if name.endswith("METADATA") or name.endswith("PKG-INFO")]
+    for meta in metas:
+        for line in archive.read(meta).decode("utf-8", "replace").splitlines():
+            if line.lower().startswith("name:"):
+                return line.split(":", 1)[1].strip()
+    return ""
 
-    A public API name that Python itself spells is not a fingerprint of one
-    dependency. The set is read from the library, not typed out here.
+
+def _absorb_python(dist: str, source: str, by_dist: dict[str, set[str]]) -> None:
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return
+    for node in ast.walk(tree):
+        name = ""
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            name = node.name
+        if not name or not name.isidentifier() or name.startswith("_"):
+            continue
+        by_dist.setdefault(dist.lower(), set()).add(name)
+
+
+def _absorb_wheel_bytes(dist: str, filename: str, blob: bytes, by_dist: dict[str, set[str]]) -> None:
+    if not filename.endswith(".py"):
+        return
+    lowered = filename.lower()
+    if any(part in {"test", "tests", "testing"} for part in lowered.split("/")):
+        return
+    _absorb_python(dist, blob.decode("utf-8", "replace"), by_dist)
+
+
+def _pin_version(dist: str, pin: str) -> str:
+    """Concrete version named by a pin, or the highest release the pin allows."""
+    exact = re.search(r"==\s*([^\s,;]+)", pin or "")
+    if exact:
+        return exact.group(1).strip()
+    spec = re.sub(r"^[A-Za-z0-9_.\-]+\s*", "", (pin or "").split(";", 1)[0]).strip()
+    if not spec:
+        return ""
+    from conduit.impact.versions import highest_on_pypi
+
+    try:
+        return highest_on_pypi(dist, spec)
+    except Exception:
+        return ""
+
+
+@functools.lru_cache(maxsize=1)
+def _stdlib_common_identifiers() -> frozenset[str]:
+    """Identifiers the standard library uses as shared vocabulary.
+
+    A name two or more library modules spell is vocabulary, and so is a name
+    any module uses as something other than the single place it is defined.
+    A method one module defines and never otherwise mentions stays out of
+    this set. ``telnetlib.Telnet.get_socket`` is that case: the same method
+    on a third-party pool is still a fingerprint of that distribution.
     """
     root = Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}"
-    found: set[str] = set()
+    if not root.is_dir():
+        root = Path("/usr/lib") / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    defined: dict[str, int] = {}
+    used: dict[str, int] = {}
+    files: dict[str, int] = {}
     if not root.is_dir():
         return frozenset()
     ident = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
@@ -328,67 +447,72 @@ def _stdlib_identifiers() -> frozenset[str]:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        found.update(ident.findall(text))
-    return frozenset(found)
-
-
-def _public_api_tokens() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Class and method names from fixture wheels and the known-break files.
-
-    A name is guarded when only one distribution exposes it, so a word shared
-    by several public APIs (a method both of them spell the same way) is not
-    treated as a vendor fingerprint. Builtins and typing wrappers are not
-    either. The set is built from those files, not written out by hand.
-
-    The first dict is distinctive tokens, matched as whole words. The second
-    is short names, matched only as string literals and attribute names.
-    """
-    by_dist: dict[str, set[str]] = {}
-
-    def add(dist: str, name: str) -> None:
-        if not dist or not name or not name.isidentifier() or name.startswith("_"):
-            return
-        by_dist.setdefault(dist.lower(), set()).add(name)
-
-    def absorb_tree(dist: str, tree: ast.AST) -> None:
+        spelled = {name for name in set(ident.findall(text)) if not name.startswith("_")}
+        for name in spelled:
+            files[name] = files.get(name, 0) + 1
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            continue
+        defs: set[str] = set()
+        uses: set[str] = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                add(dist, node.name)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                add(dist, node.name)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.name.isidentifier() and not node.name.startswith("_"):
+                    defs.add(node.name)
+            elif isinstance(node, ast.Name) and node.id.isidentifier() and not node.id.startswith("_"):
+                uses.add(node.id)
+            elif isinstance(node, ast.Attribute) and node.attr.isidentifier() and not node.attr.startswith("_"):
+                uses.add(node.attr)
+            elif isinstance(node, ast.arg) and node.arg.isidentifier() and not node.arg.startswith("_"):
+                uses.add(node.arg)
+        for name in defs:
+            defined[name] = defined.get(name, 0) + 1
+        for name in uses:
+            used[name] = used.get(name, 0) + 1
+    common: set[str] = set()
+    for name in set(files) | set(defined) | set(used):
+        # Spelled in several modules: ordinary vocabulary, not one vendor's method.
+        if files.get(name, 0) >= 2 or used.get(name, 0) >= 1 or defined.get(name, 0) >= 2:
+            common.add(name)
+    return frozenset(common)
 
-    if _FIXTURE_WHEELS.is_dir():
-        for path in _FIXTURE_WHEELS.rglob("*"):
-            if path.suffix != ".whl":
-                continue
-            try:
-                with zipfile.ZipFile(path) as archive:
-                    metas = [name for name in archive.namelist() if name.endswith("METADATA")]
-                    dist = ""
-                    if metas:
-                        for line in archive.read(metas[0]).decode("utf-8", "replace").splitlines():
-                            if line.startswith("Name:"):
-                                dist = line.split(":", 1)[1].strip()
-                                break
-                    if not dist:
-                        continue
-                    for name in archive.namelist():
-                        if not name.endswith(".py") or name.endswith("/__init__.py") and name.count("/") > 4:
-                            continue
-                        if not name.endswith(".py"):
-                            continue
-                        if "/test" in name or name.startswith("test"):
-                            continue
-                        try:
-                            source = archive.read(name).decode("utf-8", "replace")
-                            absorb_tree(dist, ast.parse(source))
-                        except (SyntaxError, UnicodeError, OSError):
-                            continue
-            except (OSError, zipfile.BadZipFile):
-                continue
+
+@functools.lru_cache(maxsize=1)
+def _public_api_tokens() -> frozenset[str]:
+    """Public class, method, and function names from fixture and eval wheels.
+
+    Every real wheel under the impact fixtures is read, and so is each
+    distribution pinned by a known-break file. A name is guarded when only
+    one distribution defines it. Builtins, the standard library, and typing
+    wrappers are not. Expected-symbol lists are not the source: a method the
+    eval never mentions is still a fingerprint when the wheel defines it.
+    """
     import json
 
+    from conduit.outside_in.evidence import _download_code
+    from conduit.outside_in.specs import normalize_dist
+
+    by_dist: dict[str, set[str]] = {}
+    seen: set[tuple[str, str]] = set()
+    if _FIXTURE_WHEELS.is_dir():
+        for path in sorted(_FIXTURE_WHEELS.rglob("*.whl")):
+            try:
+                with zipfile.ZipFile(path) as archive:
+                    dist = _wheel_dist_name(archive)
+                    if not dist:
+                        continue
+                    key = (dist.lower(), path.name)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    for name in archive.namelist():
+                        _absorb_wheel_bytes(dist, name, archive.read(name), by_dist)
+            except (OSError, zipfile.BadZipFile):
+                continue
     for path in sorted((REPO / "docs").glob("known-breaks*.json")):
+        if path.name.endswith("-results.json"):
+            continue
         document = json.loads(path.read_text(encoding="utf-8"))
         repos = document.get("repos") if isinstance(document, dict) else None
         if not isinstance(repos, list):
@@ -397,57 +521,36 @@ def _public_api_tokens() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
             if not isinstance(repo, dict):
                 continue
             dist = str(repo.get("service") or "").strip()
-            expected = repo.get("expected")
-            if not isinstance(expected, list):
+            version = _pin_version(dist, str(repo.get("pin") or ""))
+            if not dist or not version:
                 continue
-            for item in expected:
-                for part in str(item.get("symbol") or "").split("."):
-                    add(dist, part)
+            key = (dist.lower(), version)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                code = _download_code(normalize_dist(dist), version)
+            except Exception:
+                code = None
+            if code is None:
+                continue
+            for filename, blob in code.files:
+                _absorb_wheel_bytes(dist, filename, blob, by_dist)
     wrappers = {name.lower() for name in dir(typing) if name[:1].isalpha()}
     builtins = set(dir(__builtins__)) if isinstance(__builtins__, dict) else set(dir(__builtins__))
-    stdlib = _stdlib_identifiers()
+    stdlib = _stdlib_common_identifiers()
     counts: dict[str, set[str]] = {}
     for dist, names in by_dist.items():
         for name in names:
             counts.setdefault(name, set()).add(dist)
-    words: dict[str, set[str]] = {}
-    short: dict[str, set[str]] = {}
+    guarded: set[str] = set()
     for name, dists in counts.items():
         if len(dists) != 1:
             continue
-        if name in builtins or name in stdlib or name.lower() in wrappers:
+        if name in builtins or name.lower() in wrappers or name in stdlib:
             continue
-        if _distinctive_api_name(name):
-            words[name] = dists
-        else:
-            short[name] = dists
-    return words, short
-
-
-def _distinctive_api_name(name: str) -> bool:
-    """A name shaped like a coined API token rather than an ordinary word."""
-    interior = any(char.isupper() for char in name[1:])
-    return (
-        ("_" in name and len(name) >= 5)
-        or (interior and len(name) >= 8)
-        or (name[:1].isupper() and len(name) >= 10)
-        or len(name) >= 12
-    )
-
-
-def _api_leaks(root: Path, tokens: dict[str, set[str]]) -> list[str]:
-    leaks: list[str] = []
-    patterns = {name: re.compile(rf"\b{re.escape(name)}\b") for name in tokens}
-    for path in sorted(root.rglob("*.py")):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        rel = path.relative_to(root).as_posix()
-        for name, pattern in patterns.items():
-            if pattern.search(text) or pattern.search(path.name):
-                leaks.append(f"{rel}: {name}")
-    return leaks
+        guarded.add(name)
+    return frozenset(guarded)
 
 
 _DOTTED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
@@ -463,11 +566,11 @@ def _literal_api_names(value: str) -> set[str]:
     return set()
 
 
-def _short_api_leaks(root: Path, tokens: dict[str, set[str]]) -> list[str]:
-    """Short public names, only as string literals or attribute names.
+def _bound_api_leaks(root: Path, tokens: set[str] | frozenset[str]) -> list[str]:
+    """Public names used as string literals, attributes, or identifiers.
 
     A comment or a docstring sentence can use the same word. Those are not
-    attribute loads and not a string whose value is the name.
+    a string whose value is the name, and they are not an identifier.
     """
     leaks: list[str] = []
     for path in sorted(root.rglob("*.py")):
@@ -479,6 +582,17 @@ def _short_api_leaks(root: Path, tokens: dict[str, set[str]]) -> list[str]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in tokens:
                 found.add(node.attr)
+            elif isinstance(node, ast.Name) and node.id in tokens:
+                found.add(node.id)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in tokens:
+                found.add(node.name)
+            elif isinstance(node, ast.arg) and node.arg in tokens:
+                found.add(node.arg)
+            elif isinstance(node, ast.alias):
+                if node.name in tokens:
+                    found.add(node.name)
+                if node.asname in tokens:
+                    found.add(node.asname)
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
                 found.update(name for name in _literal_api_names(node.value) if name in tokens)
         rel = path.relative_to(root).as_posix()
@@ -487,33 +601,93 @@ def _short_api_leaks(root: Path, tokens: dict[str, set[str]]) -> list[str]:
     return leaks
 
 
+def _collect_targets(nodes: list[ast.AST], found: set[str]) -> None:
+    for node in nodes:
+        if isinstance(node, ast.Name):
+            found.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            found.add(node.attr)
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            _collect_targets(list(node.elts), found)
+        elif isinstance(node, ast.Starred):
+            _collect_targets([node.value], found)
+
+
+def _defined_names(root: Path) -> set[str]:
+    """Names this tree binds: functions, classes, parameters, and assignments."""
+    found: set[str] = set()
+    for path in root.rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                found.add(node.name)
+            elif isinstance(node, ast.arg):
+                found.add(node.arg)
+            elif isinstance(node, ast.Assign):
+                _collect_targets(list(node.targets), found)
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                _collect_targets([node.target], found)
+            elif isinstance(node, ast.NamedExpr):
+                _collect_targets([node.target], found)
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                _collect_targets([node.target], found)
+            elif isinstance(node, ast.comprehension):
+                _collect_targets([node.target], found)
+            elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+                _collect_targets([node.optional_vars], found)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                found.add(node.name)
+            elif isinstance(node, ast.alias):
+                found.add((node.asname or node.name).split(".")[0])
+    return found
+
+
 def test_classifier_sources_have_no_public_api_names():
-    """Class and method names from the eval and fixture APIs fail the build.
+    """Class and method names from fixture and eval wheels fail the build.
 
-    The names are read from the wheels and the known-break files. A name that
-    several distributions share is not specific enough to be a fingerprint.
-    A short name is checked when it is a string literal or an attribute, and
-    not when it is only an English word in a comment.
+    The names are read from the wheels, not from the expected-symbol lists.
+    A name that several distributions share is not specific enough to be a
+    fingerprint, and neither is a name the standard library already uses.
+    A guarded name fails as a string literal, an attribute, or an identifier.
+    A name this tree itself binds is this project's own API.
     """
-    words, short = _public_api_tokens()
-    assert words or short
-    assert short, "short public names have to be guarded, not dropped"
-    assert _api_leaks(SRC, words) == []
-    assert _short_api_leaks(SRC, short) == []
+    tokens = _public_api_tokens()
+    assert tokens, "public names from the wheels have to be guarded"
+    assert "get_socket" in tokens
+    # Coined on one distribution and absent from the expected-symbol lists.
+    assert "api_base" in tokens
+    assert "request_stream" in tokens
+    # ``connect`` is a method several distributions define, so it is not a fingerprint.
+    assert "connect" not in tokens
+    defined = _defined_names(SRC)
+    leaks = [item for item in _bound_api_leaks(SRC, tokens) if item.split(": ", 1)[1] not in defined]
+    assert leaks == []
 
 
-def test_short_api_names_match_literals_and_attributes_only(tmp_path: Path):
-    """``count`` as ``.count`` or ``"count"`` fails. The same word in prose does not."""
+def test_old_get_socket_check_is_a_public_api_leak(tmp_path: Path):
+    """The removed method-name pair would fail this guard."""
+    path = tmp_path / "evidence.py"
+    path.write_text('if {"get_socket", "connect"} <= methods:\n    pass\n', encoding="utf-8")
+    leaks = _bound_api_leaks(tmp_path, _public_api_tokens())
+    assert "evidence.py: get_socket" in leaks
+
+
+def test_api_names_match_literals_attributes_and_identifiers_only(tmp_path: Path):
+    """``count`` as ``.count``, ``"count"``, or ``def count`` fails. Prose does not."""
     package = tmp_path / "pkg"
     package.mkdir()
     (package / "attr.py").write_text("x = obj.count\n", encoding="utf-8")
     (package / "literal.py").write_text("name = 'count'\n", encoding="utf-8")
+    (package / "ident.py").write_text("def count():\n    return 1\n", encoding="utf-8")
     (package / "prose.py").write_text(
-        '"""count the rows"""\n# count is a word\ndef count():\n    return 1\n',
+        '"""count the rows"""\n# count is a word\n',
         encoding="utf-8",
     )
-    leaks = _short_api_leaks(package, {"count": {"zzflow"}})
-    assert leaks == ["attr.py: count", "literal.py: count"]
+    leaks = _bound_api_leaks(package, {"count"})
+    assert leaks == ["attr.py: count", "ident.py: count", "literal.py: count"]
 
 
 def test_resolver_has_no_name_to_type_literals():

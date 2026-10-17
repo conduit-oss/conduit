@@ -148,7 +148,10 @@ def load_api(path: Path, *, include_private: bool = False) -> dict[str, Symbol]:
     root = _materialize(path)
     found: dict[str, Symbol] = {}
     hidden: dict[str, Symbol] = {}
-    trees: list[tuple[str, ast.AST]] = []
+    # Every class, including private ones, so a public subclass can inherit.
+    pool: dict[str, Symbol] = {}
+    class_nodes: list[tuple[str, ast.ClassDef]] = []
+    trees: list[tuple[str, str, ast.AST]] = []
     for py in sorted(root.rglob("*.py")):
         if not py.is_file() or _skipped(py, root):
             continue
@@ -161,19 +164,275 @@ def load_api(path: Path, *, include_private: bool = False) -> dict[str, Symbol]:
             tree = ast.parse(py.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeDecodeError, SyntaxError):
             continue
-        trees.append((module, tree))
+        package = module if py.name == "__init__.py" else module.rsplit(".", 1)[0]
+        trees.append((module, package, tree))
         bucket = found if include_private or not private_mod else hidden
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(node.name):
-                bucket[f"{module}.{node.name}"] = _symbol(f"{module}.{node.name}", node)
-            elif isinstance(node, ast.ClassDef) and _public(node.name):
-                bucket[f"{module}.{node.name}"] = _symbol(f"{module}.{node.name}", node)
-                for child in node.body:
-                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(child.name):
-                        qual = f"{module}.{node.name}.{child.name}"
-                        bucket[qual] = _symbol(qual, child)
-    _apply_lazy_reexports(found, {**hidden, **found}, trees)
+                qual = f"{module}.{node.name}"
+                bucket[qual] = _symbol(qual, node)
+                pool[qual] = bucket[qual]
+            elif isinstance(node, ast.ClassDef):
+                qual = f"{module}.{node.name}"
+                class_nodes.append((qual, node))
+                symbol = _symbol(qual, node)
+                pool[qual] = symbol
+                if _public(node.name):
+                    bucket[qual] = symbol
+                for child in _class_methods(node):
+                    if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _public(child.name):
+                        continue
+                    method = f"{qual}.{child.name}"
+                    copied = _symbol(method, child)
+                    pool[method] = copied
+                    if _public(node.name):
+                        bucket[method] = copied
+    _dynamic_members(pool, found, class_nodes, trees)
+    _inherit_members(found, pool, class_nodes, trees)
+    _apply_lazy_reexports(found, {**hidden, **pool, **found}, [(module, tree) for module, _package, tree in trees])
+    _reexport_members(found, {**hidden, **pool, **found}, trees)
     return found
+
+
+def _class_methods(node: ast.ClassDef) -> list[ast.AST]:
+    """Methods and assignments on the class, including ones under ``if``."""
+    found: list[ast.AST] = []
+
+    def walk(body: list[ast.stmt]) -> None:
+        for child in body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Assign, ast.AnnAssign)):
+                found.append(child)
+            elif isinstance(child, ast.If):
+                walk(child.body)
+                walk(child.orelse)
+            elif isinstance(child, ast.Try):
+                walk(child.body)
+                walk(child.orelse)
+                walk(child.finalbody)
+                for handler in child.handlers:
+                    walk(handler.body)
+
+    walk(node.body)
+    return found
+
+
+def _clone(qual: str, sym: Symbol) -> Symbol:
+    return Symbol(qual, sym.params, sym.kwonly, sym.required, sym.deprecated)
+
+
+def _dynamic_members(
+    pool: dict[str, Symbol],
+    found: dict[str, Symbol],
+    class_nodes: list[tuple[str, ast.ClassDef]],
+    trees: list[tuple[str, str, ast.AST]],
+) -> None:
+    """Attributes added with ``Class.name = ...`` or ``setattr(Class, name, ...)``."""
+    by_module: dict[str, dict[str, str]] = {}
+    for qual, _node in class_nodes:
+        module, _, name = qual.rpartition(".")
+        by_module.setdefault(module, {})[name] = qual
+    for module, package, tree in trees:
+        bindings, _stars = _bind_imports(module, package, tree)
+        classes = by_module.get(module, {})
+
+        def resolve(expr: ast.AST) -> str:
+            if isinstance(expr, ast.Name):
+                if expr.id in classes:
+                    return classes[expr.id]
+                bound = bindings.get(expr.id, "")
+                return bound if bound in pool else ""
+            if isinstance(expr, ast.Attribute):
+                base = resolve(expr.value)
+                qual = f"{base}.{expr.attr}" if base else ""
+                return qual if qual in pool else ""
+            return ""
+
+        def adopt(qual: str, attr: str, value: ast.AST | None) -> None:
+            if not qual or not _public(attr):
+                return
+            method = f"{qual}.{attr}"
+            if method in pool:
+                return
+            source = ""
+            if isinstance(value, ast.Name):
+                source = bindings.get(value.id) or f"{module}.{value.id}"
+            elif isinstance(value, ast.Attribute):
+                source = resolve(value.value)
+                source = f"{source}.{value.attr}" if source else ""
+            origin = pool.get(source)
+            copied = _clone(method, origin) if origin is not None else Symbol(method, (), (), (), False)
+            pool[method] = copied
+            if qual in found:
+                found.setdefault(method, copied)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _callable_name(node) == "setattr" and len(node.args) >= 2:
+                if not isinstance(node.args[1], ast.Constant) or not isinstance(node.args[1].value, str):
+                    continue
+                adopt(resolve(node.args[0]), node.args[1].value, node.args[2] if len(node.args) > 2 else None)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Attribute):
+                        adopt(resolve(target.value), target.attr, node.value)
+        for qual, class_node in class_nodes:
+            if qual.rpartition(".")[0] != module:
+                continue
+            for child in _class_methods(class_node):
+                if isinstance(child, ast.Assign):
+                    for target in child.targets:
+                        if isinstance(target, ast.Name):
+                            adopt(qual, target.id, child.value)
+                elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name) and child.value is not None:
+                    adopt(qual, child.target.id, child.value)
+
+
+def _inherit_members(
+    found: dict[str, Symbol],
+    pool: dict[str, Symbol],
+    class_nodes: list[tuple[str, ast.ClassDef]],
+    trees: list[tuple[str, str, ast.AST]],
+) -> None:
+    """Public methods a class inherits, including from a base in another module."""
+    classes = {qual for qual, _node in class_nodes}
+    bindings: dict[str, dict[str, str]] = {}
+    for module, package, tree in trees:
+        bound, _stars = _bind_imports(module, package, tree)
+        bindings[module] = bound
+    bases: dict[str, tuple[str, ...]] = {}
+    for qual, node in class_nodes:
+        module = qual.rpartition(".")[0]
+        bound = bindings.get(module, {})
+        resolved: list[str] = []
+        for base in node.bases:
+            while isinstance(base, ast.Subscript):
+                base = base.value
+            name = ""
+            if isinstance(base, ast.Name):
+                name = bound.get(base.id) or f"{module}.{base.id}"
+            elif isinstance(base, ast.Attribute):
+                name = _dotted_base(base, bound)
+            if name in classes:
+                resolved.append(name)
+        bases[qual] = tuple(resolved)
+
+    def members(qual: str, stack: set[str]) -> dict[str, Symbol]:
+        if qual in stack:
+            return {}
+        stack.add(qual)
+        own: dict[str, Symbol] = {}
+        prefix = qual + "."
+        for name, sym in pool.items():
+            if name.startswith(prefix) and "." not in name[len(prefix) :]:
+                own[name[len(prefix) :]] = sym
+        for base in bases.get(qual, ()):
+            for attr, sym in members(base, stack).items():
+                own.setdefault(attr, sym)
+        stack.remove(qual)
+        return own
+
+    for qual, _node in class_nodes:
+        if qual not in found:
+            continue
+        for attr, sym in members(qual, set()).items():
+            if not _public(attr):
+                continue
+            method = f"{qual}.{attr}"
+            copied = _clone(method, sym)
+            pool.setdefault(method, copied)
+            found.setdefault(method, copied)
+
+
+def _dotted_base(node: ast.Attribute, bindings: dict[str, str]) -> str:
+    parts: list[str] = []
+    current: ast.AST = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return ""
+    root = bindings.get(current.id) or current.id
+    return ".".join([root, *reversed(parts)])
+
+
+def _reexport_members(
+    found: dict[str, Symbol],
+    pool: dict[str, Symbol],
+    trees: list[tuple[str, str, ast.AST]],
+) -> None:
+    """Names a public module imports, including ``import *`` limited by ``__all__``."""
+    stars: dict[str, tuple[str, ...]] = {}
+    bindings: dict[str, dict[str, str]] = {}
+    exported: dict[str, tuple[str, ...]] = {}
+    for module, package, tree in trees:
+        bound, starred = _bind_imports(module, package, tree)
+        bindings[module] = bound
+        stars[module] = starred
+        exported[module] = _exported_names(tree)
+    changed = True
+    while changed:
+        changed = False
+        grouped = _children(pool)
+        for module, bound in bindings.items():
+            names = {name: target for name, target in bound.items() if _public(name) and "." not in name}
+            for source in stars.get(module, ()):
+                listed = exported.get(source) or ()
+                if listed:
+                    available = [name for name in listed if _public(name)]
+                else:
+                    prefix = source + "."
+                    available = [
+                        name[len(prefix) :]
+                        for name in pool
+                        if name.startswith(prefix) and "." not in name[len(prefix) :] and _public(name[len(prefix) :])
+                    ]
+                for name in available:
+                    names.setdefault(name, f"{source}.{name}")
+            for local, target in names.items():
+                if _copy_export(found, pool, grouped, f"{module}.{local}", target):
+                    changed = True
+
+
+def _children(pool: dict[str, Symbol]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for name in pool:
+        parent, _, _attr = name.rpartition(".")
+        grouped.setdefault(parent, []).append(name)
+    return grouped
+
+
+def _copy_export(
+    found: dict[str, Symbol],
+    pool: dict[str, Symbol],
+    grouped: dict[str, list[str]],
+    public: str,
+    source: str,
+) -> bool:
+    if not source or public == source or source not in pool:
+        return False
+    if any(part.startswith("_") for part in public.split(".")):
+        return False
+    added = False
+    queue = [(source, public)]
+    seen: set[str] = set()
+    while queue:
+        src, dest = queue.pop()
+        if dest in seen:
+            continue
+        seen.add(dest)
+        if any(part.startswith("_") for part in dest.split(".")):
+            continue
+        origin = pool.get(src)
+        if origin is not None and dest not in found and dest != src:
+            copied = _clone(dest, origin)
+            found[dest] = copied
+            pool.setdefault(dest, copied)
+            added = True
+        for child in grouped.get(src, ()):
+            rest = child[len(src) + 1 :]
+            if not rest or any(part.startswith("_") for part in rest.split(".")):
+                continue
+            queue.append((child, f"{dest}.{rest}"))
+    return added
 
 
 def _apply_lazy_reexports(

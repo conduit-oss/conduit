@@ -1,0 +1,94 @@
+{
+  "note": "Expected breaks were written before any conduit watch or impact run on these commits. The three repositories were chosen after inherited, re-exported, and dynamically added members are included in a wheel's public API. Each scored dependency is an outside service. The services are PyMongo, stripe-python, and SQLAlchemy. None is OpenAI. Manga-Tagger reaches PyMongo through subscript, client[database][collection].method. Do not add sites after seeing a run.",
+  "scoring": {
+    "catch": "A non-wrapper impact site whose path ends with the expected file and whose line equals the expected line.",
+    "miss": "An expected site with no such impact site.",
+    "false_positive": "A non-wrapper impact site that is not one of the expected file:line pairs. Extra sites are not folded back into this file. Deprecations are not breaks and are not false positives."
+  },
+  "repos": [
+    {
+      "repo": "Inpacchi/Manga-Tagger",
+      "url": "https://github.com/Inpacchi/Manga-Tagger",
+      "commit": "d459df30dab06afc28b9c32d521aaa97dea388e9",
+      "subdir": "",
+      "service": "pymongo",
+      "pin": "pymongo==3.11.0",
+      "pin_file": "requirements.txt",
+      "removed_in": "4.0.0",
+      "expected": [
+        {
+          "file": "MangaTaggerLib/database.py",
+          "line": 194,
+          "symbol": "Collection.insert",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-insert-is-removed"
+        },
+        {
+          "file": "MangaTaggerLib/database.py",
+          "line": 210,
+          "symbol": "Collection.update",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-update-is-removed"
+        }
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "url": "https://github.com/wevote/WeVoteServer",
+      "commit": "751923f02015694251ae98f2ab0e778f0f5f465e",
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==8.7.0",
+      "pin_file": "requirements.txt",
+      "removed_in": "12.0.0",
+      "expected": [
+        {
+          "file": "donate/controllers.py",
+          "line": 107,
+          "symbol": "Invoice.upcoming",
+          "upstream": "https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0"
+        },
+        {
+          "file": "stripe_donations/controllers.py",
+          "line": 111,
+          "symbol": "Invoice.upcoming",
+          "upstream": "https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0"
+        }
+      ]
+    },
+    {
+      "repo": "indico/indico",
+      "url": "https://github.com/indico/indico",
+      "commit": "ddcf9153dcf2ffe04916ff8e2006098d32ad606d",
+      "subdir": "",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy==1.4.54",
+      "pin_file": "requirements.txt",
+      "removed_in": "2.0.0",
+      "expected": [
+        {
+          "file": "indico/modules/users/util.py",
+          "line": 257,
+          "symbol": "Query.from_self",
+          "upstream": "https://docs.sqlalchemy.org/en/20/changelog/migration_20.html#selecting-from-the-query-itself-as-a-subquery-e-g-from-self"
+        },
+        {
+          "file": "indico/modules/events/persons/controllers.py",
+          "line": 516,
+          "symbol": "Query.from_self",
+          "upstream": "https://docs.sqlalchemy.org/en/20/changelog/migration_20.html#selecting-from-the-query-itself-as-a-subquery-e-g-from-self"
+        },
+        {
+          "file": "indico/core/db/sqlalchemy/util/queries.py",
+          "line": 34,
+          "symbol": "Query.select_entity_from",
+          "upstream": "https://docs.sqlalchemy.org/en/20/changelog/migration_20.html#selecting-entities-from-alternative-selectables-query-select-entity-from"
+        },
+        {
+          "file": "indico/modules/events/editing/controllers/backend/editable_list.py",
+          "line": 225,
+          "symbol": "Query.select_entity_from",
+          "upstream": "https://docs.sqlalchemy.org/en/20/changelog/migration_20.html#selecting-entities-from-alternative-selectables-query-select-entity-from"
+        }
+      ]
+    }
+  ]
+}

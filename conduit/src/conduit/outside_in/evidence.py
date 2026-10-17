@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 from conduit.outside_in.specs import ServiceSpec, normalize_dist
 
-_SCHEMA = 24
+_SCHEMA = 27
 _MAX_DEPTH = 4
 _MAX_BYTES = 40_000_000
 # Verb names on an HTTP client. ``close`` is not one: connection objects
@@ -818,10 +818,8 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
         for node in class_nodes:
             class_name = node.name
             methods = class_methods[class_name]
-            # A class that both borrows a connection and opens one is a pool.
-            # One shape names get_socket and connect. The other takes an item
-            # off an instance collection and puts one back, and still opens it.
-            if {"get_socket", "connect"} <= methods or _lends_connections(node):
+            # A pool opens a connection, hands one out, and takes it back.
+            if _lends_connections(node, reaching):
                 direct.pool = True
             if "next" in methods and ({"__iter__", "__next__", "__anext__", "__aiter__"} & methods):
                 direct.cursor = True
@@ -837,15 +835,14 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
     _note_db_delegates(direct, func_calls, func_deps)
 
 
-def _lends_connections(node: ast.ClassDef) -> bool:
-    """True when the class opens a connection and also lends one out.
+def _lends_connections(node: ast.ClassDef, reaching: set[str]) -> bool:
+    """A class that opens a connection, hands one out, and takes it back.
 
-    Lending is taking an item off an instance collection and putting one back
-    on the same collection. The method names of those two steps are not the
-    signal. ``connect`` or ``get_socket`` is what opens the connection.
+    Handing one out takes an item off an instance collection. Taking it back
+    puts an item on that same collection. Opening one is a method of this
+    class whose calls reach a socket, including through a helper. Method
+    names are not the signal.
     """
-    if not ({"connect", "get_socket"} & _method_names(node)):
-        return False
     taken: set[str] = set()
     returned: set[str] = set()
     for method in _iter_methods(node):
@@ -859,7 +856,10 @@ def _lends_connections(node: ast.ClassDef) -> bool:
                 taken.add(collection)
             elif child.func.attr in {"append", "appendleft", "put"}:
                 returned.add(collection)
-    return bool(taken & returned)
+    if not (taken & returned):
+        return False
+    prefix = f"{node.name}."
+    return any(qual.startswith(prefix) for qual in reaching)
 
 
 def _self_collection(node: ast.AST) -> str:
@@ -1112,7 +1112,11 @@ def _stdlib_of(expanded: str) -> str:
 
 
 def _assigned_hosts(tree: ast.AST) -> set[str]:
-    """Hosts written into an endpoint default, not a documentation link."""
+    """Hosts written into an endpoint default, not a documentation link.
+
+    The target name has to say that it is a URL, a host, an endpoint, or a
+    server. A name one client coins for that default is not required.
+    """
     hosts: set[str] = set()
 
     def take(node: ast.AST | None) -> None:
@@ -1139,9 +1143,10 @@ def _assigned_hosts(tree: ast.AST) -> set[str]:
         else:
             return False
         lowered = text.lower().strip("_")
-        return any(
-            token in lowered
-            for token in ("base_url", "api_base", "api_host", "endpoint", "server_url", "host")
+        # ``*_base`` is a URL default (``api_base``, ``upload_api_base``). The
+        # specific name is not the signal.
+        return "_base" in lowered or any(
+            token in lowered for token in ("base_url", "api_host", "endpoint", "server_url", "host")
         )
 
     for node in ast.walk(tree):
@@ -1151,9 +1156,7 @@ def _assigned_hosts(tree: ast.AST) -> set[str]:
             take(node.value)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = node.args
-            names = [arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
             defaults = [*args.defaults]
-            # positional defaults line up with the tail of the positional names
             positional = [arg.arg for arg in (*args.posonlyargs, *args.args)]
             for arg_name, default in zip(positional[-len(defaults) :], defaults):
                 if named(ast.Name(id=arg_name)):

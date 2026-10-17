@@ -205,9 +205,8 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
         for call in unit.calls:
             resolved = resolver.resolve_call(unit, call)
             if resolved is None:
-                # OpenAPI Generator / Speakeasy clients often call
-                # self.api_client.param_serialize(resource_path="/…") without a
-                # resolvable external binding on self.api_client.
+                # Generated clients call a helper with a verb and a path
+                # before that helper is bound to an external SDK.
                 http = _module_path_request(call, unit, specs)
                 if http is not None:
                     spec, method, conf = http
@@ -1897,16 +1896,15 @@ def _enclosing_chain(enclosing: str) -> list[str]:
     return chain
 
 
-#: Method tails on vendor SDKs that take an OpenAPI-style path string.
-#: Includes OpenAPI Generator ``param_serialize`` / ``call_api`` and Speakeasy
-#: low-level helpers that pass ``path="/…"``.
+#: Helpers that take an HTTP verb and a path. The names are the call shape
+#: shared by generated clients. A name one scanned distribution coins is not
+#: listed here; a call that passes a verb and a path is matched below only
+#: when the helper is one of these generic tails.
 _SDK_REQUEST_TAILS = frozenset(
     {
         "request",
         "_request",
         "_static_request",
-        "request_stream",
-        "_request_stream",
         "param_serialize",
         "call_api",
     }
@@ -2100,8 +2098,7 @@ def _http_service(
             hosts=(host,),
         )
         return spec, f"{verb} https://{host}", "medium"
-    # SDK helpers that take a method plus a path string
-    # (``Resource._static_request("post", "/v1/...")``).
+    # A helper that is handed an HTTP verb and an API path.
     return _sdk_path_request(binding, call, unit, specs)
 
 
@@ -2135,7 +2132,7 @@ def _module_path_request(
     unit: ModUnit,
     specs: tuple[ServiceSpec, ...],
 ) -> tuple[ServiceSpec, str, str] | None:
-    """``param_serialize(method=…, resource_path="/…")`` inside a package module."""
+    """A generated client helper called with an HTTP verb and an API path."""
     func = call.node.func
     if not isinstance(func, ast.Attribute) or func.attr not in _SDK_REQUEST_TAILS:
         return None

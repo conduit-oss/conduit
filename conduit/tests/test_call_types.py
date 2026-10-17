@@ -390,3 +390,108 @@ def test_lazy_getattr_keeps_a_moved_symbol(tmp_path: Path):
     removed = [item.symbol for item in diff_wheels(tmp_path / "old", tmp_path / "new") if item.kind == "removed"]
     assert "pkg.error.Missing" not in removed
     assert "pkg.Missing" not in removed
+
+
+def test_inherited_reexported_method_is_not_removed(tmp_path: Path):
+    """A method that moved onto a base, then re-exported, is still on the class.
+
+    The class may be generic (``Base["T"]``), the base may live in another
+    module, and the public module may pull the class in with ``import *``
+    limited by ``__all__``. A class moved into a private module and imported
+    again (the shape of an error type re-exported from the package) is the
+    same re-export, not a removal.
+    """
+    _write(
+        tmp_path / "old" / "pkg" / "cursor.py",
+        """
+        class Cursor:
+            def skip(self, count):
+                return self
+
+            def limit(self, count):
+                return self
+        """,
+    )
+    _write(tmp_path / "old" / "pkg" / "__init__.py", "from pkg.cursor import Cursor\n")
+    _write(
+        tmp_path / "new" / "pkg" / "shared.py",
+        """
+        class _Base:
+            def skip(self, count):
+                return self
+
+            def limit(self, count):
+                return self
+        """,
+    )
+    _write(
+        tmp_path / "new" / "pkg" / "sync.py",
+        """
+        from pkg.shared import _Base
+
+        class Cursor(_Base["Cursor"]):
+            pass
+        """,
+    )
+    _write(
+        tmp_path / "new" / "pkg" / "cursor.py",
+        """
+        from pkg.sync import *
+
+        __all__ = ["Cursor"]
+        """,
+    )
+    _write(
+        tmp_path / "new" / "pkg" / "_errors.py",
+        """
+        class Missing(Exception):
+            pass
+        """,
+    )
+    _write(
+        tmp_path / "new" / "pkg" / "__init__.py",
+        """
+        from pkg.cursor import Cursor
+        from pkg._errors import Missing
+
+        __all__ = ["Cursor", "Missing"]
+        """,
+    )
+    api = load_api(tmp_path / "new")
+    assert "pkg.cursor.Cursor.skip" in api
+    assert "pkg.cursor.Cursor.limit" in api
+    assert "pkg.sync.Cursor.skip" in api
+    assert "pkg.Missing" in api
+    removed = [item.symbol for item in diff_wheels(tmp_path / "old", tmp_path / "new") if item.kind == "removed"]
+    assert "pkg.cursor.Cursor.skip" not in removed
+    assert "pkg.cursor.Cursor.limit" not in removed
+    assert "pkg.Missing" not in removed
+
+
+def test_dynamically_added_attribute_is_not_removed(tmp_path: Path):
+    _write(
+        tmp_path / "old" / "pkg" / "__init__.py",
+        """
+        class Cursor:
+            def limit(self, count):
+                return self
+        """,
+    )
+    _write(
+        tmp_path / "new" / "pkg" / "__init__.py",
+        """
+        class Cursor:
+            pass
+
+        def limit(self, count):
+            return self
+
+        setattr(Cursor, "limit", limit)
+        Cursor.skip = limit
+        """,
+    )
+    api = load_api(tmp_path / "new")
+    assert "pkg.Cursor.limit" in api
+    assert "pkg.Cursor.skip" in api
+    removed = [item.symbol for item in diff_wheels(tmp_path / "old", tmp_path / "new") if item.kind == "removed"]
+    assert "pkg.Cursor.limit" not in removed

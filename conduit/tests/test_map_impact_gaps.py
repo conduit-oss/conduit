@@ -818,8 +818,8 @@ def test_star_import_keeps_a_method_that_moved(tmp_path: Path):
     _write(tmp_path, "new/openai/__init__.py", "")
     changes = diff_wheels(tmp_path / "old", tmp_path / "new")
     removed = {item.symbol for item in changes if item.kind == "removed"}
-    assert any(symbol.endswith("Collection.insert") for symbol in removed)
-    assert not any(symbol.endswith("Collection.insert_one") for symbol in removed)
+    assert "openai.collection.Collection.insert" in removed
+    assert "openai.collection.Collection.insert_one" not in removed
 
 
 def test_subscript_and_instance_field_follow_the_wheel_return_class(tmp_path: Path):
