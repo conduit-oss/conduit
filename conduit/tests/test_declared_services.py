@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import textwrap
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from typer.testing import CliRunner
 
 from conduit.main import app
 from conduit.outside_in.analyze import analyze_repo
+from conduit.outside_in.evidence import classify_distribution
+from conduit.outside_in.library_types import LibraryTypes
 
 
 def _install_client(root: Path, dist: str, import_name: str, version: str = "1.0.0") -> None:
@@ -347,3 +350,264 @@ def test_stdlib_and_local_modules_are_not_services_even_if_required(tmp_path: Pa
         """,
     )
     assert analyze_repo(tmp_path).services() == []
+
+
+def _install_package(root: Path, dist: str, import_name: str, version: str, source: str) -> Path:
+    """Install one synthetic distribution into the repo's ``.venv`` and return site-packages."""
+    site = root / ".venv" / "lib" / "python3.12" / "site-packages"
+    info = site / f"{dist}-{version}.dist-info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "METADATA").write_text(f"Name: {dist}\nVersion: {version}\n", encoding="utf-8")
+    (info / "top_level.txt").write_text(f"{import_name}\n", encoding="utf-8")
+    package = site / import_name
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(textwrap.dedent(source).lstrip(), encoding="utf-8")
+    return site
+
+
+def test_a_declared_host_is_the_service_when_no_transport_is_traced(tmp_path: Path):
+    """A host read from the package is enough when no transport call was attributed.
+
+    The name is synthetic. Nothing here names a real client.
+    """
+    version = "0.0.3"
+    _install_package(
+        tmp_path,
+        "zzhost",
+        "zzhost",
+        version,
+        """
+        base_url = "https://billing.zzhost.com/v1"
+
+        def ping():
+            return base_url
+        """,
+    )
+    found = classify_distribution("zzhost", version, root=tmp_path)
+    assert found.loaded is True
+    assert found.service is True
+    assert found.kind == "api"
+    assert "billing.zzhost.com" in found.evidence
+
+
+def test_a_wrapper_is_not_the_service_its_driver_is(tmp_path: Path):
+    """A package that only reaches a database through another dependency is not the service.
+
+    The names are synthetic. The driver does the socket I/O. The wrapper only
+    calls the driver. A caller that reaches the wrapper maps the driver.
+    """
+    version = "0.0.9"
+    _install_package(
+        tmp_path,
+        "zzbolt",
+        "zzbolt",
+        version,
+        """
+        import socket
+
+        def connect(dsn):
+            return socket.create_connection(("db.invalid", 9))
+
+        def cursor():
+            return connect(dsn="")
+
+        def execute(query):
+            return cursor()
+
+        def commit():
+            return None
+        """,
+    )
+    site = _install_package(
+        tmp_path,
+        "zzshelf",
+        "zzshelf",
+        version,
+        """
+        import ssl
+        import zzbolt
+
+        def connect(dsn):
+            return zzbolt.connect(dsn)
+
+        def cursor():
+            return zzbolt.cursor()
+
+        def execute(query):
+            return zzbolt.execute(query)
+
+        def commit():
+            return zzbolt.commit()
+
+        def label():
+            # Unrelated to the database methods. Must not make this package the service.
+            return ssl.create_default_context()
+        """,
+    )
+    _write(tmp_path, "requirements.txt", f"zzbolt=={version}\nzzshelf=={version}\n")
+    driver = classify_distribution("zzbolt", version, root=tmp_path)
+    wrapper = classify_distribution("zzshelf", version, root=tmp_path)
+    assert driver.service is True
+    assert driver.kind == "database"
+    assert wrapper.service is False
+    assert "zzbolt" in wrapper.delegates
+
+    _write(
+        tmp_path,
+        "direct.py",
+        """
+        import zzbolt
+
+        def open():
+            return zzbolt.connect("db")
+        """,
+    )
+    sys.path.insert(0, str(site))
+    try:
+        direct = analyze_repo(tmp_path)
+        assert "zzbolt" in direct.services()
+        assert "zzshelf" not in direct.services()
+
+        (tmp_path / "direct.py").unlink()
+        _write(
+            tmp_path,
+            "via.py",
+            """
+            import zzshelf
+
+            def open():
+                return zzshelf.connect("db")
+            """,
+        )
+        wrapped = analyze_repo(tmp_path)
+        assert wrapped.services() == ["zzbolt"]
+        assert any(
+            chain.service == "zzbolt" and chain.sdk_method.endswith("connect") and chain.call_rel == "via.py"
+            for chain in wrapped.chains
+        )
+
+        (tmp_path / "via.py").unlink()
+        _write(tmp_path, "idle.py", "import zzshelf\n")
+        assert analyze_repo(tmp_path).services() == []
+    finally:
+        sys.path.remove(str(site))
+
+
+def test_subscript_getattr_and_untyped_fields_follow_the_library(tmp_path: Path):
+    """``obj[key]``, ``obj.name``, and ``self.field`` use the library's own code."""
+    version = "0.0.8"
+    site = _install_package(
+        tmp_path,
+        "zzlane",
+        "zzlane",
+        version,
+        """
+        import socket
+
+        class Record:
+            def fetch(self):
+                return socket.create_connection(("db.invalid", 9))
+
+        class Bucket:
+            def __getitem__(self, key):
+                return Record()
+
+            def __getattr__(self, name):
+                return self.__getitem__(name)
+
+        class Holder:
+            def __init__(self, record):
+                self.kept = record
+
+            def open(self):
+                self.kept = Record()
+
+        class Sleeve:
+            def __init__(self, record):
+                self.record = record
+
+        def connect(dsn):
+            socket.create_connection(("db.invalid", 9))
+            return Holder(Record())
+
+        def cursor():
+            return connect("")
+
+        def execute(query):
+            return cursor()
+
+        def commit():
+            return None
+        """,
+    )
+    _write(tmp_path, "requirements.txt", f"zzlane=={version}\n")
+    types = LibraryTypes(tmp_path)
+    sys.path.insert(0, str(site))
+    try:
+        assert types.call_return("zzlane.Bucket.__getitem__") == ("zzlane.Record",)
+        assert types.instance_attribute("zzlane.Bucket", "jobs") == "zzlane.Record"
+        assert types.instance_attribute("zzlane.Holder", "kept") == "zzlane.Record"
+        _write(
+            tmp_path,
+            "use.py",
+            """
+            import zzlane
+
+            def by_key():
+                bucket = zzlane.Bucket()
+                return bucket["jobs"].fetch()
+
+            def by_name():
+                bucket = zzlane.Bucket()
+                return bucket.jobs.fetch()
+
+            def held():
+                return zzlane.Sleeve(zzlane.Record()).record.fetch()
+
+            def opened():
+                holder = zzlane.Holder(None)
+                holder.open()
+                return holder.kept.fetch()
+
+            class Job:
+                def __init__(self, record):
+                    self.record = record
+
+                def boot(self):
+                    self.record = make()
+
+                def read(self):
+                    return self.record.fetch()
+
+            def make():
+                return zzlane.Record()
+
+            def entry():
+                return Job(zzlane.Record()).read()
+
+            def booted():
+                job = Job(None)
+                job.boot()
+                return job.read()
+            """,
+        )
+        service_map = analyze_repo(tmp_path)
+
+        def fetched(symbol: str) -> bool:
+            return any(
+                chain.call_symbol == symbol and chain.sdk_method.endswith("Record.fetch")
+                for chain in service_map.chains
+            )
+
+        for symbol in ("by_key", "by_name", "held", "opened", "Job.read"):
+            assert fetched(symbol), symbol
+        assert any(
+            chain.via_wrapper and chain.call_symbol == "entry" and chain.sdk_method.endswith("Record.fetch")
+            for chain in service_map.chains
+        )
+        assert any(
+            chain.via_wrapper and chain.call_symbol == "booted" and chain.sdk_method.endswith("Record.fetch")
+            for chain in service_map.chains
+        )
+    finally:
+        sys.path.remove(str(site))

@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 from conduit.outside_in.specs import ServiceSpec, normalize_dist
 
-_SCHEMA = 20
+_SCHEMA = 23
 _MAX_DEPTH = 4
 _MAX_BYTES = 40_000_000
 # Verb names on an HTTP client. ``close`` is not one: connection objects
@@ -118,6 +118,8 @@ class Classification:
     modules: tuple[str, ...] = ()
     evidence: str = ""
     loaded: bool = False
+    #: Services this package reaches only by calling them. Empty when it does the I/O itself.
+    delegates: tuple[str, ...] = ()
 
 
 @dataclass
@@ -144,6 +146,18 @@ class _Direct:
     client_classes: set[str] = field(default_factory=set)
     #: DB-API names are present. Wire-protocol drivers set ``database`` without this.
     db_api: bool = False
+    #: The C or header sources define the DB-API names, so this package speaks the protocol.
+    db_api_c: bool = False
+    #: Method tails reachable from a DB-API method via ``self`` calls, including across modules.
+    db_reach: set[str] = field(default_factory=set)
+    #: Method tail -> external module roots that tail's body calls.
+    deps_by_tail: dict[str, set[str]] = field(default_factory=dict)
+    #: External roots reached from DB-API methods. The package is a wrapper when one of these is the service.
+    delegate_roots: set[str] = field(default_factory=set)
+    #: Tails of functions that themselves open a socket or TLS context.
+    strong_tails: set[str] = field(default_factory=set)
+    #: A DB-API method, or a method it reaches, is what opens the socket.
+    db_strong: bool = False
     #: struct pack/unpack beside a socket, a checkout/checkin pool, and a cursor.
     wire: bool = False
     pool: bool = False
@@ -261,6 +275,10 @@ def specs_for_repo(root: Path) -> tuple[ServiceSpec, ...]:
                 add(alt, pins.get(alt), module=module)
             return
         if not found.service:
+            # The import is a wrapper. The service is the dependency its
+            # own functions call, when the caller's code reaches that call.
+            for delegate in found.delegates:
+                add(delegate, pins.get(normalize_dist(delegate)))
             return
         spec = _as_spec(found)
         if spec.service_id not in {item.service_id for item in specs}:
@@ -323,6 +341,24 @@ def _finish(
     """
     used = _used_services(direct, root=root, depth=depth, stack=stack)
     _promote_domain(direct, used)
+    if direct.database and not _own_io(direct):
+        # Names like connect/cursor are not I/O when those functions only call
+        # another dependency the classifier already counts. The service is that
+        # dependency. A package that opens the socket, frames a protocol, or
+        # implements the calls in C stays the service.
+        delegated = _delegate_services(direct, root=root, depth=depth, stack=stack)
+        drivers = [item for item in delegated if item.kind == "database" and not item.transport]
+        if drivers:
+            return Classification(
+                name=norm,
+                version=direct.version,
+                package=direct.package or norm,
+                service=False,
+                modules=direct.modules,
+                evidence=f"{norm} -> {drivers[0].evidence}",
+                delegates=tuple(dict.fromkeys(item.name for item in drivers)),
+                loaded=True,
+            )
     products = [item for item in used if not item.transport]
     transports = [item for item in used if item.transport]
     cloud = next((item for item in products if item.kind == "cloud"), None)
@@ -350,6 +386,10 @@ def _finish(
                 evidence = f"{norm} -> {via.evidence}"
             elif direct.stdlib:
                 evidence = f"{norm} -> {direct.stdlib}"
+            elif direct.hosts:
+                # The host was read from this package. The HTTP library it
+                # uses was not attributed, and the host is still the evidence.
+                evidence = f"{norm} -> {sorted(direct.hosts)[0]}"
     elif direct.http_surface and (direct.strong or transports):
         kind = "api"
         transport = True
@@ -383,6 +423,62 @@ def _finish(
         evidence=evidence,
         loaded=True,
     )
+
+
+def _own_io(direct: _Direct) -> bool:
+    """True when this package's database methods reach the network themselves.
+
+    Calling another distribution does not count. A socket opened by those
+    methods, a framed pool and cursor, a C implementation of the DB-API, a
+    declared host, or a service model does. A socket in some other function
+    does not.
+    """
+    return bool(
+        direct.db_strong
+        or (direct.wire and direct.pool and direct.cursor)
+        or direct.db_api_c
+        or direct.hosts
+        or direct.spec == "service-model"
+    )
+
+
+def _delegate_services(
+    direct: _Direct,
+    *,
+    root: Path | None,
+    depth: int,
+    stack: frozenset[str],
+) -> list[Classification]:
+    """Classify the external roots DB-API methods actually call.
+
+    These are not limited to declared requirements. A backend the package
+    imports only when that engine is selected is still the dependency the
+    method reaches.
+    """
+    found: list[Classification] = []
+    seen: set[str] = set()
+    if depth >= _MAX_DEPTH:
+        return found
+    for dep in sorted(direct.delegate_roots):
+        norm = normalize_dist(dep)
+        if not norm or norm in seen or norm in stack:
+            continue
+        seen.add(norm)
+        sub = classify_distribution(dep, root=root, depth=depth + 1, stack=stack)
+        if sub.service:
+            found.append(sub)
+    return found
+
+
+def cached_classification(name: str) -> Classification | None:
+    """A classification this process already computed. Does not fetch."""
+    norm = normalize_dist(name)
+    if not norm:
+        return None
+    for (key_name, _version), found in _MEMORY.items():
+        if key_name == norm and found.loaded:
+            return found
+    return None
 
 
 def _promote_domain(direct: _Direct, used: list[Classification]) -> None:
@@ -506,13 +602,14 @@ class _Code:
 def _scan(code: _Code) -> _Direct:
     direct = _Direct(package=code.package, version=code.version, modules=code.modules, requires=list(code.requires))
     own = set(code.modules)
-    db_defs: set[str] = set()
+    c_db: set[str] = set()
+    py_db: set[str] = set()
     for name, blob in code.files:
         if name.endswith((".c", ".h")):
             text = blob.decode("utf-8", "replace")
             for token in _DB_NAMES:
                 if re.search(rf"\b{token}\b", text):
-                    db_defs.add(token)
+                    c_db.add(token)
             continue
         if name.endswith((".json", ".json.gz", ".yaml", ".yml")):
             kind = _spec_kind(name, blob)
@@ -521,7 +618,10 @@ def _scan(code: _Code) -> _Direct:
             continue
         if not name.endswith(".py"):
             continue
-        _scan_python(name, blob, direct, db_defs, own)
+        _scan_python(name, blob, direct, py_db, own)
+    db_defs = c_db | py_db
+    if _DB_NAMES <= c_db:
+        direct.db_api_c = True
     if _DB_NAMES <= db_defs:
         direct.database = True
         direct.db_api = True
@@ -532,6 +632,13 @@ def _scan(code: _Code) -> _Direct:
         # walks rows with a cursor is a database even without DB-API names.
         direct.database = True
         direct.constructors.update(direct.client_classes)
+    for tail, deps in direct.deps_by_tail.items():
+        if tail in direct.db_reach:
+            direct.delegate_roots.update(deps)
+    # A socket somewhere else in the distribution (a mailer, a dev server)
+    # is not the database. Only a DB-API method that reaches that socket is.
+    if direct.db_reach & direct.strong_tails:
+        direct.db_strong = True
     return direct
 
 
@@ -628,6 +735,7 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
         if strong:
             func_strong.add(qual)
             local_strong.add(qual)
+            direct.strong_tails.add(qual.split(".")[-1])
 
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -721,6 +829,7 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
     if _uses_struct(tree, aliases):
         direct.wire = True
     _note_caller_hits(direct, class_methods, func_calls, func_constructed)
+    _note_db_delegates(direct, func_calls, func_deps)
 
 
 def _method_names(node: ast.ClassDef) -> set[str]:
@@ -823,6 +932,34 @@ def _note_caller_hits(
                 continue
             for root in reached(f"{class_name}.{method}"):
                 direct.caller_hits[root] = direct.caller_hits.get(root, 0) + 1
+
+
+def _note_db_delegates(
+    direct: _Direct,
+    func_calls: dict[str, set[str]],
+    func_deps: dict[str, set[str]],
+) -> None:
+    """Remember which external roots DB-API methods call.
+
+    ``self`` calls stay inside the class. A method reached that way in one
+    module counts for an override of the same method in another module: the
+    base defines ``connect`` and the backend defines the helper ``connect``
+    calls. The helper's name is the link, not a list of frameworks.
+    """
+    pending = [qual for qual in func_calls if qual.split(".")[-1] in _DB_NAMES]
+    seen: set[str] = set()
+    while pending:
+        qual = pending.pop()
+        if qual in seen:
+            continue
+        seen.add(qual)
+        direct.db_reach.add(qual.split(".")[-1])
+        pending.extend(func_calls.get(qual, ()))
+    for qual, deps in func_deps.items():
+        if not deps:
+            continue
+        tail = qual.split(".")[-1]
+        direct.deps_by_tail.setdefault(tail, set()).update(deps)
 
 
 def _product_class(class_name: str, class_methods: dict[str, set[str]], http_classes: set[str]) -> bool:
@@ -1523,6 +1660,7 @@ def _read_disk(key: tuple[str, str]) -> Classification | None:
         host_mode=str(payload.get("host_mode") or "exact"),
         modules=tuple(payload.get("modules") or ()),
         evidence=str(payload.get("evidence") or ""),
+        delegates=tuple(payload.get("delegates") or ()),
         loaded=True,
     )
 
@@ -1541,6 +1679,7 @@ def _write_disk(key: tuple[str, str], found: Classification) -> None:
         "host_mode": found.host_mode,
         "modules": list(found.modules),
         "evidence": found.evidence,
+        "delegates": list(found.delegates),
     }
     try:
         _cache_path(key).write_text(json.dumps(payload), encoding="utf-8")

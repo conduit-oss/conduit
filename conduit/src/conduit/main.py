@@ -282,7 +282,14 @@ def impact_cmd(
     from conduit.outside_in.bridge import build_service_map
     from conduit.outside_in.specs import evidence_spec
 
-    spec = evidence_spec(dep)
+    from conduit.deps.manifests import read_installed
+
+    pins = read_installed(root)
+    pinned = (from_version or "").strip() or pins.get(dep.lower()) or ""
+    # The distribution under analysis is the one this repo pins, not whichever
+    # release is newest. A newer release that grew its own I/O does not make
+    # the pinned release a service, and the reverse is true too.
+    spec = evidence_spec(dep, pinned or None)
     if spec is None or spec.family:
         console.print(
             f"[red]{dep} is not an outside service.[/red] "

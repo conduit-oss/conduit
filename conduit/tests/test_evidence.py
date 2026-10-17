@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import functools
 import re
+import sys
 import tomllib
+import typing
 import zipfile
 from pathlib import Path
 
@@ -304,6 +307,213 @@ def test_http_core_without_a_product_client_is_a_transport():
     assert product.transport is False
     assert product.kind == "api"
     assert spec_for_distribution("azure-storage-blob") is not None
+
+
+@functools.lru_cache(maxsize=1)
+def _stdlib_identifiers() -> frozenset[str]:
+    """Identifiers the installed standard library already uses.
+
+    A public API name that Python itself spells is not a fingerprint of one
+    dependency. The set is read from the library, not typed out here.
+    """
+    root = Path(sys.prefix) / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    found: set[str] = set()
+    if not root.is_dir():
+        return frozenset()
+    ident = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+    for path in root.rglob("*.py"):
+        if any(part in {"site-packages", "test", "tests"} for part in path.parts):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        found.update(ident.findall(text))
+    return frozenset(found)
+
+
+def _public_api_tokens() -> dict[str, set[str]]:
+    """Class and method names from fixture wheels and the known-break files.
+
+    A name is guarded when only one distribution exposes it, so a word shared
+    by several public APIs (a method both of them spell the same way) is not
+    treated as a vendor fingerprint. Builtins and typing wrappers are not
+    either. The set is built from those files, not written out by hand.
+    """
+    by_dist: dict[str, set[str]] = {}
+
+    def add(dist: str, name: str) -> None:
+        if not dist or not name or not name.isidentifier() or name.startswith("_"):
+            return
+        by_dist.setdefault(dist.lower(), set()).add(name)
+
+    def absorb_tree(dist: str, tree: ast.AST) -> None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                add(dist, node.name)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                add(dist, node.name)
+
+    if _FIXTURE_WHEELS.is_dir():
+        for path in _FIXTURE_WHEELS.rglob("*"):
+            if path.suffix != ".whl":
+                continue
+            try:
+                with zipfile.ZipFile(path) as archive:
+                    metas = [name for name in archive.namelist() if name.endswith("METADATA")]
+                    dist = ""
+                    if metas:
+                        for line in archive.read(metas[0]).decode("utf-8", "replace").splitlines():
+                            if line.startswith("Name:"):
+                                dist = line.split(":", 1)[1].strip()
+                                break
+                    if not dist:
+                        continue
+                    for name in archive.namelist():
+                        if not name.endswith(".py") or name.endswith("/__init__.py") and name.count("/") > 4:
+                            continue
+                        if not name.endswith(".py"):
+                            continue
+                        if "/test" in name or name.startswith("test"):
+                            continue
+                        try:
+                            source = archive.read(name).decode("utf-8", "replace")
+                            absorb_tree(dist, ast.parse(source))
+                        except (SyntaxError, UnicodeError, OSError):
+                            continue
+            except (OSError, zipfile.BadZipFile):
+                continue
+    import json
+
+    for path in sorted((REPO / "docs").glob("known-breaks*.json")):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        repos = document.get("repos") if isinstance(document, dict) else None
+        if not isinstance(repos, list):
+            continue
+        for repo in repos:
+            if not isinstance(repo, dict):
+                continue
+            dist = str(repo.get("service") or "").strip()
+            expected = repo.get("expected")
+            if not isinstance(expected, list):
+                continue
+            for item in expected:
+                for part in str(item.get("symbol") or "").split("."):
+                    add(dist, part)
+    wrappers = {name.lower() for name in dir(typing) if name[:1].isalpha()}
+    builtins = set(dir(__builtins__)) if isinstance(__builtins__, dict) else set(dir(__builtins__))
+    stdlib = _stdlib_identifiers()
+    counts: dict[str, set[str]] = {}
+    for dist, names in by_dist.items():
+        for name in names:
+            counts.setdefault(name, set()).add(dist)
+    guarded: dict[str, set[str]] = {}
+    for name, dists in counts.items():
+        if len(dists) != 1:
+            continue
+        if name in builtins or name in stdlib or name.lower() in wrappers:
+            continue
+        interior = any(char.isupper() for char in name[1:])
+        if not (
+            ("_" in name and len(name) >= 5)
+            or (interior and len(name) >= 8)
+            or (name[:1].isupper() and len(name) >= 10)
+            or len(name) >= 12
+        ):
+            continue
+        guarded[name] = dists
+    return guarded
+
+
+def _api_leaks(root: Path, tokens: dict[str, set[str]]) -> list[str]:
+    leaks: list[str] = []
+    patterns = {name: re.compile(rf"\b{re.escape(name)}\b") for name in tokens}
+    for path in sorted(root.rglob("*.py")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = path.relative_to(root).as_posix()
+        for name, pattern in patterns.items():
+            if pattern.search(text) or pattern.search(path.name):
+                leaks.append(f"{rel}: {name}")
+    return leaks
+
+
+def test_classifier_sources_have_no_public_api_names():
+    """Class and method names from the eval and fixture APIs fail the build.
+
+    The names are read from the wheels and the known-break files. A name that
+    several distributions share is not specific enough to be a fingerprint.
+    """
+    tokens = _public_api_tokens()
+    assert tokens
+    assert _api_leaks(SRC, tokens) == []
+
+
+def test_resolver_has_no_name_to_type_literals():
+    """The resolver does not map names to types, except typing wrappers.
+
+    The allowed names are the ones Python's ``typing`` module defines.
+    """
+    wrappers = {name.lower() for name in dir(typing) if name[:1].isalpha()}
+    files = [
+        SRC / "conduit" / "outside_in" / "library_types.py",
+        SRC / "conduit" / "outside_in" / "graph.py",
+    ]
+    leaks: list[str] = []
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict) and _dict_maps_names_to_types(node, wrappers):
+                leaks.append(f"{path.name}:{node.lineno} dict")
+            elif isinstance(node, ast.Set) and _set_of_type_names(node.elts, wrappers):
+                leaks.append(f"{path.name}:{node.lineno} set")
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "frozenset"
+                and node.args
+                and isinstance(node.args[0], ast.Set)
+                and _set_of_type_names(node.args[0].elts, wrappers)
+            ):
+                leaks.append(f"{path.name}:{node.lineno} frozenset")
+    assert leaks == []
+
+
+def _type_like(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return bool(node.id[:1].isupper())
+    if isinstance(node, ast.Attribute):
+        return bool(node.attr[:1].isupper())
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        text = node.value
+        if not text:
+            return False
+        return bool(re.match(r"[A-Z][A-Za-z0-9_]+(\.[A-Z][A-Za-z0-9_]+)*$", text))
+    return False
+
+
+def _dict_maps_names_to_types(node: ast.Dict, wrappers: set[str]) -> bool:
+    if not node.keys or any(key is None for key in node.keys):
+        return False
+    if not all(isinstance(key, ast.Constant) and isinstance(key.value, str) for key in node.keys):
+        return False
+    keys = [key.value for key in node.keys if isinstance(key, ast.Constant)]
+    if keys and all(str(key).lower() in wrappers for key in keys):
+        return False
+    if not node.values or not all(_type_like(value) for value in node.values):
+        return False
+    return True
+
+
+def _set_of_type_names(elts: list[ast.expr], wrappers: set[str]) -> bool:
+    if not elts or not all(isinstance(elt, ast.Constant) and isinstance(elt.value, str) for elt in elts):
+        return False
+    values = [elt.value for elt in elts if isinstance(elt, ast.Constant)]
+    if all(str(value).lower() in wrappers for value in values):
+        return False
+    return any(bool(re.match(r"[A-Z]", str(value))) for value in values)
 
 
 def test_caller_methods_choose_the_client_they_use():

@@ -181,6 +181,26 @@ def _score(repo: dict, payload: dict) -> dict:
     elif impacts:
         versions = f"{impacts[0].get('from_version')} -> {impacts[0].get('to_version')}"
     expected_n = len(repo["expected"])
+    note_text = "\n".join(str(item) for item in (payload.get("notes") or []))
+    if payload.get("exit") not in (0, None) and "not an outside service" in note_text.lower():
+        return {
+            "repo": repo["repo"],
+            "service": repo["service"],
+            "pin": repo["pin"],
+            "versions": "",
+            "status": "not an outside service",
+            "expected": expected_n,
+            "caught": 0,
+            "missed": 0,
+            "false_positives": 0,
+            "recall": "not an outside service",
+            "precision": "n/a",
+            "caught_sites": [],
+            "missed_sites": [],
+            "false_positive_sites": [],
+            "notes": payload.get("notes") or [],
+            "exit": payload.get("exit"),
+        }
     return {
         "repo": repo["repo"],
         "service": repo["service"],
@@ -224,7 +244,7 @@ def main() -> None:
             row["watch_head"] = _watch(project, repo["service"])
         rows.append(row)
         print(
-            f"   recall {row['recall']} precision {row['precision']} versions {row['versions']}",
+            f"   {row.get('status') or ''} recall {row['recall']} precision {row['precision']} versions {row['versions']}".strip(),
             flush=True,
         )
     args.out.write_text(json.dumps({"rows": rows}, indent=2) + "\n", encoding="utf-8")

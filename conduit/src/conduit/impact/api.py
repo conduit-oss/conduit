@@ -736,7 +736,7 @@ def _return_classes(mods: dict[str, _Mod]) -> dict[str, set[str]]:
     """Class a function returns, from its annotation or ``return Class(...)``.
 
     A later call can use this to turn ``client.messages.create`` into
-    ``Messages.create``, and ``db[name].insert`` into ``Collection.insert``.
+    ``Messages.create``, and a subscript into the class ``__getitem__`` returns.
     """
     classes = {qual for mod in mods.values() for qual in mod.classes}
     inverse: dict[str, str] = {}
@@ -792,8 +792,8 @@ def _return_classes(mods: dict[str, _Mod]) -> dict[str, set[str]]:
         if not changed:
             break
     found = {key: value for key, value in resolved.items() if value}
-    # ``pkg.Client.method`` is the name a caller writes; the body lives on
-    # ``pkg._mod.Client.method``. Both name the same return.
+    # ``pkg.resource.method`` is the name a caller writes; the body lives on
+    # ``pkg._mod.resource.method``. Both name the same return.
     for qual, klasses in list(found.items()):
         for alias in aliases.get(qual, ()):
             found.setdefault(alias, set()).update(klasses)

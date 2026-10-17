@@ -320,7 +320,7 @@ def _with_return_classes(
     """Rewrite ``Factory.method`` once the wheel says what ``Factory`` returns.
 
     ``__getitem__`` is the subscript ``client[name]``. Several rewrites fold
-    ``Client.__getitem__.__getitem__.insert`` into ``Collection.insert``.
+    ``Owner.__getitem__.__getitem__.insert`` into the class that method returns.
     A method the return class inherits is rewritten to the class that defines it.
     """
     owners = methods or {}

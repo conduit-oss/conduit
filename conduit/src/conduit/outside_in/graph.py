@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from conduit.outside_in.evidence import cached_classification
 from conduit.outside_in.library_types import LibraryTypes, _typing_wrapper
 from conduit.outside_in.specs import (
     HTTP_METHOD_TAILS,
@@ -97,7 +98,7 @@ class ModUnit:
     returns: dict[str, list[ast.expr]] = field(default_factory=dict)
     #: Yield expressions, used when the function is a context manager.
     yields: dict[str, list[ast.expr]] = field(default_factory=dict)
-    #: ``self.engine = create_engine(...)`` keyed by ``(class qualname, attr)``.
+    #: ``self.engine = factory(...)`` keyed by ``(class qualname, attr)``.
     instance_assigns: dict[tuple[str, str], list[tuple[ast.expr, str]]] = field(default_factory=dict)
     #: Base expressions of each class, so a subclass can see fields assigned above it.
     class_bases: dict[str, list[ast.expr]] = field(default_factory=dict)
@@ -234,6 +235,12 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
                 directs.extend(_response_directs(unit, call, direct))
                 continue
             spec = _service_of(binding, specs)
+            if spec is None:
+                delegated = _delegated_binding(resolver, binding, specs)
+                if delegated is not None:
+                    binding = delegated
+                    spec = _service_of(binding, specs)
+                    confidence = min_confidence(confidence, "medium")
             if binding.fallback:
                 fluent = Binding(
                     binding.kind,
@@ -925,6 +932,16 @@ class _Resolver:
         if isinstance(node, ast.Subscript):
             base = self._resolve_expr(node.value, unit, enclosing, stack, nxt)
             if base.kind in {"instance_external", "external_attr"} and base.target:
+                classes = self._library().call_return(f"{base.target}.__getitem__")
+                if classes:
+                    return Binding(
+                        "instance_external",
+                        classes[0],
+                        confidence=min_confidence(base.confidence, "medium"),
+                        cloud_service=base.cloud_service,
+                        base_url=base.base_url,
+                        fallback=_fluent(base, "__getitem__"),
+                    )
                 return Binding(
                     "instance_external",
                     f"{base.target}.__getitem__",
@@ -1268,7 +1285,9 @@ class _Resolver:
             qualname = func.target
             if func.kind == "instance_external":
                 qualname = f"{func.target}.__call__"
-            typed = self._library_instance(qualname, func, cloud_service, base_url)
+            typed = self._library_instance(
+                qualname, func, cloud_service, base_url, node, unit, enclosing
+            )
             if typed is not None:
                 return typed
             if func.kind == "instance_external":
@@ -1289,10 +1308,15 @@ class _Resolver:
         func: Binding,
         cloud_service: str,
         base_url: str,
+        node: ast.Call,
+        unit: ModUnit,
+        enclosing: str,
     ) -> Binding | None:
         classes = self._library().call_return(qualname)
         if not classes:
             return None
+        if classes[0].split(".")[-1] == qualname.split(".")[-1]:
+            self._remember_init(classes[0], node, unit, enclosing)
         confidence = func.confidence
         if classes[0].split(".")[-1] != qualname.split(".")[-1]:
             confidence = min_confidence(confidence, "medium")
@@ -1304,6 +1328,39 @@ class _Resolver:
             base_url=base_url or func.base_url,
             fallback=func.fallback or func.target,
         )
+
+    def _remember_init(
+        self,
+        qualname: str,
+        node: ast.Call,
+        unit: ModUnit,
+        enclosing: str,
+    ) -> None:
+        """Bind constructor parameters to the classes passed at this call."""
+        params = self._library().init_params(qualname)
+        if not params:
+            return
+        library = self._library()
+        for name, arg in zip(params, node.args):
+            self._remember_one_init(library, qualname, name, arg, unit, enclosing)
+        for keyword in node.keywords:
+            if keyword.arg and keyword.arg in params:
+                self._remember_one_init(library, qualname, keyword.arg, keyword.value, unit, enclosing)
+
+    def _remember_one_init(
+        self,
+        library: LibraryTypes,
+        qualname: str,
+        name: str,
+        arg: ast.AST,
+        unit: ModUnit,
+        enclosing: str,
+    ) -> None:
+        resolved = self._resolve_expr(arg, unit, enclosing, set())
+        if resolved.kind == "external_attr":
+            resolved = _as_instance(resolved)
+        if resolved.kind == "instance_external" and resolved.target:
+            library.remember_init_arg(qualname, name, resolved.target)
 
 
 def _public_names(unit: ModUnit, binds: dict[str, Binding]) -> list[str]:
@@ -1442,6 +1499,43 @@ def _as_instance(binding: Binding) -> Binding:
     return UNKNOWN
 
 
+def _delegated_binding(
+    resolver: _Resolver,
+    binding: Binding,
+    specs: tuple[ServiceSpec, ...],
+) -> Binding | None:
+    """Retarget a wrapper call at the service its body actually calls.
+
+    Only when a previous classification already showed this package does no
+    I/O of its own and named the dependency. Nothing is fetched here.
+    """
+    if binding.kind not in {"external_attr", "external_module", "instance_external"}:
+        return None
+    if not binding.target or service_for_module(binding.target, specs) is not None:
+        return None
+    root = binding.target.split(".", 1)[0]
+    found = cached_classification(root)
+    if found is None or found.service or not found.delegates:
+        return None
+    allowed = {name.replace("-", "_") for name in found.delegates}
+    allowed.update(found.delegates)
+    for target in resolver._library().delegated_calls(binding.target):
+        head = target.split(".", 1)[0]
+        if head not in allowed and head.replace("-", "_") not in allowed:
+            continue
+        spec = service_for_module(target, specs)
+        if spec is None or spec.transport:
+            continue
+        return Binding(
+            "external_attr",
+            target,
+            confidence=min_confidence(binding.confidence, "medium"),
+            cloud_service=binding.cloud_service,
+            base_url=binding.base_url,
+        )
+    return None
+
+
 def _service_of(binding: Binding, specs: tuple[ServiceSpec, ...]) -> ServiceSpec | None:
     if binding.kind not in {"external_attr", "external_module", "instance_external"}:
         return None
@@ -1489,7 +1583,7 @@ def _factory_service(
         return ""
     root = parts[0]
     roots = cloud_roots or frozenset()
-    if root not in roots and "Session" not in func.target:
+    if root not in roots:
         return ""
     if not node.args:
         return ""

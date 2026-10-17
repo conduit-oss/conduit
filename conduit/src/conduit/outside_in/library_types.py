@@ -53,6 +53,45 @@ class LibraryTypes:
         self._defining: set[str] = set()
         self._ctor_args: dict[tuple[str, str], str] = {}
 
+    def delegated_calls(self, qualname: str) -> tuple[str, ...]:
+        """External calls this function makes, following ``self`` methods.
+
+        The names come from the function body. A call into another
+        distribution is kept. A call to a method of the same class is
+        followed. Empty when the body is not in the installed files.
+        """
+        qualname = _clean(qualname)
+        found = self._delegated_calls(qualname, set())
+        return tuple(dict.fromkeys(found))
+
+    def init_params(self, qualname: str) -> tuple[str, ...]:
+        """Positional ``__init__`` parameter names, excluding ``self``."""
+        qualname = _clean(qualname)
+        defined = self._define(qualname)
+        if not defined or defined[2] != "class":
+            return ()
+        init = defined[0].functions.get(f"{qualname}.__init__")
+        if not isinstance(init, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return ()
+        return tuple(
+            arg.arg
+            for arg in (*init.args.posonlyargs, *init.args.args)
+            if arg.arg not in {"self", "cls"}
+        )
+
+    def remember_init_arg(self, qualname: str, name: str, typed: str) -> None:
+        """Remember a class passed for one constructor parameter at a call site."""
+        qualname = _clean(qualname)
+        name = (name or "").strip()
+        typed = _clean(typed)
+        if not qualname or not name or not typed:
+            return
+        key = (qualname, name)
+        if key in self._ctor_args:
+            return
+        self._ctor_args[key] = typed
+        self._attrs.pop(key, None)
+
     def call_return(self, qualname: str) -> tuple[str, ...]:
         """Classes a call of ``qualname`` produces. Empty when unknown."""
         qualname = _clean(qualname)
@@ -87,6 +126,30 @@ class LibraryTypes:
         finally:
             self._stack.discard(token)
         self._attrs[key] = found
+        return found
+
+    def _delegated_calls(self, qualname: str, seen: set[str]) -> list[str]:
+        if not qualname or qualname in seen or len(seen) > 8:
+            return []
+        seen.add(qualname)
+        defined = self._define(qualname)
+        if not defined or not isinstance(defined[1], (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return []
+        mod, node, _kind = defined
+        owner, _method = _owner_method(self._qual_of(mod, node) or qualname)
+        found: list[str] = []
+        for call in _call_nodes(node):
+            target = _called_qual(mod, call, owner)
+            if not target:
+                continue
+            if owner and (target == owner or target.startswith(owner + ".")):
+                found.extend(self._delegated_calls(target, seen))
+                continue
+            same_package = target.split(".", 1)[0] == qualname.split(".", 1)[0]
+            if same_package and self._define(target):
+                found.extend(self._delegated_calls(target, seen))
+                continue
+            found.append(target)
         return found
 
     def _call_return(self, qualname: str) -> tuple[str, ...]:
@@ -164,7 +227,10 @@ class LibraryTypes:
             typed = self.instance_attribute(base, name)
             if typed:
                 return typed
-        return ""
+        # A missing attribute is whatever ``__getattr__`` returns. That method
+        # is the library's own code, including a call to ``__getitem__``.
+        dynamic = self.call_return(f"{class_qual}.__getattr__")
+        return dynamic[0] if dynamic else ""
 
     def _define(self, qualname: str) -> tuple[_Mod, ast.AST | None, str] | None:
         qualname = self._resolve_alias(qualname)
@@ -219,7 +285,7 @@ class LibraryTypes:
         mods = self._modules(top)
         if not mods:
             return qualname
-        # Walk module imports: ``pkg.orm.Session`` may be ``pkg.orm.session.Session``.
+        # Walk module imports: ``pkg.orm.Name`` may be ``pkg.orm.session.Name``.
         module = top
         index = 1
         while index < len(parts):
@@ -382,7 +448,10 @@ class LibraryTypes:
                 mod, expr.orelse, fn, owner, depth + 1
             )
         if isinstance(expr, ast.Subscript):
-            return self._expr_classes(mod, expr.value, fn, owner, depth + 1)
+            found: set[str] = set()
+            for klass in self._expr_classes(mod, expr.value, fn, owner, depth + 1):
+                found |= set(self.call_return(f"{klass}.__getitem__"))
+            return found
         return set()
 
     def _param_classes(
@@ -513,6 +582,34 @@ def _typing_wrapper(node: ast.AST) -> bool:
     elif isinstance(node, ast.Attribute):
         name = node.attr
     return name.lower() in _TYPING_WRAPPERS
+
+
+def _call_nodes(node: ast.AST) -> list[ast.Call]:
+    """Calls in a function body, not in a nested function or class."""
+    found: list[ast.Call] = []
+    stack = list(getattr(node, "body", []) or [])
+    while stack:
+        child = stack.pop()
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(child, ast.Call):
+            found.append(child)
+        stack.extend(ast.iter_child_nodes(child))
+    return found
+
+
+def _called_qual(mod: _Mod, call: ast.Call, owner: str) -> str:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return mod.bindings.get(func.id, "")
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        if func.value.id in {"self", "cls"} and owner:
+            return f"{owner}.{func.attr}"
+        base = mod.bindings.get(func.value.id, "")
+        return f"{base}.{func.attr}" if base else ""
+    if isinstance(func, ast.Attribute):
+        return _dotted(mod, func)
+    return ""
 
 
 def _clean(qualname: str) -> str:
