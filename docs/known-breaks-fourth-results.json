@@ -8,9 +8,9 @@
       "expected": 4,
       "caught": 4,
       "missed": 0,
-      "false_positives": 9,
+      "false_positives": 0,
       "recall": "4/4",
-      "precision": "4/13",
+      "precision": "4/4",
       "caught_sites": [
         {
           "file": "ip_rep/front_end_scorer/pre_scorer.py",
@@ -42,80 +42,7 @@
         }
       ],
       "missed_sites": [],
-      "false_positive_sites": [
-        {
-          "path": "ip_rep/database_connector/mongo_update.py",
-          "line": 289,
-          "expr": "ip_info_db.current_ips.find({}).skip(num * page_limit).limit",
-          "change": "Cursor.limit removed",
-          "from_version": "3.11.0",
-          "to_version": "4.19.0"
-        },
-        {
-          "path": "ip_rep/front_end_scorer/pre_scorer.py",
-          "line": 104,
-          "expr": "ip_info_db.current_ips.find({}, {'_id': False}).skip(num * 100000).limit",
-          "change": "Cursor.limit removed",
-          "from_version": "3.11.0",
-          "to_version": "4.19.0"
-        },
-        {
-          "path": "ip_rep/front_end_scorer/pre_scorer.py",
-          "line": 229,
-          "expr": "ip_info_db.history_ips.find({}, {'_id': False}).skip(num * 100000).limit",
-          "change": "Cursor.limit removed",
-          "from_version": "3.11.0",
-          "to_version": "4.19.0"
-        },
-        {
-          "path": "ip_rep/database_connector/mongo_update.py",
-          "line": 287,
-          "expr": "ip_info_db.current_ips.find({}).skip",
-          "change": "Cursor.skip removed",
-          "from_version": "3.11.0",
-          "to_version": "4.19.0"
-        },
-        {
-          "path": "ip_rep/database_connector/mongo_update.py",
-          "line": 289,
-          "expr": "ip_info_db.current_ips.find({}).skip",
-          "change": "Cursor.skip removed",
-          "from_version": "3.11.0",
-          "to_version": "4.19.0"
-        },
-        {
-          "path": "ip_rep/front_end_scorer/pre_scorer.py",
-          "line": 102,
-          "expr": "ip_info_db.current_ips.find({}, {'_id': False}).skip",
-          "change": "Cursor.skip removed",
-          "from_version": "3.11.0",
-          "to_version": "4.19.0"
-        },
-        {
-          "path": "ip_rep/front_end_scorer/pre_scorer.py",
-          "line": 104,
-          "expr": "ip_info_db.current_ips.find({}, {'_id': False}).skip",
-          "change": "Cursor.skip removed",
-          "from_version": "3.11.0",
-          "to_version": "4.19.0"
-        },
-        {
-          "path": "ip_rep/front_end_scorer/pre_scorer.py",
-          "line": 227,
-          "expr": "ip_info_db.history_ips.find({}, {'_id': False}).skip",
-          "change": "Cursor.skip removed",
-          "from_version": "3.11.0",
-          "to_version": "4.19.0"
-        },
-        {
-          "path": "ip_rep/front_end_scorer/pre_scorer.py",
-          "line": 229,
-          "expr": "ip_info_db.history_ips.find({}, {'_id': False}).skip",
-          "change": "Cursor.skip removed",
-          "from_version": "3.11.0",
-          "to_version": "4.19.0"
-        }
-      ],
+      "false_positive_sites": [],
       "notes": [],
       "exit": 0
     },
