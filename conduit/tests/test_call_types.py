@@ -392,6 +392,54 @@ def test_lazy_getattr_keeps_a_moved_symbol(tmp_path: Path):
     assert "pkg.Missing" not in removed
 
 
+def test_public_alias_of_private_helper_is_not_removed(tmp_path: Path):
+    """A public name bound to a private helper is still exported.
+
+    Old wheels often assign a module-level factory (``name = factory(...)``).
+    Newer wheels rebind the same public name with
+    ``from ._impl import _helper as name``. The private source is not itself a
+    public symbol; the public alias must still count as surviving, including
+    when the old side was only a module value and the new side is an import.
+    """
+    old = tmp_path / "old" / "pkg"
+    new = tmp_path / "new" / "pkg"
+    _write(
+        old / "__init__.py",
+        """
+        def _factory():
+            def impl(*args, **kwargs):
+                return None
+            return impl
+
+        helper = _factory()
+        """,
+    )
+    _write(
+        new / "_impl.py",
+        """
+        def _helper(*args, **kwargs):
+            return None
+        """,
+    )
+    _write(new / "__init__.py", "from ._impl import _helper as helper\n")
+
+    api = load_api(tmp_path / "new")
+    assert "pkg.helper" in api
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    removed = [item.symbol for item in changes if item.kind == "removed"]
+    assert "pkg.helper" not in removed
+    assert not any(item.detail == "pkg.helper removed" for item in changes)
+
+
+def test_callable_to_module_value_is_not_removed(tmp_path: Path):
+    """A public name that changes from a function to a module value is not removed."""
+    _write(tmp_path / "old" / "pkg" / "__init__.py", "def helper():\n    return 1\n")
+    _write(tmp_path / "new" / "pkg" / "__init__.py", "helper = object()\n")
+    changes = diff_wheels(tmp_path / "old", tmp_path / "new")
+    removed = [item.symbol for item in changes if item.kind == "removed"]
+    assert "pkg.helper" not in removed
+
+
 def test_inherited_reexported_method_is_not_removed(tmp_path: Path):
     """A method that moved onto a base, then re-exported, is still on the class.
 

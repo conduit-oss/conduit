@@ -68,9 +68,9 @@
       "expected": 4,
       "caught": 3,
       "missed": 1,
-      "false_positives": 21,
+      "false_positives": 14,
       "recall": "3/4",
-      "precision": "3/24",
+      "precision": "3/17",
       "caught_sites": [
         {
           "file": "indico/modules/users/util.py",
@@ -200,73 +200,17 @@
         },
         {
           "path": "indico/core/db/sqlalchemy/core.py",
+          "line": 138,
+          "expr": "CreateSchema(schema).execute",
+          "change": "DDLElement.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/core/db/sqlalchemy/core.py",
           "line": 156,
           "expr": "mapper.iterate_properties",
           "change": "mapper.iterate_properties removed",
-          "from_version": "1.4.54",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "indico/core/db/sqlalchemy/attachments.py",
-          "line": 59,
-          "expr": "orm.mapper",
-          "change": "orm.mapper removed",
-          "from_version": "1.4.54",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "indico/core/db/sqlalchemy/util/models.py",
-          "line": 236,
-          "expr": "orm.mapper",
-          "change": "orm.mapper removed",
-          "from_version": "1.4.54",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "indico/core/db/sqlalchemy/util/models.py",
-          "line": 375,
-          "expr": "orm.mapper",
-          "change": "orm.mapper removed",
-          "from_version": "1.4.54",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "indico/modules/categories/models/categories.py",
-          "line": 687,
-          "expr": "orm.mapper",
-          "change": "orm.mapper removed",
-          "from_version": "1.4.54",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "indico/modules/events/editing/models/editable.py",
-          "line": 317,
-          "expr": "orm.mapper",
-          "change": "orm.mapper removed",
-          "from_version": "1.4.54",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "indico/modules/events/editing/models/revisions.py",
-          "line": 186,
-          "expr": "orm.mapper",
-          "change": "orm.mapper removed",
-          "from_version": "1.4.54",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "indico/modules/events/models/events.py",
-          "line": 1203,
-          "expr": "orm.mapper",
-          "change": "orm.mapper removed",
-          "from_version": "1.4.54",
-          "to_version": "2.1.5"
-        },
-        {
-          "path": "indico/modules/events/registration/models/forms.py",
-          "line": 660,
-          "expr": "orm.mapper",
-          "change": "orm.mapper removed",
           "from_version": "1.4.54",
           "to_version": "2.1.5"
         }

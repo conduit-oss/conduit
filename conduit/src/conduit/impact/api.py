@@ -34,8 +34,13 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
     new_aliases = _public_aliases(new_index, set(after_all))
     before = _public_symbols(before_all, aliases)
     after = _public_symbols(after_all, new_aliases)
+    new_imports = _public_imports(new_index)
+    new_values = _module_values(new_index)
     new_public = set(after) | {name for names in new_aliases.values() for name in names}
-    new_public |= _module_values(new_index)
+    new_public |= new_values
+    # Public import bindings survive even when the source is private or unresolved
+    # (``from ._impl import _helper as helper``).
+    new_public |= new_imports
     # A re-export that still exists under the same public name was moved, not removed.
     aliases = {
         key: tuple(name for name in names if name not in new_public)
@@ -51,6 +56,9 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
         if other is None:
             # The defining path moved, but the same public name is still exported
             # (a compatibility star-import, ``from package.sync.collection import *``).
+            # A callable that survives only as an import or module value changed
+            # kind; that is not a removal (callers may still see a low-severity
+            # hit elsewhere when the new binding is not callable).
             if name in new_public:
                 continue
             changes.append(
@@ -103,7 +111,7 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
             )
     old_values = _module_values(old_index)
     callable_names = set(before) | set(after)
-    for name in sorted(old_values - _module_values(new_index)):
+    for name in sorted(old_values - new_values):
         if name in callable_names or name in new_public:
             continue
         changes.append(
@@ -168,10 +176,13 @@ def load_api(path: Path, *, include_private: bool = False) -> dict[str, Symbol]:
         trees.append((module, package, tree))
         bucket = found if include_private or not private_mod else hidden
         for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(node.name):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 qual = f"{module}.{node.name}"
-                bucket[qual] = _symbol(qual, node)
-                pool[qual] = bucket[qual]
+                symbol = _symbol(qual, node)
+                # Private helpers stay in the pool so a public alias can re-export them.
+                pool[qual] = symbol
+                if _public(node.name):
+                    bucket[qual] = symbol
             elif isinstance(node, ast.ClassDef):
                 qual = f"{module}.{node.name}"
                 class_nodes.append((qual, node))
@@ -843,10 +854,13 @@ def _definitions(
     classes: dict[str, ast.ClassDef] = {}
     functions: dict[str, ast.AST] = {}
     for node in _module_level(tree):
-        if isinstance(node, ast.ClassDef) and _public(node.name):
+        if isinstance(node, ast.ClassDef):
             qual = f"{module}.{node.name}"
+            # Private classes stay resolvable so a public ``as`` alias can find them.
             defined[node.name] = qual
             classes[qual] = node
+            if not _public(node.name):
+                continue
             for child in node.body:
                 if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
@@ -867,11 +881,29 @@ def _definitions(
                 functions[method] = child
                 if _public(child.name):
                     defined[f"{node.name}.{child.name}"] = method
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _public(node.name):
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             qual = f"{module}.{node.name}"
+            # Private helpers are defined so ``from ._mod import _fn as name`` resolves.
             defined[node.name] = qual
             functions[qual] = node
     return defined, classes, functions
+
+
+def _public_imports(mods: dict[str, _Mod]) -> set[str]:
+    """Public names a non-private module binds with ``import`` / ``from ... import``.
+
+    The source may be private (``from ._impl import _helper as helper``). The
+    local public name is still part of that module's export surface.
+    """
+    found: set[str] = set()
+    for mod in mods.values():
+        if any(part.startswith("_") for part in mod.name.split(".") if part):
+            continue
+        for local in mod.bindings:
+            if not _public(local) or "." in local:
+                continue
+            found.add(f"{mod.name}.{local}")
+    return found
 
 
 def _module_values(mods: dict[str, _Mod]) -> set[str]:
@@ -882,7 +914,7 @@ def _module_values(mods: dict[str, _Mod]) -> set[str]:
     """
     found: set[str] = set()
     for mod in mods.values():
-        defined = set(mod.defined)
+        defined = {name for name in mod.defined if _public(name.split(".")[-1])}
         for node in _module_level(mod.tree):
             targets: list[ast.AST] = []
             if isinstance(node, ast.Assign):
