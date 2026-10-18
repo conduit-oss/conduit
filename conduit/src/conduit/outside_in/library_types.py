@@ -143,6 +143,24 @@ class LibraryTypes:
             return True
         return bool(self.instance_attribute(qualname, name))
 
+    def member_owner(self, qualname: str, name: str) -> str:
+        """Class that defines ``name``, walking bases when the subclass does not.
+
+        Empty when the name is only answered by ``__getattr__`` or is unknown.
+        """
+        qualname = _clean(qualname)
+        name = (name or "").strip()
+        if not qualname or not name or not name.isidentifier():
+            return ""
+        defined = self._define(f"{qualname}.{name}")
+        if not defined:
+            return ""
+        mod, node, kind = defined
+        if kind == "class":
+            return self._class_qual(mod, node) if node is not None else ""
+        owner, _method = _owner_method(self._qual_of(mod, node) or "")
+        return owner
+
     def _delegated_calls(self, qualname: str, seen: set[str]) -> list[str]:
         if not qualname or qualname in seen or len(seen) > 8:
             return []
@@ -374,6 +392,8 @@ class LibraryTypes:
                     parsed = None
                 if parsed is not None and not isinstance(parsed, ast.Constant):
                     return self._annotation_classes(mod, parsed, owner)
+            if text and "." not in text:
+                text = mod.bindings.get(text, text)
             return self._named_classes(mod, text)
         if isinstance(node, ast.Name):
             return self._named_classes(mod, mod.bindings.get(node.id, node.id))
@@ -457,7 +477,22 @@ class LibraryTypes:
                 target = _dotted(mod, expr.func)
             if not target:
                 return set()
-            return set(self.call_return(target))
+            returned = set(self.call_return(target))
+            if returned:
+                return returned
+            # A helper may take the concrete class as a keyword and construct
+            # it. When the helper's own return is unknown, a Name/Attribute
+            # keyword that refers to a class (possibly via a local assign) is
+            # that result.
+            for keyword in expr.keywords:
+                if keyword.arg is None:
+                    continue
+                if not self._keyword_class_ref(mod, keyword.value, fn):
+                    continue
+                found = self._expr_classes(mod, keyword.value, fn, owner, depth + 1)
+                if found:
+                    return found
+            return set()
         if isinstance(expr, ast.IfExp):
             return self._expr_classes(mod, expr.body, fn, owner, depth + 1) | self._expr_classes(
                 mod, expr.orelse, fn, owner, depth + 1
@@ -466,6 +501,9 @@ class LibraryTypes:
             found: set[str] = set()
             for klass in self._expr_classes(mod, expr.value, fn, owner, depth + 1):
                 found |= set(self.call_return(f"{klass}.__getitem__"))
+            if not found and fn is not None and isinstance(expr.value, ast.Name):
+                for value in _subscript_assigns(fn, expr.value.id):
+                    found |= self._expr_classes(mod, value, fn, owner, depth + 1)
             return found
         return set()
 
@@ -544,6 +582,32 @@ class LibraryTypes:
                 if len(found) == 1:
                     return next(iter(found))
         return ""
+
+    def _keyword_class_ref(
+        self, mod: _Mod, expr: ast.AST, fn: ast.AST | None
+    ) -> bool:
+        """True when a keyword value is a class, including ``name = Class``."""
+        cur: ast.AST = expr
+        seen: set[str] = set()
+        while isinstance(cur, ast.Name) and fn is not None and cur.id not in seen:
+            seen.add(cur.id)
+            if cur.id in {"self", "cls"}:
+                return False
+            local = _function_assign(fn, cur.id)
+            if local is None:
+                break
+            cur = local
+        target = ""
+        if isinstance(cur, ast.Name):
+            if cur.id in {"self", "cls"}:
+                return False
+            target = mod.bindings.get(cur.id, cur.id)
+        elif isinstance(cur, ast.Attribute):
+            target = _dotted(mod, cur)
+        if not target:
+            return False
+        defined = self._define(target)
+        return bool(defined and defined[2] == "class")
 
     def _modules(self, top: str) -> dict[str, _Mod]:
         top = (top or "").strip()
@@ -798,6 +862,32 @@ def _function_assign(fn: ast.AST, name: str) -> ast.expr | None:
     return found
 
 
+def _subscript_assigns(fn: ast.AST, name: str) -> list[ast.expr]:
+    """Values written to ``name[...]`` in ``fn``, ignoring nested functions."""
+    found: list[ast.expr] = []
+    stack = list(reversed(list(getattr(fn, "body", ()))))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == name
+                ):
+                    found.append(node.value)
+            continue
+        children = [
+            child
+            for child in ast.iter_child_nodes(node)
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda))
+        ]
+        stack.extend(reversed(children))
+    return found
+
+
 def _slice_index(node: ast.AST) -> int | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
         return node.value
@@ -1007,7 +1097,81 @@ def _parse_distribution(root: Path, top: str) -> dict[str, _Mod]:
             mods[module + ".pyi-overlay"] = mod
             continue
         mods[module] = mod
+    _expand_star_imports(mods)
     return mods
+
+
+def _expand_star_imports(mods: dict[str, _Mod]) -> None:
+    """Copy public names from ``from pkg import *`` into the importing module.
+
+    Distributions often re-export helpers this way. Without the copy,
+    ``pkg.connect`` does not resolve to the function defined in a submodule.
+    """
+    for _ in range(4):
+        changed = False
+        for mod in mods.values():
+            package = mod.name if mod.name in mods else mod.name.rsplit(".", 1)[0]
+            for node in _module_body(mod.tree):
+                if not isinstance(node, ast.ImportFrom):
+                    continue
+                for alias in node.names:
+                    if alias.name != "*":
+                        continue
+                    base = _abs_module(package, node.level or 0, node.module or "")
+                    source = mods.get(base)
+                    if source is None:
+                        continue
+                    for name, target in _public_exports(source).items():
+                        if name not in mod.bindings:
+                            mod.bindings[name] = target
+                            changed = True
+        if not changed:
+            break
+
+
+def _module_body(tree: ast.AST) -> list[ast.AST]:
+    found: list[ast.AST] = []
+    stack = list(getattr(tree, "body", []) or [])
+    while stack:
+        node = stack.pop(0)
+        if isinstance(node, ast.If):
+            stack[0:0] = list(node.body) + list(node.orelse)
+            continue
+        found.append(node)
+    return found
+
+
+def _public_exports(mod: _Mod) -> dict[str, str]:
+    """Names a star-import should copy from ``mod``."""
+    exported: dict[str, str] = {}
+    all_names = _dunder_all(mod)
+    if all_names is not None:
+        for name in all_names:
+            target = mod.bindings.get(name, f"{mod.name}.{name}")
+            if name in mod.bindings or f"{mod.name}.{name}" in mod.functions or f"{mod.name}.{name}" in mod.classes:
+                exported[name] = target if name in mod.bindings else f"{mod.name}.{name}"
+        return exported
+    for name, target in mod.bindings.items():
+        if not name.startswith("_"):
+            exported[name] = target
+    return exported
+
+
+def _dunder_all(mod: _Mod) -> list[str] | None:
+    for node in getattr(mod.tree, "body", []) or []:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+            continue
+        if not isinstance(node.value, (ast.List, ast.Tuple)):
+            return None
+        names = [
+            elt.value
+            for elt in node.value.elts
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+        ]
+        return names
+    return None
 
 
 def _import_root(root: Path, top: str) -> Path | None:

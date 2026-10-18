@@ -659,18 +659,14 @@ class _Resolver:
         self._returns: dict[str, Binding] = {}
         self._param_types: dict[tuple[str, str, str], Binding] = {}
         self._libraries: LibraryTypes | None = None
+        self._stem_index: dict[str, tuple[str, ...]] | None = None
+        self._expr_memo: dict[tuple[str, str, int], Binding] = {}
+        self._allow_fluent = True
         self.cloud_roots: frozenset[str] = frozenset()
-        self._type_session: object | None = None
-        self._type_session_off = False
         self._infer_returns()
 
     def close(self) -> None:
-        session = self._type_session
-        self._type_session = None
-        self._type_session_off = True
-        close = getattr(session, "close", None)
-        if close is not None:
-            close()
+        """Release any analysis resources. Safe to call more than once."""
 
     def import_entries(self, rel: str, specs: tuple[ServiceSpec, ...]) -> list[Entry]:
         unit = self.units[rel]
@@ -720,65 +716,10 @@ class _Resolver:
     def resolve_call(
         self, unit: ModUnit, call: CallRec
     ) -> tuple[Binding, str] | None:
-        checked = self._checked_receiver(unit, call)
-        binding = checked or self._resolve_expr(call.node.func, unit, call.enclosing, set())
+        binding = self._resolve_expr(call.node.func, unit, call.enclosing, set())
         if binding.kind == "unknown":
             return None
         return binding, binding.confidence
-
-    def _type_session_get(self) -> object | None:
-        if self._type_session_off:
-            return None
-        if self._type_session is not None:
-            return self._type_session
-        if self.root is None:
-            self._type_session_off = True
-            return None
-        from conduit.outside_in.typecheck import open_session
-
-        session = open_session(self.root)
-        if session is None:
-            self._type_session_off = True
-            return None
-        self._type_session = session
-        return session
-
-    def _checked_receiver(self, unit: ModUnit, call: CallRec) -> Binding | None:
-        """Concrete class of an attribute call's receiver, from a type checker.
-
-        Only a class that lives in an installed distribution is used. Any,
-        Unknown, and a missing answer leave the hand-written resolver in place.
-        """
-        func = call.node.func
-        if not isinstance(func, ast.Attribute):
-            return None
-        session = self._type_session_get()
-        if session is None or self.root is None:
-            return None
-        path = self.root / unit.rel
-        if not path.is_file():
-            return None
-        line = int(getattr(func.value, "end_lineno", 0) or getattr(func.value, "lineno", 0) or 0)
-        col = getattr(func.value, "end_col_offset", None)
-        if not line or col is None:
-            return None
-        query = getattr(session, "classes_at", None)
-        if query is None:
-            return None
-        try:
-            classes = query(path, line, max(int(col) - 1, 0))
-        except Exception:
-            self.close()
-            return None
-        if not classes:
-            return None
-        primary, *rest = classes
-        return Binding(
-            "external_attr",
-            f"{primary}.{func.attr}",
-            confidence="medium",
-            alternatives=tuple(f"{item}.{func.attr}" for item in rest),
-        )
 
     def _library(self) -> LibraryTypes:
         if self._libraries is None:
@@ -786,10 +727,17 @@ class _Resolver:
         return self._libraries
 
     def _infer_returns(self) -> None:
-        for _ in range(8):
-            changed = self._infer_return_pass() or self._infer_parameter_pass()
-            if not changed:
-                break
+        # Fluent reassignment is for call-site chains; during inference it
+        # rewalks every ``x = x.m()`` hop across the repo and dominates runtime.
+        previous = self._allow_fluent
+        self._allow_fluent = False
+        try:
+            for _ in range(8):
+                changed = self._infer_return_pass() or self._infer_parameter_pass()
+                if not changed:
+                    break
+        finally:
+            self._allow_fluent = previous
 
     def _infer_return_pass(self) -> bool:
         changed = False
@@ -874,10 +822,19 @@ class _Resolver:
             return False
         resolved = self._resolve_expr(expr, caller, enclosing, set())
         instanced = _as_instance(resolved)
-        if instanced.kind != "instance_external" or not instanced.target:
-            return False
-        self._param_types[key] = instanced
-        return True
+        if instanced.kind == "instance_external" and instanced.target:
+            self._param_types[key] = instanced
+            return True
+        # A class argument is an instance of that class for attribute reads
+        # such as ``model.query`` on an ORM model passed into a helper.
+        if (
+            instanced.kind == "instance_local"
+            and instanced.target
+            and instanced.qualname
+        ):
+            self._param_types[key] = instanced
+            return True
+        return False
 
     def _bindings_for(self, rel: str) -> dict[str, Binding]:
         cached = self._bindings.get(rel)
@@ -962,6 +919,11 @@ class _Resolver:
         binds = self._bindings_for(found)
         if raw.imported in binds:
             return binds[raw.imported]
+        owner = self.units.get(found)
+        if owner is not None:
+            assigned = _visible_assign(owner, "<module>", raw.imported, None)
+            if assigned is not None and not _is_none(assigned):
+                return self._resolve_expr(assigned, owner, "<module>", set())
         parent = _dotted(found)
         sub = self.index.lookup(f"{parent}.{raw.imported}") if parent else None
         if sub:
@@ -978,14 +940,25 @@ class _Resolver:
     ) -> Binding:
         if node is None or depth > _RESOLVE_DEPTH:
             return UNKNOWN
+        # Memoize only after inference. Inference runs before cloud factory
+        # roots are set, and caching those Call results drops the service name
+        # on ``session.client("iam")``.
+        memo_key = (unit.rel, enclosing, id(node))
+        if self._allow_fluent:
+            cached = self._expr_memo.get(memo_key)
+            if cached is not None:
+                return cached
         marker = ("node", unit.rel, str(id(node)))
         if marker in stack:
             return UNKNOWN
         stack.add(marker)
         try:
-            return self._resolve_expr_node(node, unit, enclosing, stack, depth)
+            found = self._resolve_expr_node(node, unit, enclosing, stack, depth)
         finally:
             stack.discard(marker)
+        if self._allow_fluent and found.kind != "unknown":
+            self._expr_memo[memo_key] = found
+        return found
 
     def _resolve_expr_node(
         self,
@@ -1001,6 +974,14 @@ class _Resolver:
             use = (lineno, getattr(node, "col_offset", 0) or 0) if lineno else None
             return self._resolve_name(node.id, unit, enclosing, stack, nxt, use)
         if isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and self._is_import_local(
+                unit, enclosing, node.value.id
+            ):
+                configured = self._config_module_attr(
+                    node.value.id, node.attr, unit, enclosing, stack, nxt
+                )
+                if configured is not None:
+                    return configured
             base = self._resolve_expr(node.value, unit, enclosing, stack, nxt)
             lineno = getattr(node, "lineno", 0) or 0
             use = (lineno, getattr(node, "col_offset", 0) or 0) if lineno else None
@@ -1111,6 +1092,59 @@ class _Resolver:
         if default.kind == "unknown":
             return None
         return default
+
+    def _fluent_reassign(
+        self,
+        assigned: ast.expr,
+        name: str,
+        unit: ModUnit,
+        enclosing: str,
+        stack: set[tuple[str, str, str]],
+        depth: int,
+    ) -> Binding | None:
+        """``name = name.m1().m2()`` keeps the receiver type across reassigns.
+
+        Walking the whole right-hand side as a nested expression spends a hop
+        per earlier reassignment, so a long ``query = query.filter(...)`` chain
+        hits the depth limit before the last call. Peeling the fluent methods
+        and resolving the prior ``name`` once keeps depth flat. Each method's
+        result is whatever the library returns for that call.
+        """
+        if not self._allow_fluent:
+            return None
+        peeled = _fluent_call_steps(assigned, name)
+        if peeled is None:
+            return None
+        receiver, steps = peeled
+        use = (
+            getattr(receiver, "lineno", 0) or 0,
+            getattr(receiver, "col_offset", 0) or 0,
+        )
+        if not use[0]:
+            return None
+        base = self._resolve_name(name, unit, enclosing, stack, depth, use)
+        if base.kind == "unknown":
+            return None
+        for call in steps:
+            assert isinstance(call.func, ast.Attribute)
+            lineno = getattr(call.func, "lineno", 0) or 0
+            attr_use = (
+                (lineno, getattr(call.func, "col_offset", 0) or 0) if lineno else None
+            )
+            func = self._attribute(
+                base,
+                call.func.attr,
+                stack,
+                depth,
+                enclosing=enclosing,
+                use=attr_use,
+            )
+            if func.kind == "unknown":
+                return None
+            base = self._call_result(func, call, unit, enclosing)
+            if base.kind == "unknown":
+                return None
+        return base
 
     def _super_instance(
         self,
@@ -1232,6 +1266,11 @@ class _Resolver:
                 return Binding("instance_local", unit.rel, defn.class_name)
             assigned = _visible_assign(unit, enclosing, name, use)
             if assigned is not None and not _is_none(assigned):
+                fluent = self._fluent_reassign(
+                    assigned, name, unit, enclosing, stack, depth + 1
+                )
+                if fluent is not None:
+                    return fluent
                 return self._resolve_expr(assigned, unit, enclosing, stack, depth + 1)
             if name in _params_of(unit, enclosing):
                 typed = self._annotated_binding(unit, enclosing, name, stack, depth)
@@ -1362,17 +1401,102 @@ class _Resolver:
                 method = f"{base.qualname}.{attr}"
                 if unit is not None and method in unit.defs:
                     return Binding("symbol", base.target, method, confidence=base.confidence)
+                found = self._instance_field(
+                    Binding(
+                        "instance_local",
+                        base.target,
+                        base.qualname,
+                        confidence=base.confidence,
+                    ),
+                    attr,
+                    stack if stack is not None else set(),
+                    depth + 1,
+                    enclosing=enclosing,
+                    use=use,
+                )
+                if found is not None:
+                    return found
             return UNKNOWN
         if base.kind == "module_local":
             binds = self._bindings_for(base.target)
             if attr in binds:
                 return binds[attr]
+            owner = self.units.get(base.target)
+            if owner is not None:
+                assigned = _visible_assign(owner, "<module>", attr, None)
+                if assigned is not None and not _is_none(assigned):
+                    return self._resolve_expr(
+                        assigned,
+                        owner,
+                        "<module>",
+                        stack if stack is not None else set(),
+                        depth + 1,
+                    )
             parent = _dotted(base.target)
             sub = self.index.lookup(f"{parent}.{attr}") if parent else None
             if sub:
                 return Binding("module_local", sub, confidence=base.confidence)
             return UNKNOWN
         return UNKNOWN
+
+    def _config_module_attr(
+        self,
+        name: str,
+        attr: str,
+        unit: ModUnit,
+        enclosing: str,
+        stack: set[tuple[str, str, str]],
+        depth: int,
+    ) -> Binding | None:
+        """Attribute on an imported config object that is a project module.
+
+        ``from somewhere import settings`` may bind an external proxy. When a
+        project module shares that name and assigns ``attr`` at module level,
+        the attribute is that assignment. Several modules with the same stem
+        are fine when only one of them writes the attribute.
+        """
+        if not name or not attr or not attr.isidentifier():
+            return None
+        bound = self._resolve_name(name, unit, enclosing, stack, depth + 1)
+        if bound.kind not in {"unknown", "external_attr", "external_module"}:
+            return None
+        hits: list[str] = []
+        for rel in self._modules_named(name):
+            owner = self.units[rel]
+            assigned = _visible_assign(owner, "<module>", attr, None)
+            if assigned is not None and not _is_none(assigned):
+                hits.append(rel)
+        if len(hits) != 1:
+            return None
+        owner = self.units[hits[0]]
+        assigned = _visible_assign(owner, "<module>", attr, None)
+        if assigned is None:
+            return None
+        return self._resolve_expr(assigned, owner, "<module>", stack, depth + 1)
+
+    def _modules_named(self, name: str) -> tuple[str, ...]:
+        """Project modules whose file stem or package dir is ``name``."""
+        if self._stem_index is None:
+            index: dict[str, list[str]] = {}
+            for rel in self.units:
+                path = Path(rel)
+                index.setdefault(path.stem, []).append(rel)
+                if path.name == "__init__.py" and path.parent.name:
+                    index.setdefault(path.parent.name, []).append(rel)
+            self._stem_index = {key: tuple(vals) for key, vals in index.items()}
+        return self._stem_index.get(name, ())
+
+    def _is_import_local(self, unit: ModUnit, enclosing: str, name: str) -> bool:
+        """True when ``name`` is introduced by an import in this scope chain."""
+        if not name:
+            return False
+        for scope in (enclosing, *_enclosing_chain(enclosing), "<module>"):
+            for raw in unit.local_imports.get(scope, ()):
+                if raw.local == name:
+                    return True
+            if scope == "<module>":
+                break
+        return any(raw.local == name for raw in unit.imports)
 
     def _types_defining(self, base: Binding, attr: str) -> tuple[str, list[str]]:
         """The preferred type, then the other types that also define ``attr``.
@@ -1480,8 +1604,42 @@ class _Resolver:
                 while isinstance(base_expr, ast.Subscript):
                     base_expr = base_expr.value
                 parent = self._resolve_expr(base_expr, unit, qual, stack, depth + 1)
-                if parent.kind == "symbol" and parent.qualname:
+                if parent.kind in {"symbol", "instance_local"} and parent.qualname:
                     queue.append((parent.target, parent.qualname))
+                    continue
+                external = self._library_class_attr(parent, attr)
+                if external is not None:
+                    return external
+        return None
+
+    def _library_class_attr(self, parent: Binding, attr: str) -> Binding | None:
+        """Attribute defined on an external class that this type inherits."""
+        targets: list[str] = []
+        if parent.kind in {"instance_external", "external_attr"} and parent.target:
+            targets.append(parent.target)
+            targets.extend(item for item in parent.alternatives if item and item != parent.target)
+        if not targets:
+            return None
+        library = self._library()
+        for target in targets:
+            typed = library.instance_attribute(target, attr)
+            if typed:
+                return Binding(
+                    "instance_external",
+                    typed,
+                    confidence=min_confidence(parent.confidence, "medium"),
+                    cloud_service=parent.cloud_service,
+                    base_url=parent.base_url,
+                )
+            if library.has_member(target, attr):
+                owner = library.member_owner(target, attr) or target
+                return Binding(
+                    "external_attr",
+                    f"{owner}.{attr}",
+                    confidence=min_confidence(parent.confidence, "medium"),
+                    cloud_service=parent.cloud_service,
+                    base_url=parent.base_url,
+                )
         return None
 
     def _call_result(
@@ -1750,6 +1908,24 @@ def _visible_assign(
             return None
         return visible[-1][2]
     return unit.assigns.get((enclosing, name))
+
+
+def _fluent_call_steps(
+    expr: ast.expr, name: str
+) -> tuple[ast.Name, list[ast.Call]] | None:
+    """Peel ``name.m1().m2()`` into the root name and the calls, innermost first.
+
+    Empty when the expression is not a fluent chain rooted at ``name``.
+    """
+    steps: list[ast.Call] = []
+    cur: ast.AST = expr
+    while isinstance(cur, ast.Call) and isinstance(cur.func, ast.Attribute):
+        steps.append(cur)
+        cur = cur.func.value
+    if not isinstance(cur, ast.Name) or cur.id != name or not steps:
+        return None
+    steps.reverse()
+    return cur, steps
 
 
 def _is_none(node: ast.AST) -> bool:

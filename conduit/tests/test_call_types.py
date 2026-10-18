@@ -614,79 +614,310 @@ def test_same_file_line_and_change_is_emitted_once():
     assert removed_impact.sites[0].line == 549
 
 
-def test_type_checker_class_replaces_the_receiver_when_it_is_concrete(tmp_path: Path, monkeypatch):
+def test_model_query_from_external_base_is_a_query(tmp_path: Path):
+    """``Model.query`` from an installed ORM base keeps Query method chains."""
+    lib = tmp_path / "lib"
+    _write(lib / "ormkit" / "__init__.py", "from .sql import SQL, Model, Query\n")
     _write(
-        tmp_path / "app" / "tables.py",
+        lib / "ormkit" / "sql.py",
         """
-        from shelf.client import Client
+        class Query:
+            def distinct(self, *cols):
+                return self
 
-        class Store:
+            def from_self(self, *cols):
+                return self
+
+            def select_entity_from(self, entity):
+                return self
+
+        class _QueryProperty:
+            def __get__(self, obj, cls):
+                return Query()
+
+        class Model:
+            query: "Query" = _QueryProperty()
+
+        class SQL:
             def __init__(self):
-                self.db = Client()
-
-            def write(self, record):
-                self.db.insert(record)
+                self.Model = Model
         """,
     )
-
-    class _Fake:
-        def classes_at(self, path, line, col):
-            return ("shelf.client.Bin",)
-
-        def close(self):
-            pass
-
-    monkeypatch.setenv("CONDUIT_TYPES", "pyright")
-    monkeypatch.setattr("conduit.outside_in.typecheck.open_session", lambda root: _Fake())
-    spec = ServiceSpec(
-        service_id="shelf",
-        package="shelf",
-        modules=("shelf",),
-        kind="database",
-        constructor_tails=("Bin",),
-    )
-    mapped = analyze_python(tmp_path / "app", (spec,))
-    methods = [chain.sdk_method for chain in mapped.chains if not chain.via_wrapper]
-    assert "shelf.client.Bin.insert" in methods
-
-
-def test_type_checker_unknown_keeps_the_hand_written_resolver(tmp_path: Path, monkeypatch):
     _write(
-        tmp_path / "app" / "repo.py",
+        tmp_path / "app" / "db.py",
         """
-        from ledger.orm import Session
+        from ormkit.sql import SQL
 
-        class Item:
-            pass
-
-        def listed(db: Session):
-            return db.query(Item).select_entity_from(Item)
+        db = SQL()
         """,
     )
+    _write(
+        tmp_path / "app" / "models.py",
+        """
+        from db import db
 
-    class _Fake:
-        def classes_at(self, path, line, col):
-            return ()
-
-        def close(self):
+        class User(db.Model):
             pass
+        """,
+    )
+    _write(
+        tmp_path / "app" / "users.py",
+        """
+        from models import User
 
-    monkeypatch.setenv("CONDUIT_TYPES", "pyright")
-    monkeypatch.setattr("conduit.outside_in.typecheck.open_session", lambda root: _Fake())
-    methods = set(_methods(tmp_path).values())
+        def listed():
+            query = User.query.distinct(User)
+            return query.from_self()
+        """,
+    )
+    sys.path.insert(0, str(lib))
+    sys.path.insert(0, str(tmp_path / "app"))
+    try:
+        mapped = analyze_python(
+            tmp_path / "app",
+            (
+                ServiceSpec(
+                    service_id="ormkit",
+                    package="ormkit",
+                    modules=("ormkit",),
+                    kind="database",
+                ),
+            ),
+        )
+    finally:
+        sys.path.remove(str(lib))
+        sys.path.remove(str(tmp_path / "app"))
+    methods = [chain.sdk_method for chain in mapped.chains if not chain.via_wrapper]
+    assert any(method.endswith("Query.from_self") for method in methods)
+
+
+def test_long_fluent_reassign_keeps_query_methods(tmp_path: Path):
+    """Many ``query = query.filter(...)`` hops still see Query.from_self."""
+    lib = tmp_path / "lib"
+    _write(lib / "ormkit" / "__init__.py", "from .sql import SQL, Model, Query\n")
+    _write(
+        lib / "ormkit" / "sql.py",
+        """
+        class Query:
+            def distinct(self, *cols):
+                return self
+
+            def filter(self, *args):
+                return self
+
+            def options(self, *args):
+                return self
+
+            def join(self, *args):
+                return self
+
+            def from_self(self, *cols):
+                return self
+
+        class _QueryProperty:
+            def __get__(self, obj, cls):
+                return Query()
+
+        class Model:
+            query: "Query" = _QueryProperty()
+
+        class SQL:
+            def __init__(self):
+                self.Model = Model
+        """,
+    )
+    _write(tmp_path / "app" / "db.py", "from ormkit.sql import SQL\n\ndb = SQL()\n")
+    _write(
+        tmp_path / "app" / "models.py",
+        """
+        from db import db
+
+        class User(db.Model):
+            pass
+        """,
+    )
+    _write(
+        tmp_path / "app" / "users.py",
+        """
+        from models import User
+
+        def listed(a, b, c, d, e, f):
+            query = User.query.distinct(User).options(a)
+            query = query.filter(b)
+            query = query.filter(c)
+            query = query.filter(d)
+            query = query.join(e).filter(f)
+            query = query.filter(a)
+            query = query.filter(b)
+            query = query.filter(c)
+            return query.from_self()
+        """,
+    )
+    sys.path.insert(0, str(lib))
+    sys.path.insert(0, str(tmp_path / "app"))
+    try:
+        mapped = analyze_python(
+            tmp_path / "app",
+            (
+                ServiceSpec(
+                    service_id="ormkit",
+                    package="ormkit",
+                    modules=("ormkit",),
+                    kind="database",
+                ),
+            ),
+        )
+    finally:
+        sys.path.remove(str(lib))
+        sys.path.remove(str(tmp_path / "app"))
+    methods = [chain.sdk_method for chain in mapped.chains if not chain.via_wrapper]
+    assert any(method.endswith("Query.from_self") for method in methods)
+
+
+def test_class_parameter_query_uses_the_model_query_type(tmp_path: Path):
+    """A helper ``model.query.m()`` follows the class passed at the call site."""
+    lib = tmp_path / "lib"
+    _write(lib / "ormkit" / "__init__.py", "from .sql import SQL, Model, Query\n")
+    _write(
+        lib / "ormkit" / "sql.py",
+        """
+        class Query:
+            def select_entity_from(self, entity):
+                return self
+
+        class _QueryProperty:
+            def __get__(self, obj, cls):
+                return Query()
+
+        class Model:
+            query: "Query" = _QueryProperty()
+
+        class SQL:
+            def __init__(self):
+                self.Model = Model
+        """,
+    )
+    _write(tmp_path / "app" / "db.py", "from ormkit.sql import SQL\n\ndb = SQL()\n")
+    _write(
+        tmp_path / "app" / "models.py",
+        """
+        from db import db
+
+        class Room(db.Model):
+            pass
+        """,
+    )
+    _write(
+        tmp_path / "app" / "helpers.py",
+        """
+        def regroup(query, model):
+            return model.query.select_entity_from(query)
+        """,
+    )
+    _write(
+        tmp_path / "app" / "rooms.py",
+        """
+        from helpers import regroup
+        from models import Room
+
+        def limited(query):
+            return regroup(query, Room)
+        """,
+    )
+    sys.path.insert(0, str(lib))
+    sys.path.insert(0, str(tmp_path / "app"))
+    try:
+        mapped = analyze_python(
+            tmp_path / "app",
+            (
+                ServiceSpec(
+                    service_id="ormkit",
+                    package="ormkit",
+                    modules=("ormkit",),
+                    kind="database",
+                ),
+            ),
+        )
+    finally:
+        sys.path.remove(str(lib))
+        sys.path.remove(str(tmp_path / "app"))
+    methods = [chain.sdk_method for chain in mapped.chains if not chain.via_wrapper]
     assert any(method.endswith("Query.select_entity_from") for method in methods)
 
 
-def test_qualname_comes_from_an_installed_class_file():
-    from conduit.outside_in.typecheck import hover_is_only_unknown, qualname_from_uri
+def test_config_module_attribute_follows_the_module_assignment(tmp_path: Path):
+    """``settings.HANDLE`` reads the project module that assigns ``HANDLE``."""
+    lib = tmp_path / "lib"
+    _write(
+        lib / "shelf" / "client.py",
+        """
+        class Bin:
+            def update(self, key, data):
+                return data
 
-    uri = "file:///tmp/venvs/spike/lib/python3.12/site-packages/shelf/client.py"
-    assert qualname_from_uri(uri, "Bin") == "shelf.client.Bin"
-    assert qualname_from_uri("file:///tmp/app/tables.py", "Bin") is None
-    assert hover_is_only_unknown("(variable) field: Unknown")
-    assert hover_is_only_unknown("(variable) field: Any | None")
-    assert not hover_is_only_unknown("(variable) field: Bin | Unknown")
-    assert not hover_is_only_unknown("")
+        class Database:
+            def __getattr__(self, name):
+                return Bin()
+
+        class Client:
+            def __getattr__(self, name):
+                return Database()
+
+            def __getitem__(self, name):
+                return Database()
+
+        def connect(name, **kwargs):
+            return Client()
+        """,
+    )
+    _write(lib / "shelf" / "__init__.py", "from .client import Client, connect\n")
+    _write(
+        lib / "vendorconf" / "settings.py",
+        """
+        # Stand-in for a framework settings proxy.
+        class Lazy:
+            pass
+
+        settings = Lazy()
+        """,
+    )
+    _write(lib / "vendorconf" / "__init__.py", "")
+    _write(
+        tmp_path / "app" / "config" / "settings.py",
+        """
+        from shelf.client import connect
+
+        HANDLE = connect("main")
+        """,
+    )
+    _write(
+        tmp_path / "app" / "jobs.py",
+        """
+        from vendorconf.settings import settings
+
+        db = settings.HANDLE
+
+        def revise(key, data):
+            db.news.stories.update(key, data)
+        """,
+    )
+    sys.path.insert(0, str(lib))
+    try:
+        mapped = analyze_python(
+            tmp_path / "app",
+            (
+                ServiceSpec(
+                    service_id="shelf",
+                    package="shelf",
+                    modules=("shelf",),
+                    kind="database",
+                ),
+            ),
+        )
+    finally:
+        sys.path.remove(str(lib))
+    methods = [chain.sdk_method for chain in mapped.chains if not chain.via_wrapper]
+    assert any(method.endswith("Bin.update") for method in methods)
 
 
 def test_dynamically_added_attribute_is_not_removed(tmp_path: Path):
