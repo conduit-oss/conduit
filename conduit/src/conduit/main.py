@@ -343,7 +343,7 @@ def _impact_body(
             console.print(f"[red]Fixtures directory not found:[/red] {fixture_root}")
             raise typer.Exit(2)
     service_map, _blast = build_service_map(root)
-    impacts, _diffed, notes = collect_impacts(
+    impacts, diffed, notes = collect_impacts(
         root,
         service_map,
         fixtures=fixture_root,
@@ -360,6 +360,7 @@ def _impact_body(
                 "dependency": dep,
                 "impacts": impacts_to_dicts(breaks),
                 "deprecations": impacts_to_dicts(deprecations),
+                "diffed": sorted(diffed),
                 "notes": notes,
             },
             highlight=False,

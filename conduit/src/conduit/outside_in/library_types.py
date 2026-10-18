@@ -22,6 +22,9 @@ from conduit.deps.manifests import read_installed
 _MAX_FILES = 800
 _MAX_DOWNLOAD = 8_000_000
 _DEPTH = 8
+# Cap retained distribution ASTs. Each entry can hold hundreds of modules; an
+# unbounded map of "tops" (including mis-resolved names) was the OOM source.
+_MAX_CACHED_DISTS = 8
 _FIXTURE_WHEELS = (
     Path(__file__).resolve().parents[3] / "fixtures" / "impact" / "wheels",
     Path(__file__).resolve().parents[3] / "fixtures" / "impact" / "wheels" / "deps",
@@ -100,6 +103,7 @@ class LibraryTypes:
         self.root = root
         self._pins = read_installed(root) if root is not None else {}
         self._dist: dict[str, dict[str, _Mod] | None] = {}
+        self._dist_order: list[str] = []
         self._facts: dict[str, _DistFacts] = {}
         self._returns: dict[str, tuple[str, ...]] = {}
         self._attribute_types: dict[tuple[str, str], str] = {}
@@ -107,6 +111,47 @@ class LibraryTypes:
         self._defining: set[str] = set()
         self._ctor_args: dict[tuple[str, str], str] = {}
         self._extracting = False
+
+    def release(self) -> None:
+        """Drop parsed ASTs and per-top module maps. Facts stay usable."""
+        for top in list(self._dist_order):
+            self._evict_dist(top)
+        # Keep negative / facts-only markers so we do not re-parse empties.
+        for top, mods in list(self._dist.items()):
+            if mods:
+                self._evict_dist(top)
+        self._returns.clear()
+        self._attribute_types.clear()
+        self._ctor_args.clear()
+        self._stack.clear()
+        self._defining.clear()
+
+    def _clear_mod_asts(self, mods: dict[str, _Mod]) -> None:
+        for mod in mods.values():
+            mod.tree = None  # type: ignore[assignment]
+            mod.classes.clear()
+            mod.functions.clear()
+            mod.self_assigns.clear()
+            mod.class_ann.clear()
+            mod.bindings.clear()
+
+    def _evict_dist(self, top: str) -> None:
+        """Free one distribution's ASTs; allow a later re-parse if needed."""
+        mods = self._dist.pop(top, None)
+        if mods:
+            self._clear_mod_asts(mods)
+        if top in self._dist_order:
+            self._dist_order.remove(top)
+        if top in self._facts:
+            # Facts remain; mark so _modules short-circuits to facts-only.
+            self._dist[top] = None
+
+    def _touch_dist(self, top: str) -> None:
+        if top in self._dist_order:
+            self._dist_order.remove(top)
+        self._dist_order.append(top)
+        while len(self._dist_order) > _MAX_CACHED_DISTS:
+            self._evict_dist(self._dist_order[0])
 
     def delegated_calls(self, qualname: str) -> tuple[str, ...]:
         """External calls this function makes, following ``self`` methods.
@@ -706,8 +751,11 @@ class LibraryTypes:
         pin = self._pins.get(top, "")
         from conduit.analysis_cache import cache_enabled
 
+        # An importable tree on sys.path (tests, editable installs) wins over a
+        # same-named wheel sitting in the cache directory.
+        installed = _installed_root(top)
         wheel = _resolve_wheel(top, pin)
-        if wheel is not None and cache_enabled():
+        if installed is None and wheel is not None and cache_enabled():
             digest = file_sha256(wheel)
             hit = read_json("libtypes", digest)
             facts = _DistFacts.from_json(hit)
@@ -715,15 +763,20 @@ class LibraryTypes:
                 self._facts[top] = facts
                 self._dist[top] = None
                 return {}
-        root = _unpack(wheel, top) if wheel is not None else _distribution_root(top, pin)
+        if installed is not None:
+            root = installed
+        elif wheel is not None:
+            root = _unpack(wheel, top)
+        else:
+            root = None
         if root is None:
             self._dist[top] = None
             return {}
         mods = _parse_distribution(root, top)
         self._dist[top] = mods or None
-        if mods and wheel is not None:
-            from conduit.analysis_cache import cache_enabled
-
+        if mods:
+            self._touch_dist(top)
+        if mods and wheel is not None and installed is None:
             # Full fact extraction walks every public symbol. Keep it for small
             # wheels (stubs, thin clients). Large SDKs still benefit from the
             # load_api / diff caches; re-parsing their AST once per process is
@@ -732,6 +785,9 @@ class LibraryTypes:
                 facts = self._extract_facts(top, mods)
                 self._facts[top] = facts
                 write_json("libtypes", file_sha256(wheel), facts.to_json())
+                # Facts answer later queries; free the AST forest now.
+                self._evict_dist(top)
+                return {}
         return mods
 
     def _extract_facts(self, top: str, mods: dict[str, _Mod]) -> _DistFacts:
@@ -1273,13 +1329,26 @@ def _unpack(archive: Path, top: str) -> Path | None:
     return dest
 
 
-def _parse_distribution(root: Path, top: str) -> dict[str, _Mod]:
-    import_root = _import_root(root, top)
-    if import_root is None:
-        return {}
-    mods: dict[str, _Mod] = {}
-    files = []
-    for path in import_root.rglob("*"):
+def _package_files(import_root: Path, top: str) -> list[Path]:
+    """Source files that belong to ``top`` only — never the whole site-packages.
+
+    Walking ``import_root.rglob`` used to pull hundreds of unrelated packages
+    into one distribution map and retain their ASTs until process exit.
+    """
+    package_dir = import_root / top
+    singles = [p for p in (import_root / f"{top}.py", import_root / f"{top}.pyi") if p.is_file()]
+    if package_dir.is_dir():
+        walk: list[Path] = list(package_dir.rglob("*"))
+    elif singles:
+        walk = singles
+    elif import_root.name == top and (
+        (import_root / "__init__.py").is_file() or (import_root / "__init__.pyi").is_file()
+    ):
+        walk = list(import_root.rglob("*"))
+    else:
+        return []
+    files: list[Path] = []
+    for path in walk:
         if path.suffix not in {".py", ".pyi"}:
             continue
         if any(part in {"test", "tests", "testing", "__pycache__"} for part in path.parts):
@@ -1287,6 +1356,19 @@ def _parse_distribution(root: Path, top: str) -> dict[str, _Mod]:
         files.append(path)
         if len(files) > _MAX_FILES:
             break
+    return files
+
+
+def _parse_distribution(root: Path, top: str) -> dict[str, _Mod]:
+    import_root = _import_root(root, top)
+    if import_root is None:
+        return {}
+    mods: dict[str, _Mod] = {}
+    files = _package_files(import_root, top)
+    if not files and root.name == top:
+        files = _package_files(root.parent, top)
+        if files:
+            import_root = root.parent
     for path in files:
         module = _module_name(import_root, path)
         if not module:
