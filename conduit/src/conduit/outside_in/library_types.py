@@ -16,17 +16,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.request import urlopen
 
+from conduit.analysis_cache import cache_root, file_sha256, read_json, write_json
 from conduit.deps.manifests import read_installed
 
-_CACHE = Path("/tmp/conduit-libtypes")
-_WHEEL_DIRS = (
-    Path("/tmp/conduit-wheels"),
-    Path(__file__).resolve().parents[3] / "fixtures" / "impact" / "wheels",
-    Path(__file__).resolve().parents[3] / "fixtures" / "impact" / "wheels" / "deps",
-)
 _MAX_FILES = 800
 _MAX_DOWNLOAD = 8_000_000
 _DEPTH = 8
+_FIXTURE_WHEELS = (
+    Path(__file__).resolve().parents[3] / "fixtures" / "impact" / "wheels",
+    Path(__file__).resolve().parents[3] / "fixtures" / "impact" / "wheels" / "deps",
+)
+
+
+def _libtypes_cache() -> Path:
+    return cache_root() / "libtypes"
+
+
+def _wheel_dirs() -> tuple[Path, ...]:
+    return (cache_root() / "wheels", Path("/tmp/conduit-wheels"), *_FIXTURE_WHEELS)
 
 
 @dataclass
@@ -40,6 +47,52 @@ class _Mod:
     class_ann: dict[tuple[str, str], ast.expr] = field(default_factory=dict)
 
 
+@dataclass
+class _DistFacts:
+    """JSON-friendly return / attribute / delegation facts for one wheel."""
+
+    returns: dict[str, list[str]]
+    attribute_types: dict[str, str]
+    delegated: dict[str, list[str]]
+    init_params: dict[str, list[str]]
+    members: dict[str, str]
+
+    def to_json(self) -> dict:
+        return {
+            "returns": self.returns,
+            "attribute_types": self.attribute_types,
+            "delegated": self.delegated,
+            "init_params": self.init_params,
+            "members": self.members,
+        }
+
+    @classmethod
+    def from_json(cls, payload: object) -> _DistFacts | None:
+        if not isinstance(payload, dict):
+            return None
+        returns = payload.get("returns")
+        attribute_types = payload.get("attribute_types")
+        delegated = payload.get("delegated")
+        init_params = payload.get("init_params")
+        members = payload.get("members")
+        if not all(
+            isinstance(item, dict)
+            for item in (returns, attribute_types, delegated, init_params, members)
+        ):
+            return None
+        return cls(
+            returns={str(k): [str(v) for v in vals] for k, vals in returns.items() if isinstance(vals, list)},
+            attribute_types={str(k): str(v) for k, v in attribute_types.items()},
+            delegated={
+                str(k): [str(v) for v in vals] for k, vals in delegated.items() if isinstance(vals, list)
+            },
+            init_params={
+                str(k): [str(v) for v in vals] for k, vals in init_params.items() if isinstance(vals, list)
+            },
+            members={str(k): str(v) for k, v in members.items()},
+        )
+
+
 class LibraryTypes:
     """Types for one consumer repo, loaded from installed or pinned distributions."""
 
@@ -47,11 +100,13 @@ class LibraryTypes:
         self.root = root
         self._pins = read_installed(root) if root is not None else {}
         self._dist: dict[str, dict[str, _Mod] | None] = {}
+        self._facts: dict[str, _DistFacts] = {}
         self._returns: dict[str, tuple[str, ...]] = {}
-        self._attrs: dict[tuple[str, str], str] = {}
+        self._attribute_types: dict[tuple[str, str], str] = {}
         self._stack: set[str] = set()
         self._defining: set[str] = set()
         self._ctor_args: dict[tuple[str, str], str] = {}
+        self._extracting = False
 
     def delegated_calls(self, qualname: str) -> tuple[str, ...]:
         """External calls this function makes, following ``self`` methods.
@@ -61,12 +116,18 @@ class LibraryTypes:
         followed. Empty when the body is not in the installed files.
         """
         qualname = _clean(qualname)
+        facts = self._facts_for(qualname)
+        if facts is not None and not self._extracting:
+            return tuple(facts.delegated.get(qualname, ()))
         found = self._delegated_calls(qualname, set())
         return tuple(dict.fromkeys(found))
 
     def init_params(self, qualname: str) -> tuple[str, ...]:
         """Positional ``__init__`` parameter names, excluding ``self``."""
         qualname = _clean(qualname)
+        facts = self._facts_for(qualname)
+        if facts is not None and not self._extracting:
+            return tuple(facts.init_params.get(qualname, ()))
         defined = self._define(qualname)
         if not defined or defined[2] != "class":
             return ()
@@ -90,13 +151,16 @@ class LibraryTypes:
         if key in self._ctor_args:
             return
         self._ctor_args[key] = typed
-        self._attrs.pop(key, None)
+        self._attribute_types.pop(key, None)
 
     def call_return(self, qualname: str) -> tuple[str, ...]:
         """Classes a call of ``qualname`` produces. Empty when unknown."""
         qualname = _clean(qualname)
         if not qualname or qualname in self._stack:
             return ()
+        facts = self._facts_for(qualname)
+        if facts is not None and not self._extracting:
+            return tuple(facts.returns.get(qualname, ()))
         cached = self._returns.get(qualname)
         if cached is not None:
             return cached
@@ -114,9 +178,12 @@ class LibraryTypes:
         name = (name or "").strip()
         if not qualname or not name:
             return ""
+        facts = self._facts_for(qualname)
+        if facts is not None and not self._extracting:
+            return facts.attribute_types.get(f"{qualname}.{name}", "")
         key = (qualname, name)
-        if key in self._attrs:
-            return self._attrs[key]
+        if key in self._attribute_types:
+            return self._attribute_types[key]
         token = f"{qualname}.{name}"
         if token in self._stack:
             return ""
@@ -125,7 +192,7 @@ class LibraryTypes:
             found = self._attribute(qualname, name)
         finally:
             self._stack.discard(token)
-        self._attrs[key] = found
+        self._attribute_types[key] = found
         return found
 
     def has_member(self, qualname: str, name: str) -> bool:
@@ -139,6 +206,10 @@ class LibraryTypes:
         name = (name or "").strip()
         if not qualname or not name or not name.isidentifier():
             return False
+        facts = self._facts_for(qualname)
+        if facts is not None and not self._extracting:
+            key = f"{qualname}.{name}"
+            return key in facts.members or key in facts.attribute_types
         if self._define(f"{qualname}.{name}"):
             return True
         return bool(self.instance_attribute(qualname, name))
@@ -152,6 +223,9 @@ class LibraryTypes:
         name = (name or "").strip()
         if not qualname or not name or not name.isidentifier():
             return ""
+        facts = self._facts_for(qualname)
+        if facts is not None and not self._extracting:
+            return facts.members.get(f"{qualname}.{name}", "")
         defined = self._define(f"{qualname}.{name}")
         if not defined:
             return ""
@@ -160,6 +234,13 @@ class LibraryTypes:
             return self._class_qual(mod, node) if node is not None else ""
         owner, _method = _owner_method(self._qual_of(mod, node) or "")
         return owner
+
+    def _facts_for(self, qualname: str) -> _DistFacts | None:
+        top = qualname.split(".", 1)[0] if qualname else ""
+        if not top:
+            return None
+        self._modules(top)
+        return self._facts.get(top)
 
     def _delegated_calls(self, qualname: str, seen: set[str]) -> list[str]:
         if not qualname or qualname in seen or len(seen) > 8:
@@ -568,7 +649,7 @@ class LibraryTypes:
                 typed = self._simple_class(mod, arg, fn, owner)
                 if typed and (klass, name) not in self._ctor_args:
                     self._ctor_args[(klass, name)] = typed
-                    self._attrs.pop((klass, name), None)
+                    self._attribute_types.pop((klass, name), None)
 
     def _simple_class(self, mod: _Mod, arg: ast.AST, fn: ast.AST | None, owner: str) -> str:
         if isinstance(arg, ast.Name) and arg.id in {"self", "cls"} and owner:
@@ -613,18 +694,108 @@ class LibraryTypes:
         top = (top or "").strip()
         if not top:
             return {}
+        if top in self._facts and top not in self._dist:
+            # Facts-only hit: no AST modules, queries answer from ``_facts``.
+            self._dist[top] = None
+            return {}
         cached = self._dist.get(top)
         if cached is not None:
             return cached
         if top in self._dist:
             return {}
-        root = _distribution_root(top, self._pins.get(top, ""))
+        pin = self._pins.get(top, "")
+        from conduit.analysis_cache import cache_enabled
+
+        wheel = _resolve_wheel(top, pin)
+        if wheel is not None and cache_enabled():
+            digest = file_sha256(wheel)
+            hit = read_json("libtypes", digest)
+            facts = _DistFacts.from_json(hit)
+            if facts is not None:
+                self._facts[top] = facts
+                self._dist[top] = None
+                return {}
+        root = _unpack(wheel, top) if wheel is not None else _distribution_root(top, pin)
         if root is None:
             self._dist[top] = None
             return {}
         mods = _parse_distribution(root, top)
         self._dist[top] = mods or None
+        if mods and wheel is not None:
+            from conduit.analysis_cache import cache_enabled
+
+            # Full fact extraction walks every public symbol. Keep it for small
+            # wheels (stubs, thin clients). Large SDKs still benefit from the
+            # load_api / diff caches; re-parsing their AST once per process is
+            # cheaper than an eager whole-surface walk.
+            if cache_enabled() and len(mods) <= 80:
+                facts = self._extract_facts(top, mods)
+                self._facts[top] = facts
+                write_json("libtypes", file_sha256(wheel), facts.to_json())
         return mods
+
+    def _extract_facts(self, top: str, mods: dict[str, _Mod]) -> _DistFacts:
+        """Walk the parsed distribution once and record answers for the cache."""
+        self._extracting = True
+        try:
+            returns: dict[str, list[str]] = {}
+            attribute_types: dict[str, str] = {}
+            delegated: dict[str, list[str]] = {}
+            init_params: dict[str, list[str]] = {}
+            members: dict[str, str] = {}
+            for mod in mods.values():
+                for qual in list(mod.functions):
+                    if not _public_qual(qual):
+                        continue
+                    returns[qual] = list(self.call_return(qual))
+                    delegated[qual] = list(self.delegated_calls(qual))
+                for qual in list(mod.classes):
+                    if not _public_qual(qual):
+                        continue
+                    init_params[qual] = list(self.init_params(qual))
+                    returns[qual] = list(self.call_return(qual))
+                    for name in self._all_member_names(qual, mods):
+                        if name.startswith("_") and name not in {"__init__", "__getattr__", "__getitem__"}:
+                            continue
+                        owner = self.member_owner(qual, name)
+                        if owner:
+                            members[f"{qual}.{name}"] = owner
+                        typed = self.instance_attribute(qual, name)
+                        if typed:
+                            attribute_types[f"{qual}.{name}"] = typed
+            return _DistFacts(
+                returns=returns,
+                attribute_types=attribute_types,
+                delegated=delegated,
+                init_params=init_params,
+                members=members,
+            )
+        finally:
+            self._extracting = False
+
+    def _all_member_names(self, qual: str, mods: dict[str, _Mod]) -> list[str]:
+        """Method and data names on ``qual``, including bases."""
+        names: list[str] = []
+        seen: set[str] = set()
+        stack = [qual]
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            mod = None
+            node = None
+            for candidate in mods.values():
+                item = candidate.classes.get(current)
+                if item is not None:
+                    mod = candidate
+                    node = item
+                    break
+            if mod is None or node is None:
+                continue
+            names.extend(_class_member_names(mod, current))
+            stack.extend(self._bases(mod, node))
+        return list(dict.fromkeys(names))
 
     def _modules_of(self, module: str) -> dict[str, _Mod]:
         return self._modules(module.split(".", 1)[0])
@@ -917,16 +1088,54 @@ def _distribution_root(top: str, pin: str) -> Path | None:
     installed = _installed_root(top)
     if installed is not None:
         return installed
+    wheel = _resolve_wheel(top, pin)
+    if wheel is None:
+        return None
+    return _unpack(wheel, top)
+
+
+def _resolve_wheel(top: str, pin: str) -> Path | None:
+    """Locate a wheel/sdist for ``top`` without unpacking it."""
     cached = _cached_wheel(top, pin)
     if cached is not None:
-        return _unpack(cached, top)
+        return cached
     version = pin if _exact_version(pin) else ""
     if not version:
         return None
-    downloaded = _download(top, version)
-    if downloaded is None:
-        return None
-    return _unpack(downloaded, top)
+    return _download(top, version)
+
+
+def _public_qual(qual: str) -> bool:
+    parts = [part for part in qual.split(".") if part]
+    if not parts:
+        return False
+    # Private modules stay out of the cache; dunder methods on public classes stay in.
+    return all(not part.startswith("_") for part in parts[:-1]) and (
+        not parts[-1].startswith("_") or parts[-1].startswith("__")
+    )
+
+
+def _class_member_names(mod: _Mod, qual: str) -> list[str]:
+    node = mod.classes.get(qual)
+    if node is None:
+        return []
+    names: list[str] = []
+    for child in node.body:
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.append(child.name)
+        elif isinstance(child, ast.Assign):
+            for target in child.targets:
+                if isinstance(target, ast.Name):
+                    names.append(target.id)
+        elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+            names.append(child.target.id)
+    for (owner, name) in mod.self_assigns:
+        if owner == qual:
+            names.append(name)
+    for (owner, name) in mod.class_ann:
+        if owner == qual:
+            names.append(name)
+    return list(dict.fromkeys(names))
 
 
 def _exact_version(pin: str) -> bool:
@@ -954,7 +1163,7 @@ def _installed_root(top: str) -> Path | None:
 def _cached_wheel(top: str, pin: str) -> Path | None:
     key = top.lower().replace("-", "_")
     found: list[Path] = []
-    for directory in _WHEEL_DIRS:
+    for directory in _wheel_dirs():
         if not directory.is_dir():
             continue
         for path in directory.iterdir():
@@ -990,7 +1199,7 @@ def _cached_wheel(top: str, pin: str) -> Path | None:
 
 
 def _download(top: str, version: str) -> Path | None:
-    dest_dir = _CACHE / "wheels"
+    dest_dir = _libtypes_cache() / "wheels"
     dest_dir.mkdir(parents=True, exist_ok=True)
     meta_url = f"https://pypi.org/pypi/{top}/{version}/json"
     try:
@@ -1044,7 +1253,7 @@ def _pick_url(urls: list[object]) -> tuple[str, str, int] | None:
 
 
 def _unpack(archive: Path, top: str) -> Path | None:
-    dest = _CACHE / "src" / f"{top}-{archive.name}"
+    dest = _libtypes_cache() / "src" / f"{top}-{archive.name}"
     marker = dest / ".ok"
     if marker.is_file():
         return dest

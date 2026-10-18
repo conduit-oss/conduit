@@ -203,6 +203,11 @@ def map_cmd(
     markdown: bool = typer.Option(
         False, "--markdown", help="Markdown report instead of the terminal report"
     ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Skip the on-disk analysis cache (wheels, diffs, types, classifier).",
+    ),
 ) -> None:
     """Trace outside services inward through wrappers, aliases, and re-exports.
 
@@ -219,20 +224,24 @@ def map_cmd(
             raise typer.Exit(2)
         data = _load_hop(packet_file)
 
+    from contextlib import nullcontext
+
+    from conduit.analysis_cache import without_cache
     from conduit.outside_in.bridge import build_service_map
     from conduit.outside_in.report import format_report, service_map_to_dict
 
-    service_map, blast = build_service_map(root, service=service, packet=data)
-    if json_out:
-        console.print_json(data=service_map_to_dict(service_map, blast), highlight=False)
-    else:
-        console.print(
-            format_report(service_map, blast, markdown=markdown),
-            markup=False,
-            highlight=False,
-            soft_wrap=True,
-            end="",
-        )
+    with without_cache() if no_cache else nullcontext():
+        service_map, blast = build_service_map(root, service=service, packet=data)
+        if json_out:
+            console.print_json(data=service_map_to_dict(service_map, blast), highlight=False)
+        else:
+            console.print(
+                format_report(service_map, blast, markdown=markdown),
+                markup=False,
+                highlight=False,
+                soft_wrap=True,
+                end="",
+            )
 
 
 @app.command("impact")
@@ -264,6 +273,11 @@ def impact_cmd(
         "--show-callers",
         help="List wrapper callers under each breaking SDK line. Default is a count.",
     ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Skip the on-disk analysis cache (wheels, diffs, types, classifier).",
+    ),
 ) -> None:
     """Show which lines break when an outside service or its client changes.
 
@@ -277,6 +291,32 @@ def impact_cmd(
     and why.
     """
     root = _resolve_root(path)
+    from contextlib import nullcontext
+
+    from conduit.analysis_cache import without_cache
+
+    with without_cache() if no_cache else nullcontext():
+        _impact_body(
+            root=root,
+            dep=dep,
+            to=to,
+            from_version=from_version,
+            fixtures=fixtures,
+            json_out=json_out,
+            show_callers=show_callers,
+        )
+
+
+def _impact_body(
+    *,
+    root: Path,
+    dep: str,
+    to: Optional[str],
+    from_version: Optional[str],
+    fixtures: Optional[Path],
+    json_out: bool,
+    show_callers: bool,
+) -> None:
     from conduit.impact.report import format_impacts, impacts_to_dicts
     from conduit.impact.run import collect_impacts
     from conduit.outside_in.bridge import build_service_map

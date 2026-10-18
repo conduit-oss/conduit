@@ -87,21 +87,29 @@ def _parse_payload(text: str) -> dict | None:
     return None
 
 
-def _impact(project: Path, service: str) -> dict:
-    proc = _run(
-        [
-            sys.executable,
-            "-m",
-            "conduit.main",
-            "impact",
-            "--path",
-            str(project),
-            "--dep",
-            service,
-            "--json",
-        ],
-        cwd=ROOT,
-    )
+def _impact(project: Path, service: str, repo: dict | None = None) -> dict:
+    cmd = [
+        sys.executable,
+        "-m",
+        "conduit.main",
+        "impact",
+        "--path",
+        str(project),
+        "--dep",
+        service,
+        "--json",
+    ]
+    if repo:
+        from_version = str(repo.get("from_version") or "").strip()
+        to_version = str(repo.get("to_version") or repo.get("removed_in") or "").strip()
+        if from_version:
+            cmd.extend(["--from", from_version])
+        if to_version:
+            cmd.extend(["--to", to_version])
+        fixtures = repo.get("fixtures")
+        if fixtures:
+            cmd.extend(["--fixtures", str(ROOT / fixtures)])
+    proc = _run(cmd, cwd=ROOT)
     payload = _parse_payload(proc.stdout)
     if payload is None:
         return {"impacts": [], "notes": [proc.stdout[-2000:]], "exit": proc.returncode}
@@ -238,7 +246,7 @@ def main() -> None:
             continue
         print(f"== {repo['repo']} {repo['service']}", flush=True)
         project = _checkout(repo)
-        payload = _impact(project, repo["service"])
+        payload = _impact(project, repo["service"], repo)
         row = _score(repo, payload)
         if not args.skip_watch:
             row["watch_head"] = _watch(project, repo["service"])

@@ -7,8 +7,12 @@ checkout root.
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
+
+import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
 _root = str(_ROOT)
@@ -21,3 +25,22 @@ def pytest_configure(config) -> None:
         "markers",
         "network: tests that call the public internet",
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _conduit_analysis_cache(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Isolate analysis cache per suite; disable disk writes in unit tests.
+
+    Large wheels (SQLAlchemy) produce multi‑10k symbol dumps that are too heavy
+    to serialize on every cold impact in CI. Dedicated cache tests opt in.
+    """
+    root = tmp_path_factory.mktemp("conduit-cache")
+    os.environ["CONDUIT_CACHE_DIR"] = str(root)
+    os.environ["CONDUIT_NO_CACHE"] = "1"
+    try:
+        from conduit.analysis_cache import analysis_source_digest
+
+        analysis_source_digest.cache_clear()
+    except Exception:
+        pass
+    yield

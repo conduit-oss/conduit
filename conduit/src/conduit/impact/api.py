@@ -5,9 +5,10 @@ from __future__ import annotations
 import ast
 import tempfile
 import zipfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from conduit.analysis_cache import file_sha256, read_json, write_json
 from conduit.impact.model import ApiChange
 
 _SKIP_DIRS = {"tests", "test", "testing", "__pycache__"}
@@ -24,10 +25,21 @@ class Symbol:
 
 def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
     """Removed, renamed, and signature-changed public callables, plus deprecations."""
+    old = Path(old)
+    new = Path(new)
+    cache_key = _wheel_pair_key(old, new)
+    if cache_key is not None:
+        hit = read_json("diff", cache_key)
+        if isinstance(hit, dict):
+            restored = _diff_from_cache(hit)
+            if restored is not None:
+                return restored
     old_root = _materialize(old)
     new_root = _materialize(new)
-    before_all = load_api(old_root, include_private=True)
-    after_all = load_api(new_root, include_private=True)
+    old_hash = file_sha256(old) if cache_key else None
+    new_hash = file_sha256(new) if cache_key else None
+    before_all = load_api(old_root, include_private=True, content_hash=old_hash)
+    after_all = load_api(new_root, include_private=True, content_hash=new_hash)
     old_index = _index_tree(old_root)
     new_index = _index_tree(new_root)
     aliases = _public_aliases(old_index, set(before_all))
@@ -129,6 +141,78 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
     diff.return_classes = _return_classes(old_index)
     diff.methods = _method_owners(old_index)
     diff.surviving = new_public
+    if cache_key is not None:
+        write_json("diff", cache_key, _diff_to_cache(diff))
+    return diff
+
+
+def _wheel_pair_key(old: Path, new: Path) -> str | None:
+    from conduit.analysis_cache import cache_enabled
+
+    if not cache_enabled():
+        return None
+    if not (old.is_file() and new.is_file()):
+        return None
+    if old.suffix != ".whl" or new.suffix != ".whl":
+        return None
+    return f"{file_sha256(old)}_{file_sha256(new)}"
+
+
+def _diff_to_cache(diff: _WheelDiff) -> dict:
+    return {
+        "changes": [
+            {
+                "kind": item.kind,
+                "symbol": item.symbol,
+                "old": item.old,
+                "new": item.new,
+                "detail": item.detail,
+                "confidence": item.confidence,
+                "source": item.source,
+                "service": item.service,
+                "aliases": list(item.aliases),
+            }
+            for item in diff
+        ],
+        "return_classes": {key: sorted(values) for key, values in diff.return_classes.items()},
+        "methods": dict(diff.methods),
+        "surviving": sorted(diff.surviving),
+    }
+
+
+def _diff_from_cache(payload: dict) -> _WheelDiff | None:
+    raw = payload.get("changes")
+    if not isinstance(raw, list):
+        return None
+    changes: list[ApiChange] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return None
+        changes.append(
+            ApiChange(
+                kind=str(item.get("kind") or ""),
+                symbol=str(item.get("symbol") or ""),
+                old=str(item.get("old") or ""),
+                new=str(item.get("new") or ""),
+                detail=str(item.get("detail") or ""),
+                confidence=str(item.get("confidence") or ""),
+                source=str(item.get("source") or ""),
+                service=str(item.get("service") or ""),
+                aliases=tuple(item.get("aliases") or ()),
+            )
+        )
+    diff = _WheelDiff(changes)
+    returns = payload.get("return_classes") or {}
+    if isinstance(returns, dict):
+        diff.return_classes = {
+            str(key): set(values) for key, values in returns.items() if isinstance(values, list)
+        }
+    methods = payload.get("methods") or {}
+    if isinstance(methods, dict):
+        diff.methods = {str(key): str(value) for key, value in methods.items()}
+    surviving = payload.get("surviving") or []
+    if isinstance(surviving, list):
+        diff.surviving = {str(name) for name in surviving}
     return diff
 
 
@@ -152,7 +236,20 @@ class _WheelDiff(list):
         self.surviving = set()
 
 
-def load_api(path: Path, *, include_private: bool = False) -> dict[str, Symbol]:
+def load_api(
+    path: Path,
+    *,
+    include_private: bool = False,
+    content_hash: str | None = None,
+) -> dict[str, Symbol]:
+    path = Path(path)
+    cache_key = _api_cache_key(path, include_private=include_private, content_hash=content_hash)
+    if cache_key is not None:
+        hit = read_json("api", cache_key)
+        if isinstance(hit, dict):
+            restored = _api_from_cache(hit)
+            if restored is not None:
+                return restored
     root = _materialize(path)
     found: dict[str, Symbol] = {}
     hidden: dict[str, Symbol] = {}
@@ -202,6 +299,42 @@ def load_api(path: Path, *, include_private: bool = False) -> dict[str, Symbol]:
     _inherit_members(found, pool, class_nodes, trees)
     _apply_lazy_reexports(found, {**hidden, **pool, **found}, [(module, tree) for module, _package, tree in trees])
     _reexport_members(found, {**hidden, **pool, **found}, trees)
+    if cache_key is not None and len(found) <= 20_000:
+        write_json("api", cache_key, {name: asdict(sym) for name, sym in found.items()})
+    return found
+
+
+def _api_cache_key(
+    path: Path,
+    *,
+    include_private: bool,
+    content_hash: str | None = None,
+) -> str | None:
+    from conduit.analysis_cache import cache_enabled
+
+    if not cache_enabled():
+        return None
+    digest = content_hash
+    if digest is None:
+        if not path.is_file() or path.suffix != ".whl":
+            return None
+        digest = file_sha256(path)
+    scope = "all" if include_private else "pub"
+    return f"{digest}-{scope}"
+
+
+def _api_from_cache(payload: dict) -> dict[str, Symbol] | None:
+    found: dict[str, Symbol] = {}
+    for name, raw in payload.items():
+        if not isinstance(raw, dict):
+            return None
+        found[str(name)] = Symbol(
+            qualname=str(raw.get("qualname") or name),
+            params=tuple(raw.get("params") or ()),
+            kwonly=tuple(raw.get("kwonly") or ()),
+            required=tuple(raw.get("required") or ()),
+            deprecated=bool(raw.get("deprecated")),
+        )
     return found
 
 
