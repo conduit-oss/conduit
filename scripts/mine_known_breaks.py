@@ -274,13 +274,23 @@ def _extract_py_hits(patch: str, *, refs: tuple[str, ...], filename: str) -> lis
     return hits
 
 
+_CLASSIFY_MEMO: dict[tuple[str, str], bool] = {}
+
+
 def _classify_outside(name: str, version: str) -> bool:
+    key = (name.lower(), version)
+    hit = _CLASSIFY_MEMO.get(key)
+    if hit is not None:
+        return hit
     try:
         from conduit.outside_in.evidence import classify_distribution
     except Exception:
+        _CLASSIFY_MEMO[key] = False
         return False
     found = classify_distribution(name, version)
-    return bool(found.service and not found.transport)
+    ok = bool(found.service and not found.transport)
+    _CLASSIFY_MEMO[key] = ok
+    return ok
 
 
 def _repo_from_issue(item: dict) -> str:
@@ -327,12 +337,26 @@ def _process_pr(item: dict, *, seen: set[str]) -> dict | None:
     bumps: list[tuple[str, str, str, str]] = []
     for entry in dep_files:
         path = str(entry.get("filename") or "")
-        before = _file_at(repo, base_sha, path)
-        after = _file_at(repo, merge_sha, path)
-        if not before or not after:
-            continue
-        old_pins = _parse_pins(before, path)
-        new_pins = _parse_pins(after, path)
+        # Prefer the PR patch when it carries enough pin lines (avoids two content fetches).
+        patch = str(entry.get("patch") or "")
+        before_lines = []
+        after_lines = []
+        if patch:
+            for raw in patch.splitlines():
+                if raw.startswith("-") and not raw.startswith("---"):
+                    before_lines.append(raw[1:])
+                elif raw.startswith("+") and not raw.startswith("+++"):
+                    after_lines.append(raw[1:])
+        if before_lines or after_lines:
+            old_pins = _parse_pins("\n".join(before_lines), path)
+            new_pins = _parse_pins("\n".join(after_lines), path)
+        else:
+            before = _file_at(repo, base_sha, path)
+            after = _file_at(repo, merge_sha, path)
+            if not before or not after:
+                continue
+            old_pins = _parse_pins(before, path)
+            new_pins = _parse_pins(after, path)
         for dist, new_ver in new_pins.items():
             old_ver = old_pins.get(dist)
             if not old_ver or old_ver == new_ver:
@@ -425,8 +449,15 @@ def mine(*, limit: int, out: Path) -> dict:
                     f"lines={len(found['expected'])} libs={len(libraries)}",
                     flush=True,
                 )
-            time.sleep(1.0)
+                _write_payload(out, cases, libraries)
+            time.sleep(0.4)
 
+    _write_payload(out, cases, libraries)
+    print(f"wrote {out} cases={len(cases)} libraries={sorted(libraries)}")
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def _write_payload(out: Path, cases: list[dict], libraries: dict[str, int]) -> dict:
     payload = {
         "note": (
             "Mined automatically from public GitHub pull requests that bump a dependency "
@@ -447,7 +478,6 @@ def mine(*, limit: int, out: Path) -> dict:
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {out} cases={len(cases)} libraries={sorted(libraries)}")
     return payload
 
 
