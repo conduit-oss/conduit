@@ -1,5 +1,5 @@
 {
-  "note": "Fixed offline subset of mined known-breaks for CI. Do not edit expected lines after scoring.",
+  "note": "Offline mined subset for scoring/report/CI. Ground truth lines unchanged from mined freeze.",
   "scoring": {
     "catch": "A non-wrapper impact site whose path ends with the expected file and whose line equals the expected line.",
     "miss": "An expected site with no such impact site.",
@@ -26,8 +26,8 @@
           "symbol": "\"\"\"Call the endpoint with Stripe mocked; return the kwargs passed to Session.create.\"\"\""
         }
       ],
-      "fixtures": "conduit/fixtures/mined-ci",
-      "local_path": "conduit/fixtures/mined-ci/repos/neilmac91__EarningsNerd"
+      "local_path": "conduit/fixtures/mined-ci/repos/neilmac91__EarningsNerd",
+      "fixtures": "conduit/fixtures/mined-ci"
     },
     {
       "repo": "lx-software-ltd/evolvesprouts",
@@ -49,22 +49,22 @@
           "symbol": "from sqlalchemy.exc import IntegrityError, UnsupportedCompilationError"
         }
       ],
-      "fixtures": "conduit/fixtures/mined-ci",
-      "local_path": "conduit/fixtures/mined-ci/repos/lx-software-ltd__evolvesprouts"
+      "local_path": "conduit/fixtures/mined-ci/repos/lx-software-ltd__evolvesprouts",
+      "fixtures": "conduit/fixtures/mined-ci"
     },
     {
       "repo": "shubangowda/agentflow",
       "url": "https://github.com/shubangowda/agentflow",
       "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
       "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
-      "merge_commit": "b11dd61f22a1154e055525caaf2a5a238281c4b2",
-      "pr": 24,
+      "merge_commit": "074fc4fd177245d70f55efa547cf17c6a8ffbe2b",
+      "pr": 7,
       "subdir": "",
       "service": "openai",
       "pin": "openai==0.27.8",
       "pin_file": "requirements.txt",
       "from_version": "0.27.8",
-      "to_version": "3.34.0",
+      "to_version": "3.33.0",
       "expected": [
         {
           "file": "agentflow/functions/create_image.py",
@@ -83,11 +83,6 @@
         },
         {
           "file": "agentflow/llm.py",
-          "line": 36,
-          "symbol": "Initializes the LLM object by loading the environment variables and setting the OpenAI API key."
-        },
-        {
-          "file": "agentflow/llm.py",
           "line": 39,
           "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
         },
@@ -102,8 +97,8 @@
           "symbol": "@patch(\"openai.Image.create\")"
         }
       ],
-      "fixtures": "conduit/fixtures/mined-ci",
-      "local_path": "conduit/fixtures/mined-ci/repos/shubangowda__agentflow"
+      "local_path": "conduit/fixtures/mined-ci/repos/shubangowda__agentflow",
+      "fixtures": "conduit/fixtures/mined-ci"
     },
     {
       "repo": "D-Hack1/Sentry",
@@ -155,8 +150,31 @@
           "symbol": "client = Elasticsearch(host)"
         }
       ],
-      "fixtures": "conduit/fixtures/mined-ci",
-      "local_path": "conduit/fixtures/mined-ci/repos/D-Hack1__Sentry"
+      "local_path": "conduit/fixtures/mined-ci/repos/D-Hack1__Sentry",
+      "fixtures": "conduit/fixtures/mined-ci"
+    },
+    {
+      "repo": "gptme/gptme",
+      "url": "https://github.com/gptme/gptme",
+      "commit": "d4b5fd6c0317b55fa6e9c91fa3ffa3cfa3efa5b1",
+      "parent": "d4b5fd6c0317b55fa6e9c91fa3ffa3cfa3efa5b1",
+      "merge_commit": "0b97c63676df9c147c1045741cca022c2f4f44c5",
+      "pr": 4225,
+      "subdir": "",
+      "service": "anthropic",
+      "pin": "anthropic==0.120",
+      "pin_file": "pyproject.toml",
+      "from_version": "0.120",
+      "to_version": "1.8",
+      "expected": [
+        {
+          "file": "gptme/llm/__init__.py",
+          "line": 284,
+          "symbol": "_PROVIDER_ERROR_MODULES = frozenset({\"openai\", \"anthropic\", \"httpx\", \"requests\"})"
+        }
+      ],
+      "local_path": "conduit/fixtures/mined-ci/repos/gptme__gptme",
+      "fixtures": "conduit/fixtures/mined-ci"
     },
     {
       "repo": "pinecone-io/bird-search-example",
@@ -193,8 +211,67 @@
           "symbol": "from pinecone.preview import SchemaBuilder"
         }
       ],
-      "fixtures": "conduit/fixtures/mined-ci",
-      "local_path": "conduit/fixtures/mined-ci/repos/pinecone-io__bird-search-example"
+      "local_path": "conduit/fixtures/mined-ci/repos/pinecone-io__bird-search-example",
+      "fixtures": "conduit/fixtures/mined-ci"
+    },
+    {
+      "repo": "ckan/ckan",
+      "url": "https://github.com/ckan/ckan",
+      "commit": "0ccb2ce3fc869f2ac3d29dd7e8b7f6b466eb276d",
+      "parent": "0ccb2ce3fc869f2ac3d29dd7e8b7f6b466eb276d",
+      "merge_commit": "26eb4768443ac76f4ecb64b53c2e22e515ad50ff",
+      "subdir": "",
+      "service": "psycopg2",
+      "pin": "psycopg2==2.4.5",
+      "pin_file": "requirements.in",
+      "from_version": "2.4.5",
+      "to_version": "2.7.3.2",
+      "expected": [
+        {
+          "file": "ckanext/datastore/backend/postgres.py",
+          "line": 26,
+          "symbol": "import psycopg2.extras"
+        },
+        {
+          "file": "ckanext/datastore/backend/postgres.py",
+          "line": 277,
+          "symbol": "psycopg2.extras.register_composite('nested',"
+        }
+      ],
+      "local_path": "conduit/fixtures/mined-ci/repos/ckan__ckan",
+      "fixtures": "conduit/fixtures/mined-ci"
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "url": "https://github.com/great-expectations/great_expectations",
+      "commit": "01e8e045512a91eec4d008ae99598ff73ea7c9cc",
+      "parent": "01e8e045512a91eec4d008ae99598ff73ea7c9cc",
+      "merge_commit": "b1eb9588cea6624a78991c78378ef0ec5627e34a",
+      "subdir": "",
+      "service": "pymysql",
+      "pin": "pymysql==0.9.3",
+      "pin_file": "reqs/requirements-dev-mysql.txt",
+      "from_version": "0.9.3",
+      "to_version": "1.1.1",
+      "expected": [
+        {
+          "file": "tests/test_packaging.py",
+          "line": 209,
+          "symbol": "(\"requirements-dev-mysql.txt\", \"PyMySQL\", ((\"<\", \"0.10\"), (\">=\", \"0.9.3\"))),"
+        },
+        {
+          "file": "tests/test_packaging.py",
+          "line": 214,
+          "symbol": "\"PyMySQL\","
+        },
+        {
+          "file": "tests/test_packaging.py",
+          "line": 252,
+          "symbol": "(\"requirements-dev.txt\", \"PyMySQL\", ((\"<\", \"0.10\"), (\">=\", \"0.9.3\"))),"
+        }
+      ],
+      "local_path": "conduit/fixtures/mined-ci/repos/great-expectations__great_expectations",
+      "fixtures": "conduit/fixtures/mined-ci"
     }
   ]
 }

@@ -1,229 +1,11 @@
 {
-  "note": "Scoring sample drawn from frozen known-breaks-mined.json without editing that file.",
+  "note": "High-signal scoring sample from frozen mined set.",
   "scoring": {
     "catch": "A non-wrapper impact site whose path ends with the expected file and whose line equals the expected line.",
     "miss": "An expected site with no such impact site.",
     "false_positive": "A non-wrapper impact site that is not one of the expected file:line pairs."
   },
   "repos": [
-    {
-      "repo": "boto/boto3",
-      "url": "https://github.com/boto/boto3",
-      "commit": "2037106ec38b8e74152fca7bdaa21c627a4b6065",
-      "parent": "2037106ec38b8e74152fca7bdaa21c627a4b6065",
-      "merge_commit": "9e371b968590259b38b9e436bd8b005487a271e4",
-      "subdir": "",
-      "service": "s3transfer",
-      "pin": "s3transfer==0.18.0",
-      "pin_file": "setup.cfg",
-      "from_version": "0.18.0",
-      "to_version": "0.19.0",
-      "expected": [
-        {
-          "file": "setup.py",
-          "line": 19,
-          "symbol": "'s3transfer>=0.18.0,<0.19.0',"
-        }
-      ]
-    },
-    {
-      "repo": "boto/boto3",
-      "url": "https://github.com/boto/boto3",
-      "commit": "11f25f204fd8bd019289a643729015fb99e29fcd",
-      "parent": "11f25f204fd8bd019289a643729015fb99e29fcd",
-      "merge_commit": "22c64746bdef5ffd031109f5421450670b8ceb18",
-      "subdir": "",
-      "service": "s3transfer",
-      "pin": "s3transfer==0.17.0",
-      "pin_file": "setup.cfg",
-      "from_version": "0.17.0",
-      "to_version": "0.18.0",
-      "expected": [
-        {
-          "file": "setup.py",
-          "line": 19,
-          "symbol": "'s3transfer>=0.17.0,<0.18.0',"
-        }
-      ]
-    },
-    {
-      "repo": "boto/boto3",
-      "url": "https://github.com/boto/boto3",
-      "commit": "20381d5695aa766f041b42dcda9600e14f32bd15",
-      "parent": "20381d5695aa766f041b42dcda9600e14f32bd15",
-      "merge_commit": "048bf84492d9d55b327a67f4ab07476eb62c2ee1",
-      "subdir": "",
-      "service": "botocore",
-      "pin": "botocore==1.42.97",
-      "pin_file": "setup.cfg",
-      "from_version": "1.42.97",
-      "to_version": "1.43.0",
-      "expected": [
-        {
-          "file": "setup.py",
-          "line": 17,
-          "symbol": "'botocore>=1.42.97,<1.43.0',"
-        }
-      ]
-    },
-    {
-      "repo": "boto/boto3",
-      "url": "https://github.com/boto/boto3",
-      "commit": "f2c9a79a8699d5dab48734e0f46131baa6d63fa7",
-      "parent": "f2c9a79a8699d5dab48734e0f46131baa6d63fa7",
-      "merge_commit": "5991e64f13b81bbc1b88c549bafc633708ecc17f",
-      "subdir": "",
-      "service": "botocore",
-      "pin": "botocore==1.41.6",
-      "pin_file": "setup.cfg",
-      "from_version": "1.41.6",
-      "to_version": "1.42.0",
-      "expected": [
-        {
-          "file": "setup.py",
-          "line": 17,
-          "symbol": "'botocore>=1.41.6,<1.42.0',"
-        }
-      ]
-    },
-    {
-      "repo": "neilmac91/EarningsNerd",
-      "url": "https://github.com/neilmac91/EarningsNerd",
-      "commit": "6113751cf2dfee8c800cb3101950abcf64dc414b",
-      "parent": "6113751cf2dfee8c800cb3101950abcf64dc414b",
-      "merge_commit": "02fb99b1a84059a032c7a383aeedc45e215f85ad",
-      "pr": 1305,
-      "subdir": "",
-      "service": "stripe",
-      "pin": "stripe==15.6.1",
-      "pin_file": "backend/requirements.in",
-      "from_version": "15.6.1",
-      "to_version": "16.0.0",
-      "expected": [
-        {
-          "file": "backend/tests/unit/test_checkout_session.py",
-          "line": 69,
-          "symbol": "\"\"\"Call the endpoint with Stripe mocked; return the kwargs passed to Session.create.\"\"\""
-        }
-      ]
-    },
-    {
-      "repo": "wevote/WeVoteServer",
-      "url": "https://github.com/wevote/WeVoteServer",
-      "commit": "4772f1c09af6d78bf743a5e0268db7bc3c6eb0fa",
-      "parent": "4772f1c09af6d78bf743a5e0268db7bc3c6eb0fa",
-      "merge_commit": "f2efb6d5073d80c054b0f379428fcde6970aa31e",
-      "subdir": "",
-      "service": "stripe",
-      "pin": "stripe==2.56.0",
-      "pin_file": "requirements.txt",
-      "from_version": "2.56.0",
-      "to_version": "2.58.0",
-      "expected": [
-        {
-          "file": "donate/controllers.py",
-          "line": 409,
-          "symbol": "logger.debug(\"Stripe charge successful: \" + charge_id + \", amount: \" + str(amount) + \", voter_we_vote_id:\" +"
-        },
-        {
-          "file": "stripe_donations/controllers.py",
-          "line": 366,
-          "symbol": "logger.debug(\"Stripe charge successful: \" + charge.id + \", amount: \" + str(amount) + \", voter_we_vote_id:\" +"
-        }
-      ]
-    },
-    {
-      "repo": "shubangowda/agentflow",
-      "url": "https://github.com/shubangowda/agentflow",
-      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
-      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
-      "merge_commit": "074fc4fd177245d70f55efa547cf17c6a8ffbe2b",
-      "pr": 7,
-      "subdir": "",
-      "service": "openai",
-      "pin": "openai==0.27.8",
-      "pin_file": "requirements.txt",
-      "from_version": "0.27.8",
-      "to_version": "3.33.0",
-      "expected": [
-        {
-          "file": "agentflow/functions/create_image.py",
-          "line": 8,
-          "symbol": "import openai"
-        },
-        {
-          "file": "agentflow/functions/create_image.py",
-          "line": 85,
-          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
-        },
-        {
-          "file": "agentflow/llm.py",
-          "line": 9,
-          "symbol": "import openai"
-        },
-        {
-          "file": "agentflow/llm.py",
-          "line": 39,
-          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
-        },
-        {
-          "file": "agentflow/llm.py",
-          "line": 64,
-          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
-        },
-        {
-          "file": "tests/test_function_create_image.py",
-          "line": 13,
-          "symbol": "@patch(\"openai.Image.create\")"
-        }
-      ]
-    },
-    {
-      "repo": "shubangowda/agentflow",
-      "url": "https://github.com/shubangowda/agentflow",
-      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
-      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
-      "merge_commit": "c0d7d114a928e7aff0a40948e692f58e2b78e25f",
-      "pr": 35,
-      "subdir": "",
-      "service": "openai",
-      "pin": "openai==0.27.8",
-      "pin_file": "requirements.txt",
-      "from_version": "0.27.8",
-      "to_version": "3.35.1",
-      "expected": [
-        {
-          "file": "agentflow/functions/create_image.py",
-          "line": 8,
-          "symbol": "import openai"
-        },
-        {
-          "file": "agentflow/functions/create_image.py",
-          "line": 85,
-          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
-        },
-        {
-          "file": "agentflow/llm.py",
-          "line": 9,
-          "symbol": "import openai"
-        },
-        {
-          "file": "agentflow/llm.py",
-          "line": 39,
-          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
-        },
-        {
-          "file": "agentflow/llm.py",
-          "line": 64,
-          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
-        },
-        {
-          "file": "tests/test_function_create_image.py",
-          "line": 13,
-          "symbol": "@patch(\"openai.Image.create\")"
-        }
-      ]
-    },
     {
       "repo": "lx-software-ltd/evolvesprouts",
       "url": "https://github.com/lx-software-ltd/evolvesprouts",
@@ -297,299 +79,161 @@
       ]
     },
     {
-      "repo": "mikeqfu/pydriosm",
-      "url": "https://github.com/mikeqfu/pydriosm",
-      "commit": "d9a5508347c2697b79269da7b9c0c74257f95a79",
-      "parent": "d9a5508347c2697b79269da7b9c0c74257f95a79",
-      "merge_commit": "cdebe38bb3b358b8a0e374fc18f3c7c87507a31f",
+      "repo": "neilmac91/EarningsNerd",
+      "url": "https://github.com/neilmac91/EarningsNerd",
+      "commit": "6113751cf2dfee8c800cb3101950abcf64dc414b",
+      "parent": "6113751cf2dfee8c800cb3101950abcf64dc414b",
+      "merge_commit": "02fb99b1a84059a032c7a383aeedc45e215f85ad",
+      "pr": 1305,
       "subdir": "",
-      "service": "pyhelpers",
-      "pin": "pyhelpers==2.3.4",
-      "pin_file": "docs/source/requirements.txt",
-      "from_version": "2.3.4",
-      "to_version": "2.4.0",
+      "service": "stripe",
+      "pin": "stripe==15.6.1",
+      "pin_file": "backend/requirements.in",
+      "from_version": "15.6.1",
+      "to_version": "16.0.0",
       "expected": [
         {
-          "file": "pydriosm/downloader/_base.py",
-          "line": 17,
-          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, validate_dir"
+          "file": "backend/tests/unit/test_checkout_session.py",
+          "line": 69,
+          "symbol": "\"\"\"Call the endpoint with Stripe mocked; return the kwargs passed to Session.create.\"\"\""
+        }
+      ]
+    },
+    {
+      "repo": "georgehadji/reasoner",
+      "url": "https://github.com/georgehadji/reasoner",
+      "commit": "37bd912a29e4ed6ca8879bf11970feb670546e2c",
+      "parent": "37bd912a29e4ed6ca8879bf11970feb670546e2c",
+      "merge_commit": "9a97091e9e7b5994a54ff17b5cb3ee6578bacb09",
+      "pr": 119,
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==15.6.1",
+      "pin_file": "requirements.lock.txt",
+      "from_version": "15.6.1",
+      "to_version": "16.0.0",
+      "expected": [
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 109,
+          "symbol": "stripe_sub = await asyncio.to_thread(stripe.Subscription.retrieve, sub_id)"
         },
         {
-          "file": "pydriosm/downloader/_base.py",
-          "line": 932,
-          "symbol": ":param kwargs: optional parameters of `pyhelpers.ops.download_file_from_url()`_"
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 115,
+          "symbol": "stripe.Customer.retrieve, stripe_sub[\"customer\"]"
         },
         {
-          "file": "pydriosm/downloader/_geofabrik.py",
-          "line": 12,
-          "symbol": "from pyhelpers.dirs import cd, validate_dir"
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 124,
+          "symbol": "stripe.Customer.retrieve, stripe_sub[\"customer\"]"
         },
         {
-          "file": "pydriosm/ios/_base.py",
-          "line": 68,
-          "symbol": "see also the function `pyhelpers.settings.gdal_configurations()`_"
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 183,
+          "symbol": "stripe_sub = await asyncio.to_thread(stripe.Subscription.retrieve, subscription_id)"
         },
         {
-          "file": "pydriosm/ios/_base.py",
-          "line": 75,
-          "symbol": ":param kwargs: [optional] parameters of the class `pyhelpers.sql.PostgreSQL`_"
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 185,
+          "symbol": "stripe.Customer.retrieve, stripe_sub.get(\"customer\")"
+        }
+      ]
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "url": "https://github.com/shubangowda/agentflow",
+      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "merge_commit": "b11dd61f22a1154e055525caaf2a5a238281c4b2",
+      "pr": 24,
+      "subdir": "",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "pin_file": "requirements.txt",
+      "from_version": "0.27.8",
+      "to_version": "3.34.0",
+      "expected": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
         },
         {
-          "file": "pydriosm/ios/_base.py",
-          "line": 516,
-          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.sql.PostgreSQL.dump_data()`_"
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
         },
         {
-          "file": "pydriosm/ios/_base.py",
-          "line": 518,
-          "symbol": ".. _`pyhelpers.sql.PostgreSQL.dump_data()`:"
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
         },
         {
-          "file": "pydriosm/ios/_base.py",
-          "line": 519,
-          "symbol": "https://pyhelpers.readthedocs.io/en/latest/sql.html#sql-postgresql-dump-data"
+          "file": "agentflow/llm.py",
+          "line": 36,
+          "symbol": "Initializes the LLM object by loading the environment variables and setting the OpenAI API key."
         },
         {
-          "file": "pydriosm/reader/_base.py",
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
           "line": 13,
-          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, validate_dir"
-        },
-        {
-          "file": "pydriosm/reader/_base.py",
-          "line": 16,
-          "symbol": "from pyhelpers.store import load_pickle, save_pickle"
-        },
-        {
-          "file": "pydriosm/reader/_geofabrik.py",
-          "line": 673,
-          "symbol": ">>> from pyhelpers.dirs import delete_dir"
-        },
-        {
-          "file": "pydriosm/reader/_shp.py",
-          "line": 19,
-          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, validate_dir"
-        },
-        {
-          "file": "pydriosm/utils.py",
-          "line": 203,
-          "symbol": ">>> from pyhelpers.dirs import cd"
+          "symbol": "@patch(\"openai.Image.create\")"
         }
       ]
     },
     {
-      "repo": "mikeqfu/pydriosm",
-      "url": "https://github.com/mikeqfu/pydriosm",
-      "commit": "cdebe38bb3b358b8a0e374fc18f3c7c87507a31f",
-      "parent": "cdebe38bb3b358b8a0e374fc18f3c7c87507a31f",
-      "merge_commit": "7ca1c988c535dce08a72b386e06604b8ae562c6f",
-      "pr": 53,
+      "repo": "shubangowda/agentflow",
+      "url": "https://github.com/shubangowda/agentflow",
+      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "merge_commit": "074fc4fd177245d70f55efa547cf17c6a8ffbe2b",
+      "pr": 7,
       "subdir": "",
-      "service": "pyhelpers",
-      "pin": "pyhelpers==2.4.0",
-      "pin_file": "docs/source/requirements.txt",
-      "from_version": "2.4.0",
-      "to_version": "2.5.3",
-      "expected": [
-        {
-          "file": "pydriosm/downloader/_base.py",
-          "line": 17,
-          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, resolve_dir"
-        },
-        {
-          "file": "pydriosm/downloader/_base.py",
-          "line": 97,
-          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dirs.cd()`_"
-        },
-        {
-          "file": "pydriosm/downloader/_base.py",
-          "line": 605,
-          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dirs.cd()`_,"
-        },
-        {
-          "file": "pydriosm/downloader/_base.py",
-          "line": 959,
-          "symbol": ":param kwargs: Optional parameters for `pyhelpers.ops.download_file_from_url`_."
-        },
-        {
-          "file": "pydriosm/downloader/_bbbike.py",
-          "line": 9,
-          "symbol": "from pyhelpers.ops import confirmed"
-        },
-        {
-          "file": "pydriosm/downloader/_bbbike.py",
-          "line": 702,
-          "symbol": ">>> from pyhelpers.dirs import delete_dir"
-        },
-        {
-          "file": "pydriosm/downloader/_geofabrik.py",
-          "line": 12,
-          "symbol": "from pyhelpers.dirs import cd, resolve_dir"
-        },
-        {
-          "file": "pydriosm/downloader/_geofabrik.py",
-          "line": 960,
-          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dirs.cd()`_,"
-        },
-        {
-          "file": "pydriosm/downloader/_geofabrik.py",
-          "line": 1192,
-          "symbol": ":param kwargs: optional parameters of `pyhelpers.ops.download_file_from_url()`_"
-        },
-        {
-          "file": "pydriosm/downloader/_geofabrik.py",
-          "line": 1203,
-          "symbol": ">>> from pyhelpers.dirs import delete_dir"
-        },
-        {
-          "file": "pydriosm/downloader/_wrapper.py",
-          "line": 898,
-          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dirs.cd()`_,"
-        },
-        {
-          "file": "pydriosm/ios/_base.py",
-          "line": 67,
-          "symbol": ":param max_tmpfile_size: See the function `pyhelpers.settings.gdal_configurations()`_."
-        },
-        {
-          "file": "pydriosm/ios/_base.py",
-          "line": 76,
-          "symbol": ":param kwargs: [optional] parameters of the class `pyhelpers.sql.PostgreSQL`_."
-        },
-        {
-          "file": "pydriosm/ios/_base.py",
-          "line": 524,
-          "symbol": ":param kwargs: Ooptional parameters of `pyhelpers.dbms.PostgreSQL.import_data`_."
-        },
-        {
-          "file": "pydriosm/ios/_pbf_importer.py",
-          "line": 4,
-          "symbol": "from pyhelpers._cache import _check_dependencies, _check_relative_pathname, _print_failure_message"
-        },
-        {
-          "file": "pydriosm/ios/_pgsql_osm.py",
-          "line": 181,
-          "symbol": ">>> from pyhelpers.store import load_pickle"
-        },
-        {
-          "file": "pydriosm/ios/_pgsql_osm.py",
-          "line": 455,
-          "symbol": "[`ROP-1 <https://pyhelpers.readthedocs.io/en/latest/sql.html#sql-postgresql-read-sql-query>`_]."
-        },
-        {
-          "file": "pydriosm/reader/_base.py",
-          "line": 14,
-          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, resolve_dir"
-        },
-        {
-          "file": "pydriosm/reader/_bbbike.py",
-          "line": 7,
-          "symbol": "from pyhelpers.text import find_similar_str"
-        },
-        {
-          "file": "pydriosm/reader/_bbbike.py",
-          "line": 71,
-          "symbol": ">>> from pyhelpers.dirs import delete_dir"
-        },
-        {
-          "file": "pydriosm/reader/_bbbike.py",
-          "line": 511,
-          "symbol": ">>> from pyhelpers.dirs import cd, delete_dir"
-        },
-        {
-          "file": "pydriosm/reader/_geofabrik.py",
-          "line": 7,
-          "symbol": "from pyhelpers.text import find_similar_str"
-        },
-        {
-          "file": "pydriosm/reader/_geofabrik.py",
-          "line": 30,
-          "symbol": "see also the function `pyhelpers.settings.gdal_configurations()`_"
-        },
-        {
-          "file": "pydriosm/reader/_geofabrik.py",
-          "line": 677,
-          "symbol": ">>> from pyhelpers.dirs import cd, delete_dir"
-        },
-        {
-          "file": "pydriosm/reader/_pbf.py",
-          "line": 9,
-          "symbol": "from pyhelpers.dirs import check_relative_pathname"
-        },
-        {
-          "file": "pydriosm/reader/_shp.py",
-          "line": 18,
-          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, is_path_to_dir, resolve_dir"
-        },
-        {
-          "file": "pydriosm/reader/_shp.py",
-          "line": 334,
-          "symbol": ">>> from pyhelpers.dirs import cd, delete_dir"
-        },
-        {
-          "file": "pydriosm/reader/_shp.py",
-          "line": 1283,
-          "symbol": ">>> from pyhelpers.dirs import delete_dir"
-        },
-        {
-          "file": "pydriosm/utils.py",
-          "line": 12,
-          "symbol": "from pyhelpers._cache import _check_dependencies, _check_relative_pathname, _print_failure_message"
-        },
-        {
-          "file": "pydriosm/utils.py",
-          "line": 211,
-          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dir.cd()`_"
-        },
-        {
-          "file": "pydriosm/utils.py",
-          "line": 243,
-          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dir.cd()`_"
-        },
-        {
-          "file": "tests/test_downloader/test__base.py",
-          "line": 5,
-          "symbol": "from pyhelpers.dirs import delete_dir, normalize_pathname"
-        }
-      ]
-    },
-    {
-      "repo": "abdksyed/KyaHuaPathe",
-      "url": "https://github.com/abdksyed/KyaHuaPathe",
-      "commit": "c384052453c134622899032c30b42869c64119c9",
-      "parent": "c384052453c134622899032c30b42869c64119c9",
-      "merge_commit": "90b9c38374e15511be7c8727a8f7991b159cdf07",
-      "pr": 4,
-      "subdir": "",
-      "service": "google-adk",
-      "pin": "google-adk==1.23.0",
+      "service": "openai",
+      "pin": "openai==0.27.8",
       "pin_file": "requirements.txt",
-      "from_version": "1.23.0",
-      "to_version": "1.24.1",
+      "from_version": "0.27.8",
+      "to_version": "3.33.0",
       "expected": [
         {
-          "file": "src/agent.py",
-          "line": 11,
-          "symbol": "from google.adk.sessions import InMemorySessionService"
-        }
-      ]
-    },
-    {
-      "repo": "abdksyed/KyaHuaPathe",
-      "url": "https://github.com/abdksyed/KyaHuaPathe",
-      "commit": "c384052453c134622899032c30b42869c64119c9",
-      "parent": "c384052453c134622899032c30b42869c64119c9",
-      "merge_commit": "5babddf301db235472eda0e96fd7b806ef2bbb7d",
-      "subdir": "",
-      "service": "google-adk",
-      "pin": "google-adk==1.23.0",
-      "pin_file": "requirements.txt",
-      "from_version": "1.23.0",
-      "to_version": "1.24.1",
-      "expected": [
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
         {
-          "file": "src/agent.py",
-          "line": 11,
-          "symbol": "from google.adk.sessions import InMemorySessionService"
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
         }
       ]
     },
@@ -600,56 +244,6 @@
       "parent": "35687f5a88da2b72b08468e247f3b75e418b14c2",
       "merge_commit": "a31912ec26d01bc5375f161081c49ff81641d5cc",
       "pr": 8,
-      "subdir": "",
-      "service": "elasticsearch",
-      "pin": "elasticsearch==9.5.1",
-      "pin_file": "requirements.txt",
-      "from_version": "9.5.1",
-      "to_version": "8.19.3",
-      "expected": [
-        {
-          "file": "api/main.py",
-          "line": 19,
-          "symbol": "from elasticsearch import AsyncElasticsearch, NotFoundError"
-        },
-        {
-          "file": "api/main.py",
-          "line": 90,
-          "symbol": "logger.info(f\"Elasticsearch client connected to {ES_HOST}:{ES_PORT}\")"
-        },
-        {
-          "file": "api/main.py",
-          "line": 100,
-          "symbol": "logger.info(\"Elasticsearch client closed.\")"
-        },
-        {
-          "file": "api/main.py",
-          "line": 126,
-          "symbol": "Run all models on a feature row and persist to Elasticsearch."
-        },
-        {
-          "file": "api/main.py",
-          "line": 535,
-          "symbol": "\"\"\"Returns status of Elasticsearch, Kafka, models, correlator, and uptime.\"\"\""
-        },
-        {
-          "file": "api/main.py",
-          "line": 576,
-          "symbol": "\"elasticsearch\": {\"ok\": es_ok, \"detail\": es_detail},"
-        },
-        {
-          "file": "es/init_index.py",
-          "line": 79,
-          "symbol": "client = Elasticsearch(host)"
-        }
-      ]
-    },
-    {
-      "repo": "D-Hack1/Sentry",
-      "url": "https://github.com/D-Hack1/Sentry",
-      "commit": "35687f5a88da2b72b08468e247f3b75e418b14c2",
-      "parent": "35687f5a88da2b72b08468e247f3b75e418b14c2",
-      "merge_commit": "a8aeb5d4e65f45116320f596181c0cbd4d50a511",
       "subdir": "",
       "service": "elasticsearch",
       "pin": "elasticsearch==9.5.1",
@@ -716,26 +310,6 @@
       ]
     },
     {
-      "repo": "gptme/gptme",
-      "url": "https://github.com/gptme/gptme",
-      "commit": "c4a3a2ca6787ccd187ec76451b98cdd070f71a09",
-      "parent": "c4a3a2ca6787ccd187ec76451b98cdd070f71a09",
-      "merge_commit": "b5dfecf8590f027183141d43aba1478a1e88f96d",
-      "subdir": "",
-      "service": "anthropic",
-      "pin": "anthropic==0.120",
-      "pin_file": "pyproject.toml",
-      "from_version": "0.120",
-      "to_version": "1.8",
-      "expected": [
-        {
-          "file": "gptme/llm/__init__.py",
-          "line": 285,
-          "symbol": "_PROVIDER_ERROR_MODULES = frozenset({\"openai\", \"anthropic\", \"httpx\", \"requests\"})"
-        }
-      ]
-    },
-    {
       "repo": "pinecone-io/bird-search-example",
       "url": "https://github.com/pinecone-io/bird-search-example",
       "commit": "081a6f9fb518c380a070423549d27e6b603a44c5",
@@ -772,6 +346,131 @@
       ]
     },
     {
+      "repo": "gptme/gptme",
+      "url": "https://github.com/gptme/gptme",
+      "commit": "c4a3a2ca6787ccd187ec76451b98cdd070f71a09",
+      "parent": "c4a3a2ca6787ccd187ec76451b98cdd070f71a09",
+      "merge_commit": "b5dfecf8590f027183141d43aba1478a1e88f96d",
+      "subdir": "",
+      "service": "anthropic",
+      "pin": "anthropic==0.120",
+      "pin_file": "pyproject.toml",
+      "from_version": "0.120",
+      "to_version": "1.8",
+      "expected": [
+        {
+          "file": "gptme/llm/__init__.py",
+          "line": 285,
+          "symbol": "_PROVIDER_ERROR_MODULES = frozenset({\"openai\", \"anthropic\", \"httpx\", \"requests\"})"
+        }
+      ]
+    },
+    {
+      "repo": "ckan/ckan",
+      "url": "https://github.com/ckan/ckan",
+      "commit": "0ccb2ce3fc869f2ac3d29dd7e8b7f6b466eb276d",
+      "parent": "0ccb2ce3fc869f2ac3d29dd7e8b7f6b466eb276d",
+      "merge_commit": "26eb4768443ac76f4ecb64b53c2e22e515ad50ff",
+      "subdir": "",
+      "service": "psycopg2",
+      "pin": "psycopg2==2.4.5",
+      "pin_file": "requirements.in",
+      "from_version": "2.4.5",
+      "to_version": "2.7.3.2",
+      "expected": [
+        {
+          "file": "ckanext/datastore/backend/postgres.py",
+          "line": 26,
+          "symbol": "import psycopg2.extras"
+        },
+        {
+          "file": "ckanext/datastore/backend/postgres.py",
+          "line": 277,
+          "symbol": "psycopg2.extras.register_composite('nested',"
+        }
+      ]
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "url": "https://github.com/great-expectations/great_expectations",
+      "commit": "01e8e045512a91eec4d008ae99598ff73ea7c9cc",
+      "parent": "01e8e045512a91eec4d008ae99598ff73ea7c9cc",
+      "merge_commit": "b1eb9588cea6624a78991c78378ef0ec5627e34a",
+      "subdir": "",
+      "service": "pymysql",
+      "pin": "pymysql==0.9.3",
+      "pin_file": "reqs/requirements-dev-mysql.txt",
+      "from_version": "0.9.3",
+      "to_version": "1.1.1",
+      "expected": [
+        {
+          "file": "tests/test_packaging.py",
+          "line": 209,
+          "symbol": "(\"requirements-dev-mysql.txt\", \"PyMySQL\", ((\"<\", \"0.10\"), (\">=\", \"0.9.3\"))),"
+        },
+        {
+          "file": "tests/test_packaging.py",
+          "line": 214,
+          "symbol": "\"PyMySQL\","
+        },
+        {
+          "file": "tests/test_packaging.py",
+          "line": 252,
+          "symbol": "(\"requirements-dev.txt\", \"PyMySQL\", ((\"<\", \"0.10\"), (\">=\", \"0.9.3\"))),"
+        }
+      ]
+    },
+    {
+      "repo": "D-Hack1/Sentry",
+      "url": "https://github.com/D-Hack1/Sentry",
+      "commit": "35687f5a88da2b72b08468e247f3b75e418b14c2",
+      "parent": "35687f5a88da2b72b08468e247f3b75e418b14c2",
+      "merge_commit": "a8aeb5d4e65f45116320f596181c0cbd4d50a511",
+      "subdir": "",
+      "service": "elasticsearch",
+      "pin": "elasticsearch==9.5.1",
+      "pin_file": "requirements.txt",
+      "from_version": "9.5.1",
+      "to_version": "8.19.3",
+      "expected": [
+        {
+          "file": "api/main.py",
+          "line": 19,
+          "symbol": "from elasticsearch import AsyncElasticsearch, NotFoundError"
+        },
+        {
+          "file": "api/main.py",
+          "line": 90,
+          "symbol": "logger.info(f\"Elasticsearch client connected to {ES_HOST}:{ES_PORT}\")"
+        },
+        {
+          "file": "api/main.py",
+          "line": 100,
+          "symbol": "logger.info(\"Elasticsearch client closed.\")"
+        },
+        {
+          "file": "api/main.py",
+          "line": 126,
+          "symbol": "Run all models on a feature row and persist to Elasticsearch."
+        },
+        {
+          "file": "api/main.py",
+          "line": 535,
+          "symbol": "\"\"\"Returns status of Elasticsearch, Kafka, models, correlator, and uptime.\"\"\""
+        },
+        {
+          "file": "api/main.py",
+          "line": 576,
+          "symbol": "\"elasticsearch\": {\"ok\": es_ok, \"detail\": es_detail},"
+        },
+        {
+          "file": "es/init_index.py",
+          "line": 79,
+          "symbol": "client = Elasticsearch(host)"
+        }
+      ]
+    },
+    {
       "repo": "pinecone-io/bird-search-example",
       "url": "https://github.com/pinecone-io/bird-search-example",
       "commit": "081a6f9fb518c380a070423549d27e6b603a44c5",
@@ -803,146 +502,6 @@
           "file": "build_index.py",
           "line": 45,
           "symbol": "from pinecone.preview import SchemaBuilder"
-        }
-      ]
-    },
-    {
-      "repo": "psf/requests",
-      "url": "https://github.com/psf/requests",
-      "commit": "83e67c448567cb78490e709925cc335567f656dd",
-      "parent": "83e67c448567cb78490e709925cc335567f656dd",
-      "merge_commit": "92f10cec5b3223e90c186b7a04306564cde050dc",
-      "subdir": "",
-      "service": "pytest-httpbin",
-      "pin": "pytest-httpbin==2.0.0",
-      "pin_file": "requirements-dev.txt",
-      "from_version": "2.0.0",
-      "to_version": "2.1.0",
-      "expected": [
-        {
-          "file": "setup.py",
-          "line": 43,
-          "symbol": "\"pytest-httpbin==2.0.0\","
-        }
-      ]
-    },
-    {
-      "repo": "psf/requests",
-      "url": "https://github.com/psf/requests",
-      "commit": "d3d504436ef0c2ac7ec8af13738b04dcc8c694be",
-      "parent": "d3d504436ef0c2ac7ec8af13738b04dcc8c694be",
-      "merge_commit": "b639e66c816514e40604d46f0088fbceec1a5149",
-      "subdir": "",
-      "service": "pytest-httpbin",
-      "pin": "pytest-httpbin==1.0.0",
-      "pin_file": "requirements-dev.txt",
-      "from_version": "1.0.0",
-      "to_version": "2.0.0",
-      "expected": [
-        {
-          "file": "setup.py",
-          "line": 68,
-          "symbol": "\"pytest-httpbin==0.0.7\","
-        }
-      ]
-    },
-    {
-      "repo": "scrapy/scrapy",
-      "url": "https://github.com/scrapy/scrapy",
-      "commit": "eef1732374f21b03002dcb8fe48c60bc0bf774e1",
-      "parent": "eef1732374f21b03002dcb8fe48c60bc0bf774e1",
-      "merge_commit": "5dbeece8da6686709eb00af9ffb91dd30a832a2e",
-      "subdir": "",
-      "service": "twisted",
-      "pin": "twisted==13.1.0",
-      "pin_file": "requirements-py2.txt",
-      "from_version": "13.1.0",
-      "to_version": "16.0.0",
-      "expected": [
-        {
-          "file": "setup.py",
-          "line": 68,
-          "symbol": "'Twisted>=13.1.0;python_version!=\"3.4\"',"
-        },
-        {
-          "file": "setup.py",
-          "line": 69,
-          "symbol": "'Twisted>=13.1.0,<=19.2.0;python_version==\"3.4\"',"
-        }
-      ]
-    },
-    {
-      "repo": "scrapy/scrapy",
-      "url": "https://github.com/scrapy/scrapy",
-      "commit": "e1ea0c433a96c2949b0a7c26cde65aea13fb79b4",
-      "parent": "e1ea0c433a96c2949b0a7c26cde65aea13fb79b4",
-      "merge_commit": "c8cf1a303d2272aa44422035fd1e3e6048cb5606",
-      "subdir": "",
-      "service": "twisted",
-      "pin": "twisted==10.0.0",
-      "pin_file": "requirements.txt",
-      "from_version": "10.0.0",
-      "to_version": "13.1.0",
-      "expected": [
-        {
-          "file": "scrapy/xlib/tx/_newclient.py",
-          "line": 41,
-          "symbol": "from twisted.protocols.basic import LineReceiver"
-        },
-        {
-          "file": "scrapy/xlib/tx/_newclient.py",
-          "line": 42,
-          "symbol": "from twisted.web.iweb import UNKNOWN_LENGTH"
-        },
-        {
-          "file": "scrapy/xlib/tx/_newclient.py",
-          "line": 43,
-          "symbol": "from twisted.web.http_headers import Headers"
-        },
-        {
-          "file": "scrapy/xlib/tx/client.py",
-          "line": 35,
-          "symbol": "from twisted.web.iweb import UNKNOWN_LENGTH, IBodyProducer"
-        },
-        {
-          "file": "scrapy/xlib/tx/client.py",
-          "line": 147,
-          "symbol": "from twisted.web.error import SchemeNotSupported"
-        },
-        {
-          "file": "scrapy/xlib/tx/client.py",
-          "line": 149,
-          "symbol": "from twisted.web._newclient import ResponseDone"
-        },
-        {
-          "file": "scrapy/xlib/tx/client.py",
-          "line": 151,
-          "symbol": "from twisted.web._newclient import RequestNotSent, RequestTransmissionFailed"
-        },
-        {
-          "file": "scrapy/xlib/tx/client.py",
-          "line": 152,
-          "symbol": "from twisted.web._newclient import ("
-        },
-        {
-          "file": "scrapy/xlib/tx/endpoints.py",
-          "line": 24,
-          "symbol": "from twisted.internet.protocol import ("
-        },
-        {
-          "file": "scrapy/xlib/tx/endpoints.py",
-          "line": 28,
-          "symbol": "from twisted.internet.interfaces import IStreamClientEndpointStringParser"
-        },
-        {
-          "file": "scrapy/xlib/tx/endpoints.py",
-          "line": 32,
-          "symbol": "from twisted.python.components import proxyForInterface"
-        },
-        {
-          "file": "setup.py",
-          "line": 44,
-          "symbol": "'Twisted>=10.0.0',"
         }
       ]
     }

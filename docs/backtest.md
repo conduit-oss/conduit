@@ -191,3 +191,8 @@ Indico's 14 extras, checked against the [2.0 migration guide](https://docs.sqlal
 ## Type checker comparison
 
 Pyright and Jedi were tried as receiver resolvers on the 18 known-break repos. The head-to-head is [`docs/type-checker-compare.json`](type-checker-compare.json). Pyright did not raise recall and hurt kodiak precision; Jedi typed Manga-Tagger's `_database` as `NoneType`. The hand-written resolver stayed. The optional Pyright wiring was removed after that experiment.
+
+
+## Mined known-breaks
+
+See [`known-breaks-mined.json`](known-breaks-mined.json) (frozen before scoring) and [`known-breaks-mined-results.json`](known-breaks-mined-results.json). Mine with `scripts/mine_known_breaks.py`; score with `scripts/score_mined_breaks.py`. CI runs the offline subset in `known-breaks-mined-ci.json`.

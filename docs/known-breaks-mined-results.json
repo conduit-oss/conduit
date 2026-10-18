@@ -1,0 +1,342 @@
+{
+  "note": "Scored offline against fixture trees for a subset of the frozen mined set. Full-repo scoring OOM'd in this environment; scripts/score_mined_breaks.py remains for live full runs.",
+  "rows": [
+    {
+      "repo": "neilmac91/EarningsNerd",
+      "service": "stripe",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "versions": "",
+      "false_positive_sites": [],
+      "caught_sites": [],
+      "missed_sites": []
+    },
+    {
+      "repo": "lx-software-ltd/evolvesprouts",
+      "service": "sqlalchemy",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "versions": "",
+      "false_positive_sites": [],
+      "caught_sites": [],
+      "missed_sites": []
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "expected": 6,
+      "caught": 2,
+      "missed": 4,
+      "false_positives": 2,
+      "recall": "2/6",
+      "precision": "2/4",
+      "versions": "0.27.8 -> 3.33.0",
+      "false_positive_sites": [
+        {
+          "path": "agentflow/llm.py",
+          "line": 65,
+          "expr": "response.choices[0].message",
+          "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "3.34.0"
+        },
+        {
+          "path": "agentflow/functions/create_image.py",
+          "line": 86,
+          "expr": "response['data'][0]['url']",
+          "change": "Image.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "3.34.0"
+        }
+      ],
+      "caught_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)",
+          "change": "Image.create removed",
+          "expr": "openai.Image.create"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)",
+          "change": "ChatCompletion.create removed",
+          "expr": "openai.ChatCompletion.create"
+        }
+      ],
+      "missed_sites": []
+    },
+    {
+      "repo": "D-Hack1/Sentry",
+      "service": "elasticsearch",
+      "expected": 7,
+      "caught": 0,
+      "missed": 7,
+      "false_positives": 0,
+      "recall": "0/7",
+      "precision": "n/a",
+      "versions": "",
+      "false_positive_sites": [],
+      "caught_sites": [],
+      "missed_sites": []
+    },
+    {
+      "repo": "gptme/gptme",
+      "service": "anthropic",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "versions": "",
+      "false_positive_sites": [],
+      "caught_sites": [],
+      "missed_sites": []
+    }
+  ],
+  "by_library": {
+    "stripe": {
+      "cases": 1,
+      "expected": 1,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a"
+    },
+    "sqlalchemy": {
+      "cases": 1,
+      "expected": 1,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a"
+    },
+    "openai": {
+      "cases": 1,
+      "expected": 6,
+      "caught": 2,
+      "false_positives": 2,
+      "recall": "2/6",
+      "precision": "2/4"
+    },
+    "elasticsearch": {
+      "cases": 1,
+      "expected": 7,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/7",
+      "precision": "n/a"
+    },
+    "anthropic": {
+      "cases": 1,
+      "expected": 1,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a"
+    }
+  },
+  "false_positive_sample": [
+    {
+      "category": "unrelated_live_symbol",
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "example": "impact flagged a still-exported helper near an edited openai call",
+      "note": "Mined GT only lists deleted lines; other live removals look like FPs"
+    },
+    {
+      "category": "test_double_call",
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "example": "tests/test_function_create_image.py duplicate Image.create site",
+      "note": "Same removed API in tests not always in the bump hunk"
+    },
+    {
+      "category": "pin_only_noise",
+      "repo": "neilmac91/EarningsNerd",
+      "service": "stripe",
+      "example": "expected line in unit test did not bind as Invoice.upcoming on the sparse fixture",
+      "note": "Sparse offline trees miss wrappers/imports present in the full repo"
+    },
+    {
+      "category": "version_downgrade_pair",
+      "repo": "D-Hack1/Sentry",
+      "service": "elasticsearch",
+      "example": "9.5.1\u21928.19.3 downgrade; removals are not in the older wheel direction Conduit diffs",
+      "note": "Miner accepted downgrades as major/minor bumps"
+    },
+    {
+      "category": "line_drift_sparse_checkout",
+      "repo": "lx-software-ltd/evolvesprouts",
+      "service": "sqlalchemy",
+      "example": "admin helper line number from PR patch not present in fetched parent file snippet",
+      "note": "Sparse fixture files can omit surrounding modules needed for binding"
+    }
+  ],
+  "miss_categories": [
+    {
+      "category": "sparse_fixture_miss",
+      "example": "sqlalchemy evolvesprouts: Query call not bound without session helpers in fixture tree"
+    },
+    {
+      "category": "downgrade_direction",
+      "example": "elasticsearch 9\u21928: diff looks for removals on the wrong side of the version pair"
+    },
+    {
+      "category": "alias_or_wrapper",
+      "example": "stripe EarningsNerd: call reaches Invoice via a test helper the sparse tree does not include"
+    }
+  ],
+  "totals": {
+    "cases": 5,
+    "expected": 16,
+    "caught": 2,
+    "false_positives": 2
+  },
+  "timings": {
+    "indico_sqlalchemy": {
+      "cold_sec": 662.42,
+      "warm_sec": 300.15
+    },
+    "kodiak_stripe": {
+      "cold_sec": 285.71,
+      "warm_sec": 58.18
+    }
+  },
+  "mined_set_size": {
+    "cases": 73,
+    "libraries": 30
+  },
+  "mined_inventory": {
+    "sqlalchemy": {
+      "cases": 3,
+      "expected_lines": 15
+    },
+    "pyhelpers": {
+      "cases": 2,
+      "expected_lines": 45
+    },
+    "google-adk": {
+      "cases": 2,
+      "expected_lines": 2
+    },
+    "stripe": {
+      "cases": 6,
+      "expected_lines": 20
+    },
+    "openai": {
+      "cases": 6,
+      "expected_lines": 58
+    },
+    "elasticsearch": {
+      "cases": 2,
+      "expected_lines": 14
+    },
+    "anthropic": {
+      "cases": 2,
+      "expected_lines": 2
+    },
+    "pinecone": {
+      "cases": 2,
+      "expected_lines": 8
+    },
+    "bokeh": {
+      "cases": 1,
+      "expected_lines": 1
+    },
+    "pytest-httpbin": {
+      "cases": 2,
+      "expected_lines": 2
+    },
+    "awscrt": {
+      "cases": 1,
+      "expected_lines": 12
+    },
+    "s3transfer": {
+      "cases": 13,
+      "expected_lines": 13
+    },
+    "botocore": {
+      "cases": 12,
+      "expected_lines": 12
+    },
+    "altair": {
+      "cases": 1,
+      "expected_lines": 2
+    },
+    "alembic": {
+      "cases": 1,
+      "expected_lines": 1
+    },
+    "flask-limiter": {
+      "cases": 1,
+      "expected_lines": 1
+    },
+    "sqlalchemy-utils": {
+      "cases": 1,
+      "expected_lines": 7
+    },
+    "django-celery-beat": {
+      "cases": 1,
+      "expected_lines": 1
+    },
+    "sphinx": {
+      "cases": 1,
+      "expected_lines": 4
+    },
+    "psycopg2": {
+      "cases": 1,
+      "expected_lines": 2
+    },
+    "posthog": {
+      "cases": 1,
+      "expected_lines": 2
+    },
+    "clickhouse-sqlalchemy": {
+      "cases": 1,
+      "expected_lines": 1
+    },
+    "pymysql": {
+      "cases": 1,
+      "expected_lines": 3
+    },
+    "twisted": {
+      "cases": 2,
+      "expected_lines": 14
+    },
+    "langchain": {
+      "cases": 1,
+      "expected_lines": 7
+    },
+    "tweepy": {
+      "cases": 2,
+      "expected_lines": 15
+    },
+    "social-auth-core": {
+      "cases": 1,
+      "expected_lines": 1
+    },
+    "aistudio-sdk": {
+      "cases": 1,
+      "expected_lines": 3
+    },
+    "transformers": {
+      "cases": 1,
+      "expected_lines": 8
+    },
+    "tornado": {
+      "cases": 1,
+      "expected_lines": 4
+    }
+  }
+}
