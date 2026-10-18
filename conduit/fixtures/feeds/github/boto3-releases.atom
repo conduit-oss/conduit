@@ -1,4 +1,118 @@
-<?xml version="1.0" encoding="utf-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <title>boto3</title>
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
+  <id>tag:github.com,2008:https://github.com/boto/boto3/releases</id>
+  <link type="text/html" rel="alternate" href="https://github.com/boto/boto3/releases"/>
+  <link type="application/atom+xml" rel="self" href="https://github.com/boto/boto3/releases.atom"/>
+  <title>Release notes from boto3</title>
+  <updated>2026-10-14T18:10:15Z</updated>
+  <entry>
+    <id>tag:github.com,2008:Repository/24774658/1.43.114</id>
+    <updated>2026-10-14T18:10:15Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/boto/boto3/releases/tag/1.43.114"/>
+    <title>1.43.114</title>
+    <content type="html">&lt;p&gt;Tagging 1.43.114 release.&lt;/p&gt;</content>
+    <author>
+      <name>aws-sdk-python-automation</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/43144185?s=60&amp;v=4"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/24774658/1.43.113</id>
+    <updated>2026-10-13T18:13:36Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/boto/boto3/releases/tag/1.43.113"/>
+    <title>1.43.113</title>
+    <content type="html">&lt;p&gt;Tagging 1.43.113 release.&lt;/p&gt;</content>
+    <author>
+      <name>aws-sdk-python-automation</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/43144185?s=60&amp;v=4"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/24774658/1.43.112</id>
+    <updated>2026-10-12T18:07:31Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/boto/boto3/releases/tag/1.43.112"/>
+    <title>1.43.112</title>
+    <content type="html">&lt;p&gt;Tagging 1.43.112 release.&lt;/p&gt;</content>
+    <author>
+      <name>aws-sdk-python-automation</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/43144185?s=60&amp;v=4"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/24774658/1.43.111</id>
+    <updated>2026-10-09T18:10:05Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/boto/boto3/releases/tag/1.43.111"/>
+    <title>1.43.111</title>
+    <content type="html">&lt;p&gt;Tagging 1.43.111 release.&lt;/p&gt;</content>
+    <author>
+      <name>aws-sdk-python-automation</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/43144185?s=60&amp;v=4"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/24774658/1.43.110</id>
+    <updated>2026-10-08T18:13:52Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/boto/boto3/releases/tag/1.43.110"/>
+    <title>1.43.110</title>
+    <content type="html">&lt;p&gt;Tagging 1.43.110 release.&lt;/p&gt;</content>
+    <author>
+      <name>aws-sdk-python-automation</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/43144185?s=60&amp;v=4"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/24774658/1.43.109</id>
+    <updated>2026-10-07T14:03:40Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/boto/boto3/releases/tag/1.43.109"/>
+    <title>1.43.109</title>
+    <content type="html">&lt;p&gt;Tagging 1.43.109 release.&lt;/p&gt;</content>
+    <author>
+      <name>aws-sdk-python-automation</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/43144185?s=60&amp;v=4"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/24774658/1.43.108</id>
+    <updated>2026-10-02T18:15:53Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/boto/boto3/releases/tag/1.43.108"/>
+    <title>1.43.108</title>
+    <content type="html">&lt;p&gt;Tagging 1.43.108 release.&lt;/p&gt;</content>
+    <author>
+      <name>aws-sdk-python-automation</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/43144185?s=60&amp;v=4"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/24774658/1.43.107</id>
+    <updated>2026-10-01T18:13:14Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/boto/boto3/releases/tag/1.43.107"/>
+    <title>1.43.107</title>
+    <content type="html">&lt;p&gt;Tagging 1.43.107 release.&lt;/p&gt;</content>
+    <author>
+      <name>aws-sdk-python-automation</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/43144185?s=60&amp;v=4"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/24774658/1.43.106</id>
+    <updated>2026-09-30T18:20:21Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/boto/boto3/releases/tag/1.43.106"/>
+    <title>1.43.106</title>
+    <content type="html">&lt;p&gt;Tagging 1.43.106 release.&lt;/p&gt;</content>
+    <author>
+      <name>aws-sdk-python-automation</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/43144185?s=60&amp;v=4"/>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/24774658/1.43.105</id>
+    <updated>2026-09-29T18:22:34Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/boto/boto3/releases/tag/1.43.105"/>
+    <title>1.43.105</title>
+    <content type="html">&lt;p&gt;Tagging 1.43.105 release.&lt;/p&gt;</content>
+    <author>
+      <name>aws-sdk-python-automation</name>
+    </author>
+    <media:thumbnail height="30" width="30" url="https://avatars.githubusercontent.com/u/43144185?s=60&amp;v=4"/>
+  </entry>
 </feed>

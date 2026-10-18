@@ -8,14 +8,21 @@ from typing import TYPE_CHECKING
 
 from conduit.deps.manifests import read_installed
 from conduit.feeds.versions import is_newer, parse_version
-from conduit.impact.api import diff_wheels
-from conduit.impact.botocore import diff_service_models
+from conduit.impact.api import diff_wheels, public_identifiers
+from conduit.impact.service_model import diff_service_models
+from conduit.impact.shipped_specs import diff_shipped_specs
 from conduit.impact.intersect import intersect
 from conduit.impact.model import ApiChange, Impact, SiteHit
 from conduit.impact.notes import changes_from_notes
 from conduit.impact.openapi_rest import PUBLIC_SPEC_URLS, diff_openapi, split_http_target
 from conduit.impact.openapi_sources import resolve_spec_pair
-from conduit.impact.versions import pypi_latest, resolve_client_version
+from conduit.impact.versions import (
+    lowest_on_pypi,
+    pypi_latest,
+    resolve_client_version,
+    unbounded_lower_spec,
+    wheel_backed_version,
+)
 from conduit.impact.webhook_schema import diff_webhook_schemas
 from conduit.outside_in.specs import evidence_spec, normalize_dist
 from conduit.outside_in.model import Chain, ServiceMap
@@ -82,7 +89,14 @@ def collect_impacts(
     notes: list[str] = []
     for package, service_id in targets:
         entry = index.get(package.lower()) or index.get(service_id.lower()) or {}
-        if not _should_run(package, entry, hits or [], explicit=explicit):
+        if not _should_run(
+            package,
+            entry,
+            hits or [],
+            explicit=explicit,
+            webhook=_has_webhook(service_map, service_id, package),
+            allow_network=allow_network,
+        ):
             continue
         resolved_from, resolved_to, version_note = _versions(
             root,
@@ -105,7 +119,7 @@ def collect_impacts(
             from_version=resolved_from,
             to_version=resolved_to,
             service_map=service_map,
-            allow_network=allow_network and explicit,
+            allow_network=allow_network,
             skip_versioned=bool(version_note),
             explicit=explicit,
         )
@@ -191,15 +205,24 @@ def _targets(
     return found
 
 
-def _should_run(package: str, entry: dict, hits: list[FeedHit], *, explicit: bool) -> bool:
+def _should_run(
+    package: str,
+    entry: dict,
+    hits: list[FeedHit],
+    *,
+    explicit: bool,
+    webhook: bool = False,
+    allow_network: bool = False,
+) -> bool:
     if explicit:
         return True
-    if not entry:
-        return False
     for hit in hits:
         if hit.package.lower() == package.lower() and hit.change == "version" and hit.to_version:
             return True
-    return bool(entry.get("webhook"))
+    if entry.get("webhook"):
+        return True
+    # A live watch has no recorded webhook schema. Still run so the miss is reported.
+    return bool(allow_network and webhook and not entry)
 
 
 def _versions(
@@ -232,7 +255,9 @@ def _versions(
         for hit in hits:
             if hit.package.lower() != package.lower() or hit.change != "version":
                 continue
-            if hit.to_version and _newer(hit.to_version, chosen):
+            if hit.to_version and (
+                _newer(hit.to_version, chosen) or _same_version(hit.to_version, chosen)
+            ):
                 hit_to = hit.to_version
         resolved_to = hit_to or str(entry.get("to") or "")
         if not resolved_to and explicit and allow_network and chosen:
@@ -242,6 +267,36 @@ def _versions(
                 resolved_to = ""
             if not resolved_to:
                 note = note or f"not compared: could not read the latest {package} version from PyPI"
+        if allow_network and resolved_to:
+            try:
+                backed = wheel_backed_version(package, resolved_to)
+            except Exception:
+                backed = ""
+            if backed and not _same_version(backed, resolved_to):
+                resolved_to = backed
+        elif not allow_network:
+            recorded_wheels = entry.get("wheels") if isinstance(entry.get("wheels"), dict) else {}
+            recorded_to = str(entry.get("to") or "")
+            if resolved_to not in recorded_wheels and recorded_to in recorded_wheels:
+                resolved_to = recorded_to
+    if (
+        allow_network
+        and not from_override
+        and chosen
+        and resolved_to
+        and _same_version(chosen, resolved_to)
+    ):
+        # An open lower bound resolves to the newest release, which is also
+        # the version being watched. Compare from the oldest release the
+        # requirement allows so the two published surfaces can differ.
+        floor_spec = unbounded_lower_spec(root, package)
+        if floor_spec:
+            try:
+                floor = lowest_on_pypi(package, floor_spec)
+            except Exception:
+                floor = ""
+            if floor and not _same_version(floor, chosen):
+                chosen = floor
     webhook_only = bool(entry.get("webhook")) and not _needs_library_version(entry)
     if chosen and note == NO_PIN_NOTE:
         note = ""
@@ -252,6 +307,15 @@ def _versions(
     elif not chosen:
         note = note or NO_PIN_NOTE
     return chosen, resolved_to, note
+
+
+def _same_version(left: str, right: str) -> bool:
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        return Version(left) == Version(right)
+    except InvalidVersion:
+        return (left or "") == (right or "")
 
 
 def _exact_looking(value: str) -> bool:
@@ -298,6 +362,8 @@ def _changes_for(
         return changes, compared, note
     recorded_from = str(entry.get("from") or "")
     wheels = entry.get("wheels") if isinstance(entry.get("wheels"), dict) else {}
+    old_wheel: Path | None = None
+    new_wheel: Path | None = None
     if not skip_versioned and from_version and to_version and from_version != to_version:
         if wheels or allow_network:
             old_wheel = _artifact(fixtures, wheels.get(from_version))
@@ -314,15 +380,29 @@ def _changes_for(
                 changes.surviving = getattr(wheel_diff, "surviving", set()) or set()
                 compared = True
                 wheel_compared = True
+                spec_changes, spec_compared, spec_note = diff_shipped_specs(
+                    old_wheel,
+                    new_wheel,
+                    package=package,
+                    chains=service_map.chains,
+                    allow_network=allow_network,
+                    search_dirs=[fixtures] if fixtures is not None else [],
+                )
+                changes.extend(spec_changes)
+                if spec_compared:
+                    compared = True
+                if spec_note:
+                    note = f"{note}\n{spec_note}" if note else spec_note
             elif wheels:
                 note = _missing_surface_note(from_version, to_version, old_missing=old_wheel is None)
-            elif (
-                explicit
-                and allow_network
-                and not _has_webhook(service_map, service_id, package)
-            ):
-                # No wheel, no OpenAPI history, no webhook — the pin cannot be compared.
-                note = _missing_surface_note(from_version, to_version, old_missing=old_wheel is None)
+            elif allow_network:
+                note = _unfetched_wheel_note(
+                    package,
+                    from_version,
+                    to_version,
+                    old_missing=old_wheel is None,
+                    new_missing=new_wheel is None,
+                )
         service_model = entry.get("service_model") if isinstance(entry.get("service_model"), dict) else {}
         old_model = _artifact(fixtures, service_model.get("from"))
         new_model = _artifact(fixtures, service_model.get("to"))
@@ -344,11 +424,22 @@ def _changes_for(
                 except OSError:
                     text = ""
                 if text:
-                    changes.extend(
+                    noted = [
                         item
                         for item in changes_from_notes(text)
                         if item.kind not in {"endpoint_removed", "endpoint_renamed"}
-                    )
+                    ]
+                    names = _identifiers(old_wheel, new_wheel)
+                    if names:
+                        from conduit.feeds.names import rename_grounded
+
+                        noted = [
+                            item
+                            for item in noted
+                            if item.kind not in {"renamed", "param_renamed"}
+                            or rename_grounded(item.old, item.new, names)
+                        ]
+                    changes.extend(noted)
                     compared = True
     elif not skip_versioned and explicit and (wheels or entry.get("service_model") or entry.get("changelog")):
         note = _missing_surface_note(from_version, to_version)
@@ -359,6 +450,9 @@ def _changes_for(
         if old_schema is not None and new_schema is not None:
             changes.extend(diff_webhook_schemas(old_schema, new_schema, provider=service_id))
             compared = True
+        elif fixtures is None and allow_network:
+            hook_note = f"not compared: no versioned webhook schema for {package} could be fetched"
+            note = f"{note}\n{hook_note}" if note else hook_note
     rest, rest_note, rest_compared = _rest_changes(
         package,
         service_id,
@@ -546,6 +640,23 @@ def _public_spec_note(service_id: str, calls: list[Chain]) -> str:
     )
 
 
+def _unfetched_wheel_note(
+    package: str,
+    from_version: str,
+    to_version: str,
+    *,
+    old_missing: bool,
+    new_missing: bool,
+) -> str:
+    missed: list[str] = []
+    if old_missing and from_version:
+        missed.append(from_version)
+    if new_missing and to_version and to_version not in missed:
+        missed.append(to_version)
+    listed = ", ".join(missed) if missed else "unknown"
+    return f"not compared: could not fetch {package} wheel(s) {listed}"
+
+
 def _missing_surface_note(from_version: str, to_version: str, *, old_missing: bool = True) -> str:
     if not from_version:
         return NO_PIN_NOTE
@@ -561,6 +672,13 @@ def _has_webhook(service_map: ServiceMap, service_id: str, package: str) -> bool
         if chain.kind == "webhook" and chain.service in {service_id, package}:
             return True
     return False
+
+
+def _identifiers(*wheels: Path | None) -> set[str]:
+    present = [wheel for wheel in wheels if wheel is not None]
+    if not present:
+        return set()
+    return public_identifiers(present)
 
 
 def _artifact(fixtures: Path | None, rel: object) -> Path | None:
@@ -588,8 +706,8 @@ def _load_index(fixtures: Path | None) -> dict[str, dict]:
     return {str(key).lower(): value for key, value in packages.items() if isinstance(value, dict)}
 
 
-def _download_wheel(package: str, version: str) -> Path | None:
-    """Fetch one wheel from PyPI. Skips files larger than 12 MB."""
+def _download_wheel(package: str, version: str, *, max_bytes: int = 32_000_000) -> Path | None:
+    """Fetch one wheel from PyPI. Skips files larger than ``max_bytes``."""
     if not package or not version:
         return None
     import tempfile
@@ -611,7 +729,7 @@ def _download_wheel(package: str, version: str) -> Path | None:
     if chosen is None:
         return None
     size = int(chosen.get("size") or 0)
-    if size > 12_000_000:
+    if size > max_bytes:
         return None
     url = str(chosen.get("url") or "")
     filename = str(chosen.get("filename") or f"{package}-{version}.whl")
@@ -628,7 +746,7 @@ def _download_wheel(package: str, version: str) -> Path | None:
             with dest.open("wb") as handle:
                 for chunk in streamed.iter_bytes():
                     total += len(chunk)
-                    if total > 12_000_000:
+                    if total > max_bytes:
                         handle.close()
                         dest.unlink(missing_ok=True)
                         return None

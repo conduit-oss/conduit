@@ -1,0 +1,223 @@
+{
+  "rows": [
+    {
+      "repo": "Inpacchi/Manga-Tagger",
+      "service": "pymongo",
+      "pin": "pymongo==3.11.0",
+      "versions": "",
+      "expected": 2,
+      "caught": 0,
+      "missed": 2,
+      "false_positives": 0,
+      "recall": "0/2",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [
+        {
+          "file": "MangaTaggerLib/database.py",
+          "line": 194,
+          "symbol": "Collection.insert"
+        },
+        {
+          "file": "MangaTaggerLib/database.py",
+          "line": 210,
+          "symbol": "Collection.update"
+        }
+      ],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "service": "stripe",
+      "pin": "stripe==8.7.0",
+      "versions": "8.7.0 -> 16.0.0",
+      "expected": 2,
+      "caught": 2,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "2/2",
+      "precision": "2/2",
+      "caught_sites": [
+        {
+          "file": "donate/controllers.py",
+          "line": 107,
+          "symbol": "Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "expr": "stripe.Invoice.upcoming"
+        },
+        {
+          "file": "stripe_donations/controllers.py",
+          "line": 111,
+          "symbol": "Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "expr": "stripe.Invoice.upcoming"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "indico/indico",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy==1.4.54",
+      "versions": "1.4.54 -> 2.1.5",
+      "expected": 4,
+      "caught": 3,
+      "missed": 1,
+      "false_positives": 14,
+      "recall": "3/4",
+      "precision": "3/17",
+      "caught_sites": [
+        {
+          "file": "indico/modules/users/util.py",
+          "line": 257,
+          "symbol": "Query.from_self",
+          "change": "Query.from_self removed",
+          "expr": "query.from_self"
+        },
+        {
+          "file": "indico/modules/events/persons/controllers.py",
+          "line": 516,
+          "symbol": "Query.from_self",
+          "change": "Query.from_self removed",
+          "expr": "query.from_self"
+        },
+        {
+          "file": "indico/core/db/sqlalchemy/util/queries.py",
+          "line": 34,
+          "symbol": "Query.select_entity_from",
+          "change": "Query.select_entity_from removed",
+          "expr": "model.query.select_entity_from"
+        }
+      ],
+      "missed_sites": [
+        {
+          "file": "indico/modules/events/editing/controllers/backend/editable_list.py",
+          "line": 225,
+          "symbol": "Query.select_entity_from"
+        }
+      ],
+      "false_positive_sites": [
+        {
+          "path": "indico/core/db/sqlalchemy/core.py",
+          "line": 138,
+          "expr": "CreateSchema(schema).execute",
+          "change": "CreateSchema.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/categories/models/__init__.py",
+          "line": 71,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/categories/models/__init__.py",
+          "line": 108,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/categories/models/categories.py",
+          "line": 807,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/categories/models/categories.py",
+          "line": 820,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/events/contributions/models/contributions.py",
+          "line": 689,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/events/models/__init__.py",
+          "line": 130,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/events/models/events.py",
+          "line": 1280,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/events/models/events.py",
+          "line": 1293,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/events/sessions/models/blocks.py",
+          "line": 206,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/events/timetable/models/breaks.py",
+          "line": 107,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/modules/events/timetable/models/entries.py",
+          "line": 347,
+          "expr": "DDL(sql).execute",
+          "change": "DDL.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/core/db/sqlalchemy/core.py",
+          "line": 138,
+          "expr": "CreateSchema(schema).execute",
+          "change": "DDLElement.execute removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        },
+        {
+          "path": "indico/core/db/sqlalchemy/core.py",
+          "line": 156,
+          "expr": "mapper.iterate_properties",
+          "change": "mapper.iterate_properties removed",
+          "from_version": "1.4.54",
+          "to_version": "2.1.5"
+        }
+      ],
+      "notes": [],
+      "exit": 0,
+      "watch_head": "<unknown>:95: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:95: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:96: SyntaxWarning: invalid escape sequence '\\['\nsqlalchemy 1.4.54 -> 2.1.5\n  CreateSchema.execute removed [high]\n    indico/core/db/sqlalchemy/core.py:138  CreateSchema(schema).execute [high]\n  DDL.execute removed [high]\n    indico/modules/categories/models/__init__.py:71  DDL(sql).execute [high]\n    indico/modules/categories/models/__init__.py:108  DDL(sql).execute [high]\n    indico/modules/categories/models/categories.py:807  DDL(sql).execute [high]\n    indico/modules/categories/models/categories.py:820  DDL(sql).execute [high]\n    indico/modules/events/contributions/models/contributions.py:689  DDL(sql).execute [high]\n    indico/modules/events/models/__init__.py:130  DDL(sql).execute [high]\n    indico/modules/events/models/events.py:1280  DDL(sql).execute [high]\n    indico/modules/events/models/events.py:1293  DDL(sql).execute [high]\n    indico/modules/events/sessions/models/blocks.py:206  DDL(sql).execute [high]\n    indico/modules/events/timetable/models/breaks.py:107  DDL(sql).execute [high]\n    indico/modules/events/timetable/models/entries.py:347  DDL(sql).execute [high]\n  Query.from_self removed [medium]\n    indico/modules/events/persons/controllers.py:516  query.from_self [medium]\n    indico/modules/users/util.py:257  query.from_self [medium]\n    low confidence (excluded from the breaking-line count):\n      120 wrapper callers; pass --show-callers to list\n  Query.select_entity_from removed [medium]\n    indico/core/db/sqlalchemy/util/queries.py:34  model.query.select_entity_from [medium]\n    low confidence (excluded from the breaking-line count):\n      7 wrapper callers; pass --show-callers to list\n  mapper.iterate_properties removed [medium]\n    indico/core/db/sqlalchemy/core.py:156  mapper.iterate_properties [medium]\n  orm.mapper removed [high]\n    indico/core/db/sqlalchemy/attachments.py:59  orm.mapper [high]\n    indico/core/db/sqlalchemy/util/models.py:236  orm.mapper [high]\n    indico/core/db/sqlalchemy/util/models.py:375  orm.mapper [high]\n    indico/modules/categories/models/categories.py:687  orm.mapper [high]\n    indico/modules/events/editing/models/editable.py:317  orm.mapper [high]\n    indico/modules/events/editing/models/revisions.py:186  orm.mapper [high]\n    indico/modules/events/models/events.py:1203  orm.mapper [high]\n    indico/modules/events/registration/models/forms.py:660  orm.mapper [high]\nDeprecations\nsqlalchemy 1.4.54 -> 2.1.5"
+    }
+  ]
+}

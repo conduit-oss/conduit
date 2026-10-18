@@ -1,7 +1,7 @@
 """Third-party distributions a repo declares, and the names it imports.
 
 Sources are requirements files, pyproject dependencies, lockfiles, and
-installed metadata (a repo virtualenv's ``*.dist-info``, plus the active
+installed metadata (a repo virtual environment's ``*.dist-info``, plus the active
 environment's import map). Nothing here is a list of SDK product names.
 The standard library is not a distribution we classify.
 """
@@ -90,7 +90,7 @@ def import_roots_for(root: Path, distribution: str) -> tuple[str, ...]:
     """Top-level import names for one distribution.
 
     Installed metadata wins when the import name is not the distribution
-    name (``PIL`` for ``pillow``). Otherwise the normalized name with
+    name differs from the distribution name. Otherwise the normalized name with
     hyphens turned into underscores is the import root. Stdlib roots are dropped.
     """
     norm = normalize_dist(distribution)
@@ -273,7 +273,7 @@ _IMPORT_INDEX: dict[str, dict[str, str]] = {}
 def _import_index(root: Path) -> dict[str, str]:
     """Top-level import name → normalized distribution.
 
-    A repo virtualenv is recorded first so a fixture metadata directory
+    A repo virtual environment is recorded first so a fixture metadata directory
     beats whatever happens to be installed in the interpreter.
     """
     key = str(root.resolve())

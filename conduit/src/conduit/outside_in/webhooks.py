@@ -1,9 +1,10 @@
 """Incoming webhook handlers.
 
-Routes that receive a payload from a classified outside service. The fields
-recorded are the ones the handler reads (and a helper in the same file that
-the handler passes the payload to). The service id comes from a path or
-header token that matches a classified distribution, not from a provider list.
+A route is a webhook only when the handler receives a payload from a
+classified outside service: it reads that payload's event type, or it
+verifies a signature header. The service id comes from the route path, the
+handler name, or that signature header. A docstring, an import, or a
+response header is not evidence.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ _ROUTE_TAILS = frozenset(
 )
 _JSON_TAILS = frozenset({"json", "get_json"})
 _BODY_TAILS = frozenset({"body", "data", "get_data"})
+_EVENT_KEYS = frozenset({"type", "event", "event_type", "eventtype"})
 
 _STOP = frozenset(
     {
@@ -56,15 +58,17 @@ def webhook_directs(
     for rel, unit in units.items():
         functions = _functions(unit.tree)
         for node in functions.values():
-            provider, confidence = _provider(node, specs)
+            reads = _field_reads(node, functions)
+            signatures = _signature_headers(node)
+            if not _receives_payload(node, reads, signatures):
+                continue
+            provider, confidence = _provider(node, specs, signatures)
             if provider is None or provider not in allowed:
                 continue
             spec = by_id[provider]
-            reads = _field_reads(node, functions)
             if not reads:
-                if not _route_paths(node):
-                    continue
-                reads = ((node.lineno, "", node.name),)
+                header = signatures[0]
+                reads = ((node.lineno, header, node.name),)
             for lineno, path, expr in reads:
                 found.append(
                     _Direct(
@@ -116,25 +120,82 @@ def _functions(tree: ast.AST) -> dict[str, ast.AST]:
     return found
 
 
-def _provider(node: ast.AST, specs: tuple[ServiceSpec, ...]) -> tuple[str | None, str]:
+def _receives_payload(
+    node: ast.AST,
+    reads: list[tuple[int, str, str]],
+    signatures: list[str],
+) -> bool:
+    """True when the handler takes an outside payload, not merely serves a route."""
+    if signatures:
+        return True
+    if _event_type_read(reads):
+        return True
+    return bool(reads) and _webhook_shaped(node)
+
+
+def _webhook_shaped(node: ast.AST) -> bool:
+    assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    names = [*_route_paths(node), node.name.lower()]
+    return any("webhook" in item or "/hook" in item or item.endswith("/hook") for item in names)
+
+
+def _event_type_read(reads: list[tuple[int, str, str]]) -> bool:
+    for _lineno, path, _expr in reads:
+        leaf = path.rsplit(".", 1)[-1].replace("-", "_").lower()
+        if leaf in _EVENT_KEYS:
+            return True
+    return False
+
+
+def _signature_headers(node: ast.AST) -> list[str]:
+    """Incoming signature headers the handler reads. Response headers do not count."""
+    found: list[str] = []
+    for child in ast.walk(node):
+        key = ""
+        if isinstance(child, ast.Subscript) and isinstance(getattr(child, "ctx", None), ast.Load):
+            if _is_headers(child.value):
+                key = _const_str(child.slice)
+        elif (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr == "get"
+            and _is_headers(child.func.value)
+            and child.args
+        ):
+            key = _const_str(child.args[0])
+        if key and "signature" in key.lower() and key not in found:
+            found.append(key)
+    return found
+
+
+def _is_headers(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name) and node.id == "headers":
+        return True
+    return isinstance(node, ast.Attribute) and node.attr == "headers"
+
+
+def _const_str(node: ast.AST) -> str:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return ""
+
+
+def _provider(
+    node: ast.AST,
+    specs: tuple[ServiceSpec, ...],
+    signatures: list[str],
+) -> tuple[str | None, str]:
     assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     paths = _route_paths(node)
-    constants = _string_constants(node)
-    blob = " ".join([*paths, node.name, *constants]).lower()
-    hooked = any(
-        "webhook" in item or item.endswith("/hook") or "/hook" in item
-        for item in (*paths, node.name.lower())
-    )
-    header = "signature" in blob or blob.startswith("x-") or " x-" in blob
-    if not hooked and not header and "webhook" not in node.name.lower():
-        return None, "low"
+    blob = " ".join([*paths, node.name, *signatures]).lower()
     tokens = _tokens(blob)
+    if not tokens:
+        return None, "low"
     for spec in specs:
         if spec.transport or spec.family:
             continue
-        names = _spec_tokens(spec)
-        if tokens & names:
-            confidence = "high" if paths or header else "medium"
+        if tokens & _spec_tokens(spec):
+            confidence = "high" if paths or signatures else "medium"
             return spec.service_id, confidence
     return None, "low"
 
@@ -173,14 +234,6 @@ def _route_paths(node: ast.AST) -> list[str]:
         if call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
             paths.append(call.args[0].value)
     return paths
-
-
-def _string_constants(node: ast.AST) -> list[str]:
-    found: list[str] = []
-    for child in ast.walk(node):
-        if isinstance(child, ast.Constant) and isinstance(child.value, str):
-            found.append(child.value)
-    return found
 
 
 def _field_reads(

@@ -1,0 +1,204 @@
+{
+  "rows": [
+    {
+      "repo": "PaddlePaddle/PaddleNLP",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy>=1.4.2,<2",
+      "versions": "1.4.54 -> 2.1.5",
+      "expected": 1,
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "1/1",
+      "precision": "1/1",
+      "caught_sites": [
+        {
+          "file": "pipelines/document_stores/sql.py",
+          "line": 755,
+          "symbol": "Query.from_self",
+          "change": "Query.from_self removed",
+          "expr": "session.query(column, func.row_number().over(order_by=column).label('rownum')).from_self"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0,
+      "watch_head": "<unknown>:45: SyntaxWarning: invalid escape sequence '\\d'\n<unknown>:63: SyntaxWarning: invalid escape sequence '\\d'\n<unknown>:30: SyntaxWarning: invalid escape sequence '\\`'\n<unknown>:31: SyntaxWarning: invalid escape sequence '\\^'\n<unknown>:30: SyntaxWarning: invalid escape sequence '\\l'\n<unknown>:30: SyntaxWarning: invalid escape sequence '\\%'\n<unknown>:30: SyntaxWarning: invalid escape sequence '\\%'\n<unknown>:27: SyntaxWarning: invalid escape sequence '\\o'\n<unknown>:139: SyntaxWarning: invalid escape sequence '\\o'\n<unknown>:27: SyntaxWarning: invalid escape sequence '\\o'\n<unknown>:27: SyntaxWarning: invalid escape sequence '\\`'\n<unknown>:30: SyntaxWarning: invalid escape sequence '\\&'\n<unknown>:40: SyntaxWarning: invalid escape sequence '\\%'\n<unknown>:36: SyntaxWarning: invalid escape sequence '\\%'\n<unknown>:30: SyntaxWarning: invalid escape sequence '\\&'\n<unknown>:30: SyntaxWarning: invalid escape sequence '\\l'\n<unknown>:122: SyntaxWarning: invalid escape sequence '\\_'\n<unknown>:27: SyntaxWarning: invalid escape sequence '\\o'\n<unknown>:28: SyntaxWarning: invalid escape sequence '\\O'\n<unknown>:29: SyntaxWarning: invalid escape sequence '\\{'\n<unknown>:31: SyntaxWarning: invalid escape sequence '\\~'\n<unknown>:69: SyntaxWarning: invalid escape sequence '\\l'\n<unknown>:29: SyntaxWarning: invalid escape sequence '\\`'\n<unknown>:29: SyntaxWarning: invalid escape sequence '\\`'\n<unknown>:29: SyntaxWarning: invalid escape sequence '\\%'\n<unknown>:29: SyntaxWarning: invalid escape sequence '\\%'\n<unknown>:29: SyntaxWarning: invalid escape sequence '\\`'\n<unknown>:29: SyntaxWarning: invalid escape sequence '\\i'\n<unknown>:6510: SyntaxWarning: invalid escape sequence '\\l'\n<unknown>:30: SyntaxWarning: invalid escape sequence '\\`'\n<unknown>:33: SyntaxWarning: invalid escape sequence '\\~'\n<unknown>:29: SyntaxWarning: invalid escape sequence '\\%'\n<unknown>:37: SyntaxWarning: invalid escape sequence '\\i'\n<unknown>:39: SyntaxWarning: invalid escape sequence '\\~'\n<unknown>:65: SyntaxWarning: invalid escape sequence '\\{'\n<unknown>:54: SyntaxWarning: invalid escape sequence '\\~'\n<unknown>:31: SyntaxWarning: invalid escape sequence '\\O'\n<unknown>:30: SyntaxWarning: invalid escape sequence '\\O'\n<unknown>:29: SyntaxWarning: invalid escape sequence '\\{'\n<unknown>:30: SyntaxWarning: invalid escape sequence '\\l'"
+    },
+    {
+      "repo": "diffgram/diffgram",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy==1.3.23",
+      "versions": "1.3.23 -> 2.1.5",
+      "expected": 1,
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "1/1",
+      "precision": "1/1",
+      "caught_sites": [
+        {
+          "file": "shared/database/task/task.py",
+          "line": 247,
+          "symbol": "Query.select_entity_from",
+          "change": "Query.select_entity_from removed",
+          "expr": "session.query(Task).select_entity_from"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0,
+      "watch_head": "<unknown>:716: SyntaxWarning: invalid escape sequence '\\_'\n<unknown>:716: SyntaxWarning: invalid escape sequence '\\_'\n<unknown>:1390: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:84: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:1: SyntaxWarning: invalid escape sequence '\\P'\n<unknown>:294: SyntaxWarning: invalid escape sequence '\\d'\n<unknown>:367: SyntaxWarning: invalid escape sequence '\\d'\n<unknown>:370: SyntaxWarning: invalid escape sequence '\\d'\nsqlalchemy 1.3.23 -> 2.1.5\n  Query.select_entity_from removed [medium]\n    shared/database/task/task.py:247  session.query(Task).select_entity_from [medium]\n    low confidence (excluded from the breaking-line count):\n      2 wrapper callers; pass --show-callers to list\nDeprecations\nsqlalchemy 1.3.23 -> 2.1.5\n  Query.distinct deprecated [low]\n    shared/database/permissions/roles.py:52  session.query(Role).distinct [low]\n    shared/database/source_control/working_dir.py:539  session.query(File).distinct [low]\n    shared/database/source_control/working_dir.py:560  session.query(File).distinct [low]\n    low confidence (excluded from the breaking-line count):\n      101 wrapper callers; pass --show-callers to list\n  Session.flush deprecated [low]\n    shared/database/geospatial/geo_asset.py:59  session.flush [low]\n    shared/database/point_cloud/point_cloud.py:48  session.flush [low]\n    shared/export/export_create.py:111  session.flush [low]\n    walrus/methods/data_mocking/generate_data.py:240  self.session.flush [low]\n    walrus/methods/data_mocking/generate_data.py:364  self.session.flush [low]\n    walrus/methods/data_mocking/generate_data.py:400  self.session.flush [low]\n    walrus/methods/data_mocking/generate_data.py:465  self.session.flush [low]\n    walrus/methods/data_mocking/generate_data.py:513  self.session.flush [low]\n    walrus/methods/data_mocking/generate_data.py:540  self.session.flush [low]\n    walrus/methods/data_mocking/generate_data.py:567  self.session.flush [low]\n    low confidence (excluded from the breaking-line count):\n      27 wrapper callers; pass --show-callers to list\n  Session.flush deprecated [low]\n    default/methods/auth/api/auth_api_new.py:80  session.flush [low]\n    default/methods/configs/set_logo.py:53  session.flush [low]\n    default/methods/source_control/file/compound_file_new.py:176  session.flush [low]\n    default/methods/source_control/working_dir/new_directory.py:107  session.flush [low]\n    default/methods/tag/tag.py:93  session.flush [low]"
+    },
+    {
+      "repo": "LAION-AI/Open-Assistant",
+      "service": "sqlalchemy",
+      "pin": "SQLAlchemy==1.4.41",
+      "versions": "1.4.41 -> 2.1.5",
+      "expected": 2,
+      "caught": 2,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "2/2",
+      "precision": "2/2",
+      "caught_sites": [
+        {
+          "file": "oasst_backend/tree_manager.py",
+          "line": 1075,
+          "symbol": "Query.select_entity_from",
+          "change": "Query.select_entity_from removed",
+          "expr": "self.db.query(Message).select_entity_from"
+        },
+        {
+          "file": "oasst_backend/prompt_repository.py",
+          "line": 985,
+          "symbol": "Query.select_entity_from",
+          "change": "Query.select_entity_from removed",
+          "expr": "self.db.query(*select_entities).select_entity_from"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0,
+      "watch_head": "<unknown>:110: SyntaxWarning: invalid escape sequence '\\_'\n<unknown>:585: SyntaxWarning: invalid escape sequence '\\*'\n<unknown>:671: SyntaxWarning: invalid escape sequence '\\*'\n<unknown>:865: SyntaxWarning: invalid escape sequence '\\_'\n<unknown>:884: SyntaxWarning: invalid escape sequence '\\*'\n<unknown>:909: SyntaxWarning: invalid escape sequence '\\*'\n<unknown>:952: SyntaxWarning: invalid escape sequence '\\:'\n<unknown>:1102: SyntaxWarning: invalid escape sequence '\\_'\nsqlalchemy 1.4.41 -> 2.1.5\n  Query.select_entity_from removed [medium]\n    oasst_backend/prompt_repository.py:985  self.db.query(*select_entities).select_entity_from [medium]\n    oasst_backend/tree_manager.py:1075  self.db.query(Message).select_entity_from [medium]\n    low confidence (excluded from the breaking-line count):\n      138 wrapper callers; pass --show-callers to list\nDeprecations\nsqlalchemy 1.4.41 -> 2.1.5\n  sqlalchemy.Identity deprecated [low]\n    alembic/versions/2022_12_15_0000-23e5fea252dd_first_revision.py:21  sa.Identity [low]\n    alembic/versions/2022_12_15_0000-23e5fea252dd_first_revision.py:35  sa.Identity [low]\n    alembic/versions/2022_12_15_0000-23e5fea252dd_first_revision.py:52  sa.Identity [low]\n    alembic/versions/2022_12_16_0000-cd7de470586e_v1_db_structure.py:143  sa.Identity [low]\n    alembic/versions/2022_12_16_0000-cd7de470586e_v1_db_structure.py:157  sa.Identity [low]\n    alembic/versions/2022_12_16_0000-cd7de470586e_v1_db_structure.py:174  sa.Identity [low]\nWarning: not compared: no OpenAPI/Swagger/discovery spec at tags for sqlalchemy \n(sqlalchemy/sqlalchemy) '1.4.41' \u2192 '2.1.5' (v1.4.41: no \nOpenAPI/Swagger/discovery file at common paths; v2.1.5: no \nOpenAPI/Swagger/discovery file at common paths)"
+    },
+    {
+      "repo": "Sniper970119/dianping_spider",
+      "service": "pymongo",
+      "pin": "pymongo==3.11.3",
+      "versions": "3.11.3 -> 4.19.0",
+      "expected": 5,
+      "caught": 5,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "5/5",
+      "precision": "5/5",
+      "caught_sites": [
+        {
+          "file": "utils/saver/mongo_saver.py",
+          "line": 66,
+          "symbol": "Collection.insert",
+          "change": "Collection.insert removed",
+          "expr": "col.insert"
+        },
+        {
+          "file": "utils/saver/mongo_saver.py",
+          "line": 77,
+          "symbol": "Collection.insert",
+          "change": "Collection.insert removed",
+          "expr": "col.insert"
+        },
+        {
+          "file": "utils/saver/mongo_saver.py",
+          "line": 88,
+          "symbol": "Collection.insert",
+          "change": "Collection.insert removed",
+          "expr": "col.insert"
+        },
+        {
+          "file": "utils/database_utils.py",
+          "line": 57,
+          "symbol": "Collection.update",
+          "change": "Collection.update removed",
+          "expr": "self.col.update"
+        },
+        {
+          "file": "utils/database_utils.py",
+          "line": 76,
+          "symbol": "Collection.update",
+          "change": "Collection.update removed",
+          "expr": "self.col.update"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0,
+      "watch_head": "<unknown>:62: SyntaxWarning: invalid escape sequence '\\('\n<unknown>:367: SyntaxWarning: invalid escape sequence '\\{'\n<unknown>:377: SyntaxWarning: invalid escape sequence '\\['\n<unknown>:62: SyntaxWarning: invalid escape sequence '\\('\n<unknown>:367: SyntaxWarning: invalid escape sequence '\\{'\n<unknown>:377: SyntaxWarning: invalid escape sequence '\\['\n<unknown>:40: SyntaxWarning: invalid escape sequence '\\_'\n<unknown>:703: SyntaxWarning: invalid escape sequence '\\ '\n<unknown>:761: SyntaxWarning: invalid escape sequence '\\ '\npymongo 3.11.3 -> 4.19.0\n  Collection.insert removed [medium]\n    utils/saver/mongo_saver.py:66  col.insert [medium]\n    utils/saver/mongo_saver.py:77  col.insert [medium]\n    utils/saver/mongo_saver.py:88  col.insert [medium]\n    low confidence (excluded from the breaking-line count):\n      3 wrapper callers; pass --show-callers to list\n  Collection.update removed [medium]\n    utils/database_utils.py:57  self.col.update [medium]\n    utils/database_utils.py:76  self.col.update [medium]\nskipped: www.dianping.com: not an outside service; internal modules and \nrepo-to-repo contracts are not watched\nWarning: not compared: no changelog file at release tags for pymongo\nWarning: not compared: no OpenAPI/Swagger/discovery spec at tags for pymongo \n(mongodb/mongo-python-driver) '3.11.3' \u2192 '4.19.0' (v3.11.3: no \nOpenAPI/Swagger/discovery file at common paths; v4.19.0: no \nOpenAPI/Swagger/discovery file at common paths)"
+    },
+    {
+      "repo": "TencentBlueKing/bk-chatbot",
+      "service": "pymongo",
+      "pin": "pymongo==3.11.0",
+      "versions": "3.11.0 -> 4.19.0",
+      "expected": 1,
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "1/1",
+      "precision": "1/1",
+      "caught_sites": [
+        {
+          "file": "common/mongodb/client.py",
+          "line": 69,
+          "symbol": "Collection.update",
+          "change": "Collection.update removed",
+          "expr": "collection.update"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0,
+      "watch_head": "<unknown>:70: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:70: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:1390: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:107: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:61: SyntaxWarning: invalid escape sequence '\\*'\n<unknown>:44: SyntaxWarning: invalid escape sequence '\\.'\n<unknown>:46: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:16: SyntaxWarning: invalid escape sequence '\\.'\n<unknown>:17: SyntaxWarning: invalid escape sequence '\\.'\n<unknown>:18: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:21: SyntaxWarning: invalid escape sequence '\\.'\n<unknown>:78: SyntaxWarning: invalid escape sequence '\\.'\n<unknown>:95: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:95: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:96: SyntaxWarning: invalid escape sequence '\\['\npymongo 3.11.0 -> 4.19.0\n  Collection.update removed [medium]\n    common/mongodb/client.py:69  collection.update [medium]\n    low confidence (excluded from the breaking-line count):\n      1 wrapper caller; pass --show-callers to list\nWarning: not compared: no changelog file at release tags for pymongo\nWarning: not compared: no OpenAPI/Swagger/discovery spec at tags for pymongo \n(mongodb/mongo-python-driver) '3.11.0' \u2192 '4.19.0' (v3.11.0: no \nOpenAPI/Swagger/discovery file at common paths; v4.19.0: no \nOpenAPI/Swagger/discovery file at common paths)"
+    },
+    {
+      "repo": "chdsbd/kodiak",
+      "service": "stripe",
+      "pin": "stripe==2.46.0",
+      "versions": "2.46.0 -> 16.0.0",
+      "expected": 1,
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 1,
+      "recall": "1/1",
+      "precision": "1/2",
+      "caught_sites": [
+        {
+          "file": "web_api/models.py",
+          "line": 1135,
+          "symbol": "Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "expr": "stripe.Invoice.upcoming"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [
+        {
+          "path": "web_api/test_views.py",
+          "line": 549,
+          "expr": "stripe.Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "from_version": "2.46.0",
+          "to_version": "16.0.0"
+        }
+      ],
+      "notes": [],
+      "exit": 0,
+      "watch_head": "stripe 2.46.0 -> 16.0.0\n  Invoice.upcoming removed [high]\n    web_api/models.py:1135  stripe.Invoice.upcoming [high]\n    web_api/test_views.py:549  stripe.Invoice.upcoming [high]\nWarning: not compared: no OpenAPI/Swagger/discovery spec at tags for stripe \n(stripe/stripe-python) '2.46.0' \u2192 '16.0.0' (v2.46.0: no \nOpenAPI/Swagger/discovery file at common paths; v16.0.0: no \nOpenAPI/Swagger/discovery file at common paths)\nWarning: not compared: no changelog file at release tags for github"
+    }
+  ]
+}

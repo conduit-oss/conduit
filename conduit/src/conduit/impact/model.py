@@ -49,6 +49,8 @@ class Impact:
     confidence: str
     source: str
     sites: tuple[SiteHit, ...]
+    #: ``deprecated`` is reported apart from breaks. Empty for a breaking change.
+    kind: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -58,5 +60,6 @@ class Impact:
             "change": self.change,
             "confidence": self.confidence,
             "source": self.source,
+            "kind": self.kind,
             "sites": [site.to_dict() for site in self.sites],
         }

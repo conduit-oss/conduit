@@ -1,38 +1,22 @@
 {
   "packages": {
-    "acme-sdk": {
-      "from": "1.0.0",
-      "to": "1.2.0",
-      "wheels": {
-        "1.0.0": "wheels/acme_sdk-1.0.0-py3-none-any.whl",
-        "1.2.0": "wheels/acme_sdk-1.2.0-py3-none-any.whl"
-      },
-      "changelog": "changelogs/acme-sdk.txt"
-    },
     "sqlalchemy": {
       "from": "1.4.52",
-      "to": "2.0.36",
+      "to": "2.1.4",
       "wheels": {
-        "1.4.52": "wheels/sqlalchemy-1.4.52-py3-none-any.whl",
-        "2.0.36": "wheels/sqlalchemy-2.0.36-py3-none-any.whl"
-      }
+        "1.4.52": "wheels/SQLAlchemy-1.4.52-cp310-cp310-macosx_11_0_x86_64.whl",
+        "2.1.4": "wheels/sqlalchemy-2.1.4-py3-none-any.whl"
+      },
+      "recorded": true
     },
     "boto3": {
       "from": "1.34.0",
-      "to": "1.35.0",
-      "service_model": {
-        "service": "s3",
-        "from": "botocore/s3-2006-03-01-old.json",
-        "to": "botocore/s3-2006-03-01-new.json"
-      }
-    },
-    "stripe": {
-      "webhook": {
-        "from_version": "2024-06-20",
-        "to_version": "2024-11-20",
-        "from": "webhooks/stripe-2024-06-20.openapi.yaml",
-        "to": "webhooks/stripe-2024-11-20.openapi.yaml"
-      }
+      "to": "1.43.114",
+      "wheels": {
+        "1.34.0": "wheels/boto3-1.34.0-py3-none-any.whl",
+        "1.43.114": "wheels/boto3-1.43.114-py3-none-any.whl"
+      },
+      "recorded": true
     }
   }
 }

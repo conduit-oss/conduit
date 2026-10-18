@@ -1,0 +1,127 @@
+{
+  "rows": [
+    {
+      "repo": "WebODM/WebODM",
+      "service": "django",
+      "pin": "Django==2.2.27",
+      "versions": "",
+      "status": "not an outside service",
+      "expected": 141,
+      "caught": 0,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "not an outside service",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "django is not an outside service. Impact covers API clients, database drivers, \ncloud SDKs, and incoming webhooks.\n"
+      ],
+      "exit": 2
+    },
+    {
+      "repo": "phasehq/console",
+      "service": "stripe",
+      "pin": "stripe==10.5.0",
+      "versions": "10.5.0 -> 16.0.0",
+      "expected": 1,
+      "caught": 1,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "1/1",
+      "precision": "1/1",
+      "caught_sites": [
+        {
+          "file": "ee/billing/graphene/queries/stripe.py",
+          "line": 145,
+          "symbol": "Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "expr": "stripe.Invoice.upcoming"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "samuelclay/NewsBlur",
+      "service": "pymongo",
+      "pin": "pymongo>=3,<4",
+      "versions": "3.13.0 -> 4.19.0",
+      "expected": 7,
+      "caught": 3,
+      "missed": 4,
+      "false_positives": 2,
+      "recall": "3/7",
+      "precision": "3/5",
+      "caught_sites": [
+        {
+          "file": "utils/archive/bootstrap_story_hash.py",
+          "line": 27,
+          "symbol": "Collection.update",
+          "change": "Collection.update removed",
+          "expr": "db.newsblur.stories.update"
+        },
+        {
+          "file": "flask_monitor/db_monitor.py",
+          "line": 170,
+          "symbol": "NotMasterError",
+          "change": "errors.NotMasterError removed",
+          "expr": "pymongo.errors.NotMasterError"
+        },
+        {
+          "file": "flask_monitor/db_monitor.py",
+          "line": 200,
+          "symbol": "NotMasterError",
+          "change": "errors.NotMasterError removed",
+          "expr": "pymongo.errors.NotMasterError"
+        }
+      ],
+      "missed_sites": [
+        {
+          "file": "utils/backups/copy_mongo_serialized.py",
+          "line": 35,
+          "symbol": "Collection.count"
+        },
+        {
+          "file": "utils/backups/copy_mongo_serialized.py",
+          "line": 45,
+          "symbol": "Collection.insert"
+        },
+        {
+          "file": "utils/backups/copy_mongo_serialized.py",
+          "line": 59,
+          "symbol": "Collection.insert"
+        },
+        {
+          "file": "utils/archive/bootstrap_mongo.py",
+          "line": 261,
+          "symbol": "Collection.remove"
+        }
+      ],
+      "false_positive_sites": [
+        {
+          "path": "apps/rss_feeds/migrations/0002_remove_mongo_types.py",
+          "line": 15,
+          "expr": "collection.update",
+          "change": "Collection.update removed",
+          "from_version": "3.13.0",
+          "to_version": "4.19.0"
+        },
+        {
+          "path": "apps/rss_feeds/migrations/0002_remove_mongo_types.py",
+          "line": 9,
+          "expr": "db.collection_names",
+          "change": "Database.collection_names removed",
+          "from_version": "3.13.0",
+          "to_version": "4.19.0"
+        }
+      ],
+      "notes": [],
+      "exit": 0,
+      "watch_head": "<unknown>:36: SyntaxWarning: invalid escape sequence '\\C'\n<unknown>:1232: SyntaxWarning: invalid escape sequence '\\;'\n<unknown>:2235: SyntaxWarning: invalid escape sequence '\\;'\n<unknown>:256: SyntaxWarning: invalid escape sequence '\\F'\n<unknown>:90: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:102: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:520: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:38: SyntaxWarning: invalid escape sequence '\\<'\n<unknown>:74: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:775: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:788: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:796: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:4563: SyntaxWarning: invalid escape sequence '\\-'\n<unknown>:4565: SyntaxWarning: invalid escape sequence '\\-'\n<unknown>:4567: SyntaxWarning: invalid escape sequence '\\-'\n<unknown>:4569: SyntaxWarning: invalid escape sequence '\\?'\n<unknown>:775: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:788: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:796: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:4563: SyntaxWarning: invalid escape sequence '\\-'\n<unknown>:4565: SyntaxWarning: invalid escape sequence '\\-'\n<unknown>:4567: SyntaxWarning: invalid escape sequence '\\-'\n<unknown>:4569: SyntaxWarning: invalid escape sequence '\\?'\n<unknown>:1232: SyntaxWarning: invalid escape sequence '\\;'\n<unknown>:2235: SyntaxWarning: invalid escape sequence '\\;'\n<unknown>:36: SyntaxWarning: invalid escape sequence '\\C'\n<unknown>:74: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:256: SyntaxWarning: invalid escape sequence '\\F'\n<unknown>:38: SyntaxWarning: invalid escape sequence '\\<'\n<unknown>:90: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:102: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:520: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:95: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:95: SyntaxWarning: invalid escape sequence '\\s'\n<unknown>:96: SyntaxWarning: invalid escape sequence '\\['\n<unknown>:1105: SyntaxWarning: invalid escape sequence '\\c'\n<unknown>:672: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:673: SyntaxWarning: invalid escape sequence '\\w'\n<unknown>:674: SyntaxWarning: invalid escape sequence '\\d'\n<unknown>:80: SyntaxWarning: invalid escape sequence '\\.'"
+    }
+  ]
+}

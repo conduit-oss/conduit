@@ -19,7 +19,7 @@ def diff_service_models(old: Path, new: Path, *, service: str) -> list[ApiChange
     latest = _load(new)
     if previous is None or latest is None:
         return []
-    service_id = (service or _service_id(latest) or _service_id(previous) or "aws").lower()
+    service_id = (service or _service_id(latest) or _service_id(previous) or "").lower()
     old_ops = _operations(previous)
     new_ops = _operations(latest)
     old_shapes = _shapes(previous)

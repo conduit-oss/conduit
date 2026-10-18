@@ -1,0 +1,116 @@
+{
+  "rows": [
+    {
+      "repo": "CRED-CLUB/ARTIF",
+      "service": "pymongo",
+      "pin": "pymongo==3.11.0",
+      "versions": "3.11.0 -> 4.19.0",
+      "expected": 4,
+      "caught": 4,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "4/4",
+      "precision": "4/4",
+      "caught_sites": [
+        {
+          "file": "ip_rep/front_end_scorer/pre_scorer.py",
+          "line": 695,
+          "symbol": "Collection.insert",
+          "change": "Collection.insert removed",
+          "expr": "client[score_db].max.insert"
+        },
+        {
+          "file": "ip_rep/front_end_scorer/pre_scorer.py",
+          "line": 712,
+          "symbol": "Collection.insert",
+          "change": "Collection.insert removed",
+          "expr": "client[score_db].max.insert"
+        },
+        {
+          "file": "ip_rep/database_connector/mongo_update.py",
+          "line": 299,
+          "symbol": "Collection.remove",
+          "change": "Collection.remove removed",
+          "expr": "ip_info_db.current_ips.remove"
+        },
+        {
+          "file": "ip_rep/feed_ingestor/cron.py",
+          "line": 42,
+          "symbol": "Collection.remove",
+          "change": "Collection.remove removed",
+          "expr": "ip_info_db.history_ip.remove"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "justdjango/facial-recognition-saas",
+      "service": "stripe",
+      "pin": "stripe==2.28.1",
+      "versions": "2.28.1 -> 16.0.0",
+      "expected": 2,
+      "caught": 2,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "2/2",
+      "precision": "2/2",
+      "caught_sites": [
+        {
+          "file": "core/views.py",
+          "line": 118,
+          "symbol": "Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "expr": "stripe.Invoice.upcoming"
+        },
+        {
+          "file": "core/views.py",
+          "line": 229,
+          "symbol": "UsageRecord.create",
+          "change": "UsageRecord.create removed",
+          "expr": "stripe.UsageRecord.create"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "makerspace/makeradmin",
+      "service": "stripe",
+      "pin": "stripe==7.8.2",
+      "versions": "7.8.2 -> 16.0.0",
+      "expected": 2,
+      "caught": 2,
+      "missed": 0,
+      "false_positives": 0,
+      "recall": "2/2",
+      "precision": "2/2",
+      "caught_sites": [
+        {
+          "file": "src/shop/stripe_subscriptions.py",
+          "line": 484,
+          "symbol": "Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "expr": "stripe.Invoice.upcoming"
+        },
+        {
+          "file": "src/shop/stripe_subscriptions.py",
+          "line": 486,
+          "symbol": "Invoice.upcoming",
+          "change": "Invoice.upcoming removed",
+          "expr": "stripe.Invoice.upcoming"
+        }
+      ],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "not compared: no versioned webhook schema for stripe could be fetched"
+      ],
+      "exit": 0
+    }
+  ]
+}

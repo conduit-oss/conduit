@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conduit.impact.botocore import operation_matches
+from conduit.impact.service_model import operation_matches
 from conduit.impact.model import ApiChange, Impact, SiteHit
 from conduit.outside_in.graph import min_confidence
 from conduit.outside_in.model import Chain
@@ -22,6 +22,9 @@ def intersect(
     relevant = [chain for chain in chains if _same_dependency(chain, dependency)]
     impacts: list[Impact] = []
     covered: list[tuple[str, str]] = []
+    # Two removed symbols can share one detail and one call. Emit that
+    # file:line once per change text. A different change on the same line stays.
+    emitted: set[tuple[str, int, str]] = set()
     ordered = sorted(changes, key=lambda item: (0 if item.confidence != "low" else 1, item.detail))
     for change in ordered:
         if change.confidence == "low" and any(change.old and change.old == old for old, _site in covered):
@@ -34,6 +37,14 @@ def intersect(
             surviving or set(),
             methods or {},
         )
+        fresh: list[SiteHit] = []
+        for site in sites:
+            key = (site.path, site.line, change.detail)
+            if key in emitted:
+                continue
+            emitted.add(key)
+            fresh.append(site)
+        sites = fresh
         if not sites:
             continue
         for site in sites:
@@ -48,6 +59,7 @@ def intersect(
                 confidence=_impact_confidence(change, sites),
                 source=change.source,
                 sites=tuple(sites),
+                kind=change.kind,
             )
         )
     return impacts
@@ -143,7 +155,7 @@ def _match(
     if change.source == "webhook":
         return _webhook_match(change, chain)
     if change.source == "service-model":
-        return _botocore_match(change, chain)
+        return _service_model_match(change, chain)
     if change.source == "openapi" or change.kind in {"endpoint_removed", "endpoint_renamed"}:
         return _http_match(change, chain)
     if chain.kind in {"version_gate", "http_call", "http_response"}:
@@ -205,7 +217,7 @@ def _webhook_match(change: ApiChange, chain: Chain) -> str | None:
     return None
 
 
-def _botocore_match(change: ApiChange, chain: Chain) -> str | None:
+def _service_model_match(change: ApiChange, chain: Chain) -> str | None:
     if chain.kind not in {"cloud_call", "cloud_constructor"}:
         return None
     operation = change.symbol.split(".", 1)[-1]
@@ -319,7 +331,7 @@ def _with_return_classes(
     """Rewrite ``Factory.method`` once the wheel says what ``Factory`` returns.
 
     ``__getitem__`` is the subscript ``client[name]``. Several rewrites fold
-    ``Client.__getitem__.__getitem__.insert`` into ``Collection.insert``.
+    ``Owner.__getitem__.__getitem__.insert`` into the class that method returns.
     A method the return class inherits is rewritten to the class that defines it.
     """
     owners = methods or {}

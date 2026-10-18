@@ -45,13 +45,12 @@ class FeedClient:
         return self._live(url)
 
     def _live(self, url: str) -> str:
-        import httpx
+        from conduit.feeds.http import cached_get
 
-        try:
-            with httpx.Client(timeout=30.0, follow_redirects=True) as http:
-                resp = http.get(url, headers={"User-Agent": "conduit-watch"})
-                resp.raise_for_status()
-                return resp.text
-        except Exception as exc:
-            self.warnings.append(f"{url}: {exc}")
-            raise FeedOfflineError(url) from exc
+        body, reason = cached_get(url)
+        if body is None:
+            self.warnings.append(
+                f"not compared: {url} could not be fetched ({reason or 'unknown'})"
+            )
+            raise FeedOfflineError(url)
+        return body

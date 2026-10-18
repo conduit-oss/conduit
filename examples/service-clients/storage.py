@@ -1,4 +1,4 @@
-"""S3 calls. The newer botocore model drops the PutObject ACL member."""
+"""S3 calls. The service model shipped with the client is what gets compared."""
 
 import boto3
 

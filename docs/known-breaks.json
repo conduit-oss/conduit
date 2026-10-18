@@ -1,0 +1,148 @@
+{
+  "note": "Expected breaks were written before any conduit watch or impact run on these commits. Do not add sites after seeing a run. A later detection change needs two new repos, picked after that change.",
+  "scoring": {
+    "catch": "A non-wrapper impact site whose path ends with the expected file and whose line equals the expected line.",
+    "miss": "An expected site with no such impact site.",
+    "false_positive": "A non-wrapper impact site that is not one of the expected file:line pairs. Extra sites are not folded back into this file."
+  },
+  "repos": [
+    {
+      "repo": "PaddlePaddle/PaddleNLP",
+      "url": "https://github.com/PaddlePaddle/PaddleNLP",
+      "commit": "3f87dac9b719f75399f92f8bf634ae2ef0611832",
+      "subdir": "slm/pipelines",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy>=1.4.2,<2",
+      "pin_file": "slm/pipelines/requirements.txt",
+      "removed_in": "2.0.0",
+      "expected": [
+        {
+          "file": "pipelines/document_stores/sql.py",
+          "line": 755,
+          "symbol": "Query.from_self",
+          "upstream": "https://docs.sqlalchemy.org/en/20/changelog/migration_20.html#selecting-from-the-query-itself-as-a-subquery-e-g-from-self"
+        }
+      ]
+    },
+    {
+      "repo": "diffgram/diffgram",
+      "url": "https://github.com/diffgram/diffgram",
+      "commit": "bfd8690827f3c46ddc566d2e878183dccf300948",
+      "subdir": "",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy==1.3.23",
+      "pin_file": "requirements.txt",
+      "removed_in": "2.0.0",
+      "expected": [
+        {
+          "file": "shared/database/task/task.py",
+          "line": 247,
+          "symbol": "Query.select_entity_from",
+          "upstream": "https://docs.sqlalchemy.org/en/20/changelog/migration_20.html#selecting-entities-from-alternative-selectables-query-select-entity-from"
+        }
+      ]
+    },
+    {
+      "repo": "LAION-AI/Open-Assistant",
+      "url": "https://github.com/LAION-AI/Open-Assistant",
+      "commit": "f1e6ed9526f5817531f3ab85441a40b3671ddccb",
+      "subdir": "backend",
+      "service": "sqlalchemy",
+      "pin": "SQLAlchemy==1.4.41",
+      "pin_file": "backend/requirements.txt",
+      "removed_in": "2.0.0",
+      "expected": [
+        {
+          "file": "oasst_backend/tree_manager.py",
+          "line": 1075,
+          "symbol": "Query.select_entity_from",
+          "upstream": "https://docs.sqlalchemy.org/en/20/changelog/migration_20.html#selecting-entities-from-alternative-selectables-query-select-entity-from"
+        },
+        {
+          "file": "oasst_backend/prompt_repository.py",
+          "line": 985,
+          "symbol": "Query.select_entity_from",
+          "upstream": "https://docs.sqlalchemy.org/en/20/changelog/migration_20.html#selecting-entities-from-alternative-selectables-query-select-entity-from"
+        }
+      ]
+    },
+    {
+      "repo": "Sniper970119/dianping_spider",
+      "url": "https://github.com/Sniper970119/dianping_spider",
+      "commit": "5d4e0018c2ceb02064f11329bd70b5b49b53259c",
+      "subdir": "",
+      "service": "pymongo",
+      "pin": "pymongo==3.11.3",
+      "pin_file": "requirements.txt",
+      "removed_in": "4.0.0",
+      "expected": [
+        {
+          "file": "utils/saver/mongo_saver.py",
+          "line": 66,
+          "symbol": "Collection.insert",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-insert-is-removed"
+        },
+        {
+          "file": "utils/saver/mongo_saver.py",
+          "line": 77,
+          "symbol": "Collection.insert",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-insert-is-removed"
+        },
+        {
+          "file": "utils/saver/mongo_saver.py",
+          "line": 88,
+          "symbol": "Collection.insert",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-insert-is-removed"
+        },
+        {
+          "file": "utils/database_utils.py",
+          "line": 57,
+          "symbol": "Collection.update",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-update-is-removed"
+        },
+        {
+          "file": "utils/database_utils.py",
+          "line": 76,
+          "symbol": "Collection.update",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-update-is-removed"
+        }
+      ]
+    },
+    {
+      "repo": "TencentBlueKing/bk-chatbot",
+      "url": "https://github.com/TencentBlueKing/bk-chatbot",
+      "commit": "4e7dc7a97606f548a831a3809470e682f508ae60",
+      "subdir": "",
+      "service": "pymongo",
+      "pin": "pymongo==3.11.0",
+      "pin_file": "requirements.txt",
+      "removed_in": "4.0.0",
+      "expected": [
+        {
+          "file": "common/mongodb/client.py",
+          "line": 69,
+          "symbol": "Collection.update",
+          "upstream": "https://pymongo.readthedocs.io/en/4.0/migrate-to-pymongo4.html#collection-update-is-removed"
+        }
+      ]
+    },
+    {
+      "repo": "chdsbd/kodiak",
+      "url": "https://github.com/chdsbd/kodiak",
+      "commit": "2c23f609c9dc37ef679be7734bf2aa9541d45f0c",
+      "subdir": "web_api",
+      "service": "stripe",
+      "pin": "stripe==2.46.0",
+      "pin_file": "web_api/pyproject.toml",
+      "removed_in": "12.0.0",
+      "expected": [
+        {
+          "file": "web_api/models.py",
+          "line": 1135,
+          "symbol": "Invoice.upcoming",
+          "upstream": "https://github.com/stripe/stripe-python/blob/master/CHANGELOG.md#12-0-0"
+        }
+      ]
+    }
+  ]
+}
