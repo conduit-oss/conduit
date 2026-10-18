@@ -251,6 +251,18 @@ def _is_major_or_minor_bump(old: str, new: str) -> bool:
     return len(a) > 1 and len(b) > 1 and a[1] != b[1]
 
 
+def _is_strict_upgrade(old: str, new: str) -> bool:
+    """True when packaging considers ``old < new`` (no downgrades / same pins)."""
+    try:
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        return old != new
+    try:
+        return Version(old) < Version(new)
+    except InvalidVersion:
+        return False
+
+
 def _library_refs(name: str) -> tuple[str, ...]:
     raw = name.lower().replace("-", "_")
     tops = {raw, name.lower()}
@@ -385,6 +397,10 @@ def _process_pr(item: dict, *, seen: set[str]) -> dict | None:
             if not old_ver or old_ver == new_ver:
                 continue
             if not _is_major_or_minor_bump(old_ver, new_ver):
+                continue
+            # Require a strict upgrade. Downgrades and same-version pins are
+            # noise for known-break recall; filter them before freeze/score.
+            if not _is_strict_upgrade(old_ver, new_ver):
                 continue
             bumps.append((dist, old_ver, new_ver, path))
     if not bumps:
