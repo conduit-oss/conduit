@@ -70,6 +70,29 @@ _PR_QUERIES = (
     "bump tweepy is:pr is:merged language:Python",
     "bump slack-sdk is:pr is:merged language:Python",
     "bump kubernetes is:pr is:merged language:Python",
+    "dependabot sqlalchemy is:pr is:merged",
+    "dependabot pymongo is:pr is:merged",
+    "dependabot stripe is:pr is:merged",
+    "dependabot boto3 is:pr is:merged",
+    "dependabot openai is:pr is:merged",
+    "dependabot redis is:pr is:merged",
+    "dependabot elasticsearch is:pr is:merged",
+    "dependabot anthropic is:pr is:merged",
+    "dependabot pinecone is:pr is:merged",
+    "dependabot psycopg is:pr is:merged",
+    "dependabot motor is:pr is:merged",
+    "dependabot twilio is:pr is:merged",
+    "dependabot supabase is:pr is:merged",
+    "dependabot firebase-admin is:pr is:merged",
+    "bump from sqlalchemy is:pr is:merged",
+    "bump from pymongo is:pr is:merged",
+    "bump from stripe is:pr is:merged",
+    "bump from openai is:pr is:merged",
+    "bump from boto3 is:pr is:merged",
+    "migrate sqlalchemy 2 is:pr is:merged",
+    "migrate pymongo 4 is:pr is:merged",
+    "stripe-python 12 is:pr is:merged",
+    "openai v1 migration is:pr is:merged",
 )
 
 _DEP_BASENAMES = {
@@ -419,10 +442,12 @@ def mine(*, limit: int, out: Path) -> dict:
     for query in _PR_QUERIES:
         if len(cases) >= limit:
             break
-        for page in (1, 2):
+        for page in range(1, 6):
             if len(cases) >= limit:
                 break
             items = _search_prs(query, page=page)
+            if not items:
+                break
             for item in items:
                 if len(cases) >= limit:
                     break
@@ -435,11 +460,11 @@ def mine(*, limit: int, out: Path) -> dict:
                     continue
                 svc = str(found["service"])
                 repo_name = str(found["repo"])
-                per_lib_cap = 12 if len(libraries) >= 8 else 8
+                per_lib_cap = 20 if len(libraries) >= 8 else 15
                 if libraries.get(svc, 0) >= per_lib_cap:
                     continue
                 same_repo = sum(1 for case in cases if case["repo"] == repo_name)
-                if same_repo >= 2:
+                if same_repo >= 3:
                     continue
                 cases.append(found)
                 libraries[svc] = libraries.get(svc, 0) + 1

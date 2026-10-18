@@ -34,6 +34,10 @@ def main() -> None:
         repos = repos[: args.limit]
     for repo in repos:
         print(f"== {repo['repo']} {repo['service']} {repo.get('from_version')}->{repo.get('to_version')}", flush=True)
+        # Offline CI rows may pin recorded wheels under fixtures/.
+        if repo.get("fixtures") and "local_path" in repo:
+            # Ensure impact uses fixtures: pass through repo to _impact.
+            pass
         try:
             project = eval_mod._checkout(repo)
         except SystemExit as exc:

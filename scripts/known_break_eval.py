@@ -39,6 +39,14 @@ def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess
 
 
 def _checkout(repo: dict) -> Path:
+    local = repo.get("local_path")
+    if local:
+        path = Path(local)
+        if not path.is_absolute():
+            path = ROOT / path
+        if not path.is_dir():
+            raise SystemExit(f"missing local_path {path}")
+        return path
     dest = CHECKOUTS / repo["repo"].replace("/", "__")
     if not (dest / ".git").is_dir():
         dest.parent.mkdir(parents=True, exist_ok=True)

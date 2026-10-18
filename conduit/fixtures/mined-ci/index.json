@@ -1,0 +1,49 @@
+{
+  "packages": {
+    "elasticsearch": {
+      "wheels": {
+        "8.19.3": "wheels/elasticsearch-8.19.3-py3-none-any.whl",
+        "9.5.1": "wheels/elasticsearch-9.5.1-py3-none-any.whl"
+      },
+      "recorded": true,
+      "from": "9.5.1",
+      "to": "8.19.3"
+    },
+    "sqlalchemy": {
+      "wheels": {
+        "2.1.1": "wheels/sqlalchemy-2.1.1-py3-none-any.whl",
+        "2.0.54": "wheels/sqlalchemy-2.0.54-py3-none-any.whl"
+      },
+      "recorded": true,
+      "from": "2.0.54",
+      "to": "2.1.1"
+    },
+    "openai": {
+      "wheels": {
+        "3.34.0": "wheels/openai-3.34.0-py3-none-any.whl",
+        "0.27.8": "wheels/openai-0.27.8-py3-none-any.whl"
+      },
+      "recorded": true,
+      "from": "0.27.8",
+      "to": "3.34.0"
+    },
+    "stripe": {
+      "wheels": {
+        "16.0.0": "wheels/stripe-16.0.0-py3-none-any.whl",
+        "15.6.1": "wheels/stripe-15.6.1-py3-none-any.whl"
+      },
+      "recorded": true,
+      "from": "15.6.1",
+      "to": "16.0.0"
+    },
+    "pinecone": {
+      "wheels": {
+        "10.0.0": "wheels/pinecone-10.0.0-cp310-abi3-win_amd64.whl",
+        "9.0.0": "wheels/pinecone-9.0.0-cp310-abi3-win_amd64.whl"
+      },
+      "recorded": true,
+      "from": "9.0.0",
+      "to": "10.0.0"
+    }
+  }
+}
