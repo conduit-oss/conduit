@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ast
 import json
-import tarfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1230,8 +1229,17 @@ def _cached_wheel(top: str, pin: str) -> Path | None:
             rest = name[len(prefix) :]
             if not rest or not rest[0].isdigit():
                 continue
-            if path.suffix == ".whl" or name.endswith(".tar.gz"):
-                found.append(path)
+            # Wheels only, and only small ones. The shared classify download
+            # dir also holds multi-hundred-MB sdists; unpacking those for
+            # return-type facts caused RecursionError / multi-minute maps.
+            if path.suffix != ".whl":
+                continue
+            try:
+                if path.stat().st_size > _MAX_DOWNLOAD:
+                    continue
+            except OSError:
+                continue
+            found.append(path)
     if not found:
         return None
     pin_l = pin.lower() if _exact_version(pin) else ""
@@ -1288,7 +1296,6 @@ def _download(top: str, version: str) -> Path | None:
 
 def _pick_url(urls: list[object]) -> tuple[str, str, int] | None:
     wheels: list[tuple[str, str, int]] = []
-    sdists: list[tuple[str, str, int]] = []
     for item in urls:
         if not isinstance(item, dict):
             continue
@@ -1298,32 +1305,31 @@ def _pick_url(urls: list[object]) -> tuple[str, str, int] | None:
         kind = str(item.get("packagetype") or "")
         if not name or not url:
             continue
-        if kind == "bdist_wheel" and "py3" in name or kind == "bdist_wheel" and "py2.py3" in name:
+        if kind == "bdist_wheel" and ("py3" in name or "py2.py3" in name):
             wheels.append((name, url, size))
-        elif kind == "sdist":
-            sdists.append((name, url, size))
-    if wheels:
-        wheels.sort(key=lambda item: (0 if "none-any" in item[0] else 1, item[2] or 0))
-        return wheels[0]
-    return sdists[0] if sdists else None
+    if not wheels:
+        return None
+    wheels.sort(key=lambda item: (0 if "none-any" in item[0] else 1, item[2] or 0))
+    return wheels[0]
 
 
 def _unpack(archive: Path, top: str) -> Path | None:
+    if archive.suffix != ".whl":
+        return None
+    try:
+        if archive.stat().st_size > _MAX_DOWNLOAD:
+            return None
+    except OSError:
+        return None
     dest = _libtypes_cache() / "src" / f"{top}-{archive.name}"
     marker = dest / ".ok"
     if marker.is_file():
         return dest
     dest.mkdir(parents=True, exist_ok=True)
     try:
-        if archive.suffix == ".whl":
-            with zipfile.ZipFile(archive) as zipped:
-                zipped.extractall(dest)
-        elif archive.name.endswith(".tar.gz"):
-            with tarfile.open(archive, "r:gz") as tar:
-                tar.extractall(dest)
-        else:
-            return None
-    except (OSError, zipfile.BadZipFile, tarfile.TarError):
+        with zipfile.ZipFile(archive) as zipped:
+            zipped.extractall(dest)
+    except (OSError, zipfile.BadZipFile):
         return None
     marker.write_text("ok", encoding="utf-8")
     return dest
@@ -1469,12 +1475,18 @@ def _import_root(root: Path, top: str) -> Path | None:
     direct = root / top
     if (direct / "__init__.py").is_file() or (direct / "__init__.pyi").is_file():
         return root
-    for child in root.rglob("__init__.py"):
-        if child.parent.name == top:
-            return child.parent.parent
-    for child in root.rglob("__init__.pyi"):
-        if child.parent.name == top:
-            return child.parent.parent
+    # Common sdist/src layouts only — never rglob a whole extracted tree
+    # (classify caches used to leave multi-hundred-MB sdists here).
+    for candidate in (
+        root / "src" / top,
+        root / "lib" / top,
+        root / top / top,
+    ):
+        if (candidate / "__init__.py").is_file() or (candidate / "__init__.pyi").is_file():
+            return candidate.parent
+    single = root / f"{top}.py"
+    if single.is_file():
+        return root
     return None
 
 

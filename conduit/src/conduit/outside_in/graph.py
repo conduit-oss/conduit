@@ -23,7 +23,7 @@ from conduit.outside_in.specs import (
     service_for_host,
     service_for_module,
 )
-from conduit.outside_in.model import Chain, Entry, Hop, ServiceMap
+from conduit.outside_in.model import Chain, Entry, Hop, ServiceMap, UnresolvedCall
 from conduit.prune.grep_imports import SKIP_DIRS
 
 _MAX_HOPS = 12
@@ -217,6 +217,7 @@ def _analyze_units(
     entries: list[Entry] = []
     directs: list[_Direct] = []
     edges: list[_Edge] = []
+    unresolved: list[UnresolvedCall] = []
     for rel, unit in units.items():
         entries.extend(resolver.import_entries(rel, specs))
         for call in unit.calls:
@@ -237,6 +238,10 @@ def _analyze_units(
                             confidence=conf,
                         )
                     )
+                else:
+                    item = _unresolved_attribute_call(resolver, unit, call)
+                    if item is not None:
+                        unresolved.append(item)
                 continue
             _binding, _confidence = resolved
             for binding in _call_bindings(_binding):
@@ -318,7 +323,53 @@ def _analyze_units(
         chains=tuple(chains),
         limitations=LIMITATIONS,
         evidence=evidence,
+        unresolved_calls=tuple(unresolved),
     )
+
+
+def _unresolved_attribute_call(
+    resolver: _Resolver, unit: ModUnit, call: CallRec
+) -> UnresolvedCall | None:
+    """Record ``recv.attr(...)`` when ``recv`` has no typed binding."""
+    func = call.node.func
+    if not isinstance(func, ast.Attribute):
+        return None
+    expr = _expr(call.node)
+    reason = _unresolved_reason(resolver, unit, call, func.value)
+    return UnresolvedCall(rel=unit.rel, lineno=call.lineno, expr=expr, reason=reason)
+
+
+def _unresolved_reason(
+    resolver: _Resolver, unit: ModUnit, call: CallRec, receiver: ast.AST
+) -> str:
+    """Best-effort bucket for why the receiver was untyped."""
+    if isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Name):
+        if receiver.func.id == "getattr":
+            return "dynamic getattr"
+    if isinstance(receiver, ast.Subscript):
+        return "container"
+    if isinstance(receiver, ast.Name):
+        name = receiver.id
+        defn = unit.defs.get(call.enclosing)
+        if defn is not None and name in defn.params and name not in {"self", "cls"}:
+            key = (unit.rel, call.enclosing, name)
+            if key not in resolver._param_types:
+                ann = unit.annotations.get((call.enclosing, name))
+                if ann is None:
+                    return "untyped parameter"
+        assigned = unit.assigns.get((call.enclosing, name)) or unit.assigns.get(
+            ("<module>", name)
+        )
+        if assigned is not None and isinstance(assigned, ast.Call):
+            return "unknown return"
+        if assigned is not None and isinstance(assigned, ast.Subscript):
+            return "container"
+    binding = resolver._resolve_expr(receiver, unit, call.enclosing, set())
+    if binding.kind == "unknown":
+        if isinstance(receiver, ast.Attribute):
+            return "unknown attribute"
+        return "unknown receiver"
+    return "unresolved call"
 
 
 def _python_files(root: Path) -> list[str]:
