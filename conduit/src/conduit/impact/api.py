@@ -137,10 +137,18 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
                 source="wheel",
             )
         )
+    from conduit.impact.candidates import format_symbol_signature
+
+    added_signatures = {
+        name: format_symbol_signature(sym)
+        for name, sym in after.items()
+        if name not in before
+    }
     diff = _WheelDiff(changes)
     diff.return_classes = _return_classes(old_index)
     diff.methods = _method_owners(old_index)
     diff.surviving = new_public
+    diff.added_signatures = added_signatures
     if cache_key is not None:
         write_json("diff", cache_key, _diff_to_cache(diff))
     return diff
@@ -177,6 +185,7 @@ def _diff_to_cache(diff: _WheelDiff) -> dict:
         "return_classes": {key: sorted(values) for key, values in diff.return_classes.items()},
         "methods": dict(diff.methods),
         "surviving": sorted(diff.surviving),
+        "added_signatures": dict(diff.added_signatures),
     }
 
 
@@ -213,6 +222,9 @@ def _diff_from_cache(payload: dict) -> _WheelDiff | None:
     surviving = payload.get("surviving") or []
     if isinstance(surviving, list):
         diff.surviving = {str(name) for name in surviving}
+    added = payload.get("added_signatures") or {}
+    if isinstance(added, dict):
+        diff.added_signatures = {str(key): str(value) for key, value in added.items()}
     return diff
 
 
@@ -223,17 +235,21 @@ class _WheelDiff(list):
     maps a function qualname to the class it constructs. ``methods`` maps
     ``Class.method`` to the base that defines it when the class itself does
     not. ``surviving`` is every public name the new wheel still exports.
+    ``added_signatures`` maps qualnames present only in the newer wheel to a
+    short signature string (for apply replacement candidates).
     """
 
     return_classes: dict[str, set[str]]
     methods: dict[str, str]
     surviving: set[str]
+    added_signatures: dict[str, str]
 
     def __init__(self, changes: list[ApiChange]) -> None:
         super().__init__(changes)
         self.return_classes = {}
         self.methods = {}
         self.surviving = set()
+        self.added_signatures = {}
 
 
 def load_api(

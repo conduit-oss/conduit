@@ -44,11 +44,12 @@ def sites_from_payload(raw: Any) -> list[ImpactSite]:
         new_signature = str(item.get("new") or item.get("new_signature") or "")
         new_docstring = str(item.get("new_docstring") or "")
         evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        raw_cands = item.get("candidates") or []
+        candidates: tuple[dict[str, Any], ...] = ()
+        if isinstance(raw_cands, list):
+            candidates = tuple(dict(c) for c in raw_cands if isinstance(c, dict))
         for site in item.get("sites") or []:
             if not isinstance(site, dict):
-                continue
-            if site.get("via_wrapper"):
-                # Primary SDK lines only; wrapper callers are not edit targets.
                 continue
             path = str(site.get("path") or "").replace("\\", "/")
             line = int(site.get("line") or 0)
@@ -71,6 +72,8 @@ def sites_from_payload(raw: Any) -> list[ImpactSite]:
                     new_signature=new_signature,
                     new_docstring=new_docstring,
                     evidence=dict(evidence),
+                    candidates=candidates,
+                    via_wrapper=bool(site.get("via_wrapper")),
                 )
             )
     return sites

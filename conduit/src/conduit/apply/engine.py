@@ -85,6 +85,12 @@ def _apply_one(
     client: ModelClient | None,
     report: ApplyReport,
 ) -> SiteResult:
+    if site.via_wrapper:
+        return SiteResult(
+            site=site,
+            status=SiteStatus.SKIPPED,
+            why="wrapper caller; fixed at the SDK line",
+        )
     try:
         pack = build_context_pack(config.root, site)
     except ContextError as exc:

@@ -16,7 +16,8 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "Rules:\n"
         "- Rewrite ONLY the flagged function body (same function name).\n"
         "- You may list new import lines if required; do not edit other functions.\n"
-        "- Use only the release-diff evidence and the new signature/docstring provided.\n"
+        "- Use only the release-diff evidence, new signature/docstring, and candidates "
+        "provided (candidates are newer-wheel public symbols that share name tokens).\n"
         "- Respond with a JSON object only:\n"
         '  {"function_source": "<full def ...>", "new_imports": ["import ...", ...]}\n'
         "- function_source must be the complete function definition (def/async def),\n"
@@ -34,6 +35,7 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "release_diff": pack.release_diff,
         "new_signature": pack.new_signature,
         "new_docstring": pack.new_docstring,
+        "candidates": pack.candidates,
     }
     body = (
         "Context pack (JSON):\n"

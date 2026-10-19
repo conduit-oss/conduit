@@ -35,6 +35,8 @@ class ImpactSite:
     new_signature: str = ""
     new_docstring: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
+    candidates: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    via_wrapper: bool = False
 
     @property
     def key(self) -> str:
@@ -54,6 +56,7 @@ class ContextPack:
     release_diff: dict[str, Any]
     new_signature: str
     new_docstring: str
+    candidates: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +72,7 @@ class ContextPack:
                 "source": self.site.source,
                 "kind": self.site.kind,
                 "symbol": self.site.symbol,
+                "via_wrapper": self.site.via_wrapper,
             },
             "file_path": self.file_path,
             "imports": self.imports,
@@ -79,6 +83,7 @@ class ContextPack:
             "release_diff": self.release_diff,
             "new_signature": self.new_signature,
             "new_docstring": self.new_docstring,
+            "candidates": list(self.candidates),
         }
 
 
@@ -103,4 +108,5 @@ class SiteResult:
             "diff": self.diff,
             "attempts": self.attempts,
             "error": self.error,
+            "via_wrapper": self.site.via_wrapper,
         }

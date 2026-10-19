@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,8 @@ class Impact:
     symbol: str = ""
     old: str = ""
     new: str = ""
+    #: Newer-wheel public callables that share tokens with ``symbol`` (when removed).
+    candidates: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict:
         return {
@@ -68,5 +71,6 @@ class Impact:
             "symbol": self.symbol,
             "old": self.old,
             "new": self.new,
+            "candidates": [dict(item) for item in self.candidates],
             "sites": [site.to_dict() for site in self.sites],
         }

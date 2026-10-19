@@ -35,6 +35,9 @@ def build_context_pack(root: Path, site: ImpactSite) -> ContextPack:
     }
     if site.evidence:
         release_diff["evidence"] = site.evidence
+    candidates = [dict(item) for item in site.candidates]
+    if candidates:
+        release_diff["candidates"] = candidates
     return ContextPack(
         site=site,
         file_path=site.path,
@@ -47,6 +50,7 @@ def build_context_pack(root: Path, site: ImpactSite) -> ContextPack:
         release_diff=release_diff,
         new_signature=site.new_signature,
         new_docstring=site.new_docstring,
+        candidates=candidates,
     )
 
 
