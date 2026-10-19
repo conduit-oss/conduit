@@ -11,7 +11,7 @@ Uses ``gh api`` when available (honours ``gh`` auth), else urllib with
 ``GITHUB_TOKEN`` / ``GH_TOKEN``.
 
 Usage:
-  python scripts/mine_known_breaks.py --out docs/known-breaks-mined.json --limit 100
+  python scripts/mine_known_breaks.py --out docs/archive/known-breaks-mined.json --limit 100
 """
 
 from __future__ import annotations
@@ -524,7 +524,7 @@ def _write_payload(out: Path, cases: list[dict], libraries: dict[str, int]) -> d
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path, default=ROOT / "docs" / "known-breaks-mined.json")
+    parser.add_argument("--out", type=Path, default=ROOT / "docs" / "archive" / "known-breaks-mined.json")
     parser.add_argument("--limit", type=int, default=100)
     args = parser.parse_args()
     # Prefer gh host credentials over a broken env token from the cloud agent.

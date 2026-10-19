@@ -18,7 +18,7 @@ from conduit.outside_in.evidence import _Code, _scan, classify_distribution, spe
 SRC = Path(__file__).resolve().parents[1] / "src"
 REPO = Path(__file__).resolve().parents[2]
 _FIXTURE_WHEELS = REPO / "conduit" / "fixtures" / "impact" / "wheels"
-_KNOWN_BREAKS = REPO / "docs" / "known-breaks.json"
+_KNOWN_BREAKS = REPO / "docs" / "archive" / "known-breaks.json"
 _TOP_PYPI = Path(__file__).resolve().parent / "data" / "top-pypi-names.txt"
 _GITHUB = re.compile(r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
 _IDENT = re.compile(r"[a-z0-9]+")
@@ -510,7 +510,12 @@ def _public_api_tokens() -> frozenset[str]:
                         _absorb_wheel_bytes(dist, name, archive.read(name), by_dist)
             except (OSError, zipfile.BadZipFile):
                 continue
-    for path in sorted((REPO / "docs").glob("known-breaks*.json")):
+    docs_root = REPO / "docs"
+    known_break_paths = list(docs_root.glob("known-breaks*.json"))
+    archive = docs_root / "archive"
+    if archive.is_dir():
+        known_break_paths.extend(archive.glob("known-breaks*.json"))
+    for path in sorted(known_break_paths):
         # Mined / scored dumps grow without bound and are not classifier
         # fixtures; including them dilutes single-distribution fingerprints.
         if path.name.endswith("-results.json") or "-mined" in path.name:

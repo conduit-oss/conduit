@@ -117,7 +117,7 @@ Primary-line counts, before and after: FastChat 29, dspy 14, mlflow 18, dd-trace
 
 ## Known-break evaluation
 
-This set is separate from the fractions above. Six public repositories were chosen, and the expected `file:line` pairs were written to [`docs/known-breaks.json`](known-breaks.json), before any `conduit watch` or `conduit impact` on those commits. That file was not edited after the runs. Each repository pins an old client and calls an API that the upstream changelog says was removed. Four of the six are non-OpenAI. The services are SQLAlchemy, PyMongo, and stripe-python. [`scripts/known_break_eval.py`](../scripts/known_break_eval.py) clones the recorded commit, runs live `conduit impact --dep <service> --json`, and scores it. A catch is a non-wrapper impact site at that file and line. A false positive is any other non-wrapper site. Sites reached only through a wrapper are left out of the false-positive count. Deprecations are printed in their own section and are neither breaks nor false positives. The machine score is [`docs/known-breaks-results.json`](known-breaks-results.json).
+This set is separate from the fractions above. Six public repositories were chosen, and the expected `file:line` pairs were written to [`docs/archive/known-breaks.json`](archive/known-breaks.json), before any `conduit watch` or `conduit impact` on those commits. That file was not edited after the runs. Each repository pins an old client and calls an API that the upstream changelog says was removed. Four of the six are non-OpenAI. The services are SQLAlchemy, PyMongo, and stripe-python. [`scripts/known_break_eval.py`](../scripts/known_break_eval.py) clones the recorded commit, runs live `conduit impact --dep <service> --json`, and scores it. A catch is a non-wrapper impact site at that file and line. A false positive is any other non-wrapper site. Sites reached only through a wrapper are left out of the false-positive count. Deprecations are printed in their own section and are neither breaks nor false positives. The machine score is [`docs/archive/known-breaks-results.json`](archive/known-breaks-results.json).
 
 The pin `sqlalchemy>=1.4.2,<2` resolves to 1.4.54. These live comparisons use SQLAlchemy 2.1.5. The recorded fixtures still compare 1.4.52 with 2.1.4.
 
@@ -136,7 +136,7 @@ A later rerun, after wrapper demotion and subscript tracking, scored the same si
 
 ## Fresh repositories
 
-These three were chosen after the return-type, attribute, deprecation, and re-export changes. None is an OpenAI client. The expected `file:line` pairs were written to [`docs/known-breaks-fresh.json`](known-breaks-fresh.json) before `conduit impact` on these commits, and that file was not edited after the run. The machine score is [`docs/known-breaks-fresh-results.json`](known-breaks-fresh-results.json).
+These three were chosen after the return-type, attribute, deprecation, and re-export changes. None is an OpenAI client. The expected `file:line` pairs were written to [`docs/archive/known-breaks-fresh.json`](archive/known-breaks-fresh.json) before `conduit impact` on these commits, and that file was not edited after the run. The machine score is [`docs/archive/known-breaks-fresh-results.json`](archive/known-breaks-fresh-results.json).
 
 Django is not an outside service on this rerun. It only reaches a database through a driver it imports. WebODM pins Django 2.2.27 and does not call that driver, so the driver is not on the map either. The 141 expected lines stay in the ground-truth file and are not scored as misses.
 
@@ -150,7 +150,7 @@ phasehq and NewsBlur are the two repos whose dependency is still an outside serv
 
 ## Third set
 
-These three were chosen after wrapper demotion and subscript tracking. Each scored dependency is an outside service, the three services are different, and none is OpenAI. The expected lines were written to [`docs/known-breaks-third.json`](known-breaks-third.json) from the library tags and the call sites, before `conduit impact` on these commits. That file was not edited after the run. The machine score is [`docs/known-breaks-third-results.json`](known-breaks-third-results.json).
+These three were chosen after wrapper demotion and subscript tracking. Each scored dependency is an outside service, the three services are different, and none is OpenAI. The expected lines were written to [`docs/archive/known-breaks-third.json`](archive/known-breaks-third.json) from the library tags and the call sites, before `conduit impact` on these commits. That file was not edited after the run. The machine score is [`docs/archive/known-breaks-third-results.json`](archive/known-breaks-third-results.json).
 
 | Repo | Service | Versions | Expected | Caught | Missed | False positives | Notes |
 |------|---------|----------|----------|--------|--------|-----------------|-------|
@@ -164,7 +164,7 @@ Across the two repositories whose dependency was compared: 4 expected sites, 4 c
 
 ## Fourth set
 
-These three were chosen after instance fields became flow-sensitive. The expected lines were written to [`docs/known-breaks-fourth.json`](known-breaks-fourth.json) from the call sites and the upstream removal notes, before `conduit impact` on these commits. That file was not edited after the run. The machine score is [`docs/known-breaks-fourth-results.json`](known-breaks-fourth-results.json). The scored services are PyMongo and stripe-python. None is OpenAI. ARTIF reaches PyMongo through subscript (`client[database].collection.method`).
+These three were chosen after instance fields became flow-sensitive. The expected lines were written to [`docs/archive/known-breaks-fourth.json`](archive/known-breaks-fourth.json) from the call sites and the upstream removal notes, before `conduit impact` on these commits. That file was not edited after the run. The machine score is [`docs/archive/known-breaks-fourth-results.json`](archive/known-breaks-fourth-results.json). The scored services are PyMongo and stripe-python. None is OpenAI. ARTIF reaches PyMongo through subscript (`client[database].collection.method`).
 
 | Repo | Service | Versions | Expected | Caught | Missed | False positives | Notes |
 |------|---------|----------|----------|--------|--------|-----------------|-------|
@@ -190,9 +190,9 @@ Indico's 14 extras, checked against the [2.0 migration guide](https://docs.sqlal
 
 ## Type checker comparison
 
-Pyright and Jedi were tried as receiver resolvers on the 18 known-break repos. The head-to-head is [`docs/type-checker-compare.json`](type-checker-compare.json). Pyright did not raise recall and hurt kodiak precision; Jedi typed Manga-Tagger's `_database` as `NoneType`. The hand-written resolver stayed. The optional Pyright wiring was removed after that experiment.
+Pyright and Jedi were tried as receiver resolvers on the 18 known-break repos. The head-to-head is [`docs/archive/type-checker-compare.json`](archive/type-checker-compare.json). Pyright did not raise recall and hurt kodiak precision; Jedi typed Manga-Tagger's `_database` as `NoneType`. The hand-written resolver stayed. The optional Pyright wiring was removed after that experiment.
 
 
 ## Mined known-breaks
 
-See [`known-breaks-mined.json`](known-breaks-mined.json) (frozen before scoring) and [`known-breaks-mined-results.json`](known-breaks-mined-results.json). Mine with `scripts/mine_known_breaks.py`; score with `scripts/score_mined_breaks.py`. CI runs the offline subset in `known-breaks-mined-ci.json`.
+See [`archive/known-breaks-mined.json`](archive/known-breaks-mined.json) (frozen before scoring) and [`archive/known-breaks-mined-results.json`](archive/known-breaks-mined-results.json). Mine with `scripts/mine_known_breaks.py`; score with `scripts/score_mined_breaks.py`. CI runs the offline subset in [`archive/known-breaks-mined-ci.json`](archive/known-breaks-mined-ci.json).

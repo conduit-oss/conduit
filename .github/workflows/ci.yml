@@ -68,7 +68,7 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          ground = json.loads(Path("docs/known-breaks-mined-ci.json").read_text())
+          ground = json.loads(Path("docs/archive/known-breaks-mined-ci.json").read_text())
           assert len(ground["repos"]) >= 5
           libs = {row["service"] for row in ground["repos"]}
           assert len(libs) >= 4, libs
@@ -79,7 +79,7 @@ jobs:
           print("ci ground ok", len(ground["repos"]), "libs", sorted(libs))
           PY
           python scripts/score_mined_breaks.py \
-            --ground docs/known-breaks-mined-ci.json \
+            --ground docs/archive/known-breaks-mined-ci.json \
             --out /tmp/mined-ci-results.json \
             --skip-watch
           python - <<'PY'
