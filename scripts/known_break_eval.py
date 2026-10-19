@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score live conduit impact against docs/known-breaks.json.
+"""Score live conduit impact against docs/archive/known-breaks.json.
 
 The expected file:line pairs are an input. This script does not edit them.
 It clones each commit, runs ``conduit impact`` (live wheels) and ``conduit watch``,
@@ -18,8 +18,8 @@ from pathlib import Path
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 ROOT = Path(__file__).resolve().parents[1]
-GROUND = ROOT / "docs" / "known-breaks.json"
-DEFAULT_OUT = ROOT / "docs" / "known-breaks-results.json"
+GROUND = ROOT / "docs" / "archive" / "known-breaks.json"
+DEFAULT_OUT = ROOT / "docs" / "archive" / "known-breaks-results.json"
 CHECKOUTS = Path("/tmp/known-breaks")
 
 

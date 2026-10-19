@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Score docs/known-breaks-mined-v2.json with conduit impact; leave ground truth untouched.
+"""Score docs/archive/known-breaks-mined-v2.json with conduit impact; leave ground truth untouched.
 
 Each case runs in its own ``conduit.main impact`` subprocess (via known_break_eval).
 A small worker pool (default 2) keeps peak RSS bounded while moving through the set.
 Every row ends as scored, not compared, or not an outside service.
-Writes docs/known-breaks-mined-results.json.
+Writes docs/archive/known-breaks-mined-results.json.
 """
 
 from __future__ import annotations
@@ -63,8 +63,8 @@ def _score_one(repo: dict) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ground", type=Path, default=ROOT / "docs" / "known-breaks-mined-v2.json")
-    parser.add_argument("--out", type=Path, default=ROOT / "docs" / "known-breaks-mined-results.json")
+    parser.add_argument("--ground", type=Path, default=ROOT / "docs" / "archive" / "known-breaks-mined-v2.json")
+    parser.add_argument("--out", type=Path, default=ROOT / "docs" / "archive" / "known-breaks-mined-results.json")
     parser.add_argument("--only", action="append", default=[])
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--workers", type=int, default=2)
