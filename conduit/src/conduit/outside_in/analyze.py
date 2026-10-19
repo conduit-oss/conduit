@@ -90,4 +90,5 @@ def _drop_unreached(service_map: ServiceMap) -> ServiceMap:
         chains=service_map.chains,
         limitations=service_map.limitations,
         evidence=evidence,
+        unresolved_calls=service_map.unresolved_calls,
     )

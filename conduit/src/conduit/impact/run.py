@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -739,22 +740,27 @@ def _download_wheel(package: str, version: str, *, max_bytes: int = 32_000_000) 
     if dest.is_file():
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Write to a private temp path then replace, so a concurrent reader never
+    # sees a partial wheel and a failed fetch never deletes another process's
+    # completed download.
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{package}-", suffix=".whl", dir=dest.parent)
+    tmp_path = Path(tmp_name)
     try:
-        with httpx.stream("GET", url, timeout=60.0, follow_redirects=True) as streamed:
-            streamed.raise_for_status()
-            total = 0
-            with dest.open("wb") as handle:
+        with os.fdopen(fd, "wb") as handle:
+            with httpx.stream("GET", url, timeout=60.0, follow_redirects=True) as streamed:
+                streamed.raise_for_status()
+                total = 0
                 for chunk in streamed.iter_bytes():
                     total += len(chunk)
                     if total > max_bytes:
-                        handle.close()
-                        dest.unlink(missing_ok=True)
                         return None
                     handle.write(chunk)
+        tmp_path.replace(dest)
     except Exception:
-        dest.unlink(missing_ok=True)
         return None
-    return dest
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return dest if dest.is_file() else None
 
 
 def _prefer_wheel(wheels: list[dict]) -> dict | None:

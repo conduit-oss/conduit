@@ -38,6 +38,19 @@ def service_map_to_dict(
         "chains": [_chain_dict(chain) for chain in service_map.chains],
         "limitations": list(service_map.limitations),
         "evidence": dict(service_map.evidence),
+        "unresolved_calls": {
+            "total": len(service_map.unresolved_calls),
+            "by_reason": service_map.unresolved_by_reason(),
+            "samples": [
+                {
+                    "rel": item.rel,
+                    "lineno": item.lineno,
+                    "expr": item.expr,
+                    "reason": item.reason,
+                }
+                for item in service_map.unresolved_calls[:20]
+            ],
+        },
     }
     if blast is not None:
         payload["blast"] = {
@@ -125,8 +138,19 @@ def format_report(
                     lines.append(f"    - {issue.detail} [{issue.confidence}]")
             else:
                 lines.append("  breaks: (packet does not name a change for this call)")
+    lines.extend(_unresolved_lines(service_map, markdown))
     lines.extend(_limitation_lines(service_map, markdown))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _unresolved_lines(service_map: ServiceMap, markdown: bool) -> list[str]:
+    if not service_map.unresolved_calls:
+        return []
+    title = "## Unresolved calls" if markdown else "Unresolved calls"
+    lines = ["", title, f"total: {len(service_map.unresolved_calls)}"]
+    for reason, count in service_map.unresolved_by_reason().items():
+        lines.append(f"- {reason}: {count}")
+    return lines
 
 
 def _site_key(chain: Chain) -> tuple[str, int, str, str]:

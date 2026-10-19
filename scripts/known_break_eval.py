@@ -110,6 +110,13 @@ def _impact(project: Path, service: str, repo: dict | None = None) -> dict:
     if repo:
         from_version = str(repo.get("from_version") or "").strip()
         to_version = str(repo.get("to_version") or repo.get("removed_in") or "").strip()
+        # Original known-break rows often only set ``pin`` + ``removed_in``.
+        # Pass the pin's exact version as ``--from`` so impact does not depend
+        # on re-reading the lockfile after a sparse checkout.
+        if not from_version:
+            pin = str(repo.get("pin") or "")
+            if "==" in pin:
+                from_version = pin.split("==", 1)[1].strip()
         if from_version:
             cmd.extend(["--from", from_version])
         if to_version:
@@ -201,6 +208,10 @@ def _score(repo: dict, payload: dict) -> dict:
         to_version = str(impacts[0].get("to_version") or "")
     if not from_version:
         from_version = str(repo.get("from_version") or "").strip()
+    if not from_version:
+        pin = str(repo.get("pin") or "")
+        if "==" in pin:
+            from_version = pin.split("==", 1)[1].strip()
     if not to_version:
         to_version = str(repo.get("to_version") or repo.get("removed_in") or "").strip()
     if from_version and to_version:
