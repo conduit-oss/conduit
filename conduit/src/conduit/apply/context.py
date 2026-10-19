@@ -21,6 +21,7 @@ def build_context_pack(root: Path, site: ImpactSite) -> ContextPack:
     if span is None:
         raise ContextError(f"no enclosing function at {site.path}:{site.line}")
     imports = module_imports(source)
+    call_kwargs = call_kwargs_at_line(source, site.line)
     release_diff = {
         "dependency": site.dependency,
         "from_version": site.from_version,
@@ -32,9 +33,13 @@ def build_context_pack(root: Path, site: ImpactSite) -> ContextPack:
         "symbol": site.symbol,
         "old": site.old_signature,
         "new": site.new_signature,
+        "call_kwargs": list(call_kwargs),
     }
     if site.evidence:
         release_diff["evidence"] = site.evidence
+    candidates = [dict(item) for item in site.candidates]
+    if candidates:
+        release_diff["candidates"] = candidates
     return ContextPack(
         site=site,
         file_path=site.path,
@@ -47,6 +52,7 @@ def build_context_pack(root: Path, site: ImpactSite) -> ContextPack:
         release_diff=release_diff,
         new_signature=site.new_signature,
         new_docstring=site.new_docstring,
+        candidates=candidates,
     )
 
 
@@ -99,3 +105,33 @@ def module_imports(source: str) -> str:
             end = getattr(node, "end_lineno", node.lineno) or node.lineno
             chunks.append("".join(lines[start - 1 : end]).rstrip())
     return "\n".join(chunks)
+
+
+def call_kwargs_at_line(source: str, line: int) -> tuple[str, ...]:
+    """Keyword argument names on the call spanning ``line`` (1-based), if any."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return ()
+    best: ast.Call | None = None
+    best_span: int | None = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        start = getattr(node, "lineno", None)
+        end = getattr(node, "end_lineno", start)
+        if start is None or end is None:
+            continue
+        if start <= line <= end:
+            span = end - start
+            if best is None or span < (best_span or 10**9):
+                best = node
+                best_span = span
+    if best is None:
+        return ()
+    names = tuple(
+        keyword.arg
+        for keyword in best.keywords
+        if isinstance(keyword.arg, str) and keyword.arg
+    )
+    return names

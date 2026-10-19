@@ -136,15 +136,20 @@ def collect_impacts(
             version_changes = []
         if version_changes and resolved_to and resolved_to != resolved_from:
             impacts.extend(
-                intersect(
-                    version_changes,
-                    service_map.chains,
-                    dependency=package,
-                    from_version=resolved_from,
-                    to_version=resolved_to,
-                    return_classes=getattr(changes, "return_classes", None),
-                    surviving=getattr(changes, "surviving", None),
-                    methods=getattr(changes, "methods", None),
+                _with_candidates(
+                    intersect(
+                        version_changes,
+                        service_map.chains,
+                        dependency=package,
+                        from_version=resolved_from,
+                        to_version=resolved_to,
+                        return_classes=getattr(changes, "return_classes", None),
+                        surviving=getattr(changes, "surviving", None),
+                        methods=getattr(changes, "methods", None),
+                    ),
+                    getattr(changes, "added_signatures", None) or {},
+                    added_params=getattr(changes, "added_params", None) or {},
+                    before_params=getattr(changes, "before_params", None) or {},
                 )
             )
         if rest_changes:
@@ -379,6 +384,9 @@ def _changes_for(
                 changes.return_classes = getattr(wheel_diff, "return_classes", {}) or {}
                 changes.methods = getattr(wheel_diff, "methods", {}) or {}
                 changes.surviving = getattr(wheel_diff, "surviving", set()) or set()
+                changes.added_signatures = getattr(wheel_diff, "added_signatures", {}) or {}
+                changes.added_params = getattr(wheel_diff, "added_params", {}) or {}
+                changes.before_params = getattr(wheel_diff, "before_params", {}) or {}
                 compared = True
                 wheel_compared = True
                 spec_changes, spec_compared, spec_note = diff_shipped_specs(
@@ -478,12 +486,50 @@ class _ChangeList(list):
     return_classes: dict
     methods: dict
     surviving: set
+    added_signatures: dict
+    added_params: dict
+    before_params: dict
 
     def __init__(self) -> None:
         super().__init__()
         self.return_classes = {}
         self.methods = {}
         self.surviving = set()
+        self.added_signatures = {}
+        self.added_params = {}
+        self.before_params = {}
+
+
+def _with_candidates(
+    impacts: list[Impact],
+    added_signatures: dict[str, str],
+    *,
+    added_params: dict[str, tuple[str, ...]] | None = None,
+    before_params: dict[str, tuple[str, ...]] | None = None,
+) -> list[Impact]:
+    """Attach newer-wheel replacement candidates to removed (and similar) impacts."""
+    if not added_signatures:
+        return impacts
+    from dataclasses import replace
+
+    from conduit.impact.candidates import needs_replacement_candidates, pick_candidates
+
+    before = before_params or {}
+    out: list[Impact] = []
+    for item in impacts:
+        if not needs_replacement_candidates(kind=item.kind, new=item.new):
+            out.append(item)
+            continue
+        removed = item.symbol or item.old or item.change
+        old_params = before.get(item.symbol) or before.get(item.old) or ()
+        cands = pick_candidates(
+            removed,
+            added_signatures,
+            added_params=added_params,
+            old_params=old_params,
+        )
+        out.append(replace(item, candidates=tuple(cands)))
+    return out
 
 
 def _is_rest(change: ApiChange) -> bool:

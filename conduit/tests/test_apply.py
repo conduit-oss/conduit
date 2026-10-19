@@ -447,6 +447,77 @@ def test_apply_break_fixture_paths_and_evidence():
     assert pack.release_diff["new"] == "statement"
 
 
+def test_via_wrapper_sites_are_skipped_not_edited(tmp_path: Path):
+    root = _repo_with_break(tmp_path)
+    payload = _impact_payload()
+    payload["impacts"][0]["sites"].append(
+        {
+            "path": "mod.py",
+            "line": 4,
+            "expr": "other",
+            "confidence": "high",
+            "via_wrapper": True,
+        }
+    )
+    sites = sites_from_payload(payload)
+    assert any(site.via_wrapper for site in sites)
+    client = FakeModelClient(responses=[_good_edit(), "why"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(),
+            write=True,
+            client=client,
+            site_cleared=lambda *_a, **_k: True,
+        ),
+    )
+    skipped = [item for item in report.results if item.status == SiteStatus.SKIPPED]
+    assert len(skipped) == 1
+    assert "wrapper caller" in skipped[0].why
+    fixed = [item for item in report.results if item.status != SiteStatus.SKIPPED]
+    assert fixed
+    assert "new_call" in (root / "mod.py").read_text(encoding="utf-8")
+    # Model only called for the non-wrapper site (propose + summarize).
+    assert len(client.calls) == 2
+
+
+def test_candidates_flow_into_context_pack_and_prompt(tmp_path: Path):
+    root = _repo_with_break(tmp_path)
+    payload = _impact_payload()
+    payload["impacts"][0]["kind"] = "removed"
+    payload["impacts"][0]["new"] = ""
+    payload["impacts"][0]["symbol"] = "pkg.ChatCompletion.create"
+    payload["impacts"][0]["candidates"] = [
+        {
+            "symbol": "pkg.chat.completions.create",
+            "signature": "pkg.chat.completions.create(self, *, messages)",
+        }
+    ]
+    site = sites_from_payload(payload)[0]
+    pack = build_context_pack(root, site)
+    assert pack.candidates
+    assert pack.candidates[0]["symbol"].endswith("create")
+    assert pack.release_diff["candidates"][0]["signature"]
+    from conduit.apply.prompts import propose_messages
+
+    _system, user = propose_messages(pack)
+    assert "candidates" in user[1]
+    assert "pkg.chat.completions.create" in user[1]
+
+
+def test_apply_help_describes_rewrite_not_model_diff():
+    result = CliRunner(env={"COLUMNS": "100", "NO_COLOR": "1", "TERM": "dumb"}).invoke(
+        app, ["apply", "--help"]
+    )
+    assert result.exit_code == 0
+    text = (result.stdout or "").lower()
+    assert "rewritten function" in text or "rewrite" in text
+    assert "splices" in text or "splice" in text
+    # Must not claim the model emits the unified diff.
+    assert "asks the model for a function-scoped unified diff" not in text
+
+
 @pytest.mark.network
 @pytest.mark.nebius
 def test_live_token_factory_smoke():

@@ -314,7 +314,8 @@ def apply_cmd(
     """Fix impact call sites with a Token Factory chat-completions model.
 
     Reads existing impact JSON (no re-scan). Builds a context pack per site,
-    asks the model for a function-scoped unified diff, verifies the patch
+    asks the model for a rewritten function (plus optional imports), splices
+    that rewrite by AST span and builds the diff itself, verifies the change
     (parse, impact re-check on a scratch copy, optional tests), and optionally
     writes verified fixes. Never prints API keys. Does not open a PR (use a
     later run for ``--pr``).
