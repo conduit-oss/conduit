@@ -148,6 +148,8 @@ def collect_impacts(
                         methods=getattr(changes, "methods", None),
                     ),
                     getattr(changes, "added_signatures", None) or {},
+                    added_params=getattr(changes, "added_params", None) or {},
+                    before_params=getattr(changes, "before_params", None) or {},
                 )
             )
         if rest_changes:
@@ -383,6 +385,8 @@ def _changes_for(
                 changes.methods = getattr(wheel_diff, "methods", {}) or {}
                 changes.surviving = getattr(wheel_diff, "surviving", set()) or set()
                 changes.added_signatures = getattr(wheel_diff, "added_signatures", {}) or {}
+                changes.added_params = getattr(wheel_diff, "added_params", {}) or {}
+                changes.before_params = getattr(wheel_diff, "before_params", {}) or {}
                 compared = True
                 wheel_compared = True
                 spec_changes, spec_compared, spec_note = diff_shipped_specs(
@@ -483,6 +487,8 @@ class _ChangeList(list):
     methods: dict
     surviving: set
     added_signatures: dict
+    added_params: dict
+    before_params: dict
 
     def __init__(self) -> None:
         super().__init__()
@@ -490,10 +496,16 @@ class _ChangeList(list):
         self.methods = {}
         self.surviving = set()
         self.added_signatures = {}
+        self.added_params = {}
+        self.before_params = {}
 
 
 def _with_candidates(
-    impacts: list[Impact], added_signatures: dict[str, str]
+    impacts: list[Impact],
+    added_signatures: dict[str, str],
+    *,
+    added_params: dict[str, tuple[str, ...]] | None = None,
+    before_params: dict[str, tuple[str, ...]] | None = None,
 ) -> list[Impact]:
     """Attach newer-wheel replacement candidates to removed (and similar) impacts."""
     if not added_signatures:
@@ -502,13 +514,20 @@ def _with_candidates(
 
     from conduit.impact.candidates import needs_replacement_candidates, pick_candidates
 
+    before = before_params or {}
     out: list[Impact] = []
     for item in impacts:
         if not needs_replacement_candidates(kind=item.kind, new=item.new):
             out.append(item)
             continue
         removed = item.symbol or item.old or item.change
-        cands = pick_candidates(removed, added_signatures)
+        old_params = before.get(item.symbol) or before.get(item.old) or ()
+        cands = pick_candidates(
+            removed,
+            added_signatures,
+            added_params=added_params,
+            old_params=old_params,
+        )
         out.append(replace(item, candidates=tuple(cands)))
     return out
 

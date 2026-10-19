@@ -137,18 +137,24 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
                 source="wheel",
             )
         )
-    from conduit.impact.candidates import format_symbol_signature
+    from conduit.impact.candidates import format_symbol_signature, symbol_param_names
 
     added_signatures = {
         name: format_symbol_signature(sym)
         for name, sym in after.items()
         if name not in before
     }
+    added_params = {
+        name: symbol_param_names(sym) for name, sym in after.items() if name not in before
+    }
+    before_params = {name: symbol_param_names(sym) for name, sym in before.items()}
     diff = _WheelDiff(changes)
     diff.return_classes = _return_classes(old_index)
     diff.methods = _method_owners(old_index)
     diff.surviving = new_public
     diff.added_signatures = added_signatures
+    diff.added_params = added_params
+    diff.before_params = before_params
     if cache_key is not None:
         write_json("diff", cache_key, _diff_to_cache(diff))
     return diff
@@ -186,6 +192,8 @@ def _diff_to_cache(diff: _WheelDiff) -> dict:
         "methods": dict(diff.methods),
         "surviving": sorted(diff.surviving),
         "added_signatures": dict(diff.added_signatures),
+        "added_params": {key: list(values) for key, values in diff.added_params.items()},
+        "before_params": {key: list(values) for key, values in diff.before_params.items()},
     }
 
 
@@ -225,6 +233,18 @@ def _diff_from_cache(payload: dict) -> _WheelDiff | None:
     added = payload.get("added_signatures") or {}
     if isinstance(added, dict):
         diff.added_signatures = {str(key): str(value) for key, value in added.items()}
+    added_params = payload.get("added_params") or {}
+    if isinstance(added_params, dict):
+        diff.added_params = {
+            str(key): tuple(values) if isinstance(values, list) else ()
+            for key, values in added_params.items()
+        }
+    before_params = payload.get("before_params") or {}
+    if isinstance(before_params, dict):
+        diff.before_params = {
+            str(key): tuple(values) if isinstance(values, list) else ()
+            for key, values in before_params.items()
+        }
     return diff
 
 
@@ -237,12 +257,15 @@ class _WheelDiff(list):
     not. ``surviving`` is every public name the new wheel still exports.
     ``added_signatures`` maps qualnames present only in the newer wheel to a
     short signature string (for apply replacement candidates).
+    ``added_params`` / ``before_params`` hold parameter names for scoring.
     """
 
     return_classes: dict[str, set[str]]
     methods: dict[str, str]
     surviving: set[str]
     added_signatures: dict[str, str]
+    added_params: dict[str, tuple[str, ...]]
+    before_params: dict[str, tuple[str, ...]]
 
     def __init__(self, changes: list[ApiChange]) -> None:
         super().__init__(changes)
@@ -250,6 +273,8 @@ class _WheelDiff(list):
         self.methods = {}
         self.surviving = set()
         self.added_signatures = {}
+        self.added_params = {}
+        self.before_params = {}
 
 
 def load_api(

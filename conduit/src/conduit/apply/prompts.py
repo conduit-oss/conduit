@@ -36,6 +36,7 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "new_signature": pack.new_signature,
         "new_docstring": pack.new_docstring,
         "candidates": pack.candidates,
+        "call_kwargs": pack.release_diff.get("call_kwargs") or [],
     }
     body = (
         "Context pack (JSON):\n"
