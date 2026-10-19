@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from conduit.main import app
 from conduit.outside_in.analyze import analyze_repo
-from conduit.outside_in.evidence import classify_distribution
+from conduit.outside_in.evidence import classify_distribution, specs_for_repo
 from conduit.outside_in.library_types import LibraryTypes
 
 
@@ -724,3 +724,67 @@ def test_instance_fields_follow_the_assignment_that_reaches_the_read(tmp_path: P
         assert any(item.endswith("Record.ping") for item in split_ping), split_ping
     finally:
         sys.path.remove(str(site))
+
+
+def test_webhook_token_scan_ignores_code_between_string_quotes(tmp_path: Path):
+    """Empty ``""`` must not make comments/imports look like string literals.
+
+    Scanning the file text for quote pairs treats the span after ``""`` as one
+    string when the next quote opens a real literal. Words from that span
+    (``specific``, ``seats``, ``ip-address``) then get classified if matching
+    wheels exist. Only real string constants may contribute webhook tokens.
+    """
+    junk = ("specific", "seats", "ip-address")
+    for name in junk:
+        _install_client(tmp_path, name, name.replace("-", "_"))
+    _install_client(tmp_path, "ledgerdb", "ledgerdb")
+    _write(
+        tmp_path,
+        "requirements.txt",
+        "ledgerdb\nspecific\nseats\nip-address\n",
+    )
+    _write(
+        tmp_path,
+        "routes.py",
+        """
+        def path(route, view, name=None):
+            return route, view, name
+
+        def include(urls):
+            return urls
+
+        public_urls = []
+
+        def stripe_webhook():
+            return None
+
+        urlpatterns = [
+            path("", include(public_urls)),
+        ]
+        urlpatterns.append(path("public/", include(public_urls)))
+
+        # Cloud-hosted specific URLs; seats and ip-address stay in this comment.
+        if True:
+            from billing.webhooks.stripe import stripe_webhook as hook
+
+            cloud_urls = [
+                path("stripe/webhook/", hook, name="stripe-webhook"),
+            ]
+            urlpatterns.extend(cloud_urls)
+        """,
+    )
+    _write(
+        tmp_path,
+        "app.py",
+        """
+        from ledgerdb import Client
+
+        def run(token):
+            return Client(token).go()
+        """,
+    )
+
+    services = {spec.service_id for spec in specs_for_repo(tmp_path)}
+    assert "ledgerdb" in services
+    for name in junk:
+        assert name not in services, services

@@ -1662,16 +1662,23 @@ def _is_local_module(root: Path, name: str) -> bool:
 
 
 def _webhook_tokens(root: Path) -> list[str]:
+    """Provider names from real string literals that mention webhooks or signatures.
+
+    Source between quote characters is not a string. Scanning the file text for
+    quote pairs can treat that span as one literal when an empty ``""`` shifts
+    the matches, so words from comments and imports become fake distribution
+    names. Only ``ast`` string constants count.
+    """
     found: list[str] = []
     for path in _repo_sources(root):
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        except (OSError, SyntaxError, UnicodeError):
             continue
-        if "webhook" not in text.lower() and "signature" not in text.lower():
-            continue
-        for match in re.finditer(r"""['\"]([^'\"]+)['\"]""", text):
-            raw = match.group(1)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            raw = node.value
             lowered = raw.lower()
             if "webhook" not in lowered and "signature" not in lowered:
                 continue
