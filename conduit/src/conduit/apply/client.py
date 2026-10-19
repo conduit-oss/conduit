@@ -1,0 +1,144 @@
+"""Chat-completions HTTP client for Nebius Token Factory."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+import httpx
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    role: str
+    content: str
+
+
+@dataclass
+class ChatResult:
+    content: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    model: str = ""
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+class ModelClient(Protocol):
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: list[ChatMessage],
+        max_tokens: int = 2048,
+        temperature: float = 0.2,
+    ) -> ChatResult: ...
+
+
+@dataclass
+class TokenFactoryClient:
+    """HTTP client for ``POST {base_url}chat/completions``.
+
+    Uses the Token Factory chat-completions HTTP API. The API key is held in
+    memory only and must never be printed or logged.
+    """
+
+    base_url: str
+    api_key: str = field(repr=False)
+    timeout: float = 120.0
+    _http: httpx.Client | None = field(default=None, repr=False, compare=False)
+
+    def _client(self) -> httpx.Client:
+        if self._http is None:
+            # Do not put the key into default headers that might be repr'd.
+            self._http = httpx.Client(timeout=self.timeout)
+        return self._http
+
+    def close(self) -> None:
+        if self._http is not None:
+            self._http.close()
+            self._http = None
+
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: list[ChatMessage],
+        max_tokens: int = 2048,
+        temperature: float = 0.2,
+    ) -> ChatResult:
+        if not self.api_key:
+            raise RuntimeError(
+                "NEBIUS_API_KEY is not set. Export it to call Token Factory, "
+                "or pass a fake client in tests."
+            )
+        url = self.base_url.rstrip("/") + "/chat/completions"
+        payload = {
+            "model": model,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        response = self._client().post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        content = message.get("content") or ""
+        usage = data.get("usage") or {}
+        return ChatResult(
+            content=str(content),
+            prompt_tokens=int(usage.get("prompt_tokens") or 0),
+            completion_tokens=int(usage.get("completion_tokens") or 0),
+            model=str(data.get("model") or model),
+        )
+
+
+@dataclass
+class FakeModelClient:
+    """Deterministic client for offline unit tests.
+
+    ``responses`` is a queue of strings (or callables taking messages).
+    """
+
+    responses: list[Any] = field(default_factory=list)
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: list[ChatMessage],
+        max_tokens: int = 2048,
+        temperature: float = 0.2,
+    ) -> ChatResult:
+        self.calls.append(
+            {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+        )
+        if not self.responses:
+            raise RuntimeError("FakeModelClient has no more recorded responses")
+        item = self.responses.pop(0)
+        if callable(item):
+            content = item(messages, model=model)
+        else:
+            content = str(item)
+        # Approximate token use for cost-guard tests.
+        prompt_chars = sum(len(m.content) for m in messages)
+        return ChatResult(
+            content=content,
+            prompt_tokens=max(1, prompt_chars // 4),
+            completion_tokens=max(1, len(content) // 4),
+            model=model,
+        )

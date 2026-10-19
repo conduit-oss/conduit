@@ -25,6 +25,10 @@ def pytest_configure(config) -> None:
         "markers",
         "network: tests that call the public internet",
     )
+    config.addinivalue_line(
+        "markers",
+        "nebius: tests that call Nebius Token Factory (need NEBIUS_API_KEY)",
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)

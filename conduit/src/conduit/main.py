@@ -244,6 +244,123 @@ def map_cmd(
             )
 
 
+@app.command("apply")
+def apply_cmd(
+    path: Path = typer.Option(Path("."), "--path", help="Repo root to fix"),
+    impact: Path = typer.Option(
+        ...,
+        "--impact",
+        help="JSON from `conduit impact --json` (call sites + evidence)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print context packs only; do not call the model",
+    ),
+    write: bool = typer.Option(
+        False,
+        "--write",
+        help="Write verified fixes into the working tree",
+    ),
+    test_cmd: Optional[str] = typer.Option(
+        None,
+        "--test-cmd",
+        help="Shell command to verify a fix in a scratch copy of the tree",
+    ),
+    base_url: Optional[str] = typer.Option(
+        None,
+        "--base-url",
+        help="Token Factory chat-completions base URL (or CONDUIT_APPLY_BASE_URL)",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Large model id for proposing diffs (or CONDUIT_APPLY_MODEL)",
+    ),
+    model_small: Optional[str] = typer.Option(
+        None,
+        "--model-small",
+        help="Small model id for summaries (or CONDUIT_APPLY_MODEL_SMALL)",
+    ),
+    max_tokens_per_site: Optional[int] = typer.Option(
+        None,
+        "--max-tokens-per-site",
+        help="Cost guard: max tokens spent per call site",
+    ),
+    max_attempts: Optional[int] = typer.Option(
+        None,
+        "--max-attempts",
+        help="Retries per site after verification failure (default 3)",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Machine-readable report"),
+) -> None:
+    """Fix impact call sites with a Token Factory chat-completions model.
+
+    Reads existing impact JSON (no re-scan). Builds a context pack per site,
+    asks the model for a function-scoped unified diff, verifies the patch,
+    and optionally writes verified fixes. Never prints API keys. Does not
+    open a PR (use a later run for ``--pr``).
+    """
+    root = _resolve_root(path)
+    impact_path = impact.expanduser().resolve()
+    if not impact_path.is_file():
+        console.print(f"[red]Impact JSON not found:[/red] {impact_path}")
+        raise typer.Exit(2)
+    if dry_run and write:
+        console.print("[red]Use either --dry-run or --write, not both.[/red]")
+        raise typer.Exit(2)
+
+    from conduit.apply.config import TokenFactorySettings
+    from conduit.apply.engine import ApplyConfig, apply_sites
+    from conduit.apply.impact_input import load_impact_sites
+    from conduit.apply.report import format_report
+
+    try:
+        sites = load_impact_sites(impact_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]Could not read impact JSON:[/red] {exc}")
+        raise typer.Exit(2) from exc
+
+    settings = TokenFactorySettings.from_env(
+        base_url=base_url,
+        model=model,
+        model_small=model_small,
+        max_tokens_per_site=max_tokens_per_site,
+        max_attempts=max_attempts,
+    )
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=settings,
+            dry_run=dry_run,
+            write=write,
+            test_cmd=test_cmd,
+        ),
+    )
+    if json_out:
+        payload = report.to_dict()
+        if dry_run:
+            payload["context_packs"] = [
+                item.context.to_dict()
+                for item in report.results
+                if item.context is not None
+            ]
+        console.print_json(data=payload, highlight=False)
+    else:
+        console.print(
+            format_report(report, include_context=dry_run),
+            markup=False,
+            highlight=False,
+            soft_wrap=True,
+            end="",
+        )
+    needs_human = any(
+        item.status.value == "needs-human" for item in report.results
+    )
+    raise typer.Exit(1 if needs_human and not dry_run else 0)
+
+
 @app.command("impact")
 def impact_cmd(
     path: Path = typer.Option(Path("."), "--path", help="Repo to check"),

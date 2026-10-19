@@ -66,4 +66,5 @@ pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
   "network: tests that call the public internet",
+  "nebius: tests that call Nebius Token Factory (need NEBIUS_API_KEY)",
 ]
