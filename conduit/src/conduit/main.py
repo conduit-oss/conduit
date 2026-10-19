@@ -267,6 +267,11 @@ def apply_cmd(
         "--test-cmd",
         help="Shell command to verify a fix in a scratch copy of the tree",
     ),
+    fixtures: Optional[Path] = typer.Option(
+        None,
+        "--fixtures",
+        help="Recorded wheels/specs for the post-patch impact re-check (offline).",
+    ),
     base_url: Optional[str] = typer.Option(
         None,
         "--base-url",
@@ -281,6 +286,18 @@ def apply_cmd(
         None,
         "--model-small",
         help="Small model id for summaries (or CONDUIT_APPLY_MODEL_SMALL)",
+    ),
+    enable_thinking: Optional[bool] = typer.Option(
+        None,
+        "--enable-thinking/--no-enable-thinking",
+        help="Propose model: chat_template_kwargs.enable_thinking "
+        "(default off; or CONDUIT_APPLY_ENABLE_THINKING)",
+    ),
+    enable_thinking_small: Optional[bool] = typer.Option(
+        None,
+        "--enable-thinking-small/--no-enable-thinking-small",
+        help="Summarize model: chat_template_kwargs.enable_thinking "
+        "(default off; or CONDUIT_APPLY_ENABLE_THINKING_SMALL)",
     ),
     max_tokens_per_site: Optional[int] = typer.Option(
         None,
@@ -297,9 +314,10 @@ def apply_cmd(
     """Fix impact call sites with a Token Factory chat-completions model.
 
     Reads existing impact JSON (no re-scan). Builds a context pack per site,
-    asks the model for a function-scoped unified diff, verifies the patch,
-    and optionally writes verified fixes. Never prints API keys. Does not
-    open a PR (use a later run for ``--pr``).
+    asks the model for a function-scoped unified diff, verifies the patch
+    (parse, impact re-check on a scratch copy, optional tests), and optionally
+    writes verified fixes. Never prints API keys. Does not open a PR (use a
+    later run for ``--pr``).
     """
     root = _resolve_root(path)
     impact_path = impact.expanduser().resolve()
@@ -321,12 +339,21 @@ def apply_cmd(
         console.print(f"[red]Could not read impact JSON:[/red] {exc}")
         raise typer.Exit(2) from exc
 
+    fixture_root: Path | None = None
+    if fixtures is not None:
+        fixture_root = fixtures.expanduser().resolve()
+        if not fixture_root.is_dir():
+            console.print(f"[red]Fixtures directory not found:[/red] {fixture_root}")
+            raise typer.Exit(2)
+
     settings = TokenFactorySettings.from_env(
         base_url=base_url,
         model=model,
         model_small=model_small,
         max_tokens_per_site=max_tokens_per_site,
         max_attempts=max_attempts,
+        enable_thinking=enable_thinking,
+        enable_thinking_small=enable_thinking_small,
     )
     report = apply_sites(
         sites,
@@ -336,6 +363,9 @@ def apply_cmd(
             dry_run=dry_run,
             write=write,
             test_cmd=test_cmd,
+            recheck_impact=True,
+            fixtures=fixture_root,
+            allow_network=fixture_root is None,
         ),
     )
     if json_out:

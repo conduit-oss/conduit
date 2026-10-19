@@ -1,0 +1,28 @@
+{
+  "dependency": "sqlalchemy",
+  "impacts": [
+    {
+      "dependency": "sqlalchemy",
+      "from_version": "1.4.52",
+      "to_version": "2.1.4",
+      "change": "Query.from_self removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "sites": [
+        {
+          "path": "db.py",
+          "line": 12,
+          "expr": "query.from_self",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    }
+  ],
+  "deprecations": [],
+  "diffed": [
+    "sqlalchemy"
+  ],
+  "notes": []
+}

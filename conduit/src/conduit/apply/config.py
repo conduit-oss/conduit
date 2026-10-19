@@ -22,6 +22,8 @@ ENV_BASE_URL = "CONDUIT_APPLY_BASE_URL"
 ENV_MODEL = "CONDUIT_APPLY_MODEL"
 ENV_MODEL_SMALL = "CONDUIT_APPLY_MODEL_SMALL"
 ENV_MAX_TOKENS_PER_SITE = "CONDUIT_APPLY_MAX_TOKENS_PER_SITE"
+ENV_ENABLE_THINKING = "CONDUIT_APPLY_ENABLE_THINKING"
+ENV_ENABLE_THINKING_SMALL = "CONDUIT_APPLY_ENABLE_THINKING_SMALL"
 
 DEFAULT_MAX_TOKENS_PER_SITE = 8_000
 DEFAULT_MAX_ATTEMPTS = 3
@@ -35,6 +37,10 @@ class TokenFactorySettings:
     model_small: str = ""
     max_tokens_per_site: int = DEFAULT_MAX_TOKENS_PER_SITE
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    #: When False (default), send chat_template_kwargs.enable_thinking=false
+    #: on propose calls so Nemotron does not spend max_tokens on reasoning.
+    enable_thinking: bool = False
+    enable_thinking_small: bool = False
 
     @classmethod
     def from_env(
@@ -46,6 +52,8 @@ class TokenFactorySettings:
         max_tokens_per_site: int | None = None,
         max_attempts: int | None = None,
         api_key: str | None = None,
+        enable_thinking: bool | None = None,
+        enable_thinking_small: bool | None = None,
     ) -> TokenFactorySettings:
         key = api_key if api_key is not None else os.environ.get(ENV_API_KEY, "")
         # Never echo the key; callers must not log it.
@@ -59,6 +67,12 @@ class TokenFactorySettings:
             if max_tokens_per_site is not None
             else _env_int(ENV_MAX_TOKENS_PER_SITE, DEFAULT_MAX_TOKENS_PER_SITE),
             max_attempts=max_attempts if max_attempts is not None else DEFAULT_MAX_ATTEMPTS,
+            enable_thinking=_resolve_bool(
+                enable_thinking, ENV_ENABLE_THINKING, default=False
+            ),
+            enable_thinking_small=_resolve_bool(
+                enable_thinking_small, ENV_ENABLE_THINKING_SMALL, default=False
+            ),
         )
 
 
@@ -70,3 +84,12 @@ def _env_int(name: str, default: int) -> int:
         return max(1, int(raw))
     except ValueError:
         return default
+
+
+def _resolve_bool(explicit: bool | None, env_name: str, *, default: bool) -> bool:
+    if explicit is not None:
+        return bool(explicit)
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}

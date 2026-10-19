@@ -280,6 +280,201 @@ def test_cli_rejects_dry_run_and_write(tmp_path: Path):
     assert result.exit_code == 2
 
 
+def test_propose_and_summarize_pass_enable_thinking_false_by_default(tmp_path: Path):
+    root = _repo_with_break(tmp_path)
+    sites = sites_from_payload(_impact_payload())
+    client = FakeModelClient(responses=[_good_diff(), "why"])
+    apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(),
+            client=client,
+            site_cleared=lambda *_a, **_k: True,
+        ),
+    )
+    assert len(client.calls) == 2
+    assert client.calls[0]["enable_thinking"] is False
+    assert client.calls[1]["enable_thinking"] is False
+
+
+def test_enable_thinking_configurable_per_role(tmp_path: Path):
+    root = _repo_with_break(tmp_path)
+    sites = sites_from_payload(_impact_payload())
+    client = FakeModelClient(responses=[_good_diff(), "why"])
+    apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(enable_thinking=True, enable_thinking_small=True),
+            client=client,
+            site_cleared=lambda *_a, **_k: True,
+        ),
+    )
+    assert client.calls[0]["enable_thinking"] is True
+    assert client.calls[1]["enable_thinking"] is True
+
+
+def test_token_factory_client_sends_thinking_kwarg_and_ignores_reasoning(monkeypatch):
+    from conduit.apply.client import ChatMessage, TokenFactoryClient
+
+    captured: dict = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "ok",
+                            "reasoning_content": "secret chain of thought",
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+                "model": "m",
+            }
+
+    class _Http:
+        def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["json"] = json
+            return _Resp()
+
+        def close(self) -> None:
+            return None
+
+    client = TokenFactoryClient(base_url="https://example.test/v1/", api_key="secret")
+    client._http = _Http()  # type: ignore[assignment]
+    result = client.chat(
+        model="m",
+        messages=[ChatMessage(role="user", content="hi")],
+        max_tokens=20,
+        enable_thinking=False,
+    )
+    assert result.content == "ok"
+    assert "reasoning" not in result.content
+    assert captured["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_content" not in str(captured["json"])
+
+
+def test_trim_test_feedback_keeps_last_n_lines():
+    from conduit.apply.feedback import TEST_FEEDBACK_MAX_LINES, trim_test_feedback
+
+    lines = [f"line-{i}" for i in range(TEST_FEEDBACK_MAX_LINES + 25)]
+    trimmed = trim_test_feedback("\n".join(lines))
+    assert "line-0" not in trimmed
+    assert f"line-{TEST_FEEDBACK_MAX_LINES + 24}" in trimmed
+    assert "earlier lines omitted" in trimmed
+    assert trimmed.count("\n") <= TEST_FEEDBACK_MAX_LINES + 1
+
+
+def test_test_failure_feedback_fed_to_model_is_trimmed(tmp_path: Path):
+    root = _repo_with_break(tmp_path)
+    sites = sites_from_payload(_impact_payload())
+    huge = "\n".join(f"noise-{i}" for i in range(200))
+    log_file = tmp_path / "huge.log"
+    log_file.write_text(huge + "\n", encoding="utf-8")
+    client = FakeModelClient(
+        responses=[
+            _good_diff(),
+            _good_diff(),
+            "fixed after retry",
+        ]
+    )
+    fail_once = tmp_path / "fail_once.sh"
+    marker = tmp_path / "ran"
+    fail_once.write_text(
+        "#!/bin/sh\n"
+        f"if [ ! -f '{marker}' ]; then touch '{marker}'; cat '{log_file}'; exit 1; fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fail_once.chmod(0o755)
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=3),
+            client=client,
+            test_cmd=str(fail_once),
+            site_cleared=lambda *_a, **_k: True,
+        ),
+    )
+    assert report.results[0].status == SiteStatus.FIXED_VERIFIED, report.results[0].error
+    # Second propose call includes trimmed feedback in the user message.
+    second_user = client.calls[1]["messages"][1].content
+    assert "noise-0" not in second_user
+    assert "earlier lines omitted" in second_user
+    assert "noise-199" in second_user
+
+
+def test_recheck_impact_uses_collect_impacts_on_scratch(tmp_path: Path, monkeypatch):
+    from conduit.apply import verify as verify_mod
+    from conduit.impact.model import Impact, SiteHit
+
+    root = _repo_with_break(tmp_path)
+    sites = sites_from_payload(_impact_payload())
+    calls: list[Path] = []
+
+    def fake_listed(scratch: Path, site, *, fixtures, allow_network) -> bool:
+        calls.append(scratch)
+        text = (scratch / site.path).read_text(encoding="utf-8")
+        # Still flagged only if old_call remains.
+        return "old_call" in text
+
+    monkeypatch.setattr(verify_mod, "_site_still_listed", fake_listed)
+
+    client = FakeModelClient(responses=[_good_diff(), "why"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(),
+            write=True,
+            client=client,
+            recheck_impact=True,
+            fixtures=tmp_path / "missing-fixtures-unused",
+        ),
+    )
+    assert report.results[0].status == SiteStatus.FIXED_UNVERIFIED, report.results[0].error
+    assert calls, "expected impact re-check against a scratch tree"
+    assert "new_call" in (root / "mod.py").read_text(encoding="utf-8")
+
+
+def test_recheck_impact_rejects_when_site_still_listed(tmp_path: Path, monkeypatch):
+    from conduit.apply import verify as verify_mod
+
+    root = _repo_with_break(tmp_path)
+    sites = sites_from_payload(_impact_payload())
+    monkeypatch.setattr(verify_mod, "_site_still_listed", lambda *a, **k: True)
+    client = FakeModelClient(responses=[_good_diff(), _good_diff(), _good_diff()])
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=3),
+            client=client,
+            recheck_impact=True,
+        ),
+    )
+    assert report.results[0].status == SiteStatus.NEEDS_HUMAN
+    assert "still flagged" in report.results[0].error
+
+
+def test_apply_break_fixture_paths_exist():
+    fixture = Path(__file__).resolve().parent / "fixtures" / "apply-break"
+    assert (fixture / "db.py").is_file()
+    assert (fixture / "impact.json").is_file()
+    payload = json.loads((fixture / "impact.json").read_text(encoding="utf-8"))
+    sites = sites_from_payload(payload)
+    assert sites
+    assert sites[0].expr == "query.from_self"
+
+
 @pytest.mark.network
 @pytest.mark.nebius
 def test_live_token_factory_smoke():
@@ -301,6 +496,7 @@ def test_live_token_factory_smoke():
                 ChatMessage(role="user", content="Reply with exactly: ok"),
             ],
             max_tokens=16,
+            enable_thinking=False,
         )
     finally:
         client.close()

@@ -140,10 +140,15 @@ conduit apply --path examples/service-clients --impact /tmp/impact.json --write 
 | `--dry-run` | Print context packs only; do not call the model. |
 | `--write` | Write verified fixes into the working tree. |
 | `--test-cmd` | Shell command run in a scratch copy after each patch. |
+| `--fixtures` | Offline wheels/specs for the post-patch impact re-check. |
 | `--base-url` / `CONDUIT_APPLY_BASE_URL` | Token Factory base URL (default `https://api.tokenfactory.nebius.com/v1/`). |
 | `--model` / `CONDUIT_APPLY_MODEL` | Large model for diffs (default `nvidia/Nemotron-3-Ultra-550b-a55b`). |
 | `--model-small` / `CONDUIT_APPLY_MODEL_SMALL` | Small model for summaries (default `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`). |
+| `--enable-thinking` / `CONDUIT_APPLY_ENABLE_THINKING` | Propose: `chat_template_kwargs.enable_thinking` (default off). |
+| `--enable-thinking-small` / `CONDUIT_APPLY_ENABLE_THINKING_SMALL` | Summarize: same (default off). |
 | `NEBIUS_API_KEY` | Token Factory API key. |
+
+Nemotron may put thinking in `reasoning_content` (counts toward `max_tokens`). Apply sends `enable_thinking: false` by default and reads only `message.content`. Test-failure feedback resent to the model is capped at `TEST_FEEDBACK_MAX_LINES` (40) trailing lines.
 
 Docs: [Token Factory intro](https://docs.tokenfactory.nebius.com/api-reference/introduction), [model catalog](https://tokenfactory.nebius.com/model-catalog.md). `--pr` is not in this release.
 

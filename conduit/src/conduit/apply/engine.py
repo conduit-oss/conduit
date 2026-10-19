@@ -13,6 +13,7 @@ from typing import Any
 from conduit.apply.client import ChatMessage, ModelClient
 from conduit.apply.config import TokenFactorySettings
 from conduit.apply.context import ContextError, build_context_pack
+from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.patch import (
     PatchError,
@@ -22,9 +23,10 @@ from conduit.apply.patch import (
     validate_diff_scope,
 )
 from conduit.apply.prompts import propose_messages, summarize_messages
+from conduit.apply.verify import site_cleared_by_impact
 
 # Optional hook: given root + site + patched file text, return True if the site
-# is no longer flagged. Unit tests inject this; live runs may re-check impact.
+# is no longer flagged. Unit tests inject this; the CLI uses impact re-check.
 SiteClearedCheck = Callable[[Path, ImpactSite, str], bool]
 
 
@@ -37,6 +39,11 @@ class ApplyConfig:
     test_cmd: str | None = None
     client: ModelClient | None = None
     site_cleared: SiteClearedCheck | None = None
+    #: When True and ``site_cleared`` is unset, re-run ``collect_impacts`` on a
+    #: scratch copy of the tree with the patch applied.
+    recheck_impact: bool = False
+    fixtures: Path | None = None
+    allow_network: bool = False
     max_sites: int | None = None
 
 
@@ -133,7 +140,7 @@ def _apply_one(
             _verify_site_cleared(config, site, patched)
             tests_ok, test_err = _run_tests(config, site, patched)
             if not tests_ok:
-                feedback = test_err or "tests failed"
+                feedback = trim_test_feedback(test_err or "tests failed")
                 last_error = feedback
                 continue
             why = ""
@@ -193,6 +200,7 @@ def _propose(
         model=settings.model,
         messages=messages,
         max_tokens=max_tokens,
+        enable_thinking=settings.enable_thinking,
     )
     return extract_unified_diff(result.content), result.total_tokens
 
@@ -213,6 +221,7 @@ def _summarize(
         model=settings.model_small,
         messages=messages,
         max_tokens=max_tokens,
+        enable_thinking=settings.enable_thinking_small,
     )
     text = result.content.strip()
     why = text.splitlines()[0] if text else ""
@@ -220,9 +229,19 @@ def _summarize(
 
 
 def _verify_site_cleared(config: ApplyConfig, site: ImpactSite, patched: str) -> None:
-    if config.site_cleared is None:
+    if config.site_cleared is not None:
+        cleared = config.site_cleared(config.root, site, patched)
+    elif config.recheck_impact:
+        cleared = site_cleared_by_impact(
+            config.root,
+            site,
+            patched,
+            fixtures=config.fixtures,
+            allow_network=config.allow_network,
+        )
+    else:
         return
-    if not config.site_cleared(config.root, site, patched):
+    if not cleared:
         raise PatchError("impact site still flagged after patch")
 
 

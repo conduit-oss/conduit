@@ -34,6 +34,7 @@ class ModelClient(Protocol):
         messages: list[ChatMessage],
         max_tokens: int = 2048,
         temperature: float = 0.2,
+        enable_thinking: bool = False,
     ) -> ChatResult: ...
 
 
@@ -43,6 +44,10 @@ class TokenFactoryClient:
 
     Uses the Token Factory chat-completions HTTP API. The API key is held in
     memory only and must never be printed or logged.
+
+    Nemotron models may emit ``message.reasoning_content`` that counts against
+    ``max_tokens``. We send ``chat_template_kwargs.enable_thinking`` (default
+    false) and always read only ``message.content`` — never reasoning_content.
     """
 
     base_url: str
@@ -68,6 +73,7 @@ class TokenFactoryClient:
         messages: list[ChatMessage],
         max_tokens: int = 2048,
         temperature: float = 0.2,
+        enable_thinking: bool = False,
     ) -> ChatResult:
         if not self.api_key:
             raise RuntimeError(
@@ -75,11 +81,13 @@ class TokenFactoryClient:
                 "or pass a fake client in tests."
             )
         url = self.base_url.rstrip("/") + "/chat/completions"
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "max_tokens": max_tokens,
             "temperature": temperature,
+            # Required for Nemotron: reasoning otherwise fills the token budget.
+            "chat_template_kwargs": {"enable_thinking": bool(enable_thinking)},
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -91,6 +99,7 @@ class TokenFactoryClient:
         data = response.json()
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
+        # Intentionally ignore message.reasoning_content — it is not the fix.
         content = message.get("content") or ""
         usage = data.get("usage") or {}
         return ChatResult(
@@ -118,6 +127,7 @@ class FakeModelClient:
         messages: list[ChatMessage],
         max_tokens: int = 2048,
         temperature: float = 0.2,
+        enable_thinking: bool = False,
     ) -> ChatResult:
         self.calls.append(
             {
@@ -125,6 +135,7 @@ class FakeModelClient:
                 "messages": messages,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
+                "enable_thinking": enable_thinking,
             }
         )
         if not self.responses:
