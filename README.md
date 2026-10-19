@@ -123,15 +123,15 @@ If Conduit cannot tell which versions to compare, or cannot find two API specs, 
 
 ## apply
 
-`conduit apply` takes JSON from `conduit impact --json` and proposes function-scoped fixes with NVIDIA Nemotron through Nebius Token Factory (OpenAI-compatible API). It only edits the flagged function (plus imports if needed). Fixes come from the impact evidence and the model — not from hard-coded recipes.
+`conduit apply` takes JSON from `conduit impact --json` and proposes function-scoped fixes with NVIDIA Nemotron through Nebius Token Factory (chat-completions API). The model returns rewritten function source (plus optional imports); Conduit splices by AST span and builds the diff itself. Fixes come from the impact evidence and the model — not from hard-coded recipes.
 
 ```bash
 export NEBIUS_API_KEY=...   # never commit or log this
-conduit impact --dep sqlalchemy --path examples/service-clients \
-  --fixtures conduit/fixtures/impact --json > /tmp/impact.json
-conduit apply --path examples/service-clients --impact /tmp/impact.json --dry-run
-conduit apply --path examples/service-clients --impact /tmp/impact.json --write \
-  --test-cmd "pytest -q"
+conduit apply --path conduit/tests/fixtures/apply-break \
+  --impact conduit/tests/fixtures/apply-break/impact.json --dry-run
+conduit apply --path conduit/tests/fixtures/apply-break \
+  --impact conduit/tests/fixtures/apply-break/impact.json --write \
+  --fixtures conduit/fixtures/impact --test-cmd "python3 -m pytest -q"
 ```
 
 | Flag / env | Meaning |

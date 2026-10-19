@@ -5,16 +5,19 @@
       "dependency": "sqlalchemy",
       "from_version": "1.4.52",
       "to_version": "2.1.4",
-      "change": "Query.from_self removed",
-      "confidence": "high",
+      "change": "parameter object_ renamed to statement on Connection.scalar",
+      "confidence": "medium",
       "source": "wheel",
-      "kind": "removed",
+      "kind": "param_renamed",
+      "symbol": "sqlalchemy.engine.Connection.scalar",
+      "old": "object_",
+      "new": "statement",
       "sites": [
         {
           "path": "db.py",
-          "line": 12,
-          "expr": "query.from_self",
-          "confidence": "high",
+          "line": 7,
+          "expr": "conn.scalar",
+          "confidence": "medium",
           "via_wrapper": false
         }
       ]

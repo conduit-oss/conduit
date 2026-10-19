@@ -60,6 +60,9 @@ def intersect(
                 source=change.source,
                 sites=tuple(sites),
                 kind=change.kind,
+                symbol=change.symbol,
+                old=change.old,
+                new=change.new,
             )
         )
     return impacts

@@ -1,4 +1,4 @@
-"""Propose → validate → verify loop for each impact site."""
+"""Propose → splice → verify loop for each impact site."""
 
 from __future__ import annotations
 
@@ -15,14 +15,8 @@ from conduit.apply.config import TokenFactorySettings
 from conduit.apply.context import ContextError, build_context_pack
 from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
-from conduit.apply.patch import (
-    PatchError,
-    apply_unified_diff,
-    ensure_parses,
-    extract_unified_diff,
-    validate_diff_scope,
-)
 from conduit.apply.prompts import propose_messages, summarize_messages
+from conduit.apply.splice import PatchError, parse_model_edit, splice_edit
 from conduit.apply.verify import site_cleared_by_impact
 
 # Optional hook: given root + site + patched file text, return True if the site
@@ -124,7 +118,7 @@ def _apply_one(
             last_error = "token budget exhausted for this site"
             break
         try:
-            diff, used = _propose(
+            edit_text, used = _propose(
                 client,
                 pack,
                 config.settings,
@@ -133,10 +127,9 @@ def _apply_one(
             )
             site_tokens += used
             report.tokens_used += used
+            edit = parse_model_edit(edit_text)
+            patched, diff = splice_edit(pack, edit)
             last_diff = diff
-            validate_diff_scope(diff, pack)
-            patched = apply_unified_diff(pack.full_source, diff)
-            ensure_parses(patched)
             _verify_site_cleared(config, site, patched)
             tests_ok, test_err = _run_tests(config, site, patched)
             if not tests_ok:
@@ -202,7 +195,7 @@ def _propose(
         max_tokens=max_tokens,
         enable_thinking=settings.enable_thinking,
     )
-    return extract_unified_diff(result.content), result.total_tokens
+    return result.content, result.total_tokens
 
 
 def _summarize(

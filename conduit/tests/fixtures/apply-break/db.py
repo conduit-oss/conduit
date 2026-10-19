@@ -1,12 +1,7 @@
-"""One breaking SQLAlchemy call site for apply smoke tests."""
+"""One param-rename break from Conduit wheel-diff evidence."""
 
-from sqlalchemy.orm import Query
-
-
-class User:
-    id = 0
+from sqlalchemy.engine import Connection
 
 
-def by_pk(user_id: int):
-    query = Query(User)
-    return query.from_self(user_id)
+def fetch_one(conn: Connection, stmt):
+    return conn.scalar(object_=stmt)
