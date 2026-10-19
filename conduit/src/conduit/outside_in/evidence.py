@@ -167,7 +167,9 @@ class _Direct:
 
 
 def cache_dir() -> Path:
-    path = Path(tempfile.gettempdir()) / "conduit-classify"
+    from conduit.analysis_cache import cache_root, cache_version
+
+    path = cache_root() / "classify" / cache_version()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -1704,6 +1706,10 @@ def _cached(norm: str, version: str) -> Classification | None:
 
 
 def _read_disk(key: tuple[str, str]) -> Classification | None:
+    from conduit.analysis_cache import cache_enabled
+
+    if not cache_enabled():
+        return None
     path = _cache_path(key)
     if not path.is_file():
         return None
@@ -1731,6 +1737,10 @@ def _read_disk(key: tuple[str, str]) -> Classification | None:
 
 
 def _write_disk(key: tuple[str, str], found: Classification) -> None:
+    from conduit.analysis_cache import cache_enabled
+
+    if not cache_enabled():
+        return
     payload = {
         "schema": _SCHEMA,
         "name": found.name,

@@ -511,7 +511,9 @@ def _public_api_tokens() -> frozenset[str]:
             except (OSError, zipfile.BadZipFile):
                 continue
     for path in sorted((REPO / "docs").glob("known-breaks*.json")):
-        if path.name.endswith("-results.json"):
+        # Mined / scored dumps grow without bound and are not classifier
+        # fixtures; including them dilutes single-distribution fingerprints.
+        if path.name.endswith("-results.json") or "-mined" in path.name:
             continue
         document = json.loads(path.read_text(encoding="utf-8"))
         repos = document.get("repos") if isinstance(document, dict) else None

@@ -1,0 +1,1992 @@
+{
+  "note": "Partial full-repo scoring of known-breaks-mined-v2.json. Remaining cases marked not run (time budget).",
+  "ground": "docs/known-breaks-mined-v2.json",
+  "memory": {
+    "peak_rss_before_mb": 8211,
+    "peak_rss_after_mb": 1255,
+    "case": "gptme/gptme anthropic 0.120->1.8",
+    "fix": "scoped LibraryTypes package walk + AST/LRU release"
+  },
+  "timing": {
+    "source": "prior full-repo runs + memprof checkpoints",
+    "avg_per_case_s_approx": 300,
+    "examples_s": {
+      "evolvesprouts/sqlalchemy": 581,
+      "currency_exchange/sqlalchemy": 208,
+      "gptme/anthropic_service_map": 330,
+      "gptme/anthropic_impact_after_map": 52,
+      "agentflow/openai_warm": 7
+    },
+    "dominates": "repo service-map / LibraryTypes analysis (build_service_map), not wheel diff",
+    "evidence": "gptme: after_service_map ~330s / ~1.2GB HWM; collect_impacts ~52s afterward"
+  },
+  "dropped_v1_to_v2": {
+    "count": 2,
+    "reason": "downgrade"
+  },
+  "false_positive_sample": [
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "versions": "0.27.8 -> 3.34.0",
+      "path": "agentflow/llm.py",
+      "line": 65,
+      "expr": "response.choices[0].message",
+      "change": "ChatCompletion.create return changed from a dict-like object to a typed object"
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "versions": "0.27.8 -> 3.34.0",
+      "path": "agentflow/functions/create_image.py",
+      "line": 86,
+      "expr": "response['data'][0]['url']",
+      "change": "Image.create return changed from a dict-like object to a typed object"
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "versions": "0.27.8 -> 3.33.0",
+      "path": "agentflow/llm.py",
+      "line": 65,
+      "expr": "response.choices[0].message",
+      "change": "ChatCompletion.create return changed from a dict-like object to a typed object"
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "versions": "0.27.8 -> 3.33.0",
+      "path": "agentflow/functions/create_image.py",
+      "line": 86,
+      "expr": "response['data'][0]['url']",
+      "change": "Image.create return changed from a dict-like object to a typed object"
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "versions": "0.27.8 -> 3.35.1",
+      "path": "agentflow/llm.py",
+      "line": 65,
+      "expr": "response.choices[0].message",
+      "change": "ChatCompletion.create return changed from a dict-like object to a typed object"
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "versions": "0.27.8 -> 3.35.1",
+      "path": "agentflow/functions/create_image.py",
+      "line": 86,
+      "expr": "response['data'][0]['url']",
+      "change": "Image.create return changed from a dict-like object to a typed object"
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "versions": "0.27.8 -> 1.55.3",
+      "path": "agentflow/llm.py",
+      "line": 65,
+      "expr": "response.choices[0].message",
+      "change": "ChatCompletion.create return changed from a dict-like object to a typed object"
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "versions": "0.27.8 -> 1.55.3",
+      "path": "agentflow/functions/create_image.py",
+      "line": 86,
+      "expr": "response['data'][0]['url']",
+      "change": "Image.create return changed from a dict-like object to a typed object"
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "versions": "0.27.8 -> 1.3.7",
+      "path": "agentflow/llm.py",
+      "line": 65,
+      "expr": "response.choices[0].message",
+      "change": "ChatCompletion.create return changed from a dict-like object to a typed object"
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "versions": "0.27.8 -> 1.3.7",
+      "path": "agentflow/functions/create_image.py",
+      "line": 86,
+      "expr": "response['data'][0]['url']",
+      "change": "Image.create return changed from a dict-like object to a typed object"
+    }
+  ],
+  "false_positive_hand_notes": {
+    "real_but_unfixed": [
+      {
+        "repo": "shubangowda/agentflow",
+        "service": "openai",
+        "versions": "0.27.8 -> 3.34.0",
+        "path": "agentflow/llm.py",
+        "line": 65,
+        "expr": "response.choices[0].message",
+        "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+        "category": "openai_api_rename_or_removal",
+        "note": "Likely real API break; PR may not touch every call site"
+      },
+      {
+        "repo": "shubangowda/agentflow",
+        "service": "openai",
+        "versions": "0.27.8 -> 3.34.0",
+        "path": "agentflow/functions/create_image.py",
+        "line": 86,
+        "expr": "response['data'][0]['url']",
+        "change": "Image.create return changed from a dict-like object to a typed object",
+        "category": "openai_dict_response_access",
+        "note": "Likely real break (openai 0.27 dict-style access) not fixed in this PR"
+      },
+      {
+        "repo": "shubangowda/agentflow",
+        "service": "openai",
+        "versions": "0.27.8 -> 3.33.0",
+        "path": "agentflow/llm.py",
+        "line": 65,
+        "expr": "response.choices[0].message",
+        "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+        "category": "openai_api_rename_or_removal",
+        "note": "Likely real API break; PR may not touch every call site"
+      },
+      {
+        "repo": "shubangowda/agentflow",
+        "service": "openai",
+        "versions": "0.27.8 -> 3.33.0",
+        "path": "agentflow/functions/create_image.py",
+        "line": 86,
+        "expr": "response['data'][0]['url']",
+        "change": "Image.create return changed from a dict-like object to a typed object",
+        "category": "openai_dict_response_access",
+        "note": "Likely real break (openai 0.27 dict-style access) not fixed in this PR"
+      },
+      {
+        "repo": "shubangowda/agentflow",
+        "service": "openai",
+        "versions": "0.27.8 -> 3.35.1",
+        "path": "agentflow/llm.py",
+        "line": 65,
+        "expr": "response.choices[0].message",
+        "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+        "category": "openai_api_rename_or_removal",
+        "note": "Likely real API break; PR may not touch every call site"
+      },
+      {
+        "repo": "shubangowda/agentflow",
+        "service": "openai",
+        "versions": "0.27.8 -> 3.35.1",
+        "path": "agentflow/functions/create_image.py",
+        "line": 86,
+        "expr": "response['data'][0]['url']",
+        "change": "Image.create return changed from a dict-like object to a typed object",
+        "category": "openai_dict_response_access",
+        "note": "Likely real break (openai 0.27 dict-style access) not fixed in this PR"
+      },
+      {
+        "repo": "shubangowda/agentflow",
+        "service": "openai",
+        "versions": "0.27.8 -> 1.55.3",
+        "path": "agentflow/llm.py",
+        "line": 65,
+        "expr": "response.choices[0].message",
+        "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+        "category": "openai_api_rename_or_removal",
+        "note": "Likely real API break; PR may not touch every call site"
+      },
+      {
+        "repo": "shubangowda/agentflow",
+        "service": "openai",
+        "versions": "0.27.8 -> 1.55.3",
+        "path": "agentflow/functions/create_image.py",
+        "line": 86,
+        "expr": "response['data'][0]['url']",
+        "change": "Image.create return changed from a dict-like object to a typed object",
+        "category": "openai_dict_response_access",
+        "note": "Likely real break (openai 0.27 dict-style access) not fixed in this PR"
+      },
+      {
+        "repo": "shubangowda/agentflow",
+        "service": "openai",
+        "versions": "0.27.8 -> 1.3.7",
+        "path": "agentflow/llm.py",
+        "line": 65,
+        "expr": "response.choices[0].message",
+        "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+        "category": "openai_api_rename_or_removal",
+        "note": "Likely real API break; PR may not touch every call site"
+      },
+      {
+        "repo": "shubangowda/agentflow",
+        "service": "openai",
+        "versions": "0.27.8 -> 1.3.7",
+        "path": "agentflow/functions/create_image.py",
+        "line": 86,
+        "expr": "response['data'][0]['url']",
+        "change": "Image.create return changed from a dict-like object to a typed object",
+        "category": "openai_dict_response_access",
+        "note": "Likely real break (openai 0.27 dict-style access) not fixed in this PR"
+      }
+    ],
+    "likely_true_fp": []
+  },
+  "status_counts": {
+    "scored": 15,
+    "not compared": 3,
+    "not run (time budget)": 48,
+    "rows_including_ground_duplicates": 71
+  },
+  "by_library": {
+    "sqlalchemy": {
+      "cases": 1,
+      "expected": 7,
+      "caught": 0,
+      "false_positives": 3,
+      "recall": "0/7",
+      "precision": "0/3"
+    },
+    "pyhelpers": {
+      "cases": 1,
+      "expected": 32,
+      "caught": 0,
+      "false_positives": 58,
+      "recall": "0/32",
+      "precision": "0/58"
+    },
+    "google-adk": {
+      "cases": 1,
+      "expected": 1,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a"
+    },
+    "stripe": {
+      "cases": 2,
+      "expected": 6,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/6",
+      "precision": "n/a"
+    },
+    "openai": {
+      "cases": 5,
+      "expected": 32,
+      "caught": 10,
+      "false_positives": 10,
+      "recall": "10/32",
+      "precision": "10/20"
+    },
+    "anthropic": {
+      "cases": 1,
+      "expected": 1,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a"
+    },
+    "pinecone": {
+      "cases": 1,
+      "expected": 4,
+      "caught": 0,
+      "false_positives": 10,
+      "recall": "0/4",
+      "precision": "0/10"
+    },
+    "bokeh": {
+      "cases": 1,
+      "expected": 1,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a"
+    },
+    "pytest-httpbin": {
+      "cases": 2,
+      "expected": 2,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/2",
+      "precision": "n/a"
+    }
+  },
+  "by_library_precision_adjusted": {
+    "sqlalchemy": {
+      "cases": 1,
+      "expected": 7,
+      "caught": 0,
+      "false_positives": 3,
+      "recall": "0/7",
+      "precision": "0/3",
+      "precision_raw": "0/3",
+      "real_unfixed_fps": 0,
+      "precision_adjusted_for_unfixed": "0/3"
+    },
+    "pyhelpers": {
+      "cases": 1,
+      "expected": 32,
+      "caught": 0,
+      "false_positives": 58,
+      "recall": "0/32",
+      "precision": "0/58",
+      "precision_raw": "0/58",
+      "real_unfixed_fps": 0,
+      "precision_adjusted_for_unfixed": "0/58"
+    },
+    "google-adk": {
+      "cases": 1,
+      "expected": 1,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "precision_raw": "n/a",
+      "real_unfixed_fps": 0,
+      "precision_adjusted_for_unfixed": "n/a"
+    },
+    "stripe": {
+      "cases": 2,
+      "expected": 6,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/6",
+      "precision": "n/a",
+      "precision_raw": "n/a",
+      "real_unfixed_fps": 0,
+      "precision_adjusted_for_unfixed": "n/a"
+    },
+    "openai": {
+      "cases": 5,
+      "expected": 32,
+      "caught": 10,
+      "false_positives": 10,
+      "recall": "10/32",
+      "precision": "10/20",
+      "precision_raw": "10/20",
+      "real_unfixed_fps": 10,
+      "precision_adjusted_for_unfixed": "10/10"
+    },
+    "anthropic": {
+      "cases": 1,
+      "expected": 1,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "precision_raw": "n/a",
+      "real_unfixed_fps": 0,
+      "precision_adjusted_for_unfixed": "n/a"
+    },
+    "pinecone": {
+      "cases": 1,
+      "expected": 4,
+      "caught": 0,
+      "false_positives": 10,
+      "recall": "0/4",
+      "precision": "0/10",
+      "precision_raw": "0/10",
+      "real_unfixed_fps": 0,
+      "precision_adjusted_for_unfixed": "0/10"
+    },
+    "bokeh": {
+      "cases": 1,
+      "expected": 1,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "precision_raw": "n/a",
+      "real_unfixed_fps": 0,
+      "precision_adjusted_for_unfixed": "n/a"
+    },
+    "pytest-httpbin": {
+      "cases": 2,
+      "expected": 2,
+      "caught": 0,
+      "false_positives": 0,
+      "recall": "0/2",
+      "precision": "n/a",
+      "precision_raw": "n/a",
+      "real_unfixed_fps": 0,
+      "precision_adjusted_for_unfixed": "n/a"
+    }
+  },
+  "rows": [
+    {
+      "repo": "lx-software-ltd/evolvesprouts",
+      "service": "sqlalchemy",
+      "versions": "2.0.54 -> 2.1.1",
+      "status": "not compared",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [
+        {
+          "file": "tests/test_admin_entities_helpers.py",
+          "line": 14,
+          "symbol": "from sqlalchemy.exc import IntegrityError, UnsupportedCompilationError"
+        }
+      ],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true,
+      "not_compared_reason": "impact exit 1"
+    },
+    {
+      "repo": "mbylinkin/currency_exchange",
+      "service": "sqlalchemy",
+      "versions": "2.0.29 -> 2.1.5",
+      "status": "scored",
+      "expected": 7,
+      "caught": 0,
+      "missed": 7,
+      "false_positives": 3,
+      "recall": "0/7",
+      "precision": "0/3",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "mikeqfu/pydriosm",
+      "service": "pyhelpers",
+      "versions": "2.4.0 -> 2.5.3",
+      "status": "scored",
+      "expected": 32,
+      "caught": 0,
+      "missed": 32,
+      "false_positives": 58,
+      "recall": "0/32",
+      "precision": "0/58",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "abdksyed/KyaHuaPathe",
+      "service": "google-adk",
+      "versions": "1.23.0 -> 1.24.1",
+      "status": "scored",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "neilmac91/EarningsNerd",
+      "service": "stripe",
+      "versions": "15.6.1 -> 16.0.0",
+      "status": "scored",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "georgehadji/reasoner",
+      "service": "stripe",
+      "versions": "15.6.1 -> 16.0.0",
+      "status": "scored",
+      "expected": 5,
+      "caught": 0,
+      "missed": 5,
+      "false_positives": 0,
+      "recall": "0/5",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "AlexMos555/linkshield",
+      "service": "stripe",
+      "versions": "11.0.0 -> 16.0.0",
+      "status": "not compared",
+      "expected": 3,
+      "caught": 0,
+      "missed": 3,
+      "false_positives": 0,
+      "recall": "0/3",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [
+        {
+          "file": "api/routers/payments.py",
+          "line": 383,
+          "symbol": "event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)"
+        },
+        {
+          "file": "api/services/stripe_billing.py",
+          "line": 48,
+          "symbol": "\"\"\"Read `key` from a Stripe object or a plain dict (tests) alike."
+        },
+        {
+          "file": "api/services/stripe_billing.py",
+          "line": 50,
+          "symbol": "StripeObject subclasses dict in stripe-python, so `.get` works on"
+        }
+      ],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true,
+      "not_compared_reason": "impact exit 1"
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "versions": "0.27.8 -> 3.34.0",
+      "status": "scored",
+      "expected": 7,
+      "caught": 2,
+      "missed": 5,
+      "false_positives": 2,
+      "recall": "2/7",
+      "precision": "2/4",
+      "caught_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)",
+          "change": "Image.create removed",
+          "expr": "openai.Image.create"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)",
+          "change": "ChatCompletion.create removed",
+          "expr": "openai.ChatCompletion.create"
+        }
+      ],
+      "missed_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 36,
+          "symbol": "Initializes the LLM object by loading the environment variables and setting the OpenAI API key."
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ],
+      "false_positive_sites": [
+        {
+          "path": "agentflow/llm.py",
+          "line": 65,
+          "expr": "response.choices[0].message",
+          "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "3.34.0"
+        },
+        {
+          "path": "agentflow/functions/create_image.py",
+          "line": 86,
+          "expr": "response['data'][0]['url']",
+          "change": "Image.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "3.34.0"
+        }
+      ],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "versions": "0.27.8 -> 3.33.0",
+      "status": "scored",
+      "expected": 6,
+      "caught": 2,
+      "missed": 4,
+      "false_positives": 2,
+      "recall": "2/6",
+      "precision": "2/4",
+      "caught_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)",
+          "change": "Image.create removed",
+          "expr": "openai.Image.create"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)",
+          "change": "ChatCompletion.create removed",
+          "expr": "openai.ChatCompletion.create"
+        }
+      ],
+      "missed_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ],
+      "false_positive_sites": [
+        {
+          "path": "agentflow/llm.py",
+          "line": 65,
+          "expr": "response.choices[0].message",
+          "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "3.33.0"
+        },
+        {
+          "path": "agentflow/functions/create_image.py",
+          "line": 86,
+          "expr": "response['data'][0]['url']",
+          "change": "Image.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "3.33.0"
+        }
+      ],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "gptme/gptme",
+      "service": "anthropic",
+      "versions": "0.120 -> 1.8",
+      "status": "scored",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "pinecone-io/bird-search-example",
+      "service": "pinecone",
+      "versions": "9.0.0 -> 10.0.0",
+      "status": "scored",
+      "expected": 4,
+      "caught": 0,
+      "missed": 4,
+      "false_positives": 10,
+      "recall": "0/4",
+      "precision": "0/10",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "versions": "0.27.8 -> 3.35.1",
+      "status": "scored",
+      "expected": 6,
+      "caught": 2,
+      "missed": 4,
+      "false_positives": 2,
+      "recall": "2/6",
+      "precision": "2/4",
+      "caught_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)",
+          "change": "Image.create removed",
+          "expr": "openai.Image.create"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)",
+          "change": "ChatCompletion.create removed",
+          "expr": "openai.ChatCompletion.create"
+        }
+      ],
+      "missed_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ],
+      "false_positive_sites": [
+        {
+          "path": "agentflow/llm.py",
+          "line": 65,
+          "expr": "response.choices[0].message",
+          "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "3.35.1"
+        },
+        {
+          "path": "agentflow/functions/create_image.py",
+          "line": 86,
+          "expr": "response['data'][0]['url']",
+          "change": "Image.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "3.35.1"
+        }
+      ],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "versions": "0.27.8 -> 1.55.3",
+      "status": "scored",
+      "expected": 7,
+      "caught": 2,
+      "missed": 5,
+      "false_positives": 2,
+      "recall": "2/7",
+      "precision": "2/4",
+      "caught_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)",
+          "change": "Image.create removed",
+          "expr": "openai.Image.create"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)",
+          "change": "ChatCompletion.create removed",
+          "expr": "openai.ChatCompletion.create"
+        }
+      ],
+      "missed_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 36,
+          "symbol": "Initializes the LLM object by loading the environment variables and setting the OpenAI API key."
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ],
+      "false_positive_sites": [
+        {
+          "path": "agentflow/llm.py",
+          "line": 65,
+          "expr": "response.choices[0].message",
+          "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "1.55.3"
+        },
+        {
+          "path": "agentflow/functions/create_image.py",
+          "line": 86,
+          "expr": "response['data'][0]['url']",
+          "change": "Image.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "1.55.3"
+        }
+      ],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "versions": "0.27.8 -> 1.3.7",
+      "status": "scored",
+      "expected": 6,
+      "caught": 2,
+      "missed": 4,
+      "false_positives": 2,
+      "recall": "2/6",
+      "precision": "2/4",
+      "caught_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)",
+          "change": "Image.create removed",
+          "expr": "openai.Image.create"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)",
+          "change": "ChatCompletion.create removed",
+          "expr": "openai.ChatCompletion.create"
+        }
+      ],
+      "missed_sites": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ],
+      "false_positive_sites": [
+        {
+          "path": "agentflow/llm.py",
+          "line": 65,
+          "expr": "response.choices[0].message",
+          "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "1.3.7"
+        },
+        {
+          "path": "agentflow/functions/create_image.py",
+          "line": 86,
+          "expr": "response['data'][0]['url']",
+          "change": "Image.create return changed from a dict-like object to a typed object",
+          "from_version": "0.27.8",
+          "to_version": "1.3.7"
+        }
+      ],
+      "notes": [],
+      "exit": 0
+    },
+    {
+      "repo": "amerorchis/weather_dashboard",
+      "service": "bokeh",
+      "versions": "3.1.1 -> 3.9.0",
+      "status": "scored",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "psf/requests",
+      "service": "pytest-httpbin",
+      "versions": "2.0.0 -> 2.1.0",
+      "status": "scored",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "psf/requests",
+      "service": "pytest-httpbin",
+      "versions": "1.0.0 -> 2.0.0",
+      "status": "scored",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "aws/aws-cli",
+      "service": "awscrt",
+      "versions": "0.27.6 -> 0.28.4",
+      "status": "not run (time budget)",
+      "expected": 12,
+      "caught": 0,
+      "missed": 12,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.18.0 -> 0.19.0",
+      "status": "not compared",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [
+        {
+          "file": "setup.py",
+          "line": 19,
+          "symbol": "'s3transfer>=0.18.0,<0.19.0',"
+        }
+      ],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true,
+      "not_compared_reason": "impact exit 1"
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.17.0 -> 0.18.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.42.97 -> 1.43.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.16.0 -> 0.17.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.41.6 -> 1.42.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.15.0 -> 0.16.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.14.0 -> 0.15.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.40.76 -> 1.41.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.13.0 -> 0.14.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "gptme/gptme",
+      "service": "anthropic",
+      "versions": "0.120 -> 1.8",
+      "status": "scored",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "service": "altair",
+      "versions": "4.2.1 -> 5.0.0",
+      "status": "not run (time budget)",
+      "expected": 2,
+      "caught": 0,
+      "missed": 2,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "indico/indico",
+      "service": "alembic",
+      "versions": "1.14.0 -> 1.18.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "indico/indico",
+      "service": "flask-limiter",
+      "versions": "3.9.2 -> 4.1.1",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "mbylinkin/currency_exchange",
+      "service": "sqlalchemy-utils",
+      "versions": "0.41.2 -> 0.43.0",
+      "status": "not run (time budget)",
+      "expected": 7,
+      "caught": 0,
+      "missed": 7,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "mikeqfu/pydriosm",
+      "service": "pyhelpers",
+      "versions": "2.3.4 -> 2.4.0",
+      "status": "not run (time budget)",
+      "expected": 13,
+      "caught": 0,
+      "missed": 13,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "saleor/saleor",
+      "service": "django-celery-beat",
+      "versions": "2.2.1 -> 2.8.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "scrapy/scrapy",
+      "service": "sphinx",
+      "versions": "8.1.3 -> 9.1.0",
+      "status": "not run (time budget)",
+      "expected": 4,
+      "caught": 0,
+      "missed": 4,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "georgehadji/reasoner",
+      "service": "stripe",
+      "versions": "15.6.1 -> 16.0.0",
+      "status": "scored",
+      "expected": 5,
+      "caught": 0,
+      "missed": 5,
+      "false_positives": 0,
+      "recall": "0/5",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "ckan/ckan",
+      "service": "psycopg2",
+      "versions": "2.4.5 -> 2.7.3.2",
+      "status": "not run (time budget)",
+      "expected": 2,
+      "caught": 0,
+      "missed": 2,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "service": "posthog",
+      "versions": "2.1.0 -> 3",
+      "status": "not run (time budget)",
+      "expected": 2,
+      "caught": 0,
+      "missed": 2,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "service": "clickhouse-sqlalchemy",
+      "versions": "0.2.2 -> 0.3.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "service": "pymysql",
+      "versions": "0.9.3 -> 1.1.1",
+      "status": "not run (time budget)",
+      "expected": 3,
+      "caught": 0,
+      "missed": 3,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "scrapy/scrapy",
+      "service": "twisted",
+      "versions": "13.1.0 -> 16.0.0",
+      "status": "not run (time budget)",
+      "expected": 2,
+      "caught": 0,
+      "missed": 2,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "scrapy/scrapy",
+      "service": "twisted",
+      "versions": "10.0.0 -> 13.1.0",
+      "status": "not run (time budget)",
+      "expected": 12,
+      "caught": 0,
+      "missed": 12,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "Dataherald/dataherald",
+      "service": "langchain",
+      "versions": "0.0.335 -> 0.1.5",
+      "status": "not run (time budget)",
+      "expected": 7,
+      "caught": 0,
+      "missed": 7,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "Dataherald/dataherald",
+      "service": "openai",
+      "versions": "0.27.8 -> 1.3.6",
+      "status": "not run (time budget)",
+      "expected": 26,
+      "caught": 0,
+      "missed": 26,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "service": "tweepy",
+      "versions": "4.4.0 -> 4.14.0",
+      "status": "not run (time budget)",
+      "expected": 2,
+      "caught": 0,
+      "missed": 2,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "service": "tweepy",
+      "versions": "3.10.0 -> 4.4.0",
+      "status": "not run (time budget)",
+      "expected": 13,
+      "caught": 0,
+      "missed": 13,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "service": "stripe",
+      "versions": "2.56.0 -> 2.58.0",
+      "status": "not run (time budget)",
+      "expected": 2,
+      "caught": 0,
+      "missed": 2,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "service": "stripe",
+      "versions": "2.16.0 -> 2.56.0",
+      "status": "not run (time budget)",
+      "expected": 4,
+      "caught": 0,
+      "missed": 4,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "service": "social-auth-core",
+      "versions": "1.7.0 -> 3.0.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "PaddlePaddle/PaddleNLP",
+      "service": "aistudio-sdk",
+      "versions": "0.2.6 -> 0.3.0",
+      "status": "not run (time budget)",
+      "expected": 3,
+      "caught": 0,
+      "missed": 3,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "aaronsb/knowledge-graph-system",
+      "service": "transformers",
+      "versions": "4.56.0 -> 5.0",
+      "status": "not run (time budget)",
+      "expected": 8,
+      "caught": 0,
+      "missed": 8,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "python-telegram-bot/python-telegram-bot",
+      "service": "tornado",
+      "versions": "5.1 -> 6.1",
+      "status": "not run (time budget)",
+      "expected": 4,
+      "caught": 0,
+      "missed": 4,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "abdksyed/KyaHuaPathe",
+      "service": "google-adk",
+      "versions": "1.23.0 -> 1.24.1",
+      "status": "scored",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "0/1",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.39.17 -> 1.40.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.38.46 -> 1.39.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.12.0 -> 0.13.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.37.38 -> 1.38.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.11.0 -> 0.12.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.36.26 -> 1.37.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.35.99 -> 1.36.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.10.0 -> 0.11.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.34.162 -> 1.35.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.9.0 -> 0.10.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.33.13 -> 1.34.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.8.2 -> 0.9.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.32.7 -> 1.33.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.7.0 -> 0.8.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "botocore",
+      "versions": "1.31.85 -> 1.32.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "service": "s3transfer",
+      "versions": "0.6.0 -> 0.7.0",
+      "status": "not run (time budget)",
+      "expected": 1,
+      "caught": 0,
+      "missed": 1,
+      "false_positives": 0,
+      "recall": "n/a",
+      "precision": "n/a",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [
+        "Stopped: full 71-case scoring cancelled due to time/usage budget."
+      ]
+    },
+    {
+      "repo": "mbylinkin/currency_exchange",
+      "service": "sqlalchemy",
+      "versions": "2.0.29 -> 2.1.5",
+      "status": "scored",
+      "expected": 7,
+      "caught": 0,
+      "missed": 7,
+      "false_positives": 3,
+      "recall": "0/7",
+      "precision": "0/3",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    },
+    {
+      "repo": "pinecone-io/bird-search-example",
+      "service": "pinecone",
+      "versions": "9.0.0 -> 10.0.0",
+      "status": "scored",
+      "expected": 4,
+      "caught": 0,
+      "missed": 4,
+      "false_positives": 10,
+      "recall": "0/4",
+      "precision": "0/10",
+      "caught_sites": [],
+      "missed_sites": [],
+      "false_positive_sites": [],
+      "notes": [],
+      "from_log": true
+    }
+  ],
+  "totals": {
+    "ground_cases": 71,
+    "unique_scored": 15,
+    "unique_not_compared": 3,
+    "not_run": 48,
+    "expected": 86,
+    "caught": 10,
+    "false_positives": 81
+  }
+}

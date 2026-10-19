@@ -46,3 +46,45 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python -m pytest -q conduit/tests -m network
+
+  mined-breaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          pip install -e "./conduit[dev]"
+          pip install pytest
+      - name: Offline mined known-break subset
+        env:
+          CONDUIT_NO_CACHE: "1"
+          PYTHONPATH: conduit/src
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          ground = json.loads(Path("docs/known-breaks-mined-ci.json").read_text())
+          assert len(ground["repos"]) >= 5
+          libs = {row["service"] for row in ground["repos"]}
+          assert len(libs) >= 4, libs
+          for row in ground["repos"]:
+              local = Path(row["local_path"])
+              assert local.is_dir(), local
+              assert row.get("fixtures"), row["repo"]
+          print("ci ground ok", len(ground["repos"]), "libs", sorted(libs))
+          PY
+          python scripts/score_mined_breaks.py \
+            --ground docs/known-breaks-mined-ci.json \
+            --out /tmp/mined-ci-results.json \
+            --skip-watch
+          python - <<'PY'
+          import json
+          payload = json.load(open("/tmp/mined-ci-results.json"))
+          assert payload["rows"], payload
+          print("scored", len(payload["rows"]), "totals", payload.get("totals"))
+          PY

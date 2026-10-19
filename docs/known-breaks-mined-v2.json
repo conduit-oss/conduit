@@ -1,0 +1,2444 @@
+{
+  "note": "Filtered from docs/known-breaks-mined.json. Frozen before scoring. Dropped downgrades, same-version pins, and any case where old < new fails. The v1 file is untouched.",
+  "scoring": "frozen before scoring; do not edit after results land",
+  "source": "docs/known-breaks-mined.json",
+  "filter": {
+    "require": "packaging.version.Version(old) < Version(new)",
+    "dropped_reasons": {
+      "downgrade": 2
+    }
+  },
+  "dropped": [
+    {
+      "repo": "D-Hack1/Sentry",
+      "service": "elasticsearch",
+      "from_version": "9.5.1",
+      "to_version": "8.19.3",
+      "parent": "35687f5a88da2b72b08468e247f3b75e418b14c2",
+      "reason": "downgrade",
+      "expected_count": 7
+    },
+    {
+      "repo": "D-Hack1/Sentry",
+      "service": "elasticsearch",
+      "from_version": "9.5.1",
+      "to_version": "8.19.3",
+      "parent": "35687f5a88da2b72b08468e247f3b75e418b14c2",
+      "reason": "downgrade",
+      "expected_count": 7
+    }
+  ],
+  "repos": [
+    {
+      "repo": "lx-software-ltd/evolvesprouts",
+      "url": "https://github.com/lx-software-ltd/evolvesprouts",
+      "commit": "1c293bab41b481725ce602be4c9929427456eb8c",
+      "parent": "1c293bab41b481725ce602be4c9929427456eb8c",
+      "merge_commit": "f9f6750e63f9d28d1b948c832be9364d8ee1b280",
+      "pr": 2126,
+      "subdir": "",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy==2.0.54",
+      "pin_file": "backend/requirements.txt",
+      "from_version": "2.0.54",
+      "to_version": "2.1.1",
+      "expected": [
+        {
+          "file": "tests/test_admin_entities_helpers.py",
+          "line": 14,
+          "symbol": "from sqlalchemy.exc import IntegrityError, UnsupportedCompilationError"
+        }
+      ]
+    },
+    {
+      "repo": "mbylinkin/currency_exchange",
+      "url": "https://github.com/mbylinkin/currency_exchange",
+      "commit": "896280160982e2018e415b3961df8b5ba95d9ec5",
+      "parent": "896280160982e2018e415b3961df8b5ba95d9ec5",
+      "merge_commit": "636fae833c7a294f6d59860e7186a9290da46a80",
+      "pr": 12,
+      "subdir": "",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy==2.0.29",
+      "pin_file": "requirements.txt",
+      "from_version": "2.0.29",
+      "to_version": "2.1.5",
+      "expected": [
+        {
+          "file": "src/database.py",
+          "line": 2,
+          "symbol": "from sqlalchemy import Insert, Select, Update, create_engine, exc"
+        },
+        {
+          "file": "src/database.py",
+          "line": 4,
+          "symbol": "from sqlalchemy.orm import sessionmaker, Session"
+        },
+        {
+          "file": "src/database.py",
+          "line": 9,
+          "symbol": "from sqlalchemy.pool import StaticPool"
+        },
+        {
+          "file": "src/models.py",
+          "line": 2,
+          "symbol": "from sqlalchemy.orm import DeclarativeBase"
+        },
+        {
+          "file": "src/models.py",
+          "line": 3,
+          "symbol": "from sqlalchemy.orm import relationship"
+        },
+        {
+          "file": "src/models.py",
+          "line": 4,
+          "symbol": "from sqlalchemy.orm import Mapped, mapped_column"
+        },
+        {
+          "file": "tests/conftest.py",
+          "line": 6,
+          "symbol": "from sqlalchemy.orm import Session"
+        }
+      ]
+    },
+    {
+      "repo": "mikeqfu/pydriosm",
+      "url": "https://github.com/mikeqfu/pydriosm",
+      "commit": "cdebe38bb3b358b8a0e374fc18f3c7c87507a31f",
+      "parent": "cdebe38bb3b358b8a0e374fc18f3c7c87507a31f",
+      "merge_commit": "7ca1c988c535dce08a72b386e06604b8ae562c6f",
+      "pr": 53,
+      "subdir": "",
+      "service": "pyhelpers",
+      "pin": "pyhelpers==2.4.0",
+      "pin_file": "docs/source/requirements.txt",
+      "from_version": "2.4.0",
+      "to_version": "2.5.3",
+      "expected": [
+        {
+          "file": "pydriosm/downloader/_base.py",
+          "line": 17,
+          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, resolve_dir"
+        },
+        {
+          "file": "pydriosm/downloader/_base.py",
+          "line": 97,
+          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dirs.cd()`_"
+        },
+        {
+          "file": "pydriosm/downloader/_base.py",
+          "line": 605,
+          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dirs.cd()`_,"
+        },
+        {
+          "file": "pydriosm/downloader/_base.py",
+          "line": 959,
+          "symbol": ":param kwargs: Optional parameters for `pyhelpers.ops.download_file_from_url`_."
+        },
+        {
+          "file": "pydriosm/downloader/_bbbike.py",
+          "line": 9,
+          "symbol": "from pyhelpers.ops import confirmed"
+        },
+        {
+          "file": "pydriosm/downloader/_bbbike.py",
+          "line": 702,
+          "symbol": ">>> from pyhelpers.dirs import delete_dir"
+        },
+        {
+          "file": "pydriosm/downloader/_geofabrik.py",
+          "line": 12,
+          "symbol": "from pyhelpers.dirs import cd, resolve_dir"
+        },
+        {
+          "file": "pydriosm/downloader/_geofabrik.py",
+          "line": 960,
+          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dirs.cd()`_,"
+        },
+        {
+          "file": "pydriosm/downloader/_geofabrik.py",
+          "line": 1192,
+          "symbol": ":param kwargs: optional parameters of `pyhelpers.ops.download_file_from_url()`_"
+        },
+        {
+          "file": "pydriosm/downloader/_geofabrik.py",
+          "line": 1203,
+          "symbol": ">>> from pyhelpers.dirs import delete_dir"
+        },
+        {
+          "file": "pydriosm/downloader/_wrapper.py",
+          "line": 898,
+          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dirs.cd()`_,"
+        },
+        {
+          "file": "pydriosm/ios/_base.py",
+          "line": 67,
+          "symbol": ":param max_tmpfile_size: See the function `pyhelpers.settings.gdal_configurations()`_."
+        },
+        {
+          "file": "pydriosm/ios/_base.py",
+          "line": 76,
+          "symbol": ":param kwargs: [optional] parameters of the class `pyhelpers.sql.PostgreSQL`_."
+        },
+        {
+          "file": "pydriosm/ios/_base.py",
+          "line": 524,
+          "symbol": ":param kwargs: Ooptional parameters of `pyhelpers.dbms.PostgreSQL.import_data`_."
+        },
+        {
+          "file": "pydriosm/ios/_pbf_importer.py",
+          "line": 4,
+          "symbol": "from pyhelpers._cache import _check_dependencies, _check_relative_pathname, _print_failure_message"
+        },
+        {
+          "file": "pydriosm/ios/_pgsql_osm.py",
+          "line": 181,
+          "symbol": ">>> from pyhelpers.store import load_pickle"
+        },
+        {
+          "file": "pydriosm/ios/_pgsql_osm.py",
+          "line": 455,
+          "symbol": "[`ROP-1 <https://pyhelpers.readthedocs.io/en/latest/sql.html#sql-postgresql-read-sql-query>`_]."
+        },
+        {
+          "file": "pydriosm/reader/_base.py",
+          "line": 14,
+          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, resolve_dir"
+        },
+        {
+          "file": "pydriosm/reader/_bbbike.py",
+          "line": 7,
+          "symbol": "from pyhelpers.text import find_similar_str"
+        },
+        {
+          "file": "pydriosm/reader/_bbbike.py",
+          "line": 71,
+          "symbol": ">>> from pyhelpers.dirs import delete_dir"
+        },
+        {
+          "file": "pydriosm/reader/_bbbike.py",
+          "line": 511,
+          "symbol": ">>> from pyhelpers.dirs import cd, delete_dir"
+        },
+        {
+          "file": "pydriosm/reader/_geofabrik.py",
+          "line": 7,
+          "symbol": "from pyhelpers.text import find_similar_str"
+        },
+        {
+          "file": "pydriosm/reader/_geofabrik.py",
+          "line": 30,
+          "symbol": "see also the function `pyhelpers.settings.gdal_configurations()`_"
+        },
+        {
+          "file": "pydriosm/reader/_geofabrik.py",
+          "line": 677,
+          "symbol": ">>> from pyhelpers.dirs import cd, delete_dir"
+        },
+        {
+          "file": "pydriosm/reader/_pbf.py",
+          "line": 9,
+          "symbol": "from pyhelpers.dirs import check_relative_pathname"
+        },
+        {
+          "file": "pydriosm/reader/_shp.py",
+          "line": 18,
+          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, is_path_to_dir, resolve_dir"
+        },
+        {
+          "file": "pydriosm/reader/_shp.py",
+          "line": 334,
+          "symbol": ">>> from pyhelpers.dirs import cd, delete_dir"
+        },
+        {
+          "file": "pydriosm/reader/_shp.py",
+          "line": 1283,
+          "symbol": ">>> from pyhelpers.dirs import delete_dir"
+        },
+        {
+          "file": "pydriosm/utils.py",
+          "line": 12,
+          "symbol": "from pyhelpers._cache import _check_dependencies, _check_relative_pathname, _print_failure_message"
+        },
+        {
+          "file": "pydriosm/utils.py",
+          "line": 211,
+          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dir.cd()`_"
+        },
+        {
+          "file": "pydriosm/utils.py",
+          "line": 243,
+          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.dir.cd()`_"
+        },
+        {
+          "file": "tests/test_downloader/test__base.py",
+          "line": 5,
+          "symbol": "from pyhelpers.dirs import delete_dir, normalize_pathname"
+        }
+      ]
+    },
+    {
+      "repo": "abdksyed/KyaHuaPathe",
+      "url": "https://github.com/abdksyed/KyaHuaPathe",
+      "commit": "c384052453c134622899032c30b42869c64119c9",
+      "parent": "c384052453c134622899032c30b42869c64119c9",
+      "merge_commit": "90b9c38374e15511be7c8727a8f7991b159cdf07",
+      "pr": 4,
+      "subdir": "",
+      "service": "google-adk",
+      "pin": "google-adk==1.23.0",
+      "pin_file": "requirements.txt",
+      "from_version": "1.23.0",
+      "to_version": "1.24.1",
+      "expected": [
+        {
+          "file": "src/agent.py",
+          "line": 11,
+          "symbol": "from google.adk.sessions import InMemorySessionService"
+        }
+      ]
+    },
+    {
+      "repo": "neilmac91/EarningsNerd",
+      "url": "https://github.com/neilmac91/EarningsNerd",
+      "commit": "6113751cf2dfee8c800cb3101950abcf64dc414b",
+      "parent": "6113751cf2dfee8c800cb3101950abcf64dc414b",
+      "merge_commit": "02fb99b1a84059a032c7a383aeedc45e215f85ad",
+      "pr": 1305,
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==15.6.1",
+      "pin_file": "backend/requirements.in",
+      "from_version": "15.6.1",
+      "to_version": "16.0.0",
+      "expected": [
+        {
+          "file": "backend/tests/unit/test_checkout_session.py",
+          "line": 69,
+          "symbol": "\"\"\"Call the endpoint with Stripe mocked; return the kwargs passed to Session.create.\"\"\""
+        }
+      ]
+    },
+    {
+      "repo": "georgehadji/reasoner",
+      "url": "https://github.com/georgehadji/reasoner",
+      "commit": "37bd912a29e4ed6ca8879bf11970feb670546e2c",
+      "parent": "37bd912a29e4ed6ca8879bf11970feb670546e2c",
+      "merge_commit": "9a97091e9e7b5994a54ff17b5cb3ee6578bacb09",
+      "pr": 119,
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==15.6.1",
+      "pin_file": "requirements.lock.txt",
+      "from_version": "15.6.1",
+      "to_version": "16.0.0",
+      "expected": [
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 109,
+          "symbol": "stripe_sub = await asyncio.to_thread(stripe.Subscription.retrieve, sub_id)"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 115,
+          "symbol": "stripe.Customer.retrieve, stripe_sub[\"customer\"]"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 124,
+          "symbol": "stripe.Customer.retrieve, stripe_sub[\"customer\"]"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 183,
+          "symbol": "stripe_sub = await asyncio.to_thread(stripe.Subscription.retrieve, subscription_id)"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 185,
+          "symbol": "stripe.Customer.retrieve, stripe_sub.get(\"customer\")"
+        }
+      ]
+    },
+    {
+      "repo": "AlexMos555/linkshield",
+      "url": "https://github.com/AlexMos555/linkshield",
+      "commit": "9302f6ab3002e9ae439d2a120616db0da6613222",
+      "parent": "9302f6ab3002e9ae439d2a120616db0da6613222",
+      "merge_commit": "9b45a5b5f3e598880df3c6dc575ae13a4f1d2f79",
+      "pr": 173,
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==11.0.0",
+      "pin_file": "requirements.txt",
+      "from_version": "11.0.0",
+      "to_version": "16.0.0",
+      "expected": [
+        {
+          "file": "api/routers/payments.py",
+          "line": 383,
+          "symbol": "event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)"
+        },
+        {
+          "file": "api/services/stripe_billing.py",
+          "line": 48,
+          "symbol": "\"\"\"Read `key` from a Stripe object or a plain dict (tests) alike."
+        },
+        {
+          "file": "api/services/stripe_billing.py",
+          "line": 50,
+          "symbol": "StripeObject subclasses dict in stripe-python, so `.get` works on"
+        }
+      ]
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "url": "https://github.com/shubangowda/agentflow",
+      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "merge_commit": "b11dd61f22a1154e055525caaf2a5a238281c4b2",
+      "pr": 24,
+      "subdir": "",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "pin_file": "requirements.txt",
+      "from_version": "0.27.8",
+      "to_version": "3.34.0",
+      "expected": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 36,
+          "symbol": "Initializes the LLM object by loading the environment variables and setting the OpenAI API key."
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ]
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "url": "https://github.com/shubangowda/agentflow",
+      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "merge_commit": "074fc4fd177245d70f55efa547cf17c6a8ffbe2b",
+      "pr": 7,
+      "subdir": "",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "pin_file": "requirements.txt",
+      "from_version": "0.27.8",
+      "to_version": "3.33.0",
+      "expected": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ]
+    },
+    {
+      "repo": "gptme/gptme",
+      "url": "https://github.com/gptme/gptme",
+      "commit": "d4b5fd6c0317b55fa6e9c91fa3ffa3cfa3efa5b1",
+      "parent": "d4b5fd6c0317b55fa6e9c91fa3ffa3cfa3efa5b1",
+      "merge_commit": "0b97c63676df9c147c1045741cca022c2f4f44c5",
+      "pr": 4225,
+      "subdir": "",
+      "service": "anthropic",
+      "pin": "anthropic==0.120",
+      "pin_file": "pyproject.toml",
+      "from_version": "0.120",
+      "to_version": "1.8",
+      "expected": [
+        {
+          "file": "gptme/llm/__init__.py",
+          "line": 284,
+          "symbol": "_PROVIDER_ERROR_MODULES = frozenset({\"openai\", \"anthropic\", \"httpx\", \"requests\"})"
+        }
+      ]
+    },
+    {
+      "repo": "pinecone-io/bird-search-example",
+      "url": "https://github.com/pinecone-io/bird-search-example",
+      "commit": "081a6f9fb518c380a070423549d27e6b603a44c5",
+      "parent": "081a6f9fb518c380a070423549d27e6b603a44c5",
+      "merge_commit": "13e5462ee7a9725f7469e889c1ccf885193ab66a",
+      "pr": 35,
+      "subdir": "",
+      "service": "pinecone",
+      "pin": "pinecone==9.0.0",
+      "pin_file": "requirements.txt",
+      "from_version": "9.0.0",
+      "to_version": "10.0.0",
+      "expected": [
+        {
+          "file": "app.py",
+          "line": 3,
+          "symbol": "Four search modes over one Pinecone preview FTS index:"
+        },
+        {
+          "file": "build_index.py",
+          "line": 3,
+          "symbol": "Builds a Pinecone preview FTS index over a sample of the parsed Wikipedia bird"
+        },
+        {
+          "file": "build_index.py",
+          "line": 44,
+          "symbol": "from pinecone import Pinecone"
+        },
+        {
+          "file": "build_index.py",
+          "line": 45,
+          "symbol": "from pinecone.preview import SchemaBuilder"
+        }
+      ]
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "url": "https://github.com/shubangowda/agentflow",
+      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "merge_commit": "c0d7d114a928e7aff0a40948e692f58e2b78e25f",
+      "pr": 35,
+      "subdir": "",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "pin_file": "requirements.txt",
+      "from_version": "0.27.8",
+      "to_version": "3.35.1",
+      "expected": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ]
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "url": "https://github.com/shubangowda/agentflow",
+      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "merge_commit": "c5cc31a4c7f06970c11e2fee420eb7b04c2ce62f",
+      "pr": 31,
+      "subdir": "",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "pin_file": "requirements.txt",
+      "from_version": "0.27.8",
+      "to_version": "1.55.3",
+      "expected": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 36,
+          "symbol": "Initializes the LLM object by loading the environment variables and setting the OpenAI API key."
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ]
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "url": "https://github.com/shubangowda/agentflow",
+      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "merge_commit": "e93435a4258857a56a239c10d522e78c04c59dc3",
+      "pr": 37,
+      "subdir": "",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "pin_file": "requirements.txt",
+      "from_version": "0.27.8",
+      "to_version": "1.3.7",
+      "expected": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ]
+    },
+    {
+      "repo": "amerorchis/weather_dashboard",
+      "url": "https://github.com/amerorchis/weather_dashboard",
+      "commit": "39a300c429218a47104b65136c04e45f9a14f19f",
+      "parent": "39a300c429218a47104b65136c04e45f9a14f19f",
+      "merge_commit": "8657810ce9e4289955f175055d2b68960d88be64",
+      "pr": 5,
+      "subdir": "",
+      "service": "bokeh",
+      "pin": "bokeh==3.1.1",
+      "pin_file": "requirements.txt",
+      "from_version": "3.1.1",
+      "to_version": "3.9.0",
+      "expected": [
+        {
+          "file": "api/graph.py",
+          "line": 9,
+          "symbol": "from bokeh.models import Label, Circle, HoverTool, ColumnDataSource"
+        }
+      ]
+    },
+    {
+      "repo": "psf/requests",
+      "url": "https://github.com/psf/requests",
+      "commit": "83e67c448567cb78490e709925cc335567f656dd",
+      "parent": "83e67c448567cb78490e709925cc335567f656dd",
+      "merge_commit": "92f10cec5b3223e90c186b7a04306564cde050dc",
+      "subdir": "",
+      "service": "pytest-httpbin",
+      "pin": "pytest-httpbin==2.0.0",
+      "pin_file": "requirements-dev.txt",
+      "from_version": "2.0.0",
+      "to_version": "2.1.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 43,
+          "symbol": "\"pytest-httpbin==2.0.0\","
+        }
+      ]
+    },
+    {
+      "repo": "psf/requests",
+      "url": "https://github.com/psf/requests",
+      "commit": "d3d504436ef0c2ac7ec8af13738b04dcc8c694be",
+      "parent": "d3d504436ef0c2ac7ec8af13738b04dcc8c694be",
+      "merge_commit": "b639e66c816514e40604d46f0088fbceec1a5149",
+      "subdir": "",
+      "service": "pytest-httpbin",
+      "pin": "pytest-httpbin==1.0.0",
+      "pin_file": "requirements-dev.txt",
+      "from_version": "1.0.0",
+      "to_version": "2.0.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 68,
+          "symbol": "\"pytest-httpbin==0.0.7\","
+        }
+      ]
+    },
+    {
+      "repo": "aws/aws-cli",
+      "url": "https://github.com/aws/aws-cli",
+      "commit": "523b57881ef88aa673b29bb030b04bd257a6ef24",
+      "parent": "523b57881ef88aa673b29bb030b04bd257a6ef24",
+      "merge_commit": "161131e41744ae73c33736c6d68c1dfd321e87e2",
+      "subdir": "",
+      "service": "awscrt",
+      "pin": "awscrt==0.27.6",
+      "pin_file": "requirements-docs-lock.txt",
+      "from_version": "0.27.6",
+      "to_version": "0.28.4",
+      "expected": [
+        {
+          "file": "awscli/logger.py",
+          "line": 80,
+          "symbol": "awscrt.io.init_logging(awscrt.io.LogLevel.Debug, 'stderr')"
+        },
+        {
+          "file": "awscli/logger.py",
+          "line": 84,
+          "symbol": "awscrt.io.init_logging(awscrt.io.LogLevel.NoLogs, 'stderr')"
+        },
+        {
+          "file": "tests/functional/autoprompt/test_prompttoolkit.py",
+          "line": 411,
+          "symbol": "@mock.patch('awscrt.io.init_logging')"
+        },
+        {
+          "file": "tests/functional/autoprompt/test_prompttoolkit.py",
+          "line": 421,
+          "symbol": "awscrt.io.LogLevel.NoLogs, 'stderr'"
+        },
+        {
+          "file": "tests/unit/test_clidriver.py",
+          "line": 399,
+          "symbol": "@mock.patch('awscrt.io.init_logging')"
+        },
+        {
+          "file": "tests/unit/test_clidriver.py",
+          "line": 406,
+          "symbol": "awscrt.io.LogLevel.Debug, 'stderr'"
+        },
+        {
+          "file": "tests/unit/test_clidriver.py",
+          "line": 409,
+          "symbol": "@mock.patch('awscrt.io.init_logging')"
+        },
+        {
+          "file": "tests/unit/test_clidriver.py",
+          "line": 413,
+          "symbol": "awscrt.io.LogLevel.NoLogs, 'stderr'"
+        },
+        {
+          "file": "tests/unit/test_logger.py",
+          "line": 50,
+          "symbol": "@mock.patch('awscrt.io.init_logging')"
+        },
+        {
+          "file": "tests/unit/test_logger.py",
+          "line": 54,
+          "symbol": "awscrt.io.LogLevel.Debug, 'stderr'"
+        },
+        {
+          "file": "tests/unit/test_logger.py",
+          "line": 57,
+          "symbol": "@mock.patch('awscrt.io.init_logging')"
+        },
+        {
+          "file": "tests/unit/test_logger.py",
+          "line": 61,
+          "symbol": "awscrt.io.LogLevel.NoLogs, 'stderr'"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "2037106ec38b8e74152fca7bdaa21c627a4b6065",
+      "parent": "2037106ec38b8e74152fca7bdaa21c627a4b6065",
+      "merge_commit": "9e371b968590259b38b9e436bd8b005487a271e4",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.18.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.18.0",
+      "to_version": "0.19.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 19,
+          "symbol": "'s3transfer>=0.18.0,<0.19.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "11f25f204fd8bd019289a643729015fb99e29fcd",
+      "parent": "11f25f204fd8bd019289a643729015fb99e29fcd",
+      "merge_commit": "22c64746bdef5ffd031109f5421450670b8ceb18",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.17.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.17.0",
+      "to_version": "0.18.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 19,
+          "symbol": "'s3transfer>=0.17.0,<0.18.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "20381d5695aa766f041b42dcda9600e14f32bd15",
+      "parent": "20381d5695aa766f041b42dcda9600e14f32bd15",
+      "merge_commit": "048bf84492d9d55b327a67f4ab07476eb62c2ee1",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.42.97",
+      "pin_file": "setup.cfg",
+      "from_version": "1.42.97",
+      "to_version": "1.43.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 17,
+          "symbol": "'botocore>=1.42.97,<1.43.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "20381d5695aa766f041b42dcda9600e14f32bd15",
+      "parent": "20381d5695aa766f041b42dcda9600e14f32bd15",
+      "merge_commit": "048bf84492d9d55b327a67f4ab07476eb62c2ee1",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.16.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.16.0",
+      "to_version": "0.17.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 19,
+          "symbol": "'s3transfer>=0.16.0,<0.17.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "f2c9a79a8699d5dab48734e0f46131baa6d63fa7",
+      "parent": "f2c9a79a8699d5dab48734e0f46131baa6d63fa7",
+      "merge_commit": "5991e64f13b81bbc1b88c549bafc633708ecc17f",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.41.6",
+      "pin_file": "setup.cfg",
+      "from_version": "1.41.6",
+      "to_version": "1.42.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 17,
+          "symbol": "'botocore>=1.41.6,<1.42.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "743f945f5120285528643d1eda34b8dbff458d89",
+      "parent": "743f945f5120285528643d1eda34b8dbff458d89",
+      "merge_commit": "29d92d1d17b7e9ab2f32ed9e27de376e36e70f41",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.15.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.15.0",
+      "to_version": "0.16.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 19,
+          "symbol": "'s3transfer>=0.15.0,<0.16.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "1179f32e562dd3df009c2b85953ae893a750c0f4",
+      "parent": "1179f32e562dd3df009c2b85953ae893a750c0f4",
+      "merge_commit": "31ef0a2b136b4987cfde50bfe812be05678db84d",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.14.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.14.0",
+      "to_version": "0.15.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 19,
+          "symbol": "'s3transfer>=0.14.0,<0.15.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "acec7f5049afdab0279d8c2b0c20d4062469fab3",
+      "parent": "acec7f5049afdab0279d8c2b0c20d4062469fab3",
+      "merge_commit": "f5dcb2ad0415e6cdd940e1f756d1e9a4fa0da04e",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.40.76",
+      "pin_file": "setup.cfg",
+      "from_version": "1.40.76",
+      "to_version": "1.41.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 17,
+          "symbol": "'botocore>=1.40.76,<1.41.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "578fae4a9a884fbe45141d8883ad4647db8e4f5f",
+      "parent": "578fae4a9a884fbe45141d8883ad4647db8e4f5f",
+      "merge_commit": "f904e9e013d8320ec417a9a041efc55de5e8d4ba",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.13.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.13.0",
+      "to_version": "0.14.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 19,
+          "symbol": "'s3transfer>=0.13.0,<0.14.0',"
+        }
+      ]
+    },
+    {
+      "repo": "gptme/gptme",
+      "url": "https://github.com/gptme/gptme",
+      "commit": "c4a3a2ca6787ccd187ec76451b98cdd070f71a09",
+      "parent": "c4a3a2ca6787ccd187ec76451b98cdd070f71a09",
+      "merge_commit": "b5dfecf8590f027183141d43aba1478a1e88f96d",
+      "subdir": "",
+      "service": "anthropic",
+      "pin": "anthropic==0.120",
+      "pin_file": "pyproject.toml",
+      "from_version": "0.120",
+      "to_version": "1.8",
+      "expected": [
+        {
+          "file": "gptme/llm/__init__.py",
+          "line": 285,
+          "symbol": "_PROVIDER_ERROR_MODULES = frozenset({\"openai\", \"anthropic\", \"httpx\", \"requests\"})"
+        }
+      ]
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "url": "https://github.com/great-expectations/great_expectations",
+      "commit": "4efbd7b0272f5dcd70b26d17ab7956ddc5b4e571",
+      "parent": "4efbd7b0272f5dcd70b26d17ab7956ddc5b4e571",
+      "merge_commit": "7453059a1daf9d46b1b4778ea4afb869da28ef5a",
+      "subdir": "",
+      "service": "altair",
+      "pin": "altair==4.2.1",
+      "pin_file": "requirements.txt",
+      "from_version": "4.2.1",
+      "to_version": "5.0.0",
+      "expected": [
+        {
+          "file": "tests/test_packaging.py",
+          "line": 239,
+          "symbol": "(\"requirements-dev.txt\", \"altair\", ((\"<\", \"5.0.0\"), (\">=\", \"4.2.1\"))),"
+        },
+        {
+          "file": "tests/test_packaging.py",
+          "line": 254,
+          "symbol": "(\"requirements.txt\", \"altair\", ((\"<\", \"5.0.0\"), (\">=\", \"4.2.1\"))),"
+        }
+      ]
+    },
+    {
+      "repo": "indico/indico",
+      "url": "https://github.com/indico/indico",
+      "commit": "5e7e0d125ac469957ef812555f6338bff8e24562",
+      "parent": "5e7e0d125ac469957ef812555f6338bff8e24562",
+      "merge_commit": "354806483ddc3014c38d8286595303f4568671c3",
+      "subdir": "",
+      "service": "alembic",
+      "pin": "alembic==1.14.0",
+      "pin_file": "requirements.txt",
+      "from_version": "1.14.0",
+      "to_version": "1.18.0",
+      "expected": [
+        {
+          "file": "indico/cli/database.py",
+          "line": 141,
+          "symbol": "PluginScriptDirectory.dir = os.path.join(current_app.root_path, 'core', 'plugins', 'alembic')"
+        }
+      ]
+    },
+    {
+      "repo": "indico/indico",
+      "url": "https://github.com/indico/indico",
+      "commit": "5e7e0d125ac469957ef812555f6338bff8e24562",
+      "parent": "5e7e0d125ac469957ef812555f6338bff8e24562",
+      "merge_commit": "354806483ddc3014c38d8286595303f4568671c3",
+      "subdir": "",
+      "service": "flask-limiter",
+      "pin": "flask-limiter==3.9.2",
+      "pin_file": "requirements.txt",
+      "from_version": "3.9.2",
+      "to_version": "4.1.1",
+      "expected": [
+        {
+          "file": "indico/cli/database.py",
+          "line": 14,
+          "symbol": "from flask import current_app"
+        }
+      ]
+    },
+    {
+      "repo": "mbylinkin/currency_exchange",
+      "url": "https://github.com/mbylinkin/currency_exchange",
+      "commit": "896280160982e2018e415b3961df8b5ba95d9ec5",
+      "parent": "896280160982e2018e415b3961df8b5ba95d9ec5",
+      "merge_commit": "893c342a6142c573086433531bc6c77d0b38898d",
+      "subdir": "",
+      "service": "sqlalchemy-utils",
+      "pin": "sqlalchemy-utils==0.41.2",
+      "pin_file": "requirements.txt",
+      "from_version": "0.41.2",
+      "to_version": "0.43.0",
+      "expected": [
+        {
+          "file": "src/database.py",
+          "line": 2,
+          "symbol": "from sqlalchemy import Insert, Select, Update, create_engine, exc"
+        },
+        {
+          "file": "src/database.py",
+          "line": 4,
+          "symbol": "from sqlalchemy.orm import sessionmaker, Session"
+        },
+        {
+          "file": "src/database.py",
+          "line": 9,
+          "symbol": "from sqlalchemy.pool import StaticPool"
+        },
+        {
+          "file": "src/models.py",
+          "line": 2,
+          "symbol": "from sqlalchemy.orm import DeclarativeBase"
+        },
+        {
+          "file": "src/models.py",
+          "line": 3,
+          "symbol": "from sqlalchemy.orm import relationship"
+        },
+        {
+          "file": "src/models.py",
+          "line": 4,
+          "symbol": "from sqlalchemy.orm import Mapped, mapped_column"
+        },
+        {
+          "file": "tests/conftest.py",
+          "line": 6,
+          "symbol": "from sqlalchemy.orm import Session"
+        }
+      ]
+    },
+    {
+      "repo": "mikeqfu/pydriosm",
+      "url": "https://github.com/mikeqfu/pydriosm",
+      "commit": "d9a5508347c2697b79269da7b9c0c74257f95a79",
+      "parent": "d9a5508347c2697b79269da7b9c0c74257f95a79",
+      "merge_commit": "cdebe38bb3b358b8a0e374fc18f3c7c87507a31f",
+      "subdir": "",
+      "service": "pyhelpers",
+      "pin": "pyhelpers==2.3.4",
+      "pin_file": "docs/source/requirements.txt",
+      "from_version": "2.3.4",
+      "to_version": "2.4.0",
+      "expected": [
+        {
+          "file": "pydriosm/downloader/_base.py",
+          "line": 17,
+          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, validate_dir"
+        },
+        {
+          "file": "pydriosm/downloader/_base.py",
+          "line": 932,
+          "symbol": ":param kwargs: optional parameters of `pyhelpers.ops.download_file_from_url()`_"
+        },
+        {
+          "file": "pydriosm/downloader/_geofabrik.py",
+          "line": 12,
+          "symbol": "from pyhelpers.dirs import cd, validate_dir"
+        },
+        {
+          "file": "pydriosm/ios/_base.py",
+          "line": 68,
+          "symbol": "see also the function `pyhelpers.settings.gdal_configurations()`_"
+        },
+        {
+          "file": "pydriosm/ios/_base.py",
+          "line": 75,
+          "symbol": ":param kwargs: [optional] parameters of the class `pyhelpers.sql.PostgreSQL`_"
+        },
+        {
+          "file": "pydriosm/ios/_base.py",
+          "line": 516,
+          "symbol": ":param kwargs: [optional] parameters of `pyhelpers.sql.PostgreSQL.dump_data()`_"
+        },
+        {
+          "file": "pydriosm/ios/_base.py",
+          "line": 518,
+          "symbol": ".. _`pyhelpers.sql.PostgreSQL.dump_data()`:"
+        },
+        {
+          "file": "pydriosm/ios/_base.py",
+          "line": 519,
+          "symbol": "https://pyhelpers.readthedocs.io/en/latest/sql.html#sql-postgresql-dump-data"
+        },
+        {
+          "file": "pydriosm/reader/_base.py",
+          "line": 13,
+          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, validate_dir"
+        },
+        {
+          "file": "pydriosm/reader/_base.py",
+          "line": 16,
+          "symbol": "from pyhelpers.store import load_pickle, save_pickle"
+        },
+        {
+          "file": "pydriosm/reader/_geofabrik.py",
+          "line": 673,
+          "symbol": ">>> from pyhelpers.dirs import delete_dir"
+        },
+        {
+          "file": "pydriosm/reader/_shp.py",
+          "line": 19,
+          "symbol": "from pyhelpers.dirs import add_slashes, cd, check_relative_pathname, validate_dir"
+        },
+        {
+          "file": "pydriosm/utils.py",
+          "line": 203,
+          "symbol": ">>> from pyhelpers.dirs import cd"
+        }
+      ]
+    },
+    {
+      "repo": "saleor/saleor",
+      "url": "https://github.com/saleor/saleor",
+      "commit": "3948cb6c83990254b22f4397cc769e6d683dfd86",
+      "parent": "3948cb6c83990254b22f4397cc769e6d683dfd86",
+      "merge_commit": "0f5203fbd31b29348fbeb08a81939518ea70329d",
+      "subdir": "",
+      "service": "django-celery-beat",
+      "pin": "django-celery-beat==2.2.1",
+      "pin_file": "pyproject.toml",
+      "from_version": "2.2.1",
+      "to_version": "2.8.0",
+      "expected": [
+        {
+          "file": "saleor/graphql/attribute/types.py",
+          "line": 4,
+          "symbol": "from django.db.models import QuerySet"
+        }
+      ]
+    },
+    {
+      "repo": "scrapy/scrapy",
+      "url": "https://github.com/scrapy/scrapy",
+      "commit": "58d85282cf785369bd9f2eddcce0889f60d8a065",
+      "parent": "58d85282cf785369bd9f2eddcce0889f60d8a065",
+      "merge_commit": "f8d103a65a5d5a424d3100db37ed2e5ff8738b2b",
+      "subdir": "",
+      "service": "sphinx",
+      "pin": "sphinx==8.1.3",
+      "pin_file": "docs/requirements.txt",
+      "from_version": "8.1.3",
+      "to_version": "9.1.0",
+      "expected": [
+        {
+          "file": "docs/conf.py",
+          "line": 31,
+          "symbol": "\"sphinx.ext.autodoc\","
+        },
+        {
+          "file": "docs/conf.py",
+          "line": 34,
+          "symbol": "\"sphinx.ext.intersphinx\","
+        },
+        {
+          "file": "docs/conf.py",
+          "line": 35,
+          "symbol": "\"sphinx.ext.viewcode\","
+        },
+        {
+          "file": "docs/conf.py",
+          "line": 159,
+          "symbol": "\"sphinx\": (\"https://www.sphinx-doc.org/en/master\", None),"
+        }
+      ]
+    },
+    {
+      "repo": "georgehadji/reasoner",
+      "url": "https://github.com/georgehadji/reasoner",
+      "commit": "37bd912a29e4ed6ca8879bf11970feb670546e2c",
+      "parent": "37bd912a29e4ed6ca8879bf11970feb670546e2c",
+      "merge_commit": "9526c785c6a9191b270c4413fa242c174643f378",
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==15.6.1",
+      "pin_file": "requirements.lock.txt",
+      "from_version": "15.6.1",
+      "to_version": "16.0.0",
+      "expected": [
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 109,
+          "symbol": "stripe_sub = await asyncio.to_thread(stripe.Subscription.retrieve, sub_id)"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 115,
+          "symbol": "stripe.Customer.retrieve, stripe_sub[\"customer\"]"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 124,
+          "symbol": "stripe.Customer.retrieve, stripe_sub[\"customer\"]"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 183,
+          "symbol": "stripe_sub = await asyncio.to_thread(stripe.Subscription.retrieve, subscription_id)"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 185,
+          "symbol": "stripe.Customer.retrieve, stripe_sub.get(\"customer\")"
+        }
+      ]
+    },
+    {
+      "repo": "ckan/ckan",
+      "url": "https://github.com/ckan/ckan",
+      "commit": "0ccb2ce3fc869f2ac3d29dd7e8b7f6b466eb276d",
+      "parent": "0ccb2ce3fc869f2ac3d29dd7e8b7f6b466eb276d",
+      "merge_commit": "26eb4768443ac76f4ecb64b53c2e22e515ad50ff",
+      "subdir": "",
+      "service": "psycopg2",
+      "pin": "psycopg2==2.4.5",
+      "pin_file": "requirements.in",
+      "from_version": "2.4.5",
+      "to_version": "2.7.3.2",
+      "expected": [
+        {
+          "file": "ckanext/datastore/backend/postgres.py",
+          "line": 26,
+          "symbol": "import psycopg2.extras"
+        },
+        {
+          "file": "ckanext/datastore/backend/postgres.py",
+          "line": 277,
+          "symbol": "psycopg2.extras.register_composite('nested',"
+        }
+      ]
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "url": "https://github.com/great-expectations/great_expectations",
+      "commit": "d78b52bd8905a85e415f4771b785f816ff52c149",
+      "parent": "d78b52bd8905a85e415f4771b785f816ff52c149",
+      "merge_commit": "33dcfa0c8c7f08fa64ba0214a3360ec6a8cf3713",
+      "subdir": "",
+      "service": "posthog",
+      "pin": "posthog==2.1.0",
+      "pin_file": "requirements.txt",
+      "from_version": "2.1.0",
+      "to_version": "3",
+      "expected": [
+        {
+          "file": "tests/test_packaging.py",
+          "line": 258,
+          "symbol": "(\"requirements-dev.txt\", \"posthog\", ((\"<\", \"3\"), (\">=\", \"2.1.0\"))),"
+        },
+        {
+          "file": "tests/test_packaging.py",
+          "line": 269,
+          "symbol": "(\"requirements.txt\", \"posthog\", ((\"<\", \"3\"), (\">=\", \"2.1.0\"))),"
+        }
+      ]
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "url": "https://github.com/great-expectations/great_expectations",
+      "commit": "37cc3f79930af5f18b06309bb783ac978b4857b4",
+      "parent": "37cc3f79930af5f18b06309bb783ac978b4857b4",
+      "merge_commit": "faa77f71ffae9f04f670cb7fbcdebdf6e47e936b",
+      "subdir": "",
+      "service": "clickhouse-sqlalchemy",
+      "pin": "clickhouse-sqlalchemy==0.2.2",
+      "pin_file": "reqs/requirements-dev-clickhouse.txt",
+      "from_version": "0.2.2",
+      "to_version": "0.3.0",
+      "expected": [
+        {
+          "file": "tests/test_packaging.py",
+          "line": 202,
+          "symbol": "(\"requirements-dev-clickhouse.txt\", \"pandas\", ((\"<\", \"2.2.0\"),)),"
+        }
+      ]
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "url": "https://github.com/great-expectations/great_expectations",
+      "commit": "01e8e045512a91eec4d008ae99598ff73ea7c9cc",
+      "parent": "01e8e045512a91eec4d008ae99598ff73ea7c9cc",
+      "merge_commit": "b1eb9588cea6624a78991c78378ef0ec5627e34a",
+      "subdir": "",
+      "service": "pymysql",
+      "pin": "pymysql==0.9.3",
+      "pin_file": "reqs/requirements-dev-mysql.txt",
+      "from_version": "0.9.3",
+      "to_version": "1.1.1",
+      "expected": [
+        {
+          "file": "tests/test_packaging.py",
+          "line": 209,
+          "symbol": "(\"requirements-dev-mysql.txt\", \"PyMySQL\", ((\"<\", \"0.10\"), (\">=\", \"0.9.3\"))),"
+        },
+        {
+          "file": "tests/test_packaging.py",
+          "line": 214,
+          "symbol": "\"PyMySQL\","
+        },
+        {
+          "file": "tests/test_packaging.py",
+          "line": 252,
+          "symbol": "(\"requirements-dev.txt\", \"PyMySQL\", ((\"<\", \"0.10\"), (\">=\", \"0.9.3\"))),"
+        }
+      ]
+    },
+    {
+      "repo": "scrapy/scrapy",
+      "url": "https://github.com/scrapy/scrapy",
+      "commit": "eef1732374f21b03002dcb8fe48c60bc0bf774e1",
+      "parent": "eef1732374f21b03002dcb8fe48c60bc0bf774e1",
+      "merge_commit": "5dbeece8da6686709eb00af9ffb91dd30a832a2e",
+      "subdir": "",
+      "service": "twisted",
+      "pin": "twisted==13.1.0",
+      "pin_file": "requirements-py2.txt",
+      "from_version": "13.1.0",
+      "to_version": "16.0.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 68,
+          "symbol": "'Twisted>=13.1.0;python_version!=\"3.4\"',"
+        },
+        {
+          "file": "setup.py",
+          "line": 69,
+          "symbol": "'Twisted>=13.1.0,<=19.2.0;python_version==\"3.4\"',"
+        }
+      ]
+    },
+    {
+      "repo": "scrapy/scrapy",
+      "url": "https://github.com/scrapy/scrapy",
+      "commit": "e1ea0c433a96c2949b0a7c26cde65aea13fb79b4",
+      "parent": "e1ea0c433a96c2949b0a7c26cde65aea13fb79b4",
+      "merge_commit": "c8cf1a303d2272aa44422035fd1e3e6048cb5606",
+      "subdir": "",
+      "service": "twisted",
+      "pin": "twisted==10.0.0",
+      "pin_file": "requirements.txt",
+      "from_version": "10.0.0",
+      "to_version": "13.1.0",
+      "expected": [
+        {
+          "file": "scrapy/xlib/tx/_newclient.py",
+          "line": 41,
+          "symbol": "from twisted.protocols.basic import LineReceiver"
+        },
+        {
+          "file": "scrapy/xlib/tx/_newclient.py",
+          "line": 42,
+          "symbol": "from twisted.web.iweb import UNKNOWN_LENGTH"
+        },
+        {
+          "file": "scrapy/xlib/tx/_newclient.py",
+          "line": 43,
+          "symbol": "from twisted.web.http_headers import Headers"
+        },
+        {
+          "file": "scrapy/xlib/tx/client.py",
+          "line": 35,
+          "symbol": "from twisted.web.iweb import UNKNOWN_LENGTH, IBodyProducer"
+        },
+        {
+          "file": "scrapy/xlib/tx/client.py",
+          "line": 147,
+          "symbol": "from twisted.web.error import SchemeNotSupported"
+        },
+        {
+          "file": "scrapy/xlib/tx/client.py",
+          "line": 149,
+          "symbol": "from twisted.web._newclient import ResponseDone"
+        },
+        {
+          "file": "scrapy/xlib/tx/client.py",
+          "line": 151,
+          "symbol": "from twisted.web._newclient import RequestNotSent, RequestTransmissionFailed"
+        },
+        {
+          "file": "scrapy/xlib/tx/client.py",
+          "line": 152,
+          "symbol": "from twisted.web._newclient import ("
+        },
+        {
+          "file": "scrapy/xlib/tx/endpoints.py",
+          "line": 24,
+          "symbol": "from twisted.internet.protocol import ("
+        },
+        {
+          "file": "scrapy/xlib/tx/endpoints.py",
+          "line": 28,
+          "symbol": "from twisted.internet.interfaces import IStreamClientEndpointStringParser"
+        },
+        {
+          "file": "scrapy/xlib/tx/endpoints.py",
+          "line": 32,
+          "symbol": "from twisted.python.components import proxyForInterface"
+        },
+        {
+          "file": "setup.py",
+          "line": 44,
+          "symbol": "'Twisted>=10.0.0',"
+        }
+      ]
+    },
+    {
+      "repo": "Dataherald/dataherald",
+      "url": "https://github.com/Dataherald/dataherald",
+      "commit": "8718787c43f8d3f0395702fb54d229cda96366c8",
+      "parent": "8718787c43f8d3f0395702fb54d229cda96366c8",
+      "merge_commit": "23925f7faed54f9b179f087d2f24da234e7e217c",
+      "subdir": "",
+      "service": "langchain",
+      "pin": "langchain==0.0.335",
+      "pin_file": "requirements.txt",
+      "from_version": "0.0.335",
+      "to_version": "0.1.5",
+      "expected": [
+        {
+          "file": "dataherald/eval/eval_agent.py",
+          "line": 7,
+          "symbol": "from langchain.agents.agent import AgentExecutor"
+        },
+        {
+          "file": "dataherald/finetuning/openai_finetuning.py",
+          "line": 10,
+          "symbol": "from langchain.embeddings import OpenAIEmbeddings"
+        },
+        {
+          "file": "dataherald/model/chat_model.py",
+          "line": 3,
+          "symbol": "from langchain.chat_models import ChatAnthropic, ChatCohere, ChatGooglePalm, ChatOpenAI"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 12,
+          "symbol": "from langchain.callbacks import get_openai_callback"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 16,
+          "symbol": "from langchain.callbacks import get_openai_callback"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 23,
+          "symbol": "from langchain.embeddings import OpenAIEmbeddings"
+        },
+        {
+          "file": "dataherald/vector_store/pinecone.py",
+          "line": 5,
+          "symbol": "from langchain.embeddings import OpenAIEmbeddings"
+        }
+      ]
+    },
+    {
+      "repo": "Dataherald/dataherald",
+      "url": "https://github.com/Dataherald/dataherald",
+      "commit": "6232b8c2b6455ff5f68ef66e612108c89e687640",
+      "parent": "6232b8c2b6455ff5f68ef66e612108c89e687640",
+      "merge_commit": "b5f45da78c17ab2de5c7a7a82371a38f093e1586",
+      "subdir": "",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "pin_file": "requirements.txt",
+      "from_version": "0.27.8",
+      "to_version": "1.3.6",
+      "expected": [
+        {
+          "file": "dataherald/api/fastapi.py",
+          "line": 454,
+          "symbol": "except openai.error.AuthenticationError as e:"
+        },
+        {
+          "file": "dataherald/api/fastapi.py",
+          "line": 553,
+          "symbol": "except openai.error.AuthenticationError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 54,
+          "symbol": "except openai.error.APIError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 56,
+          "symbol": "return f\"OpenAI API returned an API Error: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 57,
+          "symbol": "except openai.error.APIConnectionError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 59,
+          "symbol": "return f\"Failed to connect to OpenAI API: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 60,
+          "symbol": "except openai.error.RateLimitError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 62,
+          "symbol": "return f\"OpenAI API request exceeded rate limit: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 63,
+          "symbol": "except openai.error.Timeout as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 65,
+          "symbol": "return f\"OpenAI API request timed out: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 66,
+          "symbol": "except openai.error.ServiceUnavailableError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 68,
+          "symbol": "return f\"OpenAI API service unavailable: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 69,
+          "symbol": "except openai.error.InvalidRequestError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_finetuning_agent.py",
+          "line": 70,
+          "symbol": "return f\"OpenAI API request was invalid: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 67,
+          "symbol": "except openai.error.APIError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 69,
+          "symbol": "return f\"OpenAI API returned an API Error: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 70,
+          "symbol": "except openai.error.APIConnectionError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 72,
+          "symbol": "return f\"Failed to connect to OpenAI API: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 73,
+          "symbol": "except openai.error.RateLimitError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 75,
+          "symbol": "return f\"OpenAI API request exceeded rate limit: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 76,
+          "symbol": "except openai.error.Timeout as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 78,
+          "symbol": "return f\"OpenAI API request timed out: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 79,
+          "symbol": "except openai.error.ServiceUnavailableError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 81,
+          "symbol": "return f\"OpenAI API service unavailable: {e}\""
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 82,
+          "symbol": "except openai.error.InvalidRequestError as e:"
+        },
+        {
+          "file": "dataherald/sql_generator/dataherald_sqlagent.py",
+          "line": 83,
+          "symbol": "return f\"OpenAI API request was invalid: {e}\""
+        }
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "url": "https://github.com/wevote/WeVoteServer",
+      "commit": "246d67c094851e22ba2e8c5c7ead81a953dd02f2",
+      "parent": "246d67c094851e22ba2e8c5c7ead81a953dd02f2",
+      "merge_commit": "e2e7cbd68abea4921aff2d71f10248b32b02218e",
+      "subdir": "",
+      "service": "tweepy",
+      "pin": "tweepy==4.4.0",
+      "pin_file": "requirements.txt",
+      "from_version": "4.4.0",
+      "to_version": "4.14.0",
+      "expected": [
+        {
+          "file": "twitter/functions.py",
+          "line": 64,
+          "symbol": "auth = tweepy.OAuthHandler(TWITTER_CONSUMER_KEY, TWITTER_CONSUMER_SECRET)"
+        },
+        {
+          "file": "twitter/functions.py",
+          "line": 67,
+          "symbol": "api = tweepy.API(auth, timeout=10)"
+        }
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "url": "https://github.com/wevote/WeVoteServer",
+      "commit": "7b30bdbb59d6e0c19abc81237aa42fba7de1a432",
+      "parent": "7b30bdbb59d6e0c19abc81237aa42fba7de1a432",
+      "merge_commit": "4b42b17d76af240fd68498116e905ffaa23aac6e",
+      "subdir": "",
+      "service": "tweepy",
+      "pin": "tweepy==3.10.0",
+      "pin_file": "requirements.txt",
+      "from_version": "3.10.0",
+      "to_version": "4.4.0",
+      "expected": [
+        {
+          "file": "import_export_twitter/controllers.py",
+          "line": 9,
+          "symbol": "import tweepy"
+        },
+        {
+          "file": "import_export_twitter/controllers.py",
+          "line": 1879,
+          "symbol": "except tweepy.RateLimitError:"
+        },
+        {
+          "file": "import_export_twitter/controllers.py",
+          "line": 1882,
+          "symbol": "except tweepy.error.TweepError as error_instance:"
+        },
+        {
+          "file": "import_export_twitter/controllers.py",
+          "line": 2108,
+          "symbol": "except tweepy.RateLimitError:"
+        },
+        {
+          "file": "import_export_twitter/controllers.py",
+          "line": 2111,
+          "symbol": "except tweepy.error.TweepError as error_instance:"
+        },
+        {
+          "file": "import_export_twitter/controllers.py",
+          "line": 2249,
+          "symbol": "except tweepy.RateLimitError:"
+        },
+        {
+          "file": "import_export_twitter/controllers.py",
+          "line": 2252,
+          "symbol": "except tweepy.error.TweepError as error_instance:"
+        },
+        {
+          "file": "organization/controllers.py",
+          "line": 607,
+          "symbol": "except tweepy.error.TweepError as e:"
+        },
+        {
+          "file": "twitter/functions.py",
+          "line": 74,
+          "symbol": "except tweepy.RateLimitError as rate_limit_error:"
+        },
+        {
+          "file": "twitter/functions.py",
+          "line": 78,
+          "symbol": "except tweepy.error.TweepError as error_instance:"
+        },
+        {
+          "file": "twitter/models.py",
+          "line": 797,
+          "symbol": "api = tweepy.API(auth, wait_on_rate_limit=True, wait_on_rate_limit_notify=True, compression=True, timeout=60)"
+        },
+        {
+          "file": "twitter/models.py",
+          "line": 816,
+          "symbol": "except tweepy.RateLimitError:"
+        },
+        {
+          "file": "twitter/models.py",
+          "line": 819,
+          "symbol": "except tweepy.error.TweepError as error_instance:"
+        }
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "url": "https://github.com/wevote/WeVoteServer",
+      "commit": "4772f1c09af6d78bf743a5e0268db7bc3c6eb0fa",
+      "parent": "4772f1c09af6d78bf743a5e0268db7bc3c6eb0fa",
+      "merge_commit": "f2efb6d5073d80c054b0f379428fcde6970aa31e",
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==2.56.0",
+      "pin_file": "requirements.txt",
+      "from_version": "2.56.0",
+      "to_version": "2.58.0",
+      "expected": [
+        {
+          "file": "donate/controllers.py",
+          "line": 409,
+          "symbol": "logger.debug(\"Stripe charge successful: \" + charge_id + \", amount: \" + str(amount) + \", voter_we_vote_id:\" +"
+        },
+        {
+          "file": "stripe_donations/controllers.py",
+          "line": 366,
+          "symbol": "logger.debug(\"Stripe charge successful: \" + charge.id + \", amount: \" + str(amount) + \", voter_we_vote_id:\" +"
+        }
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "url": "https://github.com/wevote/WeVoteServer",
+      "commit": "63b2a5865732ae3bd82a3e5493964488725fd51d",
+      "parent": "63b2a5865732ae3bd82a3e5493964488725fd51d",
+      "merge_commit": "caa51e53b8a8c14a53084061a17758b90ce57220",
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==2.16.0",
+      "pin_file": "requirements.txt",
+      "from_version": "2.16.0",
+      "to_version": "2.56.0",
+      "expected": [
+        {
+          "file": "apis_v1/views/views_donation.py",
+          "line": 181,
+          "symbol": "event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)"
+        },
+        {
+          "file": "donate/models.py",
+          "line": 397,
+          "symbol": "logger.error('Stripe error (1):', stripeError)"
+        },
+        {
+          "file": "donate/models.py",
+          "line": 411,
+          "symbol": "logger.error('Stripe error (2):', stripeError)"
+        },
+        {
+          "file": "donate/models.py",
+          "line": 1480,
+          "symbol": "logger.error(\"check_for_subscription_in_db_without_card_info row does not exist for stripe customer\" +"
+        }
+      ]
+    },
+    {
+      "repo": "wevote/WeVoteServer",
+      "url": "https://github.com/wevote/WeVoteServer",
+      "commit": "ee88aa4d7749fe7d081f992cad411637a89aece4",
+      "parent": "ee88aa4d7749fe7d081f992cad411637a89aece4",
+      "merge_commit": "ecc18d3fe0c3230a9350576067695b969ec1be2a",
+      "subdir": "",
+      "service": "social-auth-core",
+      "pin": "social-auth-core==1.7.0",
+      "pin_file": "requirements.txt",
+      "from_version": "1.7.0",
+      "to_version": "3.0.0",
+      "expected": [
+        {
+          "file": "config/urls.py",
+          "line": 81,
+          "symbol": "url('', include('social_django.urls', namespace=\"social\")),"
+        }
+      ]
+    },
+    {
+      "repo": "PaddlePaddle/PaddleNLP",
+      "url": "https://github.com/PaddlePaddle/PaddleNLP",
+      "commit": "7f5d7195556a03fdfab7159514c3d15d638e45c3",
+      "parent": "7f5d7195556a03fdfab7159514c3d15d638e45c3",
+      "merge_commit": "c9c0a3ec9ea84a76a2ddbb112916e466ba6404d7",
+      "subdir": "",
+      "service": "aistudio-sdk",
+      "pin": "aistudio-sdk==0.2.6",
+      "pin_file": "requirements.txt",
+      "from_version": "0.2.6",
+      "to_version": "0.3.0",
+      "expected": [
+        {
+          "file": "paddlenlp/transformers/aistudio_utils.py",
+          "line": 17,
+          "symbol": "from aistudio_sdk.hub import download"
+        },
+        {
+          "file": "paddlenlp/transformers/aistudio_utils.py",
+          "line": 62,
+          "symbol": "\"Unauthorized Access. Please ensure that you have provided the AIStudio Access Token and you have access to the requested asset\""
+        },
+        {
+          "file": "paddlenlp/utils/download/__init__.py",
+          "line": 190,
+          "symbol": "log_endpoint = \"Aistudio Hub\""
+        }
+      ]
+    },
+    {
+      "repo": "aaronsb/knowledge-graph-system",
+      "url": "https://github.com/aaronsb/knowledge-graph-system",
+      "commit": "8cac38c93234a550fa9686374e99108831ab8619",
+      "parent": "8cac38c93234a550fa9686374e99108831ab8619",
+      "merge_commit": "97843f20e07d2ae99a879b37b5c8e1332085fc54",
+      "subdir": "",
+      "service": "transformers",
+      "pin": "transformers==4.56.0",
+      "pin_file": "requirements.txt",
+      "from_version": "4.56.0",
+      "to_version": "5.0",
+      "expected": [
+        {
+          "file": "api/app/lib/embedding_model_manager.py",
+          "line": 8,
+          "symbol": "- sentence-transformers: SentenceTransformer (nomic, bge, etc.)"
+        },
+        {
+          "file": "api/app/lib/embedding_model_manager.py",
+          "line": 263,
+          "symbol": "- sentence-transformers: model.encode() with prompt_name if prefixes configured"
+        },
+        {
+          "file": "api/app/lib/visual_embeddings.py",
+          "line": 11,
+          "symbol": "- transformers: AutoModel + AutoProcessor (Nomic Vision, SigLIP)"
+        },
+        {
+          "file": "api/app/lib/visual_embeddings.py",
+          "line": 30,
+          "symbol": "Uses transformers library with CLS token pooling."
+        },
+        {
+          "file": "api/app/lib/visual_embeddings.py",
+          "line": 88,
+          "symbol": "\"\"\"Load model via transformers AutoModel + AutoProcessor.\"\"\""
+        },
+        {
+          "file": "api/app/lib/visual_embeddings.py",
+          "line": 89,
+          "symbol": "from transformers import AutoModel, AutoProcessor"
+        },
+        {
+          "file": "api/bake_embedding_models.py",
+          "line": 45,
+          "symbol": "\"\"\"Warm the transformers AutoModel + AutoProcessor cache for the vision model.\"\"\""
+        },
+        {
+          "file": "api/bake_embedding_models.py",
+          "line": 46,
+          "symbol": "from transformers import AutoModel, AutoProcessor"
+        }
+      ]
+    },
+    {
+      "repo": "python-telegram-bot/python-telegram-bot",
+      "url": "https://github.com/python-telegram-bot/python-telegram-bot",
+      "commit": "94a9b7f9831524c648f0ccfe140332db149552d3",
+      "parent": "94a9b7f9831524c648f0ccfe140332db149552d3",
+      "merge_commit": "9737b1d3c78bdb8d79d726e27a2b37f840fe3f55",
+      "subdir": "",
+      "service": "tornado",
+      "pin": "tornado==5.1",
+      "pin_file": "requirements.txt",
+      "from_version": "5.1",
+      "to_version": "6.1",
+      "expected": [
+        {
+          "file": "telegram/ext/updater.py",
+          "line": 353,
+          "symbol": "Due to an incompatibility of the Tornado library PTB uses for the webhook with Python"
+        },
+        {
+          "file": "telegram/ext/updater.py",
+          "line": 359,
+          "symbol": ".. _thread: https://github.com/tornadoweb/tornado/issues/2608"
+        },
+        {
+          "file": "telegram/ext/utils/webhookhandler.py",
+          "line": 102,
+          "symbol": "'Tornado. Please switch to `SelectorEventLoop`.'"
+        },
+        {
+          "file": "telegram/ext/utils/webhookhandler.py",
+          "line": 131,
+          "symbol": "'Applying Tornado asyncio event loop fix for Python 3.8+ on Windows'"
+        }
+      ]
+    },
+    {
+      "repo": "abdksyed/KyaHuaPathe",
+      "url": "https://github.com/abdksyed/KyaHuaPathe",
+      "commit": "c384052453c134622899032c30b42869c64119c9",
+      "parent": "c384052453c134622899032c30b42869c64119c9",
+      "merge_commit": "5babddf301db235472eda0e96fd7b806ef2bbb7d",
+      "subdir": "",
+      "service": "google-adk",
+      "pin": "google-adk==1.23.0",
+      "pin_file": "requirements.txt",
+      "from_version": "1.23.0",
+      "to_version": "1.24.1",
+      "expected": [
+        {
+          "file": "src/agent.py",
+          "line": 11,
+          "symbol": "from google.adk.sessions import InMemorySessionService"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "dc01534ba514a0f493eaac6c86dc72d902485167",
+      "parent": "dc01534ba514a0f493eaac6c86dc72d902485167",
+      "merge_commit": "9e895ba0a527098909b07b98412f0fb962a3466b",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.39.17",
+      "pin_file": "setup.cfg",
+      "from_version": "1.39.17",
+      "to_version": "1.40.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 17,
+          "symbol": "'botocore>=1.39.17,<1.40.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "171fcea4db5a1d9cbc9ba8760a9a7c5cffe4c476",
+      "parent": "171fcea4db5a1d9cbc9ba8760a9a7c5cffe4c476",
+      "merge_commit": "eba3ce194234574b446ab9ef78eae7ad50266e54",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.38.46",
+      "pin_file": "setup.cfg",
+      "from_version": "1.38.46",
+      "to_version": "1.39.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 17,
+          "symbol": "'botocore>=1.38.46,<1.39.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "5f251bbea52b487f17993d6b3d7074af08ace406",
+      "parent": "5f251bbea52b487f17993d6b3d7074af08ace406",
+      "merge_commit": "b19759df0d70f20d0cd77ce40099e4fa6c70df1d",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.12.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.12.0",
+      "to_version": "0.13.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 19,
+          "symbol": "'s3transfer>=0.12.0,<0.13.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "6e5debc345923b6dcd4ffbe03c592d816fb1615b",
+      "parent": "6e5debc345923b6dcd4ffbe03c592d816fb1615b",
+      "merge_commit": "d6a5a2a869f10906e6e2e5f8e6b6270dc1fe307f",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.37.38",
+      "pin_file": "setup.cfg",
+      "from_version": "1.37.38",
+      "to_version": "1.38.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 17,
+          "symbol": "'botocore>=1.37.38,<1.38.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "6e5debc345923b6dcd4ffbe03c592d816fb1615b",
+      "parent": "6e5debc345923b6dcd4ffbe03c592d816fb1615b",
+      "merge_commit": "d6a5a2a869f10906e6e2e5f8e6b6270dc1fe307f",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.11.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.11.0",
+      "to_version": "0.12.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 19,
+          "symbol": "'s3transfer>=0.11.0,<0.12.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "d09143b4d0072b2c3b37dcc0df47278c3d5686c7",
+      "parent": "d09143b4d0072b2c3b37dcc0df47278c3d5686c7",
+      "merge_commit": "f806af48cb16ef5faf82fc85891cca540b088ce6",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.36.26",
+      "pin_file": "setup.cfg",
+      "from_version": "1.36.26",
+      "to_version": "1.37.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 17,
+          "symbol": "'botocore>=1.36.26,<1.37.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "aa8225e21af51c98bdf3b7da4b9a8b6f01cb33b5",
+      "parent": "aa8225e21af51c98bdf3b7da4b9a8b6f01cb33b5",
+      "merge_commit": "80855f0fd822d21bc1ba9fcb501512ec2b79cc14",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.35.99",
+      "pin_file": "setup.cfg",
+      "from_version": "1.35.99",
+      "to_version": "1.36.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 17,
+          "symbol": "'botocore>=1.35.99,<1.36.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "aa8225e21af51c98bdf3b7da4b9a8b6f01cb33b5",
+      "parent": "aa8225e21af51c98bdf3b7da4b9a8b6f01cb33b5",
+      "merge_commit": "80855f0fd822d21bc1ba9fcb501512ec2b79cc14",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.10.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.10.0",
+      "to_version": "0.11.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 19,
+          "symbol": "'s3transfer>=0.10.0,<0.11.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "eaae319cf8f7c76c2db9c4b8db027911057e4f3d",
+      "parent": "eaae319cf8f7c76c2db9c4b8db027911057e4f3d",
+      "merge_commit": "d0a872dcaff4643be2250379a26f277a0e739d06",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.34.162",
+      "pin_file": "setup.cfg",
+      "from_version": "1.34.162",
+      "to_version": "1.35.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 17,
+          "symbol": "'botocore>=1.34.162,<1.35.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "b7502b1ead77062f6e76b304672cc01bbf0f7581",
+      "parent": "b7502b1ead77062f6e76b304672cc01bbf0f7581",
+      "merge_commit": "97a019785f2c95968c18ddc6b5f41c7aa784efc0",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.9.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.9.0",
+      "to_version": "0.10.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 18,
+          "symbol": "'s3transfer>=0.9.0,<0.10.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "ac52ae6a360f6fc4957cee00eadad0b7a99b3cc3",
+      "parent": "ac52ae6a360f6fc4957cee00eadad0b7a99b3cc3",
+      "merge_commit": "71fee691d536e334a0aae18fd69d296179c17b51",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.33.13",
+      "pin_file": "setup.cfg",
+      "from_version": "1.33.13",
+      "to_version": "1.34.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 16,
+          "symbol": "'botocore>=1.33.13,<1.34.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "ac52ae6a360f6fc4957cee00eadad0b7a99b3cc3",
+      "parent": "ac52ae6a360f6fc4957cee00eadad0b7a99b3cc3",
+      "merge_commit": "71fee691d536e334a0aae18fd69d296179c17b51",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.8.2",
+      "pin_file": "setup.cfg",
+      "from_version": "0.8.2",
+      "to_version": "0.9.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 18,
+          "symbol": "'s3transfer>=0.8.2,<0.9.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "8c316b56746fa552c64bb026a1109aca5092ac8f",
+      "parent": "8c316b56746fa552c64bb026a1109aca5092ac8f",
+      "merge_commit": "2b47b716089eedb213ef2e6249940cf5b16ef177",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.32.7",
+      "pin_file": "setup.cfg",
+      "from_version": "1.32.7",
+      "to_version": "1.33.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 16,
+          "symbol": "'botocore>=1.32.7,<1.33.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "45facdeba91437a57f56d8a7f33b53fc7af3b933",
+      "parent": "45facdeba91437a57f56d8a7f33b53fc7af3b933",
+      "merge_commit": "75947e3470f7ed72738ec5af0ac77fc871b4fe67",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.7.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.7.0",
+      "to_version": "0.8.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 18,
+          "symbol": "'s3transfer>=0.7.0,<0.8.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "5aaf948b2544622042761a97e5f26ff51cb5c946",
+      "parent": "5aaf948b2544622042761a97e5f26ff51cb5c946",
+      "merge_commit": "3637dd752570356b24ae1b76f60ed86f247f5b2d",
+      "subdir": "",
+      "service": "botocore",
+      "pin": "botocore==1.31.85",
+      "pin_file": "setup.cfg",
+      "from_version": "1.31.85",
+      "to_version": "1.32.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 16,
+          "symbol": "'botocore>=1.31.85,<1.32.0',"
+        }
+      ]
+    },
+    {
+      "repo": "boto/boto3",
+      "url": "https://github.com/boto/boto3",
+      "commit": "86e0be8e78df3213abc4a3bb7754da08a859179c",
+      "parent": "86e0be8e78df3213abc4a3bb7754da08a859179c",
+      "merge_commit": "565af800684503f6c5d8e81d40d1793859a4dc42",
+      "subdir": "",
+      "service": "s3transfer",
+      "pin": "s3transfer==0.6.0",
+      "pin_file": "setup.cfg",
+      "from_version": "0.6.0",
+      "to_version": "0.7.0",
+      "expected": [
+        {
+          "file": "setup.py",
+          "line": 18,
+          "symbol": "'s3transfer>=0.6.0,<0.7.0',"
+        }
+      ]
+    },
+    {
+      "repo": "mbylinkin/currency_exchange",
+      "url": "https://github.com/mbylinkin/currency_exchange",
+      "commit": "896280160982e2018e415b3961df8b5ba95d9ec5",
+      "parent": "896280160982e2018e415b3961df8b5ba95d9ec5",
+      "merge_commit": "893c342a6142c573086433531bc6c77d0b38898d",
+      "subdir": "",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy==2.0.29",
+      "pin_file": "requirements.txt",
+      "from_version": "2.0.29",
+      "to_version": "2.1.5",
+      "expected": [
+        {
+          "file": "src/database.py",
+          "line": 2,
+          "symbol": "from sqlalchemy import Insert, Select, Update, create_engine, exc"
+        },
+        {
+          "file": "src/database.py",
+          "line": 4,
+          "symbol": "from sqlalchemy.orm import sessionmaker, Session"
+        },
+        {
+          "file": "src/database.py",
+          "line": 9,
+          "symbol": "from sqlalchemy.pool import StaticPool"
+        },
+        {
+          "file": "src/models.py",
+          "line": 2,
+          "symbol": "from sqlalchemy.orm import DeclarativeBase"
+        },
+        {
+          "file": "src/models.py",
+          "line": 3,
+          "symbol": "from sqlalchemy.orm import relationship"
+        },
+        {
+          "file": "src/models.py",
+          "line": 4,
+          "symbol": "from sqlalchemy.orm import Mapped, mapped_column"
+        },
+        {
+          "file": "tests/conftest.py",
+          "line": 6,
+          "symbol": "from sqlalchemy.orm import Session"
+        }
+      ]
+    },
+    {
+      "repo": "pinecone-io/bird-search-example",
+      "url": "https://github.com/pinecone-io/bird-search-example",
+      "commit": "081a6f9fb518c380a070423549d27e6b603a44c5",
+      "parent": "081a6f9fb518c380a070423549d27e6b603a44c5",
+      "merge_commit": "8d1cb73ef832d707381c27a2f20f696a5d4ea119",
+      "subdir": "",
+      "service": "pinecone",
+      "pin": "pinecone==9.0.0",
+      "pin_file": "requirements.txt",
+      "from_version": "9.0.0",
+      "to_version": "10.0.0",
+      "expected": [
+        {
+          "file": "app.py",
+          "line": 3,
+          "symbol": "Four search modes over one Pinecone preview FTS index:"
+        },
+        {
+          "file": "build_index.py",
+          "line": 3,
+          "symbol": "Builds a Pinecone preview FTS index over a sample of the parsed Wikipedia bird"
+        },
+        {
+          "file": "build_index.py",
+          "line": 44,
+          "symbol": "from pinecone import Pinecone"
+        },
+        {
+          "file": "build_index.py",
+          "line": 45,
+          "symbol": "from pinecone.preview import SchemaBuilder"
+        }
+      ]
+    }
+  ],
+  "frozen": true
+}

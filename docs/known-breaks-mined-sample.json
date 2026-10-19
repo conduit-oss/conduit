@@ -1,0 +1,509 @@
+{
+  "note": "High-signal scoring sample from frozen mined set.",
+  "scoring": {
+    "catch": "A non-wrapper impact site whose path ends with the expected file and whose line equals the expected line.",
+    "miss": "An expected site with no such impact site.",
+    "false_positive": "A non-wrapper impact site that is not one of the expected file:line pairs."
+  },
+  "repos": [
+    {
+      "repo": "lx-software-ltd/evolvesprouts",
+      "url": "https://github.com/lx-software-ltd/evolvesprouts",
+      "commit": "1c293bab41b481725ce602be4c9929427456eb8c",
+      "parent": "1c293bab41b481725ce602be4c9929427456eb8c",
+      "merge_commit": "f9f6750e63f9d28d1b948c832be9364d8ee1b280",
+      "pr": 2126,
+      "subdir": "",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy==2.0.54",
+      "pin_file": "backend/requirements.txt",
+      "from_version": "2.0.54",
+      "to_version": "2.1.1",
+      "expected": [
+        {
+          "file": "tests/test_admin_entities_helpers.py",
+          "line": 14,
+          "symbol": "from sqlalchemy.exc import IntegrityError, UnsupportedCompilationError"
+        }
+      ]
+    },
+    {
+      "repo": "mbylinkin/currency_exchange",
+      "url": "https://github.com/mbylinkin/currency_exchange",
+      "commit": "896280160982e2018e415b3961df8b5ba95d9ec5",
+      "parent": "896280160982e2018e415b3961df8b5ba95d9ec5",
+      "merge_commit": "636fae833c7a294f6d59860e7186a9290da46a80",
+      "pr": 12,
+      "subdir": "",
+      "service": "sqlalchemy",
+      "pin": "sqlalchemy==2.0.29",
+      "pin_file": "requirements.txt",
+      "from_version": "2.0.29",
+      "to_version": "2.1.5",
+      "expected": [
+        {
+          "file": "src/database.py",
+          "line": 2,
+          "symbol": "from sqlalchemy import Insert, Select, Update, create_engine, exc"
+        },
+        {
+          "file": "src/database.py",
+          "line": 4,
+          "symbol": "from sqlalchemy.orm import sessionmaker, Session"
+        },
+        {
+          "file": "src/database.py",
+          "line": 9,
+          "symbol": "from sqlalchemy.pool import StaticPool"
+        },
+        {
+          "file": "src/models.py",
+          "line": 2,
+          "symbol": "from sqlalchemy.orm import DeclarativeBase"
+        },
+        {
+          "file": "src/models.py",
+          "line": 3,
+          "symbol": "from sqlalchemy.orm import relationship"
+        },
+        {
+          "file": "src/models.py",
+          "line": 4,
+          "symbol": "from sqlalchemy.orm import Mapped, mapped_column"
+        },
+        {
+          "file": "tests/conftest.py",
+          "line": 6,
+          "symbol": "from sqlalchemy.orm import Session"
+        }
+      ]
+    },
+    {
+      "repo": "neilmac91/EarningsNerd",
+      "url": "https://github.com/neilmac91/EarningsNerd",
+      "commit": "6113751cf2dfee8c800cb3101950abcf64dc414b",
+      "parent": "6113751cf2dfee8c800cb3101950abcf64dc414b",
+      "merge_commit": "02fb99b1a84059a032c7a383aeedc45e215f85ad",
+      "pr": 1305,
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==15.6.1",
+      "pin_file": "backend/requirements.in",
+      "from_version": "15.6.1",
+      "to_version": "16.0.0",
+      "expected": [
+        {
+          "file": "backend/tests/unit/test_checkout_session.py",
+          "line": 69,
+          "symbol": "\"\"\"Call the endpoint with Stripe mocked; return the kwargs passed to Session.create.\"\"\""
+        }
+      ]
+    },
+    {
+      "repo": "georgehadji/reasoner",
+      "url": "https://github.com/georgehadji/reasoner",
+      "commit": "37bd912a29e4ed6ca8879bf11970feb670546e2c",
+      "parent": "37bd912a29e4ed6ca8879bf11970feb670546e2c",
+      "merge_commit": "9a97091e9e7b5994a54ff17b5cb3ee6578bacb09",
+      "pr": 119,
+      "subdir": "",
+      "service": "stripe",
+      "pin": "stripe==15.6.1",
+      "pin_file": "requirements.lock.txt",
+      "from_version": "15.6.1",
+      "to_version": "16.0.0",
+      "expected": [
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 109,
+          "symbol": "stripe_sub = await asyncio.to_thread(stripe.Subscription.retrieve, sub_id)"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 115,
+          "symbol": "stripe.Customer.retrieve, stripe_sub[\"customer\"]"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 124,
+          "symbol": "stripe.Customer.retrieve, stripe_sub[\"customer\"]"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 183,
+          "symbol": "stripe_sub = await asyncio.to_thread(stripe.Subscription.retrieve, subscription_id)"
+        },
+        {
+          "file": "src/reasoner/infrastructure/billing/stripe_adapter.py",
+          "line": 185,
+          "symbol": "stripe.Customer.retrieve, stripe_sub.get(\"customer\")"
+        }
+      ]
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "url": "https://github.com/shubangowda/agentflow",
+      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "merge_commit": "b11dd61f22a1154e055525caaf2a5a238281c4b2",
+      "pr": 24,
+      "subdir": "",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "pin_file": "requirements.txt",
+      "from_version": "0.27.8",
+      "to_version": "3.34.0",
+      "expected": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 36,
+          "symbol": "Initializes the LLM object by loading the environment variables and setting the OpenAI API key."
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ]
+    },
+    {
+      "repo": "shubangowda/agentflow",
+      "url": "https://github.com/shubangowda/agentflow",
+      "commit": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "parent": "19759304ea9802fec8a4351a94aa4a6fb8fb156a",
+      "merge_commit": "074fc4fd177245d70f55efa547cf17c6a8ffbe2b",
+      "pr": 7,
+      "subdir": "",
+      "service": "openai",
+      "pin": "openai==0.27.8",
+      "pin_file": "requirements.txt",
+      "from_version": "0.27.8",
+      "to_version": "3.33.0",
+      "expected": [
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 8,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/functions/create_image.py",
+          "line": 85,
+          "symbol": "response = openai.Image.create(prompt=prompt, n=n, size=size)"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 9,
+          "symbol": "import openai"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 39,
+          "symbol": "openai.api_key = os.getenv(\"OPENAI_API_KEY\")"
+        },
+        {
+          "file": "agentflow/llm.py",
+          "line": 64,
+          "symbol": "response = openai.ChatCompletion.create(**openai_args)"
+        },
+        {
+          "file": "tests/test_function_create_image.py",
+          "line": 13,
+          "symbol": "@patch(\"openai.Image.create\")"
+        }
+      ]
+    },
+    {
+      "repo": "D-Hack1/Sentry",
+      "url": "https://github.com/D-Hack1/Sentry",
+      "commit": "35687f5a88da2b72b08468e247f3b75e418b14c2",
+      "parent": "35687f5a88da2b72b08468e247f3b75e418b14c2",
+      "merge_commit": "a31912ec26d01bc5375f161081c49ff81641d5cc",
+      "pr": 8,
+      "subdir": "",
+      "service": "elasticsearch",
+      "pin": "elasticsearch==9.5.1",
+      "pin_file": "requirements.txt",
+      "from_version": "9.5.1",
+      "to_version": "8.19.3",
+      "expected": [
+        {
+          "file": "api/main.py",
+          "line": 19,
+          "symbol": "from elasticsearch import AsyncElasticsearch, NotFoundError"
+        },
+        {
+          "file": "api/main.py",
+          "line": 90,
+          "symbol": "logger.info(f\"Elasticsearch client connected to {ES_HOST}:{ES_PORT}\")"
+        },
+        {
+          "file": "api/main.py",
+          "line": 100,
+          "symbol": "logger.info(\"Elasticsearch client closed.\")"
+        },
+        {
+          "file": "api/main.py",
+          "line": 126,
+          "symbol": "Run all models on a feature row and persist to Elasticsearch."
+        },
+        {
+          "file": "api/main.py",
+          "line": 535,
+          "symbol": "\"\"\"Returns status of Elasticsearch, Kafka, models, correlator, and uptime.\"\"\""
+        },
+        {
+          "file": "api/main.py",
+          "line": 576,
+          "symbol": "\"elasticsearch\": {\"ok\": es_ok, \"detail\": es_detail},"
+        },
+        {
+          "file": "es/init_index.py",
+          "line": 79,
+          "symbol": "client = Elasticsearch(host)"
+        }
+      ]
+    },
+    {
+      "repo": "gptme/gptme",
+      "url": "https://github.com/gptme/gptme",
+      "commit": "d4b5fd6c0317b55fa6e9c91fa3ffa3cfa3efa5b1",
+      "parent": "d4b5fd6c0317b55fa6e9c91fa3ffa3cfa3efa5b1",
+      "merge_commit": "0b97c63676df9c147c1045741cca022c2f4f44c5",
+      "pr": 4225,
+      "subdir": "",
+      "service": "anthropic",
+      "pin": "anthropic==0.120",
+      "pin_file": "pyproject.toml",
+      "from_version": "0.120",
+      "to_version": "1.8",
+      "expected": [
+        {
+          "file": "gptme/llm/__init__.py",
+          "line": 284,
+          "symbol": "_PROVIDER_ERROR_MODULES = frozenset({\"openai\", \"anthropic\", \"httpx\", \"requests\"})"
+        }
+      ]
+    },
+    {
+      "repo": "pinecone-io/bird-search-example",
+      "url": "https://github.com/pinecone-io/bird-search-example",
+      "commit": "081a6f9fb518c380a070423549d27e6b603a44c5",
+      "parent": "081a6f9fb518c380a070423549d27e6b603a44c5",
+      "merge_commit": "13e5462ee7a9725f7469e889c1ccf885193ab66a",
+      "pr": 35,
+      "subdir": "",
+      "service": "pinecone",
+      "pin": "pinecone==9.0.0",
+      "pin_file": "requirements.txt",
+      "from_version": "9.0.0",
+      "to_version": "10.0.0",
+      "expected": [
+        {
+          "file": "app.py",
+          "line": 3,
+          "symbol": "Four search modes over one Pinecone preview FTS index:"
+        },
+        {
+          "file": "build_index.py",
+          "line": 3,
+          "symbol": "Builds a Pinecone preview FTS index over a sample of the parsed Wikipedia bird"
+        },
+        {
+          "file": "build_index.py",
+          "line": 44,
+          "symbol": "from pinecone import Pinecone"
+        },
+        {
+          "file": "build_index.py",
+          "line": 45,
+          "symbol": "from pinecone.preview import SchemaBuilder"
+        }
+      ]
+    },
+    {
+      "repo": "gptme/gptme",
+      "url": "https://github.com/gptme/gptme",
+      "commit": "c4a3a2ca6787ccd187ec76451b98cdd070f71a09",
+      "parent": "c4a3a2ca6787ccd187ec76451b98cdd070f71a09",
+      "merge_commit": "b5dfecf8590f027183141d43aba1478a1e88f96d",
+      "subdir": "",
+      "service": "anthropic",
+      "pin": "anthropic==0.120",
+      "pin_file": "pyproject.toml",
+      "from_version": "0.120",
+      "to_version": "1.8",
+      "expected": [
+        {
+          "file": "gptme/llm/__init__.py",
+          "line": 285,
+          "symbol": "_PROVIDER_ERROR_MODULES = frozenset({\"openai\", \"anthropic\", \"httpx\", \"requests\"})"
+        }
+      ]
+    },
+    {
+      "repo": "ckan/ckan",
+      "url": "https://github.com/ckan/ckan",
+      "commit": "0ccb2ce3fc869f2ac3d29dd7e8b7f6b466eb276d",
+      "parent": "0ccb2ce3fc869f2ac3d29dd7e8b7f6b466eb276d",
+      "merge_commit": "26eb4768443ac76f4ecb64b53c2e22e515ad50ff",
+      "subdir": "",
+      "service": "psycopg2",
+      "pin": "psycopg2==2.4.5",
+      "pin_file": "requirements.in",
+      "from_version": "2.4.5",
+      "to_version": "2.7.3.2",
+      "expected": [
+        {
+          "file": "ckanext/datastore/backend/postgres.py",
+          "line": 26,
+          "symbol": "import psycopg2.extras"
+        },
+        {
+          "file": "ckanext/datastore/backend/postgres.py",
+          "line": 277,
+          "symbol": "psycopg2.extras.register_composite('nested',"
+        }
+      ]
+    },
+    {
+      "repo": "great-expectations/great_expectations",
+      "url": "https://github.com/great-expectations/great_expectations",
+      "commit": "01e8e045512a91eec4d008ae99598ff73ea7c9cc",
+      "parent": "01e8e045512a91eec4d008ae99598ff73ea7c9cc",
+      "merge_commit": "b1eb9588cea6624a78991c78378ef0ec5627e34a",
+      "subdir": "",
+      "service": "pymysql",
+      "pin": "pymysql==0.9.3",
+      "pin_file": "reqs/requirements-dev-mysql.txt",
+      "from_version": "0.9.3",
+      "to_version": "1.1.1",
+      "expected": [
+        {
+          "file": "tests/test_packaging.py",
+          "line": 209,
+          "symbol": "(\"requirements-dev-mysql.txt\", \"PyMySQL\", ((\"<\", \"0.10\"), (\">=\", \"0.9.3\"))),"
+        },
+        {
+          "file": "tests/test_packaging.py",
+          "line": 214,
+          "symbol": "\"PyMySQL\","
+        },
+        {
+          "file": "tests/test_packaging.py",
+          "line": 252,
+          "symbol": "(\"requirements-dev.txt\", \"PyMySQL\", ((\"<\", \"0.10\"), (\">=\", \"0.9.3\"))),"
+        }
+      ]
+    },
+    {
+      "repo": "D-Hack1/Sentry",
+      "url": "https://github.com/D-Hack1/Sentry",
+      "commit": "35687f5a88da2b72b08468e247f3b75e418b14c2",
+      "parent": "35687f5a88da2b72b08468e247f3b75e418b14c2",
+      "merge_commit": "a8aeb5d4e65f45116320f596181c0cbd4d50a511",
+      "subdir": "",
+      "service": "elasticsearch",
+      "pin": "elasticsearch==9.5.1",
+      "pin_file": "requirements.txt",
+      "from_version": "9.5.1",
+      "to_version": "8.19.3",
+      "expected": [
+        {
+          "file": "api/main.py",
+          "line": 19,
+          "symbol": "from elasticsearch import AsyncElasticsearch, NotFoundError"
+        },
+        {
+          "file": "api/main.py",
+          "line": 90,
+          "symbol": "logger.info(f\"Elasticsearch client connected to {ES_HOST}:{ES_PORT}\")"
+        },
+        {
+          "file": "api/main.py",
+          "line": 100,
+          "symbol": "logger.info(\"Elasticsearch client closed.\")"
+        },
+        {
+          "file": "api/main.py",
+          "line": 126,
+          "symbol": "Run all models on a feature row and persist to Elasticsearch."
+        },
+        {
+          "file": "api/main.py",
+          "line": 535,
+          "symbol": "\"\"\"Returns status of Elasticsearch, Kafka, models, correlator, and uptime.\"\"\""
+        },
+        {
+          "file": "api/main.py",
+          "line": 576,
+          "symbol": "\"elasticsearch\": {\"ok\": es_ok, \"detail\": es_detail},"
+        },
+        {
+          "file": "es/init_index.py",
+          "line": 79,
+          "symbol": "client = Elasticsearch(host)"
+        }
+      ]
+    },
+    {
+      "repo": "pinecone-io/bird-search-example",
+      "url": "https://github.com/pinecone-io/bird-search-example",
+      "commit": "081a6f9fb518c380a070423549d27e6b603a44c5",
+      "parent": "081a6f9fb518c380a070423549d27e6b603a44c5",
+      "merge_commit": "8d1cb73ef832d707381c27a2f20f696a5d4ea119",
+      "subdir": "",
+      "service": "pinecone",
+      "pin": "pinecone==9.0.0",
+      "pin_file": "requirements.txt",
+      "from_version": "9.0.0",
+      "to_version": "10.0.0",
+      "expected": [
+        {
+          "file": "app.py",
+          "line": 3,
+          "symbol": "Four search modes over one Pinecone preview FTS index:"
+        },
+        {
+          "file": "build_index.py",
+          "line": 3,
+          "symbol": "Builds a Pinecone preview FTS index over a sample of the parsed Wikipedia bird"
+        },
+        {
+          "file": "build_index.py",
+          "line": 44,
+          "symbol": "from pinecone import Pinecone"
+        },
+        {
+          "file": "build_index.py",
+          "line": 45,
+          "symbol": "from pinecone.preview import SchemaBuilder"
+        }
+      ]
+    }
+  ]
+}

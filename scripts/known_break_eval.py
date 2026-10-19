@@ -39,6 +39,14 @@ def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess
 
 
 def _checkout(repo: dict) -> Path:
+    local = repo.get("local_path")
+    if local:
+        path = Path(local)
+        if not path.is_absolute():
+            path = ROOT / path
+        if not path.is_dir():
+            raise SystemExit(f"missing local_path {path}")
+        return path
     dest = CHECKOUTS / repo["repo"].replace("/", "__")
     if not (dest / ".git").is_dir():
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -87,21 +95,29 @@ def _parse_payload(text: str) -> dict | None:
     return None
 
 
-def _impact(project: Path, service: str) -> dict:
-    proc = _run(
-        [
-            sys.executable,
-            "-m",
-            "conduit.main",
-            "impact",
-            "--path",
-            str(project),
-            "--dep",
-            service,
-            "--json",
-        ],
-        cwd=ROOT,
-    )
+def _impact(project: Path, service: str, repo: dict | None = None) -> dict:
+    cmd = [
+        sys.executable,
+        "-m",
+        "conduit.main",
+        "impact",
+        "--path",
+        str(project),
+        "--dep",
+        service,
+        "--json",
+    ]
+    if repo:
+        from_version = str(repo.get("from_version") or "").strip()
+        to_version = str(repo.get("to_version") or repo.get("removed_in") or "").strip()
+        if from_version:
+            cmd.extend(["--from", from_version])
+        if to_version:
+            cmd.extend(["--to", to_version])
+        fixtures = repo.get("fixtures")
+        if fixtures:
+            cmd.extend(["--fixtures", str(ROOT / fixtures)])
+    proc = _run(cmd, cwd=ROOT)
     payload = _parse_payload(proc.stdout)
     if payload is None:
         return {"impacts": [], "notes": [proc.stdout[-2000:]], "exit": proc.returncode}
@@ -175,19 +191,33 @@ def _score(repo: dict, payload: dict) -> dict:
         if _site_key(path, line) in expected_keys:
             continue
         false_positives.append(site)
-    versions = ""
+    from_version = ""
+    to_version = ""
     if primary:
-        versions = f"{primary[0]['from_version']} -> {primary[0]['to_version']}"
+        from_version = str(primary[0].get("from_version") or "")
+        to_version = str(primary[0].get("to_version") or "")
     elif impacts:
-        versions = f"{impacts[0].get('from_version')} -> {impacts[0].get('to_version')}"
+        from_version = str(impacts[0].get("from_version") or "")
+        to_version = str(impacts[0].get("to_version") or "")
+    if not from_version:
+        from_version = str(repo.get("from_version") or "").strip()
+    if not to_version:
+        to_version = str(repo.get("to_version") or repo.get("removed_in") or "").strip()
+    if from_version and to_version:
+        versions = f"{from_version} -> {to_version}"
+    else:
+        # A blank versions field is a scorer bug; never leave it empty when we
+        # know the intended pair from the ground-truth row.
+        versions = f"{from_version or '?'} -> {to_version or '?'}"
     expected_n = len(repo["expected"])
     note_text = "\n".join(str(item) for item in (payload.get("notes") or []))
-    if payload.get("exit") not in (0, None) and "not an outside service" in note_text.lower():
+    note_lower = note_text.lower()
+    if "not an outside service" in note_lower:
         return {
             "repo": repo["repo"],
             "service": repo["service"],
             "pin": repo["pin"],
-            "versions": "",
+            "versions": versions,
             "status": "not an outside service",
             "expected": expected_n,
             "caught": 0,
@@ -201,11 +231,36 @@ def _score(repo: dict, payload: dict) -> dict:
             "notes": payload.get("notes") or [],
             "exit": payload.get("exit"),
         }
+    not_compared_reason = _not_compared_reason(repo, note_text, payload, impacts)
+    if not_compared_reason:
+        return {
+            "repo": repo["repo"],
+            "service": repo["service"],
+            "pin": repo["pin"],
+            "versions": versions,
+            "status": "not compared",
+            "not_compared_reason": not_compared_reason,
+            "expected": expected_n,
+            "caught": 0,
+            "missed": expected_n,
+            "false_positives": 0,
+            "recall": f"0/{expected_n}",
+            "precision": "n/a",
+            "caught_sites": [],
+            "missed_sites": [
+                {"file": item["file"], "line": item["line"], "symbol": item["symbol"]}
+                for item in repo["expected"]
+            ],
+            "false_positive_sites": [],
+            "notes": payload.get("notes") or [],
+            "exit": payload.get("exit"),
+        }
     return {
         "repo": repo["repo"],
         "service": repo["service"],
         "pin": repo["pin"],
         "versions": versions,
+        "status": "scored",
         "expected": expected_n,
         "caught": len(caught),
         "missed": len(missed),
@@ -224,6 +279,58 @@ def _score(repo: dict, payload: dict) -> dict:
     }
 
 
+def _not_compared_reason(
+    repo: dict, note_text: str, payload: dict, impacts: list
+) -> str | None:
+    """Concrete reason when the two surfaces were not compared.
+
+    OpenAPI-only notes must not mask a successful wheel diff: empty impacts
+    with ``diffed`` containing the package still counts as scored.
+    """
+    if impacts:
+        return None
+    service = str(repo.get("service") or "").lower()
+    diffed = {str(item).lower() for item in (payload.get("diffed") or [])}
+    if service and service in diffed:
+        return None
+    if any(service and service in name for name in diffed):
+        return None
+    lower = note_text.lower()
+    markers = (
+        "could not fetch",
+        "no wheel",
+        "install failure",
+        "failed to install",
+        "could not install",
+        "download failed",
+        "no version could be determined",
+        "does not match a recorded surface",
+        "no released surface",
+        "not compared:",
+    )
+    for line in note_text.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if any(needle in text.lower() for needle in markers):
+            # Skip OpenAPI-only notes when we have no stronger signal — those
+            # are supplemental. Prefer wheel/pin failures.
+            if "openapi" in text.lower() or "swagger" in text.lower():
+                continue
+            return text
+    for line in note_text.splitlines():
+        text = line.strip()
+        if text.lower().startswith("not compared:"):
+            return text
+    if payload.get("exit") not in (0, None):
+        return f"impact exit {payload.get('exit')}"
+    if not note_text.strip() and not diffed:
+        return "no impacts returned and package not diffed"
+    if not diffed:
+        return "package surfaces not diffed"
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ground", type=Path, default=GROUND)
@@ -238,7 +345,7 @@ def main() -> None:
             continue
         print(f"== {repo['repo']} {repo['service']}", flush=True)
         project = _checkout(repo)
-        payload = _impact(project, repo["service"])
+        payload = _impact(project, repo["service"], repo)
         row = _score(repo, payload)
         if not args.skip_watch:
             row["watch_head"] = _watch(project, repo["service"])

@@ -200,6 +200,10 @@ def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
     try:
         return _analyze_units(root, specs, units, resolver, cloud_roots)
     finally:
+        # Module ASTs are only needed while resolving; drop them before the
+        # ServiceMap outlives this frame so peak RSS is bounded.
+        for unit in units.values():
+            unit.tree = None  # type: ignore[assignment]
         resolver.close()
 
 
@@ -667,6 +671,14 @@ class _Resolver:
 
     def close(self) -> None:
         """Release any analysis resources. Safe to call more than once."""
+        self._expr_memo.clear()
+        self._bindings.clear()
+        self._returns.clear()
+        self._param_types.clear()
+        self._stem_index = None
+        if self._libraries is not None:
+            self._libraries.release()
+            self._libraries = None
 
     def import_entries(self, rel: str, specs: tuple[ServiceSpec, ...]) -> list[Entry]:
         unit = self.units[rel]
