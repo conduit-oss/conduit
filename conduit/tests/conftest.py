@@ -20,10 +20,20 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 
+collect_ignore_glob = [
+    # Intentionally broken until apply rewrites it; run via --test-cmd on that tree.
+    "fixtures/apply-break/test_*.py",
+]
+
+
 def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers",
         "network: tests that call the public internet",
+    )
+    config.addinivalue_line(
+        "markers",
+        "nebius: tests that call Nebius Token Factory (need NEBIUS_API_KEY)",
     )
 
 

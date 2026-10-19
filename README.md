@@ -20,7 +20,7 @@ Check that the commands are there:
 conduit --help
 ```
 
-You should see `map`, `watch`, `impact`, and `service`.
+You should see `map`, `watch`, `impact`, `apply`, and `service`.
 
 ## Quickstart
 
@@ -121,6 +121,37 @@ That prints the SQLAlchemy block from the watch example: `Query.from_self` remov
 
 If Conduit cannot tell which versions to compare, or cannot find two API specs, it says `not compared` and why. That is not an all-clear.
 
+## apply
+
+`conduit apply` takes JSON from `conduit impact --json` and proposes function-scoped fixes with NVIDIA Nemotron through Nebius Token Factory (chat-completions API). The model returns rewritten function source (plus optional imports); Conduit splices by AST span and builds the diff itself. Fixes come from the impact evidence and the model — not from hard-coded recipes.
+
+```bash
+export NEBIUS_API_KEY=...   # never commit or log this
+conduit apply --path conduit/tests/fixtures/apply-break \
+  --impact conduit/tests/fixtures/apply-break/impact.json --dry-run
+conduit apply --path conduit/tests/fixtures/apply-break \
+  --impact conduit/tests/fixtures/apply-break/impact.json --write \
+  --fixtures conduit/fixtures/impact --test-cmd "python3 -m pytest -q"
+```
+
+| Flag / env | Meaning |
+|------------|---------|
+| `--impact` | Required. Impact JSON with call sites and change evidence. |
+| `--dry-run` | Print context packs only; do not call the model. |
+| `--write` | Write verified fixes into the working tree. |
+| `--test-cmd` | Shell command run in a scratch copy after each patch. |
+| `--fixtures` | Offline wheels/specs for the post-patch impact re-check. |
+| `--base-url` / `CONDUIT_APPLY_BASE_URL` | Token Factory base URL (default `https://api.tokenfactory.nebius.com/v1/`). |
+| `--model` / `CONDUIT_APPLY_MODEL` | Large model for diffs (default `nvidia/Nemotron-3-Ultra-550b-a55b`). |
+| `--model-small` / `CONDUIT_APPLY_MODEL_SMALL` | Small model for summaries (default `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`). |
+| `--enable-thinking` / `CONDUIT_APPLY_ENABLE_THINKING` | Propose: `chat_template_kwargs.enable_thinking` (default off). |
+| `--enable-thinking-small` / `CONDUIT_APPLY_ENABLE_THINKING_SMALL` | Summarize: same (default off). |
+| `NEBIUS_API_KEY` | Token Factory API key. |
+
+Nemotron may put thinking in `reasoning_content` (counts toward `max_tokens`). Apply sends `enable_thinking: false` by default and reads only `message.content`. Test-failure feedback resent to the model is capped at `TEST_FEEDBACK_MAX_LINES` (40) trailing lines.
+
+Docs: [Token Factory intro](https://docs.tokenfactory.nebius.com/api-reference/introduction), [model catalog](https://tokenfactory.nebius.com/model-catalog.md). `--pr` is not in this release.
+
 ## service
 
 `conduit service` saves a map for one customer, then checks it later and writes a local note of lines that break.
@@ -149,7 +180,7 @@ To see what changed, Conduit compares the old and new published libraries. Versi
 
 ## Limits and FAQ
 
-Python only. Conduit does not bump lockfiles, open dependency-update pull requests, or scan for security advisories. It does not watch calls between your own services. It does not edit your tree. It prints the lines.
+Python only. Conduit does not bump lockfiles, open dependency-update pull requests, or scan for security advisories. It does not watch calls between your own services. `map`, `watch`, and `impact` are read-only. `apply --write` may edit flagged functions after verification; it does not auto-merge.
 
 These calls stay invisible:
 

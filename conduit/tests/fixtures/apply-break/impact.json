@@ -1,0 +1,31 @@
+{
+  "dependency": "sqlalchemy",
+  "impacts": [
+    {
+      "dependency": "sqlalchemy",
+      "from_version": "1.4.52",
+      "to_version": "2.1.4",
+      "change": "parameter object_ renamed to statement on Connection.scalar",
+      "confidence": "medium",
+      "source": "wheel",
+      "kind": "param_renamed",
+      "symbol": "sqlalchemy.engine.Connection.scalar",
+      "old": "object_",
+      "new": "statement",
+      "sites": [
+        {
+          "path": "db.py",
+          "line": 7,
+          "expr": "conn.scalar",
+          "confidence": "medium",
+          "via_wrapper": false
+        }
+      ]
+    }
+  ],
+  "deprecations": [],
+  "diffed": [
+    "sqlalchemy"
+  ],
+  "notes": []
+}

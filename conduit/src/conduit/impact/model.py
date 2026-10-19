@@ -51,6 +51,10 @@ class Impact:
     sites: tuple[SiteHit, ...]
     #: ``deprecated`` is reported apart from breaks. Empty for a breaking change.
     kind: str = ""
+    #: From the wheel/API diff entry (e.g. param rename old → new).
+    symbol: str = ""
+    old: str = ""
+    new: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -61,5 +65,8 @@ class Impact:
             "confidence": self.confidence,
             "source": self.source,
             "kind": self.kind,
+            "symbol": self.symbol,
+            "old": self.old,
+            "new": self.new,
             "sites": [site.to_dict() for site in self.sites],
         }

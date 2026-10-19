@@ -1,0 +1,106 @@
+"""Shared types for ``conduit apply``."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any
+
+
+class SiteStatus(str, Enum):
+    FIXED_VERIFIED = "fixed (verified)"
+    FIXED_UNVERIFIED = "fixed (unverified: no tests)"
+    NEEDS_HUMAN = "needs-human"
+    DRY_RUN = "dry-run"
+    SKIPPED = "skipped"
+
+
+@dataclass(frozen=True)
+class ImpactSite:
+    """One call site from impact JSON, with the parent change as evidence."""
+
+    path: str
+    line: int
+    expr: str
+    dependency: str
+    from_version: str
+    to_version: str
+    change: str
+    confidence: str
+    source: str
+    kind: str = ""
+    #: Optional release-diff fields when present on the impact record.
+    symbol: str = ""
+    old_signature: str = ""
+    new_signature: str = ""
+    new_docstring: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def key(self) -> str:
+        return f"{self.path}:{self.line}"
+
+
+@dataclass
+class ContextPack:
+    site: ImpactSite
+    file_path: str
+    imports: str
+    function_name: str
+    function_source: str
+    function_start_line: int
+    function_end_line: int
+    full_source: str
+    release_diff: dict[str, Any]
+    new_signature: str
+    new_docstring: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "site": {
+                "path": self.site.path,
+                "line": self.site.line,
+                "expr": self.site.expr,
+                "dependency": self.site.dependency,
+                "from_version": self.site.from_version,
+                "to_version": self.site.to_version,
+                "change": self.site.change,
+                "confidence": self.site.confidence,
+                "source": self.site.source,
+                "kind": self.site.kind,
+                "symbol": self.site.symbol,
+            },
+            "file_path": self.file_path,
+            "imports": self.imports,
+            "function_name": self.function_name,
+            "function_source": self.function_source,
+            "function_start_line": self.function_start_line,
+            "function_end_line": self.function_end_line,
+            "release_diff": self.release_diff,
+            "new_signature": self.new_signature,
+            "new_docstring": self.new_docstring,
+        }
+
+
+@dataclass
+class SiteResult:
+    site: ImpactSite
+    status: SiteStatus
+    why: str = ""
+    diff: str = ""
+    attempts: int = 0
+    error: str = ""
+    context: ContextPack | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.site.path,
+            "line": self.site.line,
+            "expr": self.site.expr,
+            "change": self.site.change,
+            "status": self.status.value,
+            "why": self.why,
+            "diff": self.diff,
+            "attempts": self.attempts,
+            "error": self.error,
+        }
