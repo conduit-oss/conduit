@@ -1048,28 +1048,429 @@ def test_attribute_check_narrows_overloads_by_the_call_keywords(tmp_path: Path):
 
 def test_prompt_shows_same_file_helpers_read_only():
     from conduit.apply.models import ContextPack, ImpactSite
-    from conduit.apply.prompts import same_file_helpers
+    from conduit.apply.prompts import propose_messages, same_file_helpers
 
     source = textwrap.dedent(
         """\
         class A:
             def run(self, rows):
                 text = self._render(rows)
+                self._note(rows)
                 return send(text)
 
             @staticmethod
             def _render(rows) -> str:
                 return "".join(rows)
 
+            def _note(self, rows) -> int:
+                return len(rows)
+
             def unrelated(self):
                 return 1
         """
     )
-    site = ImpactSite(path="a.py", line=4, expr="send", dependency="x", from_version="1", to_version="2", change="c", confidence="high", source="wheel")
+    site = ImpactSite(path="a.py", line=5, expr="send", dependency="x", from_version="1", to_version="2", change="c", confidence="high", source="wheel")
     pack = ContextPack(
         site=site, file_path="a.py", imports="", function_name="run", function_source="",
-        function_start_line=2, function_end_line=4, full_source=source, release_diff={},
+        function_start_line=2, function_end_line=5, full_source=source, release_diff={},
         new_signature="", new_docstring="",
     )
     helpers = same_file_helpers(pack)
-    assert len(helpers) == 1 and helpers[0].lstrip().startswith("@staticmethod") and "_render" in helpers[0]
+    assert any(item.lstrip().startswith("@staticmethod") and "_render" in item for item in helpers)
+    assert any("def _note" in item for item in helpers)
+    messages = propose_messages(pack)
+    system, body = messages[0][1], messages[1][1]
+    payload = json.loads(body.split("Context pack (JSON):\n", 1)[1].split("\n\nReturn JSON", 1)[0])
+    # The helper that builds the flagged argument can be rewritten. The other stays read-only.
+    assert payload["editable_helpers"][0]["name"] == "_render"
+    assert "_render" not in "\n".join(payload["helpers_called_read_only"])
+    assert "_note" in "\n".join(payload["helpers_called_read_only"])
+    assert "helper_sources" in system
+    assert "each turn becomes its own record" in system
+
+
+_TRANSCRIPT_APP = textwrap.dedent(
+    """\
+    class Role:
+        System = "system"
+        User = "user"
+        Assistant = "assistant"
+
+    _USER = "\\n\\nHuman:"
+    _ASSISTANT = "\\n\\nAssistant:"
+
+    class Bot:
+        def post(self, client, messages):
+            prompt = self._to_transcript(messages)
+            return client.completions.create(prompt=prompt, model="m")
+
+        @staticmethod
+        def _to_transcript(messages) -> str:
+            result = []
+            if messages and messages[0].is_of_role(Role.System) and len(messages) > 1:
+                result.append(f"{_USER} {messages[0].content}\\n{messages[1].content}")
+                remaining = messages[2:]
+            else:
+                result.append(f"{_USER} {messages[0].content}")
+                remaining = messages[1:]
+            for item in remaining:
+                prefix = _USER if item.is_of_role(Role.User) else _ASSISTANT
+                result.append(f"{prefix} {item.content}")
+            result.append(_ASSISTANT)
+            return "".join(result)
+
+        def other(self):
+            return 1
+    """
+)
+
+
+def _turn_wheel(tmp_path: Path) -> Path:
+    """A release whose create() takes a sequence of role/text records, shaped like a real SDK."""
+    root = tmp_path / "wheel"
+    pkg = root / "example_sdk"
+    (pkg / "types").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "types" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "types" / "turn.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Iterable, Union
+            from typing_extensions import Literal, Required, TypedDict
+
+            class Turn(TypedDict, total=False):
+                content: Required[Union[str, Iterable[object]]]
+                role: Required[Literal["user", "assistant", "system"]]
+            """
+        ),
+        encoding="utf-8",
+    )
+    (pkg / "client.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Iterable, Union
+
+            from .types.turn import Turn
+
+            Turns = Iterable[Turn]
+
+            class Messages:
+                def create(
+                    self,
+                    *,
+                    messages: Iterable[Turn],
+                    model: str,
+                    system: Union[str, None] = None,
+                ) -> str:
+                    return ""
+
+                def create_alias(self, *, messages: Turns, model: str) -> str:
+                    return ""
+            """
+        ),
+        encoding="utf-8",
+    )
+    return root
+
+
+def _transcript_breaks_for(source: str, modules, expr: str):
+    from conduit.apply.typecheck import transcript_breaks
+
+    tree = ast.parse(source)
+    call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == expr
+    )
+    return transcript_breaks(
+        modules, tree, "bot.py", _chain("bot.py", call.lineno, expr, "example_sdk.client.Messages.create"),
+        "example-sdk", "2.0",
+    )
+
+
+def test_transcript_wrap_is_a_break_and_a_restructured_helper_is_not(tmp_path: Path):
+    from conduit.apply.signatures import _modules
+
+    modules = _modules(str(_turn_wheel(tmp_path)))
+    wrapped = _TRANSCRIPT_APP.replace(
+        "return client.completions.create(prompt=prompt, model=\"m\")",
+        "return client.messages.create(messages=[{\"role\": \"user\", \"content\": prompt}], model=\"m\")",
+    )
+    found = _transcript_breaks_for(wrapped, modules, "client.messages.create")
+    assert len(found) == 1, found
+    assert "wraps a joined multi-turn string into one record" in found[0]
+    assert "'user'" in found[0] and "'assistant'" in found[0]
+    # The same string passed straight through is a kind mismatch, not this finding.
+    bare = wrapped.replace(
+        "messages=[{\"role\": \"user\", \"content\": prompt}]",
+        "messages=prompt",
+    )
+    assert _transcript_breaks_for(bare, modules, "client.messages.create") == []
+    # Joining plain text, with no per-item role prefix, is one turn and stays allowed.
+    plain = textwrap.dedent(
+        """\
+        class Bot:
+            def post(self, client, messages):
+                text = self._render(messages)
+                return client.messages.create(messages=[{"role": "user", "content": text}], model="m")
+
+            @staticmethod
+            def _render(rows) -> str:
+                return "".join(rows)
+        """
+    )
+    assert _transcript_breaks_for(plain, modules, "client.messages.create") == []
+    # Moving the wrap into the helper still fails. One record per turn does not.
+    hidden = textwrap.dedent(
+        """\
+        class Role:
+            User = "user"
+            Assistant = "assistant"
+
+        _USER = "Human:"
+        _ASSISTANT = "Assistant:"
+
+        class Bot:
+            def post(self, client, messages):
+                return client.messages.create(messages=self._to_transcript(messages), model="m")
+
+            @staticmethod
+            def _to_transcript(messages):
+                result = []
+                for item in messages:
+                    prefix = _USER if item.is_of_role(Role.User) else _ASSISTANT
+                    result.append(f"{prefix} {item.content}")
+                prompt = "".join(result)
+                return [{"role": "user", "content": prompt}]
+        """
+    )
+    hidden_found = _transcript_breaks_for(hidden, modules, "client.messages.create")
+    assert len(hidden_found) == 1 and "wraps a joined multi-turn string" in hidden_found[0]
+    fixed = textwrap.dedent(
+        """\
+        class Role:
+            System = "system"
+            User = "user"
+            Assistant = "assistant"
+
+        class Bot:
+            def post(self, client, messages):
+                payload = self._to_transcript(messages)
+                return client.messages.create(messages=payload["messages"], system=payload["system"], model="m")
+
+            @staticmethod
+            def _to_transcript(messages):
+                system = None
+                out = []
+                for item in messages:
+                    if item.is_of_role(Role.System):
+                        system = item.content
+                        continue
+                    role = "user" if item.is_of_role(Role.User) else "assistant"
+                    out.append({"role": role, "content": item.content})
+                return {"messages": out, "system": system}
+        """
+    )
+    assert _transcript_breaks_for(fixed, modules, "client.messages.create") == []
+    # An alias of the sequence annotation resolves to the same record type.
+    alias = fixed.replace("client.messages.create", "client.messages.create_alias")
+    assert _transcript_breaks_for(alias, modules, "client.messages.create_alias") == []
+    inline = textwrap.dedent(
+        """\
+        class Role:
+            User = "user"
+            Assistant = "assistant"
+
+        _USER = "Human:"
+        _ASSISTANT = "Assistant:"
+
+        def post(client, messages):
+            result = []
+            for item in messages:
+                prefix = _USER if item.is_of_role(Role.User) else _ASSISTANT
+                result.append(f"{prefix} {item.content}")
+            text = "".join(result)
+            return client.messages.create(messages=[{"role": "user", "content": text}], model="m")
+        """
+    )
+    inline_found = _transcript_breaks_for(inline, modules, "client.messages.create")
+    assert len(inline_found) == 1 and "wraps a joined multi-turn string" in inline_found[0]
+
+
+def test_recheck_wires_transcript_wrap_into_type_breaks(tmp_path: Path):
+    from conduit.apply.models import ImpactSite
+    from conduit.apply.verify import _type_breaks
+    from conduit.outside_in.model import Chain, ServiceMap
+
+    wheel = _turn_wheel(tmp_path)
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "wheel").symlink_to(wheel, target_is_directory=True)
+    (fixtures / "index.json").write_text(
+        json.dumps({"packages": {"example-sdk": {"wheels": {"2.0": "wheel"}}}}),
+        encoding="utf-8",
+    )
+    source = _TRANSCRIPT_APP.replace(
+        "return client.completions.create(prompt=prompt, model=\"m\")",
+        "return client.messages.create(messages=[{\"role\": \"user\", \"content\": prompt}], model=\"m\")",
+    )
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "bot.py").write_text(source, encoding="utf-8")
+    line = next(i for i, text in enumerate(source.splitlines(), 1) if "messages.create" in text)
+    chain = Chain(
+        service="example-sdk", package="example-sdk", call_rel="bot.py", call_lineno=line,
+        call_symbol="post", call_expr="client.messages.create", hops=(),
+        sdk_method="example_sdk.client.Messages.create", kind="method_call", params=(),
+        site_keywords=("messages", "model"), response_fields=(), confidence="high", via_wrapper=False,
+    )
+    service_map = ServiceMap(root=str(root), chains=(chain,))
+    site = ImpactSite(
+        path="bot.py", line=line, expr="client.messages.create", dependency="example-sdk",
+        from_version="1.0", to_version="2.0", change="completions removed", confidence="high",
+        source="wheel",
+    )
+    found = _type_breaks(root, service_map, site, "bot.py", (1, 10**6), fixtures, False)
+    assert any("wraps a joined multi-turn string" in text for text, _symbol in found), found
+
+
+def test_apply_accepts_helper_and_call_site_rewrite_after_recheck(tmp_path: Path):
+    """A transcript wrapped as one message is rejected; a helper that emits one record per turn is accepted."""
+    from conduit.apply import verify as verify_mod
+    from conduit.apply.signatures import _modules
+    from conduit.apply.typecheck import transcript_breaks
+
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "bot.py").write_text(_TRANSCRIPT_APP, encoding="utf-8")
+    line = next(i for i, text in enumerate(_TRANSCRIPT_APP.splitlines(), 1) if "completions.create" in text)
+    modules = _modules(str(_turn_wheel(tmp_path)))
+    payload = _impact_payload(path="bot.py", line=line)
+    payload["impacts"][0]["symbol"] = "example_sdk.client.Messages.create"
+    payload["impacts"][0]["change"] = "completions.create removed"
+    sites = sites_from_payload(payload)
+
+    def breaks(scratch, site, *, span, fixtures, allow_network):
+        source = (scratch / site.path).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        found = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not span or not (span[0] <= node.lineno <= span[1]):
+                continue
+            expr = ast.unparse(node.func)
+            if not expr.endswith(".create"):
+                continue
+            chain = _chain(site.path, node.lineno, expr, "example_sdk.client.Messages.create")
+            for text in transcript_breaks(modules, tree, site.path, chain, "example-sdk", "2.0"):
+                found.append((text, chain.sdk_method))
+        return found
+
+    wrapped = json.dumps(
+        {
+            "function_source": (
+                "def post(self, client, messages):\n"
+                "    prompt = self._to_transcript(messages)\n"
+                "    return client.messages.create(messages=[{\"role\": \"user\", \"content\": prompt}], model=\"m\")\n"
+            ),
+            "new_imports": [],
+        }
+    )
+    helper = textwrap.dedent(
+        """\
+        @staticmethod
+        def _to_transcript(messages):
+            system = None
+            out = []
+            for item in messages:
+                if item.is_of_role(Role.System):
+                    system = item.content
+                    continue
+                role = "user" if item.is_of_role(Role.User) else "assistant"
+                out.append({"role": role, "content": item.content})
+            return {"messages": out, "system": system}
+        """
+    )
+    fixed = json.dumps(
+        {
+            "function_source": (
+                "def post(self, client, messages):\n"
+                "    payload = self._to_transcript(messages)\n"
+                "    return client.messages.create(messages=payload[\"messages\"], system=payload[\"system\"], model=\"m\")\n"
+            ),
+            "new_imports": [],
+            "helper_sources": {"_to_transcript": helper},
+        }
+    )
+    client = FakeModelClient(responses=[wrapped, fixed, "Each turn is its own record."])
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(verify_mod, "_breaks_listed", breaks)
+    try:
+        report = apply_sites(
+            sites,
+            ApplyConfig(
+                root=root,
+                settings=_settings(max_attempts=3),
+                write=True,
+                client=client,
+                recheck_impact=True,
+            ),
+        )
+    finally:
+        monkeypatch.undo()
+    result = report.results[0]
+    assert result.status == SiteStatus.FIXED_UNVERIFIED, result.error
+    assert result.attempts == 2
+    assert "wraps a joined multi-turn string" in client.calls[1]["messages"][-1].content
+    assert client.calls[0]["enable_thinking"] is False
+    text = (root / "bot.py").read_text(encoding="utf-8")
+    assert 'payload["messages"]' in text
+    assert 'system=payload["system"]' in text
+    assert "prefix = _USER" not in text
+    assert "def other" in text
+    assert result.status == SiteStatus.FIXED_UNVERIFIED
+
+
+def test_splice_rejects_helpers_that_do_not_build_the_flagged_call(tmp_path: Path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "bot.py").write_text(
+        _TRANSCRIPT_APP.replace(
+            "def other(self):\n        return 1\n",
+            "def other(self, messages):\n        return self._to_transcript(messages)\n",
+        ),
+        encoding="utf-8",
+    )
+    line = next(i for i, text in enumerate(_TRANSCRIPT_APP.splitlines(), 1) if "completions.create" in text)
+    # The shared-helper edit shifts nothing above the call; the line number still matches.
+    site = sites_from_payload(_impact_payload(path="bot.py", line=line))[0]
+    pack = build_context_pack(root, site)
+    edit = parse_model_edit(
+        json.dumps(
+            {
+                "function_source": "def post(self, client, messages):\n    return client.messages.create(messages=[], model='m')\n",
+                "new_imports": [],
+                "helper_sources": {"_to_transcript": "def _to_transcript(messages):\n    return []\n"},
+            }
+        )
+    )
+    with pytest.raises(PatchError, match="cannot be edited"):
+        splice_edit(pack, edit)
+
+    # Exclusive helper: the call site and the helper both change, and the rest of the file stays.
+    (root / "bot.py").write_text(_TRANSCRIPT_APP, encoding="utf-8")
+    pack = build_context_pack(root, site)
+    helper = "@staticmethod\ndef _to_transcript(messages):\n    return []\n"
+    edit = parse_model_edit(
+        json.dumps(
+            {
+                "function_source": "def post(self, client, messages):\n    return client.messages.create(messages=self._to_transcript(messages), model='m')\n",
+                "new_imports": [],
+                "helper_sources": {"_to_transcript": helper},
+            }
+        )
+    )
+    patched, _diff = splice_edit(pack, edit)
+    assert "messages=self._to_transcript(messages)" in patched
+    assert "return []" in patched
+    assert "def other" in patched
+    assert "prefix = _USER" not in patched

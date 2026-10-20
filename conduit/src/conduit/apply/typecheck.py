@@ -754,3 +754,518 @@ def _fields(classes) -> list[str]:
                 if text not in names:
                     names.append(text)
     return names[:12]
+
+
+# --- 3. a joined multi-turn string stuffed into one record ----------------
+
+
+def transcript_breaks(
+    modules: dict[str, ast.Module],
+    tree: ast.Module,
+    path: str,
+    chain,
+    package: str,
+    version: str,
+) -> list[str]:
+    """A role-transcript string placed into one record of a sequence of records.
+
+    The parameter's element type comes from the new release: a record with a
+    role field (a ``Literal`` / ``Enum`` of several strings) and a text field
+    that accepts ``str``. The value is a transcript when same-file code joins
+    a sequence into one string, picking a prefix per item with a conditional
+    that does not read the item. That is the old "Human:/Assistant:" shape
+    wrapped as a single message: type-correct, and still one turn.
+    """
+    found = resolve_callable(modules, chain.sdk_method)
+    if found is None:
+        return []
+    module_name, node = found
+    call = _call_at(tree, chain.call_lineno, chain.call_expr)
+    if call is None:
+        return []
+    func = _enclosing_function(tree, call.lineno)
+    params = {arg.arg: arg for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)}
+    out: list[str] = []
+    for keyword in call.keywords:
+        param = params.get(keyword.arg or "")
+        if param is None or param.annotation is None or keyword.value is None:
+            continue
+        spec = _role_sequence(modules, module_name, param.annotation)
+        if spec is None:
+            continue
+        role_field, allowed, text_fields = spec
+        if not _wraps_transcript(keyword.value, tree, func, call.lineno, text_fields):
+            continue
+        shown = ", ".join(repr(item) for item in allowed)
+        out.append(
+            f"{path}:{call.lineno} {chain.call_expr}: {keyword.arg}= wraps a joined multi-turn "
+            f"string into one record; {_owner(chain.sdk_method)} in {package} {version} expects "
+            f"one record per turn ({role_field} is one of {shown}). Rewrite the helper that joins "
+            f"those turns so each turn is its own record, and pass that sequence. Do not put the "
+            f"joined string in a single record's text ({', '.join(text_fields)})."
+        )
+    return out
+
+
+def _role_sequence(
+    modules: dict[str, ast.Module], near: str, annotation: ast.AST | None, depth: int = 0
+) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+    """``(role field, allowed values, text fields)`` when ``annotation`` is a sequence of those records."""
+    element = _sequence_element(modules, near, annotation, depth)
+    if element is None:
+        return None
+    return _role_record(modules, near, element, depth)
+
+
+def _sequence_element(
+    modules: dict[str, ast.Module], near: str, node: ast.AST | None, depth: int
+) -> ast.AST | None:
+    if node is None or depth > _MAX_DEPTH:
+        return None
+    node = _as_expr(node)
+    if node is None:
+        return None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _sequence_element(modules, near, node.left, depth + 1) or _sequence_element(
+            modules, near, node.right, depth + 1
+        )
+    if isinstance(node, ast.Subscript):
+        base = _type_name(node.value)
+        items = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if base in _UNWRAP or base == "Union":
+            found = None
+            for item in items if base == "Union" else items[:1]:
+                found = _sequence_element(modules, near, item, depth + 1)
+                if found is not None:
+                    return found
+            return None
+        if base in _ITERABLES and items:
+            inner = items[0]
+            # ``tuple[Turn, ...]`` — the element is the first entry, not the ellipsis.
+            return inner
+        return None
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        alias = _alias_value(modules, near, _type_name(node))
+        if alias is not None:
+            return _sequence_element(modules, alias[0], alias[1], depth + 1)
+    return None
+
+
+def _role_record(
+    modules: dict[str, ast.Module], near: str, node: ast.AST | None, depth: int
+) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+    if node is None or depth > _MAX_DEPTH:
+        return None
+    node = _unwrap_type(node)
+    if node is None:
+        return None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _role_record(modules, near, node.left, depth + 1) or _role_record(
+            modules, near, node.right, depth + 1
+        )
+    if isinstance(node, ast.Subscript) and _type_name(node.value) == "Union":
+        items = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        for item in items:
+            found = _role_record(modules, near, item, depth + 1)
+            if found is not None:
+                return found
+        return None
+    if not isinstance(node, (ast.Name, ast.Attribute)):
+        return None
+    name = _type_name(node)
+    alias = _alias_value(modules, near, name)
+    if alias is not None and _class_def(modules, near, name) is None:
+        return _role_record(modules, alias[0], alias[1], depth + 1)
+    klass = _class_def(modules, near, name)
+    if klass is None:
+        return None
+    role_name = ""
+    allowed: tuple[str, ...] = ()
+    texts: list[str] = []
+    for stmt in _class_statements(klass.body):
+        if not isinstance(stmt, ast.AnnAssign) or not isinstance(stmt.target, ast.Name):
+            continue
+        inner = _unwrap_type(stmt.annotation)
+        values = _literal_strings(inner)
+        if not values and isinstance(inner, (ast.Name, ast.Attribute)):
+            values = _enum_strings(modules, near, _type_name(inner))
+        if len(values) >= 2 and not role_name:
+            role_name = stmt.target.id
+            allowed = values
+            continue
+        if _accepts_plain_str(stmt.annotation):
+            texts.append(stmt.target.id)
+    if role_name and texts:
+        return role_name, allowed, tuple(texts)
+    return None
+
+
+def _class_def(modules: dict[str, ast.Module], near: str, name: str) -> ast.ClassDef | None:
+    typed = _typed_dict_class(modules, name)
+    if typed is not None:
+        return typed
+    hit = _find_class(modules, name, near)
+    return hit[1] if hit else None
+
+
+def _as_expr(node: ast.AST | None) -> ast.AST | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            return ast.parse(node.value.strip(), mode="eval").body
+        except SyntaxError:
+            return None
+    return node
+
+
+def _unwrap_type(node: ast.AST | None, depth: int = 0) -> ast.AST | None:
+    node = _as_expr(node)
+    if node is None or depth > _MAX_DEPTH:
+        return node
+    if isinstance(node, ast.Subscript) and _type_name(node.value) in _UNWRAP:
+        items = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if items:
+            return _unwrap_type(items[0], depth + 1)
+    return node
+
+
+def _literal_strings(node: ast.AST | None) -> tuple[str, ...]:
+    node = _as_expr(node)
+    if not isinstance(node, ast.Subscript) or _type_name(node.value) != "Literal":
+        return ()
+    elts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+    return tuple(item.value for item in elts if isinstance(item, ast.Constant) and isinstance(item.value, str))
+
+
+def _enum_strings(modules: dict[str, ast.Module], near: str, name: str) -> tuple[str, ...]:
+    hit = _find_class(modules, name, near)
+    if hit is None:
+        return ()
+    klass = hit[1]
+    bases = [ast.unparse(base).split(".")[-1] for base in klass.bases]
+    if not any(base in {"Enum", "StrEnum"} for base in bases):
+        return ()
+    values: list[str] = []
+    for stmt in _class_statements(klass.body):
+        value = stmt.value if isinstance(stmt, (ast.Assign, ast.AnnAssign)) else None
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            values.append(value.value)
+    return tuple(values)
+
+
+def _accepts_plain_str(node: ast.AST | None, depth: int = 0) -> bool:
+    if node is None or depth > _MAX_DEPTH:
+        return False
+    node = _unwrap_type(node)
+    if node is None:
+        return False
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _accepts_plain_str(node.left, depth + 1) or _accepts_plain_str(node.right, depth + 1)
+    if isinstance(node, ast.Subscript):
+        base = _type_name(node.value)
+        items = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if base == "Union":
+            return any(_accepts_plain_str(item, depth + 1) for item in items)
+        return False
+    return isinstance(node, ast.Name) and node.id == "str"
+
+
+def _wraps_transcript(
+    expr: ast.AST,
+    tree: ast.AST,
+    func: ast.AST | None,
+    line: int,
+    text_fields: tuple[str, ...],
+    seen: set[int] | None = None,
+    depth: int = 0,
+) -> bool:
+    """True when ``expr`` is a sequence containing a joined multi-turn string."""
+    if depth > _MAX_DEPTH:
+        return False
+    expr = _follow_expr(expr, func, line)
+    if isinstance(expr, (ast.List, ast.Tuple)):
+        return any(_element_wraps(elt, tree, func, line, text_fields, seen, depth) for elt in expr.elts)
+    if isinstance(expr, ast.IfExp):
+        return _wraps_transcript(expr.body, tree, func, line, text_fields, seen, depth + 1) or _wraps_transcript(
+            expr.orelse, tree, func, line, text_fields, seen, depth + 1
+        )
+    if isinstance(expr, ast.Subscript) and isinstance(expr.slice, ast.Constant):
+        return _subscript_wraps(expr, tree, func, line, text_fields, seen, depth)
+    if isinstance(expr, ast.Call):
+        seen = set(seen or ())
+        for helper in _functions_named(tree, _callee_name(expr)):
+            if helper is func or id(helper) in seen:
+                continue
+            seen.add(id(helper))
+            for ret in _return_exprs(helper):
+                if _wraps_transcript(ret, tree, helper, getattr(ret, "lineno", line), text_fields, seen, depth + 1):
+                    return True
+        return False
+    return False
+
+
+def _subscript_wraps(expr, tree, func, line, text_fields, seen, depth) -> bool:
+    key = expr.slice.value
+    base = _follow_expr(expr.value, func, line)
+    if isinstance(base, ast.Dict):
+        for dict_key, value in zip(base.keys, base.values):
+            if isinstance(dict_key, ast.Constant) and dict_key.value == key and value is not None:
+                if _wraps_transcript(value, tree, func, line, text_fields, seen, depth + 1):
+                    return True
+        return False
+    if isinstance(base, ast.Call):
+        for helper in _functions_named(tree, _callee_name(base)):
+            for ret in _return_exprs(helper):
+                value = _follow_expr(ret, helper, getattr(ret, "lineno", line))
+                if not isinstance(value, ast.Dict):
+                    continue
+                for dict_key, item in zip(value.keys, value.values):
+                    if isinstance(dict_key, ast.Constant) and dict_key.value == key and item is not None:
+                        if _wraps_transcript(
+                            item, tree, helper, getattr(item, "lineno", line), text_fields, seen, depth + 1
+                        ):
+                            return True
+    return False
+
+
+def _element_wraps(elt, tree, func, line, text_fields, seen, depth) -> bool:
+    if _is_transcript_expr(elt, tree, func, line):
+        return True
+    if isinstance(elt, ast.Dict):
+        for key, value in zip(elt.keys, elt.values):
+            if (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and key.value in text_fields
+                and value is not None
+                and _is_transcript_expr(value, tree, func, line)
+            ):
+                return True
+    if isinstance(elt, ast.Call):
+        for keyword in elt.keywords:
+            if keyword.arg in text_fields and _is_transcript_expr(keyword.value, tree, func, line):
+                return True
+    return False
+
+
+def _is_transcript_expr(expr: ast.AST | None, tree: ast.AST, func: ast.AST | None, line: int, depth: int = 0) -> bool:
+    """True when ``expr`` is a string built by joining role-prefixed turns."""
+    if expr is None or depth > _MAX_DEPTH:
+        return False
+    if isinstance(expr, ast.Name):
+        if func is not None and _name_accumulates_roles(func, expr.id, line):
+            return True
+        value = _assigned_value(func, expr.id, line) if func is not None else None
+        if isinstance(value, ast.expr):
+            return _is_transcript_expr(value, tree, func, getattr(value, "lineno", line), depth + 1)
+        return False
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+        return _is_transcript_expr(expr.left, tree, func, line, depth + 1) or _is_transcript_expr(
+            expr.right, tree, func, line, depth + 1
+        )
+    if not isinstance(expr, ast.Call):
+        return False
+    if _is_join_call(expr) and func is not None and _join_joins_role_turns(func, expr):
+        return True
+    for helper in _functions_named(tree, _callee_name(expr)):
+        if helper is not func and _function_builds_transcript(helper):
+            return True
+    return False
+
+
+def _function_builds_transcript(fn: ast.AST) -> bool:
+    for ret in _return_exprs(fn):
+        value = _follow_expr(ret, fn, getattr(ret, "lineno", 0))
+        if isinstance(value, ast.Call) and _is_join_call(value) and _join_joins_role_turns(fn, value):
+            return True
+        if isinstance(ret, ast.Name) and _name_accumulates_roles(fn, ret.id, getattr(ret, "lineno", 0)):
+            return True
+    return False
+
+
+def _join_joins_role_turns(fn: ast.AST, call: ast.Call) -> bool:
+    if not call.args:
+        return False
+    arg = call.args[0]
+    if isinstance(arg, ast.Name):
+        return _name_fed_by_role_loop(fn, arg.id)
+    if isinstance(arg, ast.GeneratorExp):
+        targets: set[str] = set()
+        for comp in arg.generators:
+            targets |= _target_names(comp.target)
+        return _contains_role_ifexp(arg.elt, targets)
+    return False
+
+
+def _name_fed_by_role_loop(fn: ast.AST, name: str) -> bool:
+    for loop in _loops(fn):
+        targets = _target_names(loop.target)
+        prefixes = _prefix_names(loop, targets)
+        for node in ast.walk(loop):
+            added = _added_to_name(node, name)
+            if added is None:
+                continue
+            if prefixes and _loads(added, prefixes):
+                return True
+            if _contains_role_ifexp(added, targets):
+                return True
+    return False
+
+
+def _name_accumulates_roles(fn: ast.AST, name: str, line: int) -> bool:
+    for loop in _loops(fn):
+        if loop.lineno >= line:
+            continue
+        targets = _target_names(loop.target)
+        prefixes = _prefix_names(loop, targets)
+        for node in ast.walk(loop):
+            if (
+                isinstance(node, ast.AugAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == name
+                and isinstance(node.op, ast.Add)
+                and (prefixes and _loads(node.value, prefixes) or _contains_role_ifexp(node.value, targets))
+            ):
+                return True
+    return False
+
+
+def _loops(fn: ast.AST):
+    for node in ast.walk(fn):
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            yield node
+
+
+def _prefix_names(loop: ast.AST, targets: set[str]) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(loop):
+        value = node.value if isinstance(node, (ast.Assign, ast.AnnAssign)) else None
+        if isinstance(value, ast.IfExp) and _role_ifexp(value, targets):
+            targets_assigned = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets_assigned:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+        if isinstance(node, ast.If) and _loads(node.test, targets):
+            assigned = _if_assigns_prefix(node, targets)
+            if assigned:
+                names.add(assigned)
+    return names
+
+
+def _if_assigns_prefix(node: ast.If, targets: set[str]) -> str:
+    def assigned(stmts: list[ast.stmt]) -> tuple[str, ast.AST] | None:
+        if len(stmts) != 1 or not isinstance(stmts[0], ast.Assign) or len(stmts[0].targets) != 1:
+            return None
+        target = stmts[0].targets[0]
+        if isinstance(target, ast.Name) and _is_foreign_prefix(stmts[0].value, targets):
+            return target.id, stmts[0].value
+        return None
+
+    body = assigned(node.body)
+    orelse = assigned(node.orelse)
+    if body and orelse and body[0] == orelse[0]:
+        return body[0]
+    return ""
+
+
+def _role_ifexp(expr: ast.AST, targets: set[str]) -> bool:
+    return (
+        isinstance(expr, ast.IfExp)
+        and _loads(expr.test, targets)
+        and _is_foreign_prefix(expr.body, targets)
+        and _is_foreign_prefix(expr.orelse, targets)
+    )
+
+
+def _contains_role_ifexp(expr: ast.AST, targets: set[str]) -> bool:
+    for node in ast.walk(expr):
+        if isinstance(node, ast.IfExp) and _role_ifexp(node, targets):
+            return True
+    return False
+
+
+def _is_foreign_prefix(expr: ast.AST, targets: set[str]) -> bool:
+    """A prefix string that does not read the loop item (a role marker, not the item's text)."""
+    if _loads(expr, targets):
+        return False
+    if isinstance(expr, ast.Constant):
+        return isinstance(expr.value, str)
+    return isinstance(expr, (ast.Name, ast.Attribute))
+
+
+def _added_to_name(node: ast.AST, name: str) -> ast.AST | None:
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"append", "extend"}
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == name
+        and node.args
+    ):
+        return node.args[0]
+    if (
+        isinstance(node, ast.AugAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == name
+        and isinstance(node.op, ast.Add)
+    ):
+        return node.value
+    return None
+
+
+def _is_join_call(expr: ast.AST) -> bool:
+    return isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "join"
+
+
+def _target_names(target: ast.AST) -> set[str]:
+    return {node.id for node in ast.walk(target) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
+
+
+def _loads(expr: ast.AST, names: set[str]) -> bool:
+    return any(
+        isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in names for node in ast.walk(expr)
+    )
+
+
+def _follow_expr(expr: ast.AST, func: ast.AST | None, line: int, depth: int = 0) -> ast.AST:
+    if depth > 4 or not isinstance(expr, ast.Name) or func is None:
+        return expr
+    value = _assigned_value(func, expr.id, line)
+    if not isinstance(value, ast.expr):
+        return expr
+    return _follow_expr(value, func, getattr(value, "lineno", line), depth + 1)
+
+
+def _assigned_value(func: ast.AST | None, name: str, line: int) -> ast.AST | None:
+    if func is None:
+        return None
+    value = _last_assignment(func, name, line)
+    if isinstance(value, ast.AnnAssign):
+        return value.value
+    return value if isinstance(value, ast.expr) else None
+
+
+def _return_exprs(fn: ast.AST) -> list[ast.AST]:
+    return [
+        node.value
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Return) and node.value is not None
+    ]
+
+
+def _functions_named(tree: ast.AST, name: str) -> list[ast.AST]:
+    if not name:
+        return []
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    ]
+
+
+def _callee_name(call: ast.Call) -> str:
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return ""

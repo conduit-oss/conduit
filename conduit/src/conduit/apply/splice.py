@@ -1,4 +1,4 @@
-"""Splice a rewritten function (+ optional imports) into a source file."""
+"""Splice a rewritten function, optional same-file helpers, and imports into a source file."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import textwrap
 from dataclasses import dataclass
 
 from conduit.apply.models import ContextPack
+from conduit.apply.prompts import editable_helpers
 
 
 class PatchError(ValueError):
@@ -20,6 +21,8 @@ class PatchError(ValueError):
 class ModelEdit:
     function_source: str
     new_imports: tuple[str, ...]
+    #: ``(helper name, full def)`` for same-file helpers the model may rewrite.
+    helper_sources: tuple[tuple[str, str], ...] = ()
 
 
 def parse_model_edit(text: str) -> ModelEdit:
@@ -44,7 +47,11 @@ def parse_model_edit(text: str) -> ModelEdit:
             import_lines = tuple(str(item).strip() for item in imports if str(item).strip())
         else:
             raise PatchError("new_imports must be a list of strings or a string")
-        return ModelEdit(function_source=str(data["function_source"]), new_imports=import_lines)
+        return ModelEdit(
+            function_source=str(data["function_source"]),
+            new_imports=import_lines,
+            helper_sources=_parse_helper_sources(data.get("helper_sources")),
+        )
 
     blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
     if blocks:
@@ -100,6 +107,31 @@ def splice_edit(pack: ContextPack, edit: ModelEdit) -> tuple[str, str]:
     return patched, diff
 
 
+def _parse_helper_sources(raw: object) -> tuple[tuple[str, str], ...]:
+    if raw is None or raw == "" or raw == [] or raw == {}:
+        return ()
+    items: list[tuple[str, str]] = []
+    if isinstance(raw, dict):
+        pairs = ((str(name), source) for name, source in raw.items())
+    elif isinstance(raw, list):
+        pairs = (
+            (str(entry.get("name", "")), entry.get("function_source", ""))
+            for entry in raw
+            if isinstance(entry, dict)
+        )
+    else:
+        raise PatchError("helper_sources must be an object of helper name to function source")
+    for name, source in pairs:
+        cleaned = str(name).strip()
+        text = str(source).strip("\n")
+        if not cleaned and not text:
+            continue
+        if not cleaned or not text:
+            raise PatchError("each helper source needs a name and a function definition")
+        items.append((cleaned, text))
+    return tuple(items)
+
+
 def splice_edit_with_span(
     pack: ContextPack, edit: ModelEdit
 ) -> tuple[str, str, tuple[int, int]]:
@@ -111,18 +143,55 @@ def splice_edit_with_span(
     original_def = lines[start] if 0 <= start < len(lines) else ""
     indent = _leading_ws(original_def)
     fn_lines = _reindent_function_lines(new_fn, indent) if new_fn else []
-    patched_lines = lines[:start] + fn_lines + lines[end:]
-    patched = "".join(patched_lines)
+    # (start inclusive, end exclusive, replacement lines, is the flagged function)
+    replacements: list[tuple[int, int, list[str], bool]] = [(start, end, fn_lines, True)]
+    replacements.extend(_helper_replacements(pack, edit, lines))
+    main_start = start
+    main_len = len(fn_lines)
+    for rep_start, rep_end, rep_lines, is_main in sorted(replacements, key=lambda item: item[0], reverse=True):
+        lines = lines[:rep_start] + rep_lines + lines[rep_end:]
+        if is_main:
+            main_len = len(rep_lines)
+        elif rep_start < main_start:
+            main_start += len(rep_lines) - (rep_end - rep_start)
+    patched = "".join(lines)
     before = patched.count("\n")
     patched = add_imports(patched, edit.new_imports)
     shift = patched.count("\n") - before
-    span = (start + 1 + shift, start + shift + max(len(fn_lines), 1))
+    span = (main_start + 1 + shift, main_start + shift + max(main_len, 1))
     try:
         ast.parse(patched)
     except SyntaxError as exc:
         raise PatchError(f"patched file does not parse: {exc}") from exc
     diff = unified_diff_for(pack.file_path, pack.full_source, patched)
     return patched, diff, span
+
+
+def _helper_replacements(
+    pack: ContextPack, edit: ModelEdit, lines: list[str]
+) -> list[tuple[int, int, list[str], bool]]:
+    if not edit.helper_sources:
+        return []
+    allowed = {item.name: item for item in editable_helpers(pack)}
+    seen: set[str] = set()
+    out: list[tuple[int, int, list[str], bool]] = []
+    for name, source in edit.helper_sources:
+        if name in seen:
+            raise PatchError(f"helper {name!r} is repeated")
+        seen.add(name)
+        if name == pack.function_name:
+            raise PatchError(f"helper {name!r} is the flagged function; put it in function_source")
+        helper = allowed.get(name)
+        if helper is None:
+            names = ", ".join(sorted(allowed)) or "(none)"
+            raise PatchError(
+                f"helper {name!r} cannot be edited for this call site; editable helpers: {names}"
+            )
+        text = validate_function_source(source, expected_name=name)
+        def_line = lines[helper.def_line - 1] if 0 <= helper.def_line - 1 < len(lines) else ""
+        helper_lines = _reindent_function_lines(text, _leading_ws(def_line)) if text else []
+        out.append((helper.start_line - 1, helper.end_line, helper_lines, False))
+    return out
 
 
 def add_imports(source: str, new_imports: tuple[str, ...]) -> str:

@@ -138,11 +138,11 @@ def _merge_keyword_findings(found: list[tuple[str, str]], extra: list[tuple[str,
 def _type_breaks(
     root: Path, service_map, site: ImpactSite, path: str, span: tuple[int, int], fixtures, allow_network
 ) -> list[tuple[str, str]]:
-    """Argument kinds and attribute reads in the span that the new release's types rule out."""
+    """Argument kinds, role-transcript wraps, and attribute reads the new release's types rule out."""
     import ast
 
     from conduit.apply.signatures import _modules, new_release_wheel
-    from conduit.apply.typecheck import argument_breaks, attribute_breaks
+    from conduit.apply.typecheck import argument_breaks, attribute_breaks, transcript_breaks
 
     try:
         source = (root / path).read_text(encoding="utf-8")
@@ -164,10 +164,11 @@ def _type_breaks(
                 and not chain.via_wrapper
                 and chain.kind.endswith("_call")
             ):
-                for text in argument_breaks(
-                    modules, tree, path, chain, site.dependency or "", site.to_version or ""
-                ):
-                    found.append((text, chain.sdk_method))
+                for checker in (argument_breaks, transcript_breaks):
+                    for text in checker(
+                        modules, tree, path, chain, site.dependency or "", site.to_version or ""
+                    ):
+                        found.append((text, chain.sdk_method))
         for text in attribute_breaks(
             modules, root, path, source, span, service_map.chains,
             site.dependency or "", site.to_version or "",
