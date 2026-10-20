@@ -24,6 +24,9 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "  not a unified diff and not the whole file.\n"
         "- If function_name is empty, the flagged line is a module-level statement:\n"
         "  function_source is that statement; return only its rewritten statement(s).\n"
+        "- If feedback says a value has the wrong type or lacks an attribute in the new\n"
+        "  release, build or read a value of the expected type inside this function from\n"
+        "  its own inputs (helpers outside this function keep their current types).\n"
     )
     user = {
         "file": pack.file_path,
@@ -40,6 +43,10 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "candidates": pack.candidates,
         "call_kwargs": pack.release_diff.get("call_kwargs") or [],
     }
+    helpers = same_file_helpers(pack)
+    if helpers:
+        # Read-only: shows how this function's inputs are shaped.
+        user["helpers_called_read_only"] = helpers
     body = (
         "Context pack (JSON):\n"
         f"{json.dumps(user, indent=2)}\n\n"
@@ -48,6 +55,40 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
     if feedback:
         body += f"\n\nPrevious attempt failed:\n{feedback}\nRetry with a corrected rewrite."
     return [("system", system), ("user", body)]
+
+
+def same_file_helpers(pack: ContextPack, *, limit: int = 3, max_lines: int = 40) -> list[str]:
+    """Sources of functions in the same file that the flagged function calls."""
+    import ast
+
+    try:
+        tree = ast.parse(pack.full_source)
+    except (SyntaxError, ValueError):
+        return []
+    called: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and pack.function_start_line <= node.lineno <= pack.function_end_line
+        ):
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name and name != pack.function_name and name not in called:
+                called.append(name)
+    lines = pack.full_source.splitlines()
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in called
+            and not (pack.function_start_line <= node.lineno <= pack.function_end_line)
+            and (node.end_lineno or node.lineno) - node.lineno < max_lines
+        ):
+            start = min([node.lineno, *[deco.lineno for deco in node.decorator_list]])
+            out.append("\n".join(lines[start - 1 : node.end_lineno]))
+            if len(out) >= limit:
+                break
+    return out
 
 
 def summarize_messages(pack: ContextPack, diff: str) -> list[tuple[str, str]]:

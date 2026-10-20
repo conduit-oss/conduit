@@ -112,10 +112,70 @@ def _breaks_listed(
                 if text not in found:
                     found.append(text)
     if span is not None:
-        found.extend(
-            _unknown_keyword_breaks(service_map, site, want_path, span, fixtures, allow_network)
+        _merge_keyword_findings(
+            found, _unknown_keyword_breaks(service_map, site, want_path, span, fixtures, allow_network)
         )
+        for item in _type_breaks(root, service_map, site, want_path, span, fixtures, allow_network):
+            if item not in found:
+                found.append(item)
     return found
+
+
+def _merge_keyword_findings(found: list[tuple[str, str]], extra: list[tuple[str, str]]) -> None:
+    """Add unknown-keyword findings unless the same name on the same line is already a removed parameter."""
+    for text, symbol in extra:
+        name = text.split(": keyword ", 1)[-1].split(" ", 1)[0]
+        line = text.split(" ", 1)[0]
+        if any(
+            existing.split(" ", 1)[0] == line and f"parameter {name} " in existing
+            for existing, _symbol in found
+        ):
+            continue
+        if (text, symbol) not in found:
+            found.append((text, symbol))
+
+
+def _type_breaks(
+    root: Path, service_map, site: ImpactSite, path: str, span: tuple[int, int], fixtures, allow_network
+) -> list[tuple[str, str]]:
+    """Argument kinds and attribute reads in the span that the new release's types rule out."""
+    import ast
+
+    from conduit.apply.signatures import _modules, new_release_wheel
+    from conduit.apply.typecheck import argument_breaks, attribute_breaks
+
+    try:
+        source = (root / path).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return []
+    wheel = new_release_wheel(
+        site.dependency, site.to_version, fixtures=fixtures, allow_network=allow_network
+    )
+    if wheel is None:
+        return []
+    try:
+        modules = _modules(str(wheel))
+        found: list[tuple[str, str]] = []
+        for chain in service_map.chains:
+            if (
+                chain.call_rel.replace("\\", "/") == path
+                and span[0] <= chain.call_lineno <= span[1]
+                and not chain.via_wrapper
+                and chain.kind.endswith("_call")
+            ):
+                for text in argument_breaks(
+                    modules, tree, path, chain, site.dependency or "", site.to_version or ""
+                ):
+                    found.append((text, chain.sdk_method))
+        for text in attribute_breaks(
+            modules, root, path, source, span, service_map.chains,
+            site.dependency or "", site.to_version or "",
+        ):
+            found.append((text, ""))
+        return found
+    except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
+        return []
 
 
 def _unknown_keyword_breaks(

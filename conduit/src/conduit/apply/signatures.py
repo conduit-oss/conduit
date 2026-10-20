@@ -211,6 +211,14 @@ def unknown_keywords(wheel: Path | None, call_target: str, keywords: tuple[str, 
 
 
 def _resolve_callable(modules: dict[str, ast.Module], dotted: str) -> ast.AST | None:
+    found = resolve_callable(modules, dotted)
+    return found[1] if found else None
+
+
+def resolve_callable(
+    modules: dict[str, ast.Module], dotted: str
+) -> tuple[str, ast.AST] | None:
+    """``(defining module, def node)`` for a call's resolved name in the wheel."""
     parts = [part for part in dotted.split(".") if part]
     for index in range(len(parts) - 1, 0, -1):
         if not parts[index][:1].isupper():
@@ -255,7 +263,7 @@ def _find_class(
 
 def _walk_members(
     modules: dict[str, ast.Module], klass: tuple[str, ast.ClassDef], rest: list[str]
-) -> ast.AST | None:
+) -> tuple[str, ast.AST] | None:
     module_name, node = klass
     for index, attr in enumerate(rest):
         last = index == len(rest) - 1
@@ -263,7 +271,9 @@ def _walk_members(
         if member is None:
             return None
         if last:
-            return member if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) else None
+            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return _owner_module(modules, module_name, node, attr), member
+            return None
         annotation = member.returns if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) else member.annotation
         type_name = _type_name(annotation)
         hit = _find_class(modules, type_name, module_name) if type_name else None
@@ -271,6 +281,18 @@ def _walk_members(
             return None
         module_name, node = hit
     return None
+
+
+def _owner_module(modules, module_name: str, node: ast.ClassDef, attr: str, depth: int = 0) -> str:
+    """Module of the class (or base) that defines ``attr``; names in its annotations resolve there."""
+    if any(getattr(child, "name", None) == attr for child in node.body) or depth >= 3:
+        return module_name
+    for base in node.bases:
+        name = _type_name(base)
+        hit = _find_class(modules, name, module_name) if name else None
+        if hit is not None and hit[1] is not node and _member(modules, hit[0], hit[1], attr) is not None:
+            return _owner_module(modules, hit[0], hit[1], attr, depth + 1)
+    return module_name
 
 
 def _member(modules, module_name: str, node: ast.ClassDef, attr: str, depth: int = 0):

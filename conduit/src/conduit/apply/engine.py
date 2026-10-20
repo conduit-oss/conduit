@@ -120,6 +120,7 @@ def _apply_one(
     feedback = ""
     last_error = ""
     last_diff = ""
+    earlier: list[str] = []
     attempts = 0
     site_tokens = 0
     for attempt in range(1, config.settings.max_attempts + 1):
@@ -170,6 +171,10 @@ def _apply_one(
                 attempts=attempts,
                 context=pack,
             )
+        except RecheckError as exc:
+            last_error = str(exc)
+            feedback = _with_earlier(last_error, exc.findings, earlier)
+            earlier.extend(text for text in exc.findings if text not in earlier)
         except PatchError as exc:
             last_error = str(exc)
             feedback = last_error
@@ -251,7 +256,7 @@ def _verify_site_cleared(
     )
     if breaks:
         # Fed back to the model as the retry reason; the last one is the Why.
-        message = "rewrite still breaks against the new release: " + "; ".join(
+        message = "rewrite still breaks against the new release:\n- " + "\n- ".join(
             text for text, _symbol in breaks
         )
         signatures = _new_signatures(config, site, [symbol for _text, symbol in breaks])
@@ -259,7 +264,25 @@ def _verify_site_cleared(
             message += "\nNew release signatures (read from its own code):\n" + "\n".join(
                 signatures.values()
             )
-        raise PatchError(message)
+        raise RecheckError(message, [text for text, _symbol in breaks])
+
+
+class RecheckError(PatchError):
+    """Recheck findings for one attempt; ``findings`` carries them one by one."""
+
+    def __init__(self, message: str, findings: list[str]) -> None:
+        super().__init__(message)
+        self.findings = findings
+
+
+def _with_earlier(message: str, current: list[str], earlier: list[str]) -> str:
+    """Remind the model of findings an earlier attempt hit that this one did not repeat."""
+    missing = [text for text in earlier if text not in current]
+    if not missing:
+        return message
+    head, sep, tail = message.partition("\nNew release signatures")
+    head += "\nEarlier attempts also broke (keep these fixed):\n- " + "\n- ".join(missing)
+    return head + sep + tail
 
 
 def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -> dict[str, str]:

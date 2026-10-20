@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import textwrap
 from pathlib import Path
@@ -808,3 +809,267 @@ def test_unknown_keyword_on_new_release_callable_is_a_break(tmp_path: Path):
     assert [text for text, _symbol in found] == [
         "mod.py:7 client.new_call: keyword timeout is not a parameter of client.new_call in example-sdk 2.0"
     ]
+
+
+def _typed_release(tmp_path: Path) -> dict:
+    from conduit.apply.signatures import _modules
+
+    pkg = tmp_path / "typed-wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .client import Client\n", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Iterable, Optional, Sequence, TypedDict, Union
+            from .models import Reply
+
+            class ItemParam(TypedDict):
+                name: str
+                size: int
+
+            ItemsParam = Iterable[ItemParam]
+
+            class Client:
+                def send(
+                    self,
+                    *,
+                    items: ItemsParam,
+                    note: Optional[str] = None,
+                    tags: Sequence[str] = (),
+                    limit: Union[int, None] = None,
+                    extra: "Unknown" = None,
+                ) -> Reply:
+                    return Reply()
+
+                def open(self) -> "Dynamic":
+                    return Dynamic()
+
+            class Dynamic:
+                def __getattr__(self, name):
+                    return name
+            """
+        ),
+        encoding="utf-8",
+    )
+    (pkg / "models.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Generic, List, TypeVar
+
+            T = TypeVar("T")
+
+            class Base(Generic[T]):
+                def to_dict(self) -> dict:
+                    return {}
+
+            class Reply(Base[str]):
+                text: str
+                parts: List[str]
+            """
+        ),
+        encoding="utf-8",
+    )
+    return _modules(str(tmp_path / "typed-wheel"))
+
+
+def _chain(path: str, line: int, expr: str, method: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        call_rel=path, call_lineno=line, call_expr=expr, sdk_method=method,
+        kind="method_call", via_wrapper=False,
+    )
+
+
+def test_argument_type_check_flags_obvious_mismatches(tmp_path: Path):
+    from conduit.apply.typecheck import argument_breaks
+
+    modules = _typed_release(tmp_path)
+    source = textwrap.dedent(
+        """\
+        class Wrapper:
+            def run(self, note: str, rows: list, other):
+                prompt = self._render(rows)
+                self.client.send(items=prompt, note=note, tags=[note], limit="5")
+                self.client.send(items=[{"name": "a", "size": 1}], note=other, tags=note, extra=1)
+                self.client.send(items=other, limit=3)
+
+            @staticmethod
+            def _render(rows) -> str:
+                return ""
+        """
+    )
+    tree = ast.parse(source)
+    method = "example_sdk.Client.send"
+    first = argument_breaks(modules, tree, "w.py", _chain("w.py", 4, "self.client.send", method), "example-sdk", "2.0")
+    assert len(first) == 2, first
+    assert "items= passes a str" in first[0] and "expects ItemsParam" in first[0]
+    assert "ItemParam is a TypedDict: name: str, size: int" in first[0]
+    assert 'a list like [{"name": <str>, "size": <int>}, ...]' in first[0]
+    assert "prompt = self._render(rows)" in first[0]
+    assert "limit= passes a str" in first[1]
+    # A list of dicts, an unknown variable, Sequence[str] given a str (a str is a sequence of str),
+    # and an annotation the wheel does not define: none flagged.
+    second = argument_breaks(modules, tree, "w.py", _chain("w.py", 5, "self.client.send", method), "example-sdk", "2.0")
+    assert second == []
+    third = argument_breaks(modules, tree, "w.py", _chain("w.py", 6, "self.client.send", method), "example-sdk", "2.0")
+    assert third == []
+    # A callable the new release does not define: unknown, nothing flagged.
+    assert argument_breaks(modules, tree, "w.py", _chain("w.py", 4, "self.client.send", "example_sdk.Client.gone"), "x", "2") == []
+
+
+def test_attribute_check_flags_reads_the_new_return_type_lacks(tmp_path: Path):
+    from conduit.apply.typecheck import attribute_breaks
+
+    modules = _typed_release(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    caller = textwrap.dedent(
+        """\
+        from result import Result
+
+        def call(client):
+            reply = client.send(items=[])
+            print(reply.text, reply.to_dict(), reply.gone)
+            Result.typed(reply)
+            return Result.from_reply(reply)
+
+        def dynamic(client):
+            handle = client.open()
+            return handle.anything
+        """
+    )
+    result = textwrap.dedent(
+        """\
+        from typing import Any
+
+        class Result:
+            @staticmethod
+            def from_reply(reply: Any) -> "Result":
+                text = getattr(reply, "completion", None) or reply.text
+                return Result()
+
+            @staticmethod
+            def other(value: int) -> int:
+                return value.real
+
+            @staticmethod
+            def typed(reply: "example_sdk.client.Dynamic") -> str:
+                return reply.text
+        """
+    )
+    (root / "caller.py").write_text(caller, encoding="utf-8")
+    (root / "result.py").write_text(result, encoding="utf-8")
+    chains = [
+        _chain("caller.py", 4, "client.send", "example_sdk.Client.send"),
+        _chain("caller.py", 10, "client.open", "example_sdk.Client.open"),
+    ]
+    local = attribute_breaks(modules, root, "caller.py", caller, (3, 11), chains, "example-sdk", "2.0")
+    assert len(local) == 1, local
+    assert "reply.gone" in local[0] and "no attribute gone" in local[0]
+    assert "fields: text: str, parts: List[str]" in local[0]
+    # A parameter typed by its only caller, read through getattr with a literal name.
+    passed = attribute_breaks(modules, root, "result.py", result, (4, 16), chains, "example-sdk", "2.0")
+    assert len(passed) == 2, passed
+    assert "getattr(reply, 'completion', None)" in passed[0] and "no attribute completion" in passed[0]
+    # An annotation naming a release class the callers never pass is itself a break.
+    assert "annotated Dynamic but callers pass Reply" in passed[1]
+
+
+def test_unknown_keyword_not_repeated_for_a_removed_parameter():
+    from conduit.apply.verify import _merge_keyword_findings
+
+    found = [("a.py:3 c.create: parameter temperature removed from C.create", "s")]
+    _merge_keyword_findings(
+        found,
+        [
+            ("a.py:3 c.create: keyword temperature is not a parameter of C.create in x 2", "s"),
+            ("a.py:3 c.create: keyword top_k is not a parameter of C.create in x 2", "s"),
+            ("a.py:9 c.create: keyword temperature is not a parameter of C.create in x 2", "s"),
+        ],
+    )
+    assert [text.split(": ", 1)[1] for text, _symbol in found] == [
+        "parameter temperature removed from C.create",
+        "keyword top_k is not a parameter of C.create in x 2",
+        "keyword temperature is not a parameter of C.create in x 2",
+    ]
+
+
+def test_retry_feedback_keeps_findings_from_earlier_attempts():
+    from conduit.apply.engine import _with_earlier
+
+    message = "rewrite still breaks against the new release:\n- b\nNew release signatures (read from its own code):\nsig"
+    out = _with_earlier(message, ["b"], ["a", "b"])
+    assert out.startswith("rewrite still breaks against the new release:\n- b\nEarlier attempts also broke (keep these fixed):\n- a\n")
+    assert out.endswith("New release signatures (read from its own code):\nsig")
+    assert _with_earlier(message, ["b"], ["b"]) == message
+
+
+def test_attribute_check_narrows_overloads_by_the_call_keywords(tmp_path: Path):
+    from conduit.apply.signatures import _modules
+    from conduit.apply.typecheck import attribute_breaks
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Literal, overload
+
+            class Reply:
+                text: str
+
+            class Chunks:
+                def __iter__(self):
+                    return iter(())
+
+            class Client:
+                @overload
+                def make(self, *, q: str, stream: Literal[False] = False) -> Reply: ...
+                @overload
+                def make(self, *, q: str, stream: Literal[True]) -> Chunks: ...
+                def make(self, *, q: str, stream: bool = False) -> "Reply | Chunks":
+                    return Reply()
+            """
+        ),
+        encoding="utf-8",
+    )
+    modules = _modules(str(tmp_path / "wheel"))
+    source = "def f(client):\n    out = client.make(q='x')\n    return out.text, out.gone\n"
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "f.py").write_text(source, encoding="utf-8")
+    chains = [_chain("f.py", 2, "client.make", "example_sdk.client.Client.make")]
+    found = attribute_breaks(modules, root, "f.py", source, (1, 3), chains, "example-sdk", "2.0")
+    # Only the non-streaming overload fits: out is a Reply, so .text is fine and .gone is not.
+    assert len(found) == 1 and "out is Reply in" in found[0] and "no attribute gone" in found[0], found
+
+
+def test_prompt_shows_same_file_helpers_read_only():
+    from conduit.apply.models import ContextPack, ImpactSite
+    from conduit.apply.prompts import same_file_helpers
+
+    source = textwrap.dedent(
+        """\
+        class A:
+            def run(self, rows):
+                text = self._render(rows)
+                return send(text)
+
+            @staticmethod
+            def _render(rows) -> str:
+                return "".join(rows)
+
+            def unrelated(self):
+                return 1
+        """
+    )
+    site = ImpactSite(path="a.py", line=4, expr="send", dependency="x", from_version="1", to_version="2", change="c", confidence="high", source="wheel")
+    pack = ContextPack(
+        site=site, file_path="a.py", imports="", function_name="run", function_source="",
+        function_start_line=2, function_end_line=4, full_source=source, release_diff={},
+        new_signature="", new_docstring="",
+    )
+    helpers = same_file_helpers(pack)
+    assert len(helpers) == 1 and helpers[0].lstrip().startswith("@staticmethod") and "_render" in helpers[0]
