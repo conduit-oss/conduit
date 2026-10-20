@@ -389,10 +389,10 @@ def test_recheck_impact_uses_collect_impacts_on_scratch(tmp_path: Path, monkeypa
     sites = sites_from_payload(_impact_payload())
     calls: list[Path] = []
 
-    def fake_listed(scratch: Path, site, *, span, fixtures, allow_network) -> list[str]:
+    def fake_listed(scratch: Path, site, *, span, fixtures, allow_network) -> list[tuple[str, str]]:
         calls.append(scratch)
         text = (scratch / site.path).read_text(encoding="utf-8")
-        return ["mod.py:7 client.old_call: renamed"] if "old_call" in text else []
+        return [("mod.py:7 client.old_call: renamed", "")] if "old_call" in text else []
 
     monkeypatch.setattr(verify_mod, "_breaks_listed", fake_listed)
     client = FakeModelClient(responses=[_good_edit(), "why"])
@@ -416,7 +416,7 @@ def test_recheck_impact_rejects_when_site_still_listed(tmp_path: Path, monkeypat
 
     root = _repo_with_break(tmp_path)
     sites = sites_from_payload(_impact_payload())
-    monkeypatch.setattr(verify_mod, "_breaks_listed", lambda *a, **k: ["mod.py:7 client.old_call: x"])
+    monkeypatch.setattr(verify_mod, "_breaks_listed", lambda *a, **k: [("mod.py:7 client.old_call: x", "")])
     client = FakeModelClient(responses=[_good_edit(), _good_edit(), _good_edit()])
     report = apply_sites(
         sites,
@@ -614,11 +614,14 @@ def test_empty_module_statement_rewrite_deletes_it(tmp_path: Path):
     assert patched == "import os\n\nX = os.sep\n"
 
 
-def _hits_in_span(scratch: Path, site, *, span, fixtures, allow_network) -> list[str]:
+def _hits_in_span(scratch: Path, site, *, span, fixtures, allow_network) -> list[tuple[str, str]]:
     """Stand-in for impact: a removed ``timeout`` keyword inside the rewritten span."""
     lines = (scratch / site.path).read_text(encoding="utf-8").splitlines()
     return [
-        f"{site.path}:{number} client.new_call: parameter timeout removed from Client.new_call"
+        (
+            f"{site.path}:{number} client.new_call: parameter timeout removed from Client.new_call",
+            "example_sdk.client.Client.new_call",
+        )
         for number, line in enumerate(lines, start=1)
         if span[0] <= number <= span[1] and "timeout=" in line
     ]
@@ -687,3 +690,76 @@ def test_recheck_accepts_clean_rewrite_after_feedback(tmp_path: Path, monkeypatc
     assert result.attempts == 2
     text = (root / "mod.py").read_text(encoding="utf-8")
     assert "client.new_call(1)" in text and "timeout" not in text
+
+
+def _new_release_fixture(tmp_path: Path) -> Path:
+    fixtures = tmp_path / "fixtures"
+    pkg = fixtures / "new" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .client import Client\n", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Iterable, TypedDict
+
+            class ItemParam(TypedDict):
+                name: str
+                size: int
+
+            class Client:
+                def new_call(self, value: int, *, items: Iterable[ItemParam], retries: int = 2) -> str:
+                    return ""
+            """
+        ),
+        encoding="utf-8",
+    )
+    (fixtures / "index.json").write_text(
+        json.dumps({"packages": {"example-sdk": {"wheels": {"2.0": "new"}}}}), encoding="utf-8"
+    )
+    return fixtures
+
+
+def test_signatures_read_from_new_release_code(tmp_path: Path):
+    from conduit.apply.signatures import signatures_for
+
+    fixtures = _new_release_fixture(tmp_path)
+    found = signatures_for(fixtures / "new", ["example_sdk.Client.new_call", "example_sdk.Client.gone"])
+    assert list(found) == ["example_sdk.Client.new_call"]
+    text = found["example_sdk.Client.new_call"]
+    assert "Client.new_call(self, value: int, *, items: Iterable[ItemParam], retries: int=2) -> str" in text
+    assert "ItemParam(TypedDict): name: str; size: int" in text
+
+
+def test_recheck_retry_prompt_carries_new_signature(tmp_path: Path, monkeypatch):
+    from conduit.apply import verify as verify_mod
+
+    root = _repo_with_break(tmp_path)
+    fixtures = _new_release_fixture(tmp_path)
+    payload = _impact_payload()
+    payload["impacts"][0]["symbol"] = "example_sdk.Client.new_call"
+    sites = sites_from_payload(payload)
+    monkeypatch.setattr(verify_mod, "_breaks_listed", _hits_in_span)
+    still_broken = json.dumps(
+        {
+            "function_source": "def broken(client):\n    return client.new_call(1, timeout=5)\n",
+            "new_imports": [],
+        }
+    )
+    client = FakeModelClient(responses=[still_broken, _good_edit(), "why"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=3),
+            client=client,
+            recheck_impact=True,
+            fixtures=fixtures,
+        ),
+    )
+    assert report.results[0].status == SiteStatus.FIXED_UNVERIFIED, report.results[0].error
+    first = client.calls[0]["messages"][-1].content
+    retry = client.calls[1]["messages"][-1].content
+    assert "new_release_signatures" in first
+    assert "parameter timeout removed" in retry
+    assert "items: Iterable[ItemParam]" in retry
+    assert "ItemParam(TypedDict): name: str; size: int" in retry

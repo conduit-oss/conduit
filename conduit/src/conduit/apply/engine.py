@@ -17,6 +17,7 @@ from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.prompts import propose_messages, summarize_messages
 from conduit.apply.splice import PatchError, parse_model_edit, splice_edit_with_span
+from conduit.apply.signatures import new_release_wheel, signatures_for
 from conduit.apply.verify import remaining_breaks
 
 # Optional hook: given root + site + patched file text, return True if the site
@@ -112,6 +113,10 @@ def _apply_one(
             context=pack,
         )
 
+    target = _new_signatures(config, site, [site.symbol])
+    if target:
+        pack.release_diff["new_release_signatures"] = target
+
     feedback = ""
     last_error = ""
     last_diff = ""
@@ -178,7 +183,7 @@ def _apply_one(
         why="",
         diff=last_diff,
         attempts=attempts,
-        error=last_error or "max attempts exhausted",
+        error=last_error.split("\nNew release signatures", 1)[0] or "max attempts exhausted",
         context=pack,
     )
 
@@ -246,9 +251,31 @@ def _verify_site_cleared(
     )
     if breaks:
         # Fed back to the model as the retry reason; the last one is the Why.
-        raise PatchError(
-            "rewrite still breaks against the new release: " + "; ".join(breaks)
+        message = "rewrite still breaks against the new release: " + "; ".join(
+            text for text, _symbol in breaks
         )
+        signatures = _new_signatures(config, site, [symbol for _text, symbol in breaks])
+        if signatures:
+            message += "\nNew release signatures (read from its own code):\n" + "\n".join(
+                signatures.values()
+            )
+        raise PatchError(message)
+
+
+def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -> dict[str, str]:
+    """Signatures of ``symbols`` in the new release's own code, when it defines them."""
+    if not config.recheck_impact or not any(symbols):
+        return {}
+    try:
+        wheel = new_release_wheel(
+            site.dependency,
+            site.to_version,
+            fixtures=config.fixtures,
+            allow_network=config.allow_network,
+        )
+        return signatures_for(wheel, [symbol for symbol in symbols if symbol])
+    except Exception:  # noqa: BLE001 — prompt context only; never blocks a fix
+        return {}
 
 
 def _run_tests(

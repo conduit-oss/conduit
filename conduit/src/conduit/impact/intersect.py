@@ -40,7 +40,13 @@ def intersect(
         fresh: list[SiteHit] = []
         # One removed name can appear under its defining path and a public
         # re-export (``types.completion.Completion`` and ``types.Completion``).
-        short = (change.kind, (change.symbol or "").rsplit(".", 1)[-1])
+        # The parameter (``old``) stays in the key: two removed keywords on one
+        # call are two breaks.
+        short = (
+            change.kind,
+            (change.symbol or "").rsplit(".", 1)[-1],
+            (change.old or "").rsplit(".", 1)[-1],
+        )
         for site in sites:
             key = (site.path, site.line, change.detail)
             same = (site.path, site.line, site.expr, *short)

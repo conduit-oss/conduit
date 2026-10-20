@@ -1500,3 +1500,39 @@ def test_removed_type_flags_its_import_and_annotations(tmp_path: Path):
     assert sorted(line for line, _expr in hits) == [1, 4, 5, 11]
     assert (1, "import OpenAIObject") in hits
     assert all(item.kind == "removed" for item in impacts)
+
+
+def test_two_removed_keywords_on_one_call_are_two_breaks(tmp_path: Path):
+    _write(
+        tmp_path,
+        "app.py",
+        """
+        import openai
+
+        def ask(prompt):
+            return openai.Completion.create(model="x", prompt=prompt)
+        """,
+    )
+    changes = [
+        ApiChange(
+            kind="param_removed",
+            symbol="openai.Completion.create",
+            old=name,
+            new="",
+            detail=f"parameter {name} removed from Completion.create",
+            confidence="high",
+            source="wheel",
+        )
+        for name in ("model", "prompt")
+    ]
+    impacts = intersect(
+        changes,
+        analyze_repo(tmp_path).chains,
+        dependency="openai",
+        from_version="0.28.1",
+        to_version="1.0.0",
+    )
+    assert sorted(item.change for item in impacts) == [
+        "parameter model removed from Completion.create",
+        "parameter prompt removed from Completion.create",
+    ]

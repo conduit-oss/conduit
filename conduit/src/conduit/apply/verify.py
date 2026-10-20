@@ -31,8 +31,8 @@ def remaining_breaks(
     span: tuple[int, int] | None = None,
     fixtures: Path | None = None,
     allow_network: bool = False,
-) -> list[str]:
-    """Breaks impact still reports for the original site or the rewritten span.
+) -> list[tuple[str, str]]:
+    """``(finding, symbol)`` pairs impact still reports for the original site or the rewritten span.
 
     Copies ``root`` to a scratch tree, writes ``patched`` over ``site.path``,
     then calls ``collect_impacts`` for ``site.dependency`` with the same
@@ -74,7 +74,7 @@ def _breaks_listed(
     span: tuple[int, int] | None,
     fixtures: Path | None,
     allow_network: bool,
-) -> list[str]:
+) -> list[tuple[str, str]]:
     from conduit.impact.run import collect_impacts
     from conduit.outside_in.bridge import build_service_map
 
@@ -90,7 +90,7 @@ def _breaks_listed(
     )
     want_path = site.path.replace("\\", "/")
     want_expr = (site.expr or "").strip()
-    found: list[str] = []
+    found: list[tuple[str, str]] = []
     for item in impacts:
         if item.kind == "deprecated":
             continue
@@ -103,7 +103,7 @@ def _breaks_listed(
             same = (hit.expr == want_expr) if want_expr else hit.line == site.line
             inside = span is not None and span[0] <= hit.line <= span[1]
             if same or inside:
-                text = f"{hit_path}:{hit.line} {hit.expr}: {item.change}"
+                text = (f"{hit_path}:{hit.line} {hit.expr}: {item.change}", item.symbol)
                 if text not in found:
                     found.append(text)
     return found
