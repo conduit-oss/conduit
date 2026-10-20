@@ -292,7 +292,12 @@ def specs_for_repo(root: Path) -> tuple[ServiceSpec, ...]:
         top = module.split(".", 1)[0]
         if is_stdlib_module(top) or _is_local_module(root, top):
             continue
-        dist = index.get(top) or declared.get(normalize_dist(top)) or _declared_by_token(top, declared)
+        dist = (
+            index.get(top)
+            or declared.get(normalize_dist(top))
+            or _declared_by_token(top, declared)
+            or _declared_installed(top, declared)
+        )
         if dist:
             add(dist, pins.get(normalize_dist(dist)), module=module)
             continue
@@ -311,6 +316,20 @@ def _declared_by_token(top: str, declared: dict[str, str]) -> str:
     token = normalize_dist(top)
     hits = [name for norm, name in declared.items() if token in norm.split("-") and norm != token]
     return hits[0] if len(hits) == 1 else ""
+
+
+def _declared_installed(top: str, declared: dict[str, str]) -> str:
+    """A declared distribution the running interpreter says provides ``top``
+    (``square`` -> ``squareup`` when the repo's requirements are installed)."""
+    global _INTERPRETER_INDEX
+    if _INTERPRETER_INDEX is None:
+        from conduit.outside_in.distributions import _interpreter_import_index
+
+        _INTERPRETER_INDEX = _interpreter_import_index()
+    return declared.get(_INTERPRETER_INDEX.get(top, ""), "")
+
+
+_INTERPRETER_INDEX: dict[str, str] | None = None
 
 
 def _as_spec(found: Classification) -> ServiceSpec:

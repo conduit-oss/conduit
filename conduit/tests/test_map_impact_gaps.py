@@ -1553,3 +1553,23 @@ def test_wheel_without_top_level_txt_imports_as_its_package_and_templated_paths_
     assert _path_templates(tree) == {"/api/v2/users"}
     assert _declared_by_token("auth0", {"auth0-python": "auth0-python", "fastapi": "fastapi"}) == "auth0-python"
     assert _declared_by_token("google", {"google-auth": "a", "google-cloud-storage": "b"}) == ""
+
+
+def test_installed_declared_distribution_and_reads_on_a_removed_calls_result(monkeypatch):
+    from types import SimpleNamespace
+
+    from conduit.impact.intersect import _python_match
+    from conduit.outside_in import evidence
+
+    monkeypatch.setattr(evidence, "_INTERPRETER_INDEX", {"pay": "payup", "other": "not-declared"})
+    declared = {"payup": "payup", "requests": "requests"}
+    assert evidence._declared_installed("pay", declared) == "payup"
+    assert evidence._declared_installed("other", declared) == ""
+
+    change = ApiChange(kind="removed", symbol="pay.client.Client", old="", new="", detail="", confidence="high", source="wheel")
+    read = SimpleNamespace(kind="sdk_response", sdk_method="pay.client.Client.cards.create", response_fields=(".body['card']",), confidence="high")
+    assert _python_match(change, read, [change]) == "medium"
+    subscript = SimpleNamespace(kind="sdk_response", sdk_method="pay.client.Client.cards.create", response_fields=("['id']",), confidence="high")
+    assert _python_match(change, subscript, [change]) is None
+    changed = ApiChange(kind="param_removed", symbol="pay.client.Client", old="x", new="", detail="", confidence="high", source="wheel")
+    assert _python_match(changed, read, [changed]) is None

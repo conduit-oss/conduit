@@ -277,7 +277,13 @@ def _python_match(
         base = change.confidence if how == "exact" else min_confidence(change.confidence, "medium")
         return min_confidence(base, chain.confidence)
     if chain.kind.endswith("_response"):
-        return None
+        # A removed call's result object goes with it: an attribute read on
+        # that result (``.body``, ``.errors``) breaks. Plain subscripts are left
+        # to response_shape changes.
+        if change.kind != "removed" or not any(field.startswith(".") for field in chain.response_fields):
+            return None
+        how = _method_match(chain.sdk_method, change.symbol, change, peers, return_classes, surviving, methods)
+        return None if how is None else min_confidence(min_confidence(change.confidence, "medium"), chain.confidence)
     if chain.kind.endswith("_alias") and change.kind not in {"removed", "renamed"}:
         # An import line only breaks when the imported name is gone.
         return None
