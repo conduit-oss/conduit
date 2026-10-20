@@ -6,6 +6,7 @@ import ast
 import difflib
 import json
 import re
+import textwrap
 from dataclasses import dataclass
 
 from conduit.apply.models import ContextPack
@@ -62,12 +63,21 @@ def parse_model_edit(text: str) -> ModelEdit:
 
 
 def validate_function_source(function_source: str, *, expected_name: str) -> str:
-    """Require a single top-level function with ``expected_name``; return text + newline."""
-    text = function_source.strip("\n") + "\n"
+    """Require a single top-level function with ``expected_name``; return text + newline.
+
+    A method comes back indented as it sits in its class; it is dedented here
+    and re-indented to the original def when spliced. An empty
+    ``expected_name`` is a module-level statement: any statements that parse,
+    or nothing to delete it.
+    """
+    text = textwrap.dedent(function_source.strip("\n")) + "\n"
     try:
         tree = ast.parse(text)
     except SyntaxError as exc:
         raise PatchError(f"rewritten function does not parse: {exc}") from exc
+    if not expected_name:
+        # An empty rewrite deletes the statement (an import nothing needs).
+        return text if tree.body else ""
     defs = [
         node
         for node in tree.body
@@ -92,7 +102,7 @@ def splice_edit(pack: ContextPack, edit: ModelEdit) -> tuple[str, str]:
     end = pack.function_end_line
     original_def = lines[start] if 0 <= start < len(lines) else ""
     indent = _leading_ws(original_def)
-    fn_lines = _reindent_function_lines(new_fn, indent)
+    fn_lines = _reindent_function_lines(new_fn, indent) if new_fn else []
     patched_lines = lines[:start] + fn_lines + lines[end:]
     patched = "".join(patched_lines)
     patched = add_imports(patched, edit.new_imports)

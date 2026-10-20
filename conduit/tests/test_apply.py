@@ -542,3 +542,73 @@ def test_live_token_factory_smoke():
     finally:
         client.close()
     assert result.content
+
+
+def test_class_method_rewrite_is_dedented_and_reindented(tmp_path: Path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text(
+        textwrap.dedent(
+            """\
+            class Wrapper:
+                def call(self, client):
+                    return client.old_call(1)
+
+                def keep(self):
+                    return 2
+            """
+        ),
+        encoding="utf-8",
+    )
+    site = sites_from_payload(_impact_payload(line=3))[0]
+    pack = build_context_pack(root, site)
+    # Models return the method as it sits in the class: indented.
+    edit = json.dumps(
+        {
+            "function_source": "    def call(self, client):\n        return client.new_call(1)\n",
+            "new_imports": [],
+        }
+    )
+    patched, diff = splice_edit(pack, parse_model_edit(edit))
+    assert "    def call(self, client):\n        return client.new_call(1)\n" in patched
+    assert "    def keep(self):" in patched
+    assert "old_call" not in patched
+    assert diff.startswith("---")
+
+
+def test_module_level_statement_is_rewritten_alone(tmp_path: Path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text(
+        textwrap.dedent(
+            """\
+            import helper
+
+            TURN = helper.OLD_PROMPT
+
+            def other():
+                return TURN
+            """
+        ),
+        encoding="utf-8",
+    )
+    site = sites_from_payload(_impact_payload(line=3))[0]
+    pack = build_context_pack(root, site)
+    assert pack.function_name == ""
+    assert pack.function_source == "TURN = helper.OLD_PROMPT\n"
+    edit = json.dumps({"function_source": 'TURN = "\\n\\nHuman:"\n', "new_imports": []})
+    patched, _diff = splice_edit(pack, parse_model_edit(edit))
+    assert 'TURN = "\\n\\nHuman:"\n' in patched
+    assert "OLD_PROMPT" not in patched
+    assert "def other():\n    return TURN\n" in patched
+
+
+def test_empty_module_statement_rewrite_deletes_it(tmp_path: Path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text("import os\nfrom helper import Gone\n\nX = os.sep\n", encoding="utf-8")
+    site = sites_from_payload(_impact_payload(line=2))[0]
+    pack = build_context_pack(root, site)
+    edit = json.dumps({"function_source": "", "new_imports": []})
+    patched, _diff = splice_edit(pack, parse_model_edit(edit))
+    assert patched == "import os\n\nX = os.sep\n"

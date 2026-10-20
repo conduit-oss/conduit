@@ -22,6 +22,8 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         '  {"function_source": "<full def ...>", "new_imports": ["import ...", ...]}\n'
         "- function_source must be the complete function definition (def/async def),\n"
         "  not a unified diff and not the whole file.\n"
+        "- If function_name is empty, the flagged line is a module-level statement:\n"
+        "  function_source is that statement; return only its rewritten statement(s).\n"
     )
     user = {
         "file": pack.file_path,

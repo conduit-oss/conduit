@@ -1436,3 +1436,67 @@ def test_runner_keeps_the_wheel_return_class(tmp_path: Path):
     )
     assert "openai" in diffed
     assert any("execute" in site.expr for item in impacts for site in item.sites)
+
+
+def test_removed_type_flags_its_import_and_annotations(tmp_path: Path):
+    from conduit.impact.run import _import_chains
+
+    _write(
+        tmp_path,
+        "app.py",
+        """
+        from openai.openai_object import OpenAIObject
+        import openai
+
+        def wrap(resp: OpenAIObject) -> OpenAIObject:
+            result: OpenAIObject = resp
+            return result
+
+        def ask(prompt):
+            return openai.Completion.create(model="x", prompt=prompt)
+
+        def later(resp: "OpenAIObject"):
+            return resp
+        """,
+    )
+    removed = ApiChange(
+        kind="removed",
+        symbol="openai.openai_object.OpenAIObject",
+        old="openai.openai_object.OpenAIObject",
+        new="",
+        detail="openai_object.OpenAIObject removed",
+        confidence="high",
+        source="wheel",
+    )
+    # The same class under a public re-export is one break per line, not two.
+    reexport = ApiChange(
+        kind="removed",
+        symbol="openai.OpenAIObject",
+        old="openai.OpenAIObject",
+        new="",
+        detail="openai.OpenAIObject removed",
+        confidence="high",
+        source="wheel",
+        aliases=("openai.openai_object.OpenAIObject",),
+    )
+    renamed_param = ApiChange(
+        kind="param_removed",
+        symbol="openai.openai_object.OpenAIObject",
+        old="api_key",
+        new="",
+        detail="OpenAIObject api_key removed",
+        confidence="high",
+        source="wheel",
+    )
+    service_map = analyze_repo(tmp_path)
+    impacts = intersect(
+        [removed, reexport, renamed_param],
+        (*service_map.chains, *_import_chains(service_map)),
+        dependency="openai",
+        from_version="0.28.1",
+        to_version="1.0.0",
+    )
+    hits = [(site.line, site.expr) for item in impacts for site in item.sites]
+    assert sorted(line for line, _expr in hits) == [1, 4, 5, 11]
+    assert (1, "import OpenAIObject") in hits
+    assert all(item.kind == "removed" for item in impacts)

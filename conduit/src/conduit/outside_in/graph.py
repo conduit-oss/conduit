@@ -2985,9 +2985,25 @@ class _RefScan(ast.NodeVisitor):
         for default in list(node.args.defaults) + [item for item in node.args.kw_defaults if item is not None]:
             self.visit(default)
         self.enclosing = node.name if previous == "<module>" else f"{previous}.{node.name}"
+        args = node.args
+        for arg in (*args.posonlyargs, *args.args, args.vararg, *args.kwonlyargs, args.kwarg):
+            if arg is not None:
+                self._annotation(arg.annotation)
+        self._annotation(node.returns)
         for stmt in node.body:
             self.visit(stmt)
         self.enclosing = previous
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._annotation(node.annotation)
+        self.visit(node.target)
+        if node.value is not None:
+            self.visit(node.value)
+
+    def _annotation(self, node: ast.AST | None) -> None:
+        """A package type named in an annotation is a reference to it."""
+        for expr in _annotation_exprs(node):
+            self._record(expr, force=True)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         if node.type is not None:
@@ -3107,6 +3123,28 @@ class _RefScan(ast.NodeVisitor):
                     confidence=binding.confidence or "high",
                 )
             )
+
+
+def _annotation_exprs(node: ast.AST | None) -> list[ast.AST]:
+    """Names and dotted names inside an annotation (``Optional[pkg.T] | None``)."""
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        return [node]
+    if isinstance(node, ast.Subscript):
+        return [*_annotation_exprs(node.value), *_annotation_exprs(node.slice)]
+    if isinstance(node, ast.BinOp):
+        return [*_annotation_exprs(node.left), *_annotation_exprs(node.right)]
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return [expr for elt in node.elts for expr in _annotation_exprs(elt)]
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        # A string (forward reference) annotation names the same type.
+        try:
+            parsed = ast.parse(node.value.strip(), mode="eval").body
+        except SyntaxError:
+            return []
+        for child in ast.walk(parsed):
+            ast.copy_location(child, node)
+        return _annotation_exprs(parsed)
+    return []
 
 
 def _atomic_exprs(node: ast.AST) -> list[ast.AST]:

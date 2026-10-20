@@ -24,7 +24,7 @@ def intersect(
     covered: list[tuple[str, str]] = []
     # Two removed symbols can share one detail and one call. Emit that
     # file:line once per change text. A different change on the same line stays.
-    emitted: set[tuple[str, int, str]] = set()
+    emitted: set[tuple] = set()
     ordered = sorted(changes, key=lambda item: (0 if item.confidence != "low" else 1, item.detail))
     for change in ordered:
         if change.confidence == "low" and any(change.old and change.old == old for old, _site in covered):
@@ -38,11 +38,16 @@ def intersect(
             methods or {},
         )
         fresh: list[SiteHit] = []
+        # One removed name can appear under its defining path and a public
+        # re-export (``types.completion.Completion`` and ``types.Completion``).
+        short = (change.kind, (change.symbol or "").rsplit(".", 1)[-1])
         for site in sites:
             key = (site.path, site.line, change.detail)
-            if key in emitted:
+            same = (site.path, site.line, site.expr, *short)
+            if key in emitted or same in emitted:
                 continue
             emitted.add(key)
+            emitted.add(same)
             fresh.append(site)
         sites = fresh
         if not sites:
@@ -266,6 +271,9 @@ def _python_match(
         base = change.confidence if how == "exact" else min_confidence(change.confidence, "medium")
         return min_confidence(base, chain.confidence)
     if chain.kind.endswith("_response"):
+        return None
+    if chain.kind.endswith("_alias") and change.kind not in {"removed", "renamed"}:
+        # An import line only breaks when the imported name is gone.
         return None
     how = _method_match(
         chain.sdk_method, change.symbol, change, peers, return_classes, surviving, methods

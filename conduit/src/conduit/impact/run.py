@@ -139,7 +139,7 @@ def collect_impacts(
                 _with_candidates(
                     intersect(
                         version_changes,
-                        service_map.chains,
+                        (*service_map.chains, *_import_chains(service_map)),
                         dependency=package,
                         from_version=resolved_from,
                         to_version=resolved_to,
@@ -183,6 +183,30 @@ def collect_impacts(
                 )
             )
     return impacts, diffed, notes
+
+
+def _import_chains(service_map: ServiceMap) -> list[Chain]:
+    """``from pkg import Name`` lines as sites, so a removed name flags its import."""
+    return [
+        Chain(
+            service=entry.service,
+            package=entry.package,
+            call_rel=entry.rel,
+            call_lineno=entry.lineno,
+            call_symbol="<module>",
+            call_expr=f"import {(entry.detail or entry.symbol).split(' = ', 1)[0]}",
+            hops=(),
+            sdk_method=entry.symbol,
+            kind=entry.kind,
+            params=(),
+            site_keywords=(),
+            response_fields=(),
+            confidence=entry.confidence,
+            via_wrapper=False,
+        )
+        for entry in service_map.entries
+        if entry.kind.endswith("_alias")
+    ]
 
 
 def _targets(

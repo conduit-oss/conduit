@@ -17,7 +17,7 @@ def build_context_pack(root: Path, site: ImpactSite) -> ContextPack:
     if not file_path.is_file():
         raise ContextError(f"file not found: {site.path}")
     source = file_path.read_text(encoding="utf-8")
-    span = enclosing_function(source, site.line)
+    span = enclosing_function(source, site.line) or module_statement(source, site.line)
     if span is None:
         raise ContextError(f"no enclosing function at {site.path}:{site.line}")
     imports = module_imports(source)
@@ -89,6 +89,20 @@ def enclosing_function(
     end = int(best.end_lineno or best.lineno)
     slice_src = "".join(lines[start - 1 : end])
     return best.name, slice_src, start, end
+
+
+def module_statement(source: str, line: int) -> tuple[str, str, int, int] | None:
+    """A module-level statement (not a class) spanning ``line``; name is empty."""
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    for node in tree.body:
+        start = node.lineno
+        end = getattr(node, "end_lineno", None) or start
+        if start <= line <= end:
+            if isinstance(node, ast.ClassDef):
+                return None
+            return "", "".join(lines[start - 1 : end]), start, end
+    return None
 
 
 def module_imports(source: str) -> str:
