@@ -709,6 +709,14 @@ def _new_release_fixture(tmp_path: Path) -> Path:
             class Client:
                 def new_call(self, value: int, *, items: Iterable[ItemParam], retries: int = 2) -> str:
                     return ""
+
+                def loose(self, **kwargs) -> str:
+                    return ""
+
+            class Sdk:
+                @property
+                def client(self) -> "Client":
+                    return Client()
             """
         ),
         encoding="utf-8",
@@ -763,3 +771,40 @@ def test_recheck_retry_prompt_carries_new_signature(tmp_path: Path, monkeypatch)
     assert "parameter timeout removed" in retry
     assert "items: Iterable[ItemParam]" in retry
     assert "ItemParam(TypedDict): name: str; size: int" in retry
+
+
+def test_unknown_keyword_on_new_release_callable_is_a_break(tmp_path: Path):
+    from conduit.apply.impact_input import sites_from_payload as load
+    from conduit.apply.signatures import unknown_keywords
+    from conduit.apply.verify import _unknown_keyword_breaks
+    from conduit.outside_in.model import Chain, ServiceMap
+
+    fixtures = _new_release_fixture(tmp_path)
+    wheel = fixtures / "new"
+    # Followed through a property's return type to the method.
+    assert unknown_keywords(wheel, "example_sdk.Sdk.client.new_call", ("items", "timeout")) == (
+        "client.new_call",
+        ["timeout"],
+    )
+    assert unknown_keywords(wheel, "example_sdk.Client.loose", ("anything",)) == ("", [])
+    assert unknown_keywords(wheel, "example_sdk.Client.gone", ("x",)) == ("", [])
+
+    def chain(line: int, keywords: tuple[str, ...]) -> Chain:
+        return Chain(
+            service="example-sdk", package="example-sdk", call_rel="mod.py", call_lineno=line,
+            call_symbol="broken", call_expr="client.new_call", hops=(),
+            sdk_method="example_sdk.Sdk.client.new_call", kind="sdk_call", params=(),
+            site_keywords=keywords, response_fields=(), confidence="high", via_wrapper=False,
+        )
+
+    service_map = ServiceMap(
+        root=str(tmp_path), entries=(), limitations=(), evidence={}, unresolved_calls=(),
+        chains=(chain(7, ("items", "timeout")), chain(20, ("bogus",))),
+    )
+    payload = _impact_payload()
+    payload["impacts"][0]["to_version"] = "2.0"
+    site = load(payload)[0]
+    found = _unknown_keyword_breaks(service_map, site, "mod.py", (6, 8), fixtures, False)
+    assert [text for text, _symbol in found] == [
+        "mod.py:7 client.new_call: keyword timeout is not a parameter of client.new_call in example-sdk 2.0"
+    ]

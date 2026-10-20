@@ -73,6 +73,9 @@ def _modules(wheel: str) -> dict[str, ast.Module]:
 
 def _signature_text(modules: dict[str, ast.Module], symbol: str) -> str:
     parts = symbol.split(".")
+    resolved = _resolve_callable(modules, symbol)
+    if resolved is not None:
+        return _render(modules, resolved, parts)
     found: list[tuple[int, str, ast.AST, ast.Module]] = []
     # ``Class.method`` is looked up as a method only; ``module.func`` as a function.
     lengths = (2,) if len(parts) >= 2 and parts[-2][:1].isupper() else (1,)
@@ -91,7 +94,11 @@ def _signature_text(modules: dict[str, ast.Module], symbol: str) -> str:
     if not found:
         return ""
     found.sort(key=lambda item: (-item[0], item[1]))
-    _shared, _module, node, tree = found[0]
+    _shared, _module, node, _tree = found[0]
+    return _render(modules, node, parts)
+
+
+def _render(modules: dict[str, ast.Module], node: ast.AST, parts: list[str]) -> str:
     assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     text = f"{'.'.join(parts[-2:])}({ast.unparse(node.args)})"
     if node.returns is not None:
@@ -179,3 +186,143 @@ def _typed_dict_class(modules: dict[str, ast.Module], name: str) -> ast.ClassDef
                 if any(base.split(".")[-1] == "TypedDict" for base in bases):
                     return node
     return None
+
+
+def unknown_keywords(wheel: Path | None, call_target: str, keywords: tuple[str, ...]) -> tuple[str, list[str]]:
+    """``(callable, kwargs it does not accept)`` for a call into the new release.
+
+    ``call_target`` is the call's resolved name (``pkg.Client.attr.method``).
+    Attributes are followed through property / cached_property return types
+    and class annotations in the new wheel. A callable with ``**kwargs``
+    accepts every keyword. Unresolved targets report nothing.
+    """
+    if wheel is None or not keywords:
+        return "", []
+    modules = _modules(str(wheel))
+    node = _resolve_callable(modules, call_target)
+    if node is None:
+        return "", []
+    args = node.args
+    if args.kwarg is not None:
+        return "", []
+    accepted = {arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+    owner = ".".join(call_target.split(".")[-2:])
+    return owner, [name for name in keywords if name and name not in accepted]
+
+
+def _resolve_callable(modules: dict[str, ast.Module], dotted: str) -> ast.AST | None:
+    parts = [part for part in dotted.split(".") if part]
+    for index in range(len(parts) - 1, 0, -1):
+        if not parts[index][:1].isupper():
+            continue
+        klass = _find_class(modules, parts[index], ".".join(parts[:index]))
+        if klass is None:
+            continue
+        found = _walk_members(modules, klass, parts[index + 1 :])
+        if found is not None:
+            return found
+    return None
+
+
+def _find_class(
+    modules: dict[str, ast.Module], name: str, near: str
+) -> tuple[str, ast.ClassDef] | None:
+    """The class ``name``: imported into module ``near`` if possible, else closest module."""
+    tree = modules.get(near)
+    if tree is not None:
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == name:
+                return near, node
+        # Imports anywhere in the module, including ``if TYPE_CHECKING:`` blocks.
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if (alias.asname or alias.name) == name:
+                        source = _absolute(near, node, is_package=_is_package(modules, near))
+                        if source != near and source in modules:
+                            hit = _find_class(modules, alias.name, source)
+                            if hit is not None:
+                                return hit
+    best: tuple[int, str, ast.ClassDef] | None = None
+    for module_name, module in modules.items():
+        for node in module.body:
+            if isinstance(node, ast.ClassDef) and node.name == name:
+                score = _shared_prefix(module_name.split("."), near.split("."))
+                if best is None or score > best[0]:
+                    best = (score, module_name, node)
+    return (best[1], best[2]) if best else None
+
+
+def _walk_members(
+    modules: dict[str, ast.Module], klass: tuple[str, ast.ClassDef], rest: list[str]
+) -> ast.AST | None:
+    module_name, node = klass
+    for index, attr in enumerate(rest):
+        last = index == len(rest) - 1
+        member = _member(modules, module_name, node, attr)
+        if member is None:
+            return None
+        if last:
+            return member if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) else None
+        annotation = member.returns if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) else member.annotation
+        type_name = _type_name(annotation)
+        hit = _find_class(modules, type_name, module_name) if type_name else None
+        if hit is None:
+            return None
+        module_name, node = hit
+    return None
+
+
+def _member(modules, module_name: str, node: ast.ClassDef, attr: str, depth: int = 0):
+    funcs = [
+        child
+        for child in node.body
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == attr
+    ]
+    if funcs:
+        plain = [child for child in funcs if not _is_overload(child)]
+        return (plain or funcs)[-1]
+    for child in node.body:
+        if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name) and child.target.id == attr:
+            return child
+    if depth >= 3:
+        return None
+    for base in node.bases:
+        name = _type_name(base)
+        hit = _find_class(modules, name, module_name) if name else None
+        if hit is not None and hit[1] is not node:
+            found = _member(modules, hit[0], hit[1], attr, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _type_name(node: ast.AST | None) -> str:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            node = ast.parse(node.value.strip(), mode="eval").body
+        except SyntaxError:
+            return ""
+    if isinstance(node, ast.Subscript):
+        node = node.value
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return ""
+
+
+def _is_package(modules: dict[str, ast.Module], name: str) -> bool:
+    prefix = name + "."
+    return any(other.startswith(prefix) for other in modules)
+
+
+def _absolute(module: str, node: ast.ImportFrom, *, is_package: bool) -> str:
+    if not node.level:
+        return node.module or ""
+    base = module.split(".")
+    if not is_package:
+        base = base[:-1]
+    if node.level > 1:
+        base = base[: len(base) - (node.level - 1)]
+    return ".".join([*base, node.module] if node.module else base)

@@ -490,7 +490,11 @@ def _impact_body(
         if not fixture_root.is_dir():
             console.print(f"[red]Fixtures directory not found:[/red] {fixture_root}")
             raise typer.Exit(2)
-    service_map, _blast = build_service_map(root)
+    from conduit.outside_in.library_types import installed_version, types_from
+
+    typed = {dep: pinned} if pinned and installed_version(dep) not in {"", pinned} else {}
+    with types_from(typed):
+        service_map, _blast = build_service_map(root)
     impacts, diffed, notes = collect_impacts(
         root,
         service_map,

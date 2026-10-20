@@ -78,7 +78,12 @@ def _breaks_listed(
     from conduit.impact.run import collect_impacts
     from conduit.outside_in.bridge import build_service_map
 
-    service_map, _blast = build_service_map(root)
+    from conduit.outside_in.library_types import installed_version, types_from
+
+    dep, pinned = site.dependency or "", site.from_version or ""
+    typed = {dep: pinned} if dep and pinned and installed_version(dep) not in {"", pinned} else {}
+    with types_from(typed):
+        service_map, _blast = build_service_map(root)
     impacts, _diffed, _notes = collect_impacts(
         root,
         service_map,
@@ -106,4 +111,45 @@ def _breaks_listed(
                 text = (f"{hit_path}:{hit.line} {hit.expr}: {item.change}", item.symbol)
                 if text not in found:
                     found.append(text)
+    if span is not None:
+        found.extend(
+            _unknown_keyword_breaks(service_map, site, want_path, span, fixtures, allow_network)
+        )
+    return found
+
+
+def _unknown_keyword_breaks(
+    service_map, site: ImpactSite, path: str, span: tuple[int, int], fixtures, allow_network
+) -> list[tuple[str, str]]:
+    """Keywords a call in the rewritten span passes that the new release's callable rejects.
+
+    Covers callables that are new in that release (no diff entry to compare).
+    """
+    from conduit.apply.signatures import new_release_wheel, unknown_keywords
+
+    calls = [
+        chain
+        for chain in service_map.chains
+        if chain.call_rel.replace("\\", "/") == path
+        and span[0] <= chain.call_lineno <= span[1]
+        and not chain.via_wrapper
+        and chain.kind.endswith("_call")
+        and chain.site_keywords
+    ]
+    if not calls:
+        return []
+    wheel = new_release_wheel(
+        site.dependency, site.to_version, fixtures=fixtures, allow_network=allow_network
+    )
+    found: list[tuple[str, str]] = []
+    for chain in calls:
+        owner, rejected = unknown_keywords(wheel, chain.sdk_method, chain.site_keywords)
+        for name in rejected:
+            text = (
+                f"{path}:{chain.call_lineno} {chain.call_expr}: keyword {name} is not a "
+                f"parameter of {owner} in {site.dependency} {site.to_version}",
+                chain.sdk_method,
+            )
+            if text not in found:
+                found.append(text)
     return found
