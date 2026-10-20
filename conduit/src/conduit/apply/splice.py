@@ -96,6 +96,14 @@ def validate_function_source(function_source: str, *, expected_name: str) -> str
 
 def splice_edit(pack: ContextPack, edit: ModelEdit) -> tuple[str, str]:
     """Return ``(patched_source, unified_diff)`` built by Conduit (not the model)."""
+    patched, diff, _span = splice_edit_with_span(pack, edit)
+    return patched, diff
+
+
+def splice_edit_with_span(
+    pack: ContextPack, edit: ModelEdit
+) -> tuple[str, str, tuple[int, int]]:
+    """Like ``splice_edit`` plus the rewritten lines' 1-based span in the patch."""
     new_fn = validate_function_source(edit.function_source, expected_name=pack.function_name)
     lines = pack.full_source.splitlines(keepends=True)
     start = pack.function_start_line - 1
@@ -105,13 +113,16 @@ def splice_edit(pack: ContextPack, edit: ModelEdit) -> tuple[str, str]:
     fn_lines = _reindent_function_lines(new_fn, indent) if new_fn else []
     patched_lines = lines[:start] + fn_lines + lines[end:]
     patched = "".join(patched_lines)
+    before = patched.count("\n")
     patched = add_imports(patched, edit.new_imports)
+    shift = patched.count("\n") - before
+    span = (start + 1 + shift, start + shift + max(len(fn_lines), 1))
     try:
         ast.parse(patched)
     except SyntaxError as exc:
         raise PatchError(f"patched file does not parse: {exc}") from exc
     diff = unified_diff_for(pack.file_path, pack.full_source, patched)
-    return patched, diff
+    return patched, diff, span
 
 
 def add_imports(source: str, new_imports: tuple[str, ...]) -> str:

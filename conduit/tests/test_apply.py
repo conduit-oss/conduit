@@ -389,12 +389,12 @@ def test_recheck_impact_uses_collect_impacts_on_scratch(tmp_path: Path, monkeypa
     sites = sites_from_payload(_impact_payload())
     calls: list[Path] = []
 
-    def fake_listed(scratch: Path, site, *, fixtures, allow_network) -> bool:
+    def fake_listed(scratch: Path, site, *, span, fixtures, allow_network) -> list[str]:
         calls.append(scratch)
         text = (scratch / site.path).read_text(encoding="utf-8")
-        return "old_call" in text
+        return ["mod.py:7 client.old_call: renamed"] if "old_call" in text else []
 
-    monkeypatch.setattr(verify_mod, "_site_still_listed", fake_listed)
+    monkeypatch.setattr(verify_mod, "_breaks_listed", fake_listed)
     client = FakeModelClient(responses=[_good_edit(), "why"])
     report = apply_sites(
         sites,
@@ -416,7 +416,7 @@ def test_recheck_impact_rejects_when_site_still_listed(tmp_path: Path, monkeypat
 
     root = _repo_with_break(tmp_path)
     sites = sites_from_payload(_impact_payload())
-    monkeypatch.setattr(verify_mod, "_site_still_listed", lambda *a, **k: True)
+    monkeypatch.setattr(verify_mod, "_breaks_listed", lambda *a, **k: ["mod.py:7 client.old_call: x"])
     client = FakeModelClient(responses=[_good_edit(), _good_edit(), _good_edit()])
     report = apply_sites(
         sites,
@@ -428,7 +428,7 @@ def test_recheck_impact_rejects_when_site_still_listed(tmp_path: Path, monkeypat
         ),
     )
     assert report.results[0].status == SiteStatus.NEEDS_HUMAN
-    assert "still flagged" in report.results[0].error
+    assert "still breaks" in report.results[0].error
 
 
 def test_apply_break_fixture_paths_and_evidence():
@@ -612,3 +612,78 @@ def test_empty_module_statement_rewrite_deletes_it(tmp_path: Path):
     edit = json.dumps({"function_source": "", "new_imports": []})
     patched, _diff = splice_edit(pack, parse_model_edit(edit))
     assert patched == "import os\n\nX = os.sep\n"
+
+
+def _hits_in_span(scratch: Path, site, *, span, fixtures, allow_network) -> list[str]:
+    """Stand-in for impact: a removed ``timeout`` keyword inside the rewritten span."""
+    lines = (scratch / site.path).read_text(encoding="utf-8").splitlines()
+    return [
+        f"{site.path}:{number} client.new_call: parameter timeout removed from Client.new_call"
+        for number, line in enumerate(lines, start=1)
+        if span[0] <= number <= span[1] and "timeout=" in line
+    ]
+
+
+def test_recheck_rejects_rewrite_that_uses_a_removed_param(tmp_path: Path, monkeypatch):
+    from conduit.apply import verify as verify_mod
+
+    root = _repo_with_break(tmp_path)
+    sites = sites_from_payload(_impact_payload())
+    monkeypatch.setattr(verify_mod, "_breaks_listed", _hits_in_span)
+    still_broken = json.dumps(
+        {
+            "function_source": "def broken(client):\n    return client.new_call(1, timeout=5)\n",
+            "new_imports": [],
+        }
+    )
+    client = FakeModelClient(responses=[still_broken, still_broken])
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=2),
+            write=True,
+            test_cmd="python3 -c \"print('ok')\"",
+            client=client,
+            recheck_impact=True,
+        ),
+    )
+    result = report.results[0]
+    assert result.status == SiteStatus.NEEDS_HUMAN
+    assert "parameter timeout removed" in result.error
+    assert result.attempts == 2
+    # The finding went back to the model as the retry reason.
+    retry_prompt = client.calls[1]["messages"][-1].content
+    assert "parameter timeout removed" in retry_prompt
+    assert "old_call" in (root / "mod.py").read_text(encoding="utf-8")
+
+
+def test_recheck_accepts_clean_rewrite_after_feedback(tmp_path: Path, monkeypatch):
+    from conduit.apply import verify as verify_mod
+
+    root = _repo_with_break(tmp_path)
+    sites = sites_from_payload(_impact_payload())
+    monkeypatch.setattr(verify_mod, "_breaks_listed", _hits_in_span)
+    still_broken = json.dumps(
+        {
+            "function_source": "def broken(client):\n    return client.new_call(1, timeout=5)\n",
+            "new_imports": [],
+        }
+    )
+    client = FakeModelClient(responses=[still_broken, _good_edit(), "why"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=3),
+            write=True,
+            test_cmd="python3 -c \"print('ok')\"",
+            client=client,
+            recheck_impact=True,
+        ),
+    )
+    result = report.results[0]
+    assert result.status == SiteStatus.FIXED_VERIFIED, result.error
+    assert result.attempts == 2
+    text = (root / "mod.py").read_text(encoding="utf-8")
+    assert "client.new_call(1)" in text and "timeout" not in text

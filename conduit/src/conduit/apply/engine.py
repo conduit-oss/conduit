@@ -16,8 +16,8 @@ from conduit.apply.context import ContextError, build_context_pack
 from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.prompts import propose_messages, summarize_messages
-from conduit.apply.splice import PatchError, parse_model_edit, splice_edit
-from conduit.apply.verify import site_cleared_by_impact
+from conduit.apply.splice import PatchError, parse_model_edit, splice_edit_with_span
+from conduit.apply.verify import remaining_breaks
 
 # Optional hook: given root + site + patched file text, return True if the site
 # is no longer flagged. Unit tests inject this; the CLI uses impact re-check.
@@ -134,9 +134,9 @@ def _apply_one(
             site_tokens += used
             report.tokens_used += used
             edit = parse_model_edit(edit_text)
-            patched, diff = splice_edit(pack, edit)
+            patched, diff, span = splice_edit_with_span(pack, edit)
             last_diff = diff
-            _verify_site_cleared(config, site, patched)
+            _verify_site_cleared(config, site, patched, span)
             tests_ok, test_err = _run_tests(config, site, patched)
             if not tests_ok:
                 feedback = trim_test_feedback(test_err or "tests failed")
@@ -227,21 +227,28 @@ def _summarize(
     return why, result.total_tokens
 
 
-def _verify_site_cleared(config: ApplyConfig, site: ImpactSite, patched: str) -> None:
+def _verify_site_cleared(
+    config: ApplyConfig, site: ImpactSite, patched: str, span: tuple[int, int]
+) -> None:
     if config.site_cleared is not None:
-        cleared = config.site_cleared(config.root, site, patched)
-    elif config.recheck_impact:
-        cleared = site_cleared_by_impact(
-            config.root,
-            site,
-            patched,
-            fixtures=config.fixtures,
-            allow_network=config.allow_network,
-        )
-    else:
+        if not config.site_cleared(config.root, site, patched):
+            raise PatchError("impact site still flagged after patch")
         return
-    if not cleared:
-        raise PatchError("impact site still flagged after patch")
+    if not config.recheck_impact:
+        return
+    breaks = remaining_breaks(
+        config.root,
+        site,
+        patched,
+        span=span,
+        fixtures=config.fixtures,
+        allow_network=config.allow_network,
+    )
+    if breaks:
+        # Fed back to the model as the retry reason; the last one is the Why.
+        raise PatchError(
+            "rewrite still breaks against the new release: " + "; ".join(breaks)
+        )
 
 
 def _run_tests(

@@ -17,12 +17,29 @@ def site_cleared_by_impact(
     fixtures: Path | None = None,
     allow_network: bool = False,
 ) -> bool:
-    """Return True when the call site is gone after re-running impact.
+    """Return True when the call site is gone after re-running impact."""
+    return not remaining_breaks(
+        root, site, patched, fixtures=fixtures, allow_network=allow_network
+    )
+
+
+def remaining_breaks(
+    root: Path,
+    site: ImpactSite,
+    patched: str,
+    *,
+    span: tuple[int, int] | None = None,
+    fixtures: Path | None = None,
+    allow_network: bool = False,
+) -> list[str]:
+    """Breaks impact still reports for the original site or the rewritten span.
 
     Copies ``root`` to a scratch tree, writes ``patched`` over ``site.path``,
     then calls ``collect_impacts`` for ``site.dependency`` with the same
-    from/to versions. The site is cleared when no remaining hit shares this
-    path and expression (line may shift after the edit).
+    from/to versions. A hit counts when it shares the original path and
+    expression (line may shift after the edit), or when it falls inside
+    ``span`` (1-based, inclusive): a break the rewrite itself introduced,
+    such as a parameter the new release removed.
     """
     with tempfile.TemporaryDirectory(prefix="conduit-apply-recheck-") as tmp:
         scratch = Path(tmp) / "tree"
@@ -41,21 +58,23 @@ def site_cleared_by_impact(
         target = scratch / site.path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(patched, encoding="utf-8")
-        return not _site_still_listed(
+        return _breaks_listed(
             scratch,
             site,
+            span=span,
             fixtures=fixtures,
             allow_network=allow_network,
         )
 
 
-def _site_still_listed(
+def _breaks_listed(
     root: Path,
     site: ImpactSite,
     *,
+    span: tuple[int, int] | None,
     fixtures: Path | None,
     allow_network: bool,
-) -> bool:
+) -> list[str]:
     from conduit.impact.run import collect_impacts
     from conduit.outside_in.bridge import build_service_map
 
@@ -71,6 +90,7 @@ def _site_still_listed(
     )
     want_path = site.path.replace("\\", "/")
     want_expr = (site.expr or "").strip()
+    found: list[str] = []
     for item in impacts:
         if item.kind == "deprecated":
             continue
@@ -80,8 +100,10 @@ def _site_still_listed(
             hit_path = hit.path.replace("\\", "/")
             if hit_path != want_path:
                 continue
-            if want_expr and hit.expr == want_expr:
-                return True
-            if not want_expr and hit.line == site.line:
-                return True
-    return False
+            same = (hit.expr == want_expr) if want_expr else hit.line == site.line
+            inside = span is not None and span[0] <= hit.line <= span[1]
+            if same or inside:
+                text = f"{hit_path}:{hit.line} {hit.expr}: {item.change}"
+                if text not in found:
+                    found.append(text)
+    return found
