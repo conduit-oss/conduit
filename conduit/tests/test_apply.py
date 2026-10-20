@@ -1474,3 +1474,17 @@ def test_splice_rejects_helpers_that_do_not_build_the_flagged_call(tmp_path: Pat
     assert "return []" in patched
     assert "def other" in patched
     assert "prefix = _USER" not in patched
+
+
+def test_transcript_rules_only_when_a_helper_is_editable():
+    from conduit.apply.models import ContextPack, ImpactSite
+    from conduit.apply.prompts import propose_messages
+
+    site = ImpactSite(path="a.py", line=1, expr="pkg.PROMPT", dependency="pkg", from_version="1", to_version="2", change="removed", confidence="high", source="wheel")
+    pack = ContextPack(
+        site=site, file_path="a.py", imports="import pkg", function_name="", function_source="TURN = pkg.PROMPT\n",
+        function_start_line=1, function_end_line=1, full_source="import pkg\nTURN = pkg.PROMPT\n", release_diff={},
+        new_signature="", new_docstring="",
+    )
+    system = propose_messages(pack)[0][1]
+    assert "joins several turns" not in system and "joined multi-turn" not in system

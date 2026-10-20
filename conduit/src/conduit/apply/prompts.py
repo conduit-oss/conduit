@@ -32,14 +32,19 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "  not a unified diff and not the whole file. Each helper source is the same.\n"
         "- If function_name is empty, the flagged line is a module-level statement:\n"
         "  function_source is that statement; return only its rewritten statement(s).\n"
+        "- If feedback says a value has the wrong type or lacks an attribute, build the\n"
+        "  shape the new signature describes. Helpers keep their current return type unless\n"
+        "  listed in editable_helpers; rebuild the value inside this function from its inputs.\n"
+    )
+    # Helper / transcript rules only when there is a helper to edit: on unrelated sites
+    # (e.g. module-level constants) they pushed models to blank role-prefix strings.
+    editable_rules = (
         "- If an editable helper joins several turns into one string and the new parameter\n"
         "  is a sequence of records, rewrite that helper so each turn becomes its own record.\n"
         "  Do not put the joined string in one record. A turn whose role is not one of the\n"
         "  record's role values belongs in another parameter that accepts that text.\n"
-        "- If feedback says a value has the wrong type, lacks an attribute, or wraps a joined\n"
-        "  multi-turn string into one record, build the shape the new signature describes.\n"
-        "  Editable helpers may change their return shape. Every other helper keeps its\n"
-        "  current return type; rebuild the value inside this function from its own inputs.\n"
+        "- If feedback says a value wraps a joined multi-turn string into one record, build\n"
+        "  the shape the new signature describes. Editable helpers may change their return shape.\n"
     )
     user = {
         "file": pack.file_path,
@@ -58,6 +63,7 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
     }
     editable = editable_helpers(pack)
     if editable:
+        system += editable_rules
         user["editable_helpers"] = [{"name": item.name, "source": item.source} for item in editable]
     helpers = same_file_helpers(pack, exclude={item.name for item in editable})
     if helpers:
