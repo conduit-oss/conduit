@@ -1536,3 +1536,20 @@ def test_two_removed_keywords_on_one_call_are_two_breaks(tmp_path: Path):
         "parameter model removed from Completion.create",
         "parameter prompt removed from Completion.create",
     ]
+
+
+def test_wheel_without_top_level_txt_imports_as_its_package_and_templated_paths_are_a_product():
+    import ast as _ast
+
+    from conduit.outside_in.evidence import _declared_by_token, _path_templates, _roots_from_paths
+
+    assert _roots_from_paths(
+        ["auth0/__init__.py", "auth0/management/users.py", "auth0_python-5.0.0.dist-info/RECORD", "six.py"]
+    ) == ("auth0", "six")
+    tree = _ast.parse(
+        'def u(self):\n    return f"{self.protocol}://{self.domain}/api/v2/users"\n'
+        'def g(scheme, host, path):\n    return f"{scheme}://{host}{path}"\n'
+    )
+    assert _path_templates(tree) == {"/api/v2/users"}
+    assert _declared_by_token("auth0", {"auth0-python": "auth0-python", "fastapi": "fastapi"}) == "auth0-python"
+    assert _declared_by_token("google", {"google-auth": "a", "google-cloud-storage": "b"}) == ""

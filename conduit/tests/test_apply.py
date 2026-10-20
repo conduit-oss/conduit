@@ -914,8 +914,16 @@ def test_argument_type_check_flags_obvious_mismatches(tmp_path: Path):
     assert second == []
     third = argument_breaks(modules, tree, "w.py", _chain("w.py", 6, "self.client.send", method), "example-sdk", "2.0")
     assert third == []
-    # A callable the new release does not define: unknown, nothing flagged.
-    assert argument_breaks(modules, tree, "w.py", _chain("w.py", 4, "self.client.send", "example_sdk.Client.gone"), "x", "2") == []
+    # A method the new release's class does not define is itself the finding.
+    gone = argument_breaks(modules, tree, "w.py", _chain("w.py", 4, "self.client.send", "example_sdk.Client.gone"), "x", "2")
+    assert gone == ["w.py:4 self.client.send: Client in x 2 has no gone (its methods: open, send)"]
+    # An owner the new release does not define: unknown, nothing flagged.
+    assert argument_breaks(modules, tree, "w.py", _chain("w.py", 4, "self.client.send", "example_sdk.Nope.send"), "x", "2") == []
+    # A keyword-only parameter passed positionally is a TypeError at call time.
+    positional = ast.parse("def f(client, d):\n    client.send(d)\n    client.send(*d)\n")
+    found = argument_breaks(modules, positional, "p.py", _chain("p.py", 2, "client.send", method), "x", "2")
+    assert len(found) == 1 and "passes 1 positional arguments" in found[0] and "takes 0 (none)" in found[0], found
+    assert argument_breaks(modules, positional, "p.py", _chain("p.py", 3, "client.send", method), "x", "2") == []
 
 
 def test_attribute_check_flags_reads_the_new_return_type_lacks(tmp_path: Path):
@@ -1073,3 +1081,32 @@ def test_prompt_shows_same_file_helpers_read_only():
     )
     helpers = same_file_helpers(pack)
     assert len(helpers) == 1 and helpers[0].lstrip().startswith("@staticmethod") and "_render" in helpers[0]
+
+
+def test_missing_member_through_unannotated_property(tmp_path: Path):
+    from conduit.apply.signatures import _modules, missing_member, resolve_callable
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .client import Client\n", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        textwrap.dedent(
+            """\
+            class UsersClient:
+                async def get(self, id: str) -> dict:
+                    return {}
+
+            class Client:
+                @property
+                def users(self):
+                    if self._users is None:
+                        self._users = UsersClient()
+                    return self._users
+            """
+        ),
+        encoding="utf-8",
+    )
+    modules = _modules(str(tmp_path / "wheel"))
+    assert resolve_callable(modules, "example_sdk.Client.users.get") is not None
+    assert missing_member(modules, "example_sdk.Client.users.get") is None
+    assert missing_member(modules, "example_sdk.Client.users.get_async") == ("UsersClient", ["get"])

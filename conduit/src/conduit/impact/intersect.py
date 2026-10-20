@@ -323,6 +323,15 @@ def _method_match(
         for name in (symbol, *change.aliases):
             if name and (candidate == name or candidate.endswith("." + name)):
                 return "exact"
+    if (
+        change.kind == "removed"
+        and symbol.rsplit(".", 1)[-1][:1].isupper()
+        and any(candidate.startswith(symbol + ".") for candidate in candidates)
+        and not any(peer.symbol in candidates for peer in peers)
+    ):
+        # A call on a removed class whose method the old release never defined
+        # statically (generated at runtime, e.g. ``get_async``) breaks with it.
+        return "pair"
     if _still_exported(sdk_method, surviving or set()):
         return None
     pair = _last_two(symbol)

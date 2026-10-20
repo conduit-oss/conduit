@@ -275,12 +275,63 @@ def _walk_members(
                 return _owner_module(modules, module_name, node, attr), member
             return None
         annotation = member.returns if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) else member.annotation
-        type_name = _type_name(annotation)
+        type_name = _type_name(annotation) or _constructed_return(member)
         hit = _find_class(modules, type_name, module_name) if type_name else None
         if hit is None:
             return None
         module_name, node = hit
     return None
+
+
+def _constructed_return(node: ast.AST) -> str:
+    """Class an unannotated property returns: ``self.x = Cls(...)`` ... ``return self.x``."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return ""
+    returned = {ast.unparse(item.value) for item in ast.walk(node) if isinstance(item, ast.Return) and item.value is not None}
+    for item in ast.walk(node):
+        if isinstance(item, ast.Assign) and isinstance(item.value, ast.Call) and len(item.targets) == 1:
+            if ast.unparse(item.targets[0]) in returned:
+                return _type_name(item.value.func)
+    return ""
+
+
+def missing_member(modules: dict[str, ast.Module], dotted: str) -> tuple[str, list[str]] | None:
+    """``(owner class, its public methods)`` when the call's owner resolves in the wheel
+    but the called name is not one of its members (and it has no ``__getattr__``)."""
+    parts = [part for part in dotted.split(".") if part]
+    for index in range(len(parts) - 2, 0, -1):
+        if not parts[index][:1].isupper():
+            continue
+        klass = _find_class(modules, parts[index], ".".join(parts[:index]))
+        if klass is None:
+            continue
+        rest = parts[index + 1 :]
+        owner = _walk_to_class(modules, klass, rest[:-1])
+        if owner is None or _member(modules, owner[0], owner[1], "__getattr__") is not None:
+            return None
+        if _member(modules, owner[0], owner[1], rest[-1]) is not None:
+            return None
+        names = sorted(
+            child.name for child in owner[1].body
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and not child.name.startswith("_")
+        )
+        return owner[1].name, names
+    return None
+
+
+def _walk_to_class(modules, klass: tuple[str, ast.ClassDef], names: list[str]):
+    module_name, node = klass
+    for attr in names:
+        member = _member(modules, module_name, node, attr)
+        if member is None:
+            return None
+        annotation = member.returns if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) else member.annotation
+        type_name = _type_name(annotation) or _constructed_return(member)
+        hit = _find_class(modules, type_name, module_name) if type_name else None
+        if hit is None:
+            return None
+        module_name, node = hit
+    return module_name, node
 
 
 def _owner_module(modules, module_name: str, node: ast.ClassDef, attr: str, depth: int = 0) -> str:

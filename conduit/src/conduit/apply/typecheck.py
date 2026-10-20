@@ -15,6 +15,7 @@ from conduit.apply.signatures import (
     _is_overload,
     _type_name,
     _typed_dict_class,
+    missing_member,
     resolve_callable,
 )
 
@@ -44,7 +45,15 @@ def argument_breaks(
     """Keyword arguments whose inferred builtin kind the new annotation cannot take."""
     found = resolve_callable(modules, chain.sdk_method)
     if found is None:
-        return []
+        missing = missing_member(modules, chain.sdk_method)
+        if missing is None:
+            return []
+        owner, names = missing
+        attr = chain.sdk_method.rsplit(".", 1)[-1]
+        return [
+            f"{path}:{chain.call_lineno} {chain.call_expr}: {owner} in {package} {version} has no "
+            f"{attr} (its methods: {', '.join(names[:20])})"
+        ]
     module_name, node = found
     call = _call_at(tree, chain.call_lineno, chain.call_expr)
     if call is None:
@@ -52,6 +61,17 @@ def argument_breaks(
     func = _enclosing_function(tree, call.lineno)
     params = {arg.arg: arg for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)}
     out: list[str] = []
+    positional = [arg.arg for arg in (*node.args.posonlyargs, *node.args.args)]
+    if positional and positional[0] in {"self", "cls"}:
+        positional = positional[1:]
+    if node.args.vararg is None and not any(isinstance(arg, ast.Starred) for arg in call.args):
+        if len(call.args) > len(positional):
+            keyword_only = [arg.arg for arg in node.args.kwonlyargs][:12]
+            out.append(
+                f"{path}:{call.lineno} {chain.call_expr}: passes {len(call.args)} positional arguments but "
+                f"{_owner(chain.sdk_method)} in {package} {version} takes {len(positional)} "
+                f"({', '.join(positional) or 'none'}); pass the rest by keyword ({', '.join(keyword_only)})"
+            )
     for keyword in call.keywords:
         param = params.get(keyword.arg or "")
         if param is None or param.annotation is None:
