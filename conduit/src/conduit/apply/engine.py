@@ -6,13 +6,13 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from conduit.apply.client import ChatMessage, ModelClient
 from conduit.apply.config import TokenFactorySettings
-from conduit.apply.context import ContextError, build_context_pack
+from conduit.apply.context import ContextError, build_context_pack, enclosing_function
 from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.prompts import propose_messages, summarize_messages
@@ -72,12 +72,61 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
         owns_client = True
     try:
         selected = sites if config.max_sites is None else sites[: config.max_sites]
+        covered, texts = _one_per_function(config.root, selected)
         for site in selected:
-            report.results.append(_apply_one(site, config, client, report))
+            if id(site) in covered:
+                report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
+                continue
+            moved = _relocate(config.root, site, texts.get(id(site), "")) if config.write else site
+            if moved is None:
+                why = "line rewritten by an earlier fix in this file"
+                report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=why))
+                continue
+            report.results.append(_apply_one(moved, config, client, report))
     finally:
         if owns_client and client is not None and hasattr(client, "close"):
             client.close()  # type: ignore[union-attr]
     return report
+
+
+def _one_per_function(root: Path, sites: list[ImpactSite]) -> tuple[dict[int, str], dict[int, str]]:
+    """The rewrite replaces a whole function and the recheck covers its span,
+    so one site per enclosing function is enough; the rest point at it."""
+    first: dict[tuple[str, int], ImpactSite] = {}
+    covered: dict[int, str] = {}
+    texts: dict[int, str] = {}
+    for site in sites:
+        if site.via_wrapper:
+            continue
+        try:
+            lines = (root / site.path).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        try:
+            span = enclosing_function("\n".join(lines), site.line)
+        except ContextError:
+            span = None
+        key = (site.path, span[2] if span else -site.line)
+        lead = first.setdefault(key, site)
+        if lead is not site:
+            covered[id(site)] = f"same function as {lead.path}:{lead.line}; covered by that rewrite and its recheck"
+        elif 0 < site.line <= len(lines):
+            texts[id(site)] = lines[site.line - 1].strip()
+    return covered, texts
+
+
+def _relocate(root: Path, site: ImpactSite, text: str) -> ImpactSite | None:
+    """Earlier written fixes shift lines: find the site's original line text again."""
+    try:
+        lines = (root / site.path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return site
+    if not text or (0 < site.line <= len(lines) and lines[site.line - 1].strip() == text):
+        return site
+    hits = [number for number, line in enumerate(lines, 1) if line.strip() == text]
+    if not hits:
+        return None
+    return replace(site, line=min(hits, key=lambda number: abs(number - site.line)))
 
 
 def _apply_one(

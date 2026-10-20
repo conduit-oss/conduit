@@ -1110,3 +1110,29 @@ def test_missing_member_through_unannotated_property(tmp_path: Path):
     assert resolve_callable(modules, "example_sdk.Client.users.get") is not None
     assert missing_member(modules, "example_sdk.Client.users.get") is None
     assert missing_member(modules, "example_sdk.Client.users.get_async") == ("UsersClient", ["get"])
+
+
+def test_one_rewrite_per_function_and_later_sites_follow_shifted_lines(tmp_path: Path):
+    root = _repo_with_break(tmp_path)
+    payload = _impact_payload(line=7)
+    extra = [dict(payload["impacts"][0]["sites"][0], line=line) for line in (6, 10)]
+    payload["impacts"][0]["sites"].extend(extra)
+    sites = sites_from_payload(payload)
+    longer = json.dumps(
+        {"function_source": "def broken(client):\n    value = client.new_call(1)\n    return value\n", "new_imports": []}
+    )
+    seen: list[int] = []
+
+    def cleared(_root: Path, site, patched: str) -> bool:
+        seen.append(site.line)
+        return True
+
+    also = json.dumps({"function_source": "def also_ok():\n    return 3\n", "new_imports": []})
+    client = FakeModelClient(responses=[longer, "why", also, "why"])
+    report = apply_sites(
+        sites, ApplyConfig(root=root, settings=_settings(), write=True, client=client, site_cleared=cleared)
+    )
+    statuses = [result.status for result in report.results]
+    assert statuses[1] == SiteStatus.SKIPPED and "same function as mod.py:7" in report.results[1].why
+    assert seen == [7, 11], report.results[2].error  # also_ok's "return 2" moved down one line
+    assert "return 3" in (root / "mod.py").read_text(encoding="utf-8")
