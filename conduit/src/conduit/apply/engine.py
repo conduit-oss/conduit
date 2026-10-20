@@ -73,7 +73,9 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
     try:
         selected = sites if config.max_sites is None else sites[: config.max_sites]
         covered, texts = _one_per_function(config.root, selected)
-        for site in selected:
+        # Lines that import or construct a removed class go first, so later
+        # rechecks resolve calls through the new client instead of the old one.
+        for site in sorted(selected, key=lambda item: not _names_removed_class(item)):
             if id(site) in covered:
                 report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
                 continue
@@ -87,6 +89,11 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
         if owns_client and client is not None and hasattr(client, "close"):
             client.close()  # type: ignore[union-attr]
     return report
+
+
+def _names_removed_class(site: ImpactSite) -> bool:
+    tail = (site.expr.split() or [""])[-1].rsplit(".", 1)[-1]
+    return site.kind == "removed" and tail[:1].isupper() and tail == site.symbol.rsplit(".", 1)[-1]
 
 
 def _one_per_function(root: Path, sites: list[ImpactSite]) -> tuple[dict[int, str], dict[int, str]]:
