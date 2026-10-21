@@ -395,6 +395,58 @@ def _owner(dotted: str) -> str:
     return ".".join(dotted.split(".")[-2:])
 
 
+def original_arguments(source: str, site, old_modules: dict[str, ast.Module]) -> set[str]:
+    """Parameter names the site's original call passed: its keywords, plus
+    positionals named through the old release's signature when it resolves."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return set()
+    call = _call_at(tree, site.line, (site.expr or "").strip())
+    if call is None or any(kw.arg is None for kw in call.keywords):
+        return set()
+    names = {kw.arg for kw in call.keywords if kw.arg}
+    found = resolve_callable(old_modules, site.symbol) if call.args and site.symbol and old_modules else None
+    if found is not None and not any(isinstance(arg, ast.Starred) for arg in call.args):
+        order = [arg.arg for arg in (*found[1].args.posonlyargs, *found[1].args.args)]
+        order = order[1:] if order and order[0] in {"self", "cls"} else order
+        names |= set(order[: len(call.args)])
+    return names
+
+
+def dropped_arguments(
+    modules: dict[str, ast.Module],
+    tree: ast.Module,
+    path: str,
+    chain,
+    passed_before: set[str],
+    package: str,
+    version: str,
+) -> list[str]:
+    """Arguments the original call passed that the rewrite's target still accepts but no longer gets.
+
+    Only for a call that keeps at least one of the original arguments, so an
+    unrelated new call in the rewritten function is not compared."""
+    if not passed_before:
+        return []
+    found = resolve_callable(modules, chain.sdk_method)
+    call = _call_at(tree, chain.call_lineno, chain.call_expr)
+    if found is None or call is None or any(kw.arg is None for kw in call.keywords):
+        return []
+    node = found[1]
+    order = [arg.arg for arg in (*node.args.posonlyargs, *node.args.args)]
+    order = order[1:] if order and order[0] in {"self", "cls"} else order
+    accepted = set(order) | {arg.arg for arg in node.args.kwonlyargs}
+    passed = {kw.arg for kw in call.keywords if kw.arg} | set(order[: len(call.args)])
+    if not passed & passed_before:
+        return []
+    return [
+        f"{path}:{call.lineno} {chain.call_expr}: rewrite drops {name} which "
+        f"{_owner(chain.sdk_method)} in {package} {version} still accepts; keep passing it"
+        for name in sorted((passed_before & accepted) - passed)
+    ]
+
+
 # --- 2. attributes read on a return value --------------------------------
 
 
@@ -460,6 +512,62 @@ def attribute_breaks(
                 text += f"; a {node.func.id} check on it is dead code, drop that branch"
             if text not in out:
                 out.append(text)
+        for text in _callee_reads(modules, root, trees, chains, path, func, typed, package, version):
+            if text not in out:
+                out.append(text)
+    return out
+
+
+def _callee_reads(modules, root: Path, trees, chains, path: str, func, typed, package: str, version: str) -> list[str]:
+    """Attributes a repo function reads on a release value this function passes it.
+
+    ``helper(result)`` where ``result`` comes from the release: the helper's
+    parameter has that type, so ``param.x`` / ``getattr(param, "x", default)``
+    there must exist on it too (the default does not make it work)."""
+    out: list[str] = []
+    for call in ast.walk(func):
+        if not isinstance(call, ast.Call):
+            continue
+        callee = call.func.attr if isinstance(call.func, ast.Attribute) else getattr(call.func, "id", "")
+        if not callee or callee in {"getattr", "hasattr", "isinstance"}:
+            continue
+        given: list[tuple[int | str, list[tuple[str, ast.ClassDef]]]] = []
+        for index, value in [*enumerate(call.args), *((kw.arg, kw.value) for kw in call.keywords if kw.arg)]:
+            classes = typed.get(value.id, []) if isinstance(value, ast.Name) else _call_classes(modules, chains, path, value)
+            if classes:
+                given.append((index, classes))
+        if not given:
+            continue
+        defs = [
+            (rel, node)
+            for rel, tree in _repo_trees(root, trees)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == callee
+        ]
+        if len(defs) != 1:
+            continue
+        rel, target = defs[0]
+        params = _positional(target)
+        for index, classes in given:
+            param = params[index] if isinstance(index, int) and index < len(params) else next(
+                (arg for arg in (*params, *target.args.kwonlyargs) if arg.arg == index), None
+            )
+            if param is None or _annotated_elsewhere(param.annotation, ""):
+                continue
+            names = ", ".join(sorted({klass.name for _module, klass in classes}))
+            for node in ast.walk(target):
+                name, attr = _attribute_read(node)
+                if name != param.arg or attr.startswith("__") or _has_attribute(modules, classes, attr) is not False:
+                    continue
+                text = (
+                    f"{rel}:{node.lineno} {ast.unparse(node)[:80]}: {target.name}() gets {param.arg} = {names} "
+                    f"from {path}:{call.lineno} in {package} {version}, which has no attribute {attr}"
+                )
+                fields = _fields(classes)
+                if fields:
+                    text += f" (fields: {', '.join(fields)}); read what you need here instead of passing it on"
+                if text not in out:
+                    out.append(text)
     return out
 
 
@@ -643,9 +751,10 @@ def _repo_trees(root: Path, cached: dict[str, ast.Module]):
             yield rel, cached[rel]
             continue
         try:
-            yield rel, ast.parse(file.read_text(encoding="utf-8"))
+            cached[rel] = ast.parse(file.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError, OSError):
             continue
+        yield rel, cached[rel]
 
 
 def _attribute_read(node: ast.AST) -> tuple[str, str]:

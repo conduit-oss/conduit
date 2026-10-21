@@ -56,6 +56,10 @@ def remaining_breaks(
             ),
         )
         target = scratch / site.path
+        try:
+            original = target.read_text(encoding="utf-8")
+        except OSError:
+            original = ""
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(patched, encoding="utf-8")
         return _breaks_listed(
@@ -64,6 +68,7 @@ def remaining_breaks(
             span=span,
             fixtures=fixtures,
             allow_network=allow_network,
+            original=original,
         )
 
 
@@ -74,6 +79,7 @@ def _breaks_listed(
     span: tuple[int, int] | None,
     fixtures: Path | None,
     allow_network: bool,
+    original: str = "",
 ) -> list[tuple[str, str]]:
     from conduit.impact.run import collect_impacts
     from conduit.outside_in.bridge import build_service_map
@@ -115,7 +121,7 @@ def _breaks_listed(
         _merge_keyword_findings(
             found, _unknown_keyword_breaks(service_map, site, want_path, span, fixtures, allow_network)
         )
-        for item in _type_breaks(root, service_map, site, want_path, span, fixtures, allow_network):
+        for item in _type_breaks(root, service_map, site, want_path, span, fixtures, allow_network, original):
             if item not in found:
                 found.append(item)
     return found
@@ -136,13 +142,14 @@ def _merge_keyword_findings(found: list[tuple[str, str]], extra: list[tuple[str,
 
 
 def _type_breaks(
-    root: Path, service_map, site: ImpactSite, path: str, span: tuple[int, int], fixtures, allow_network
+    root: Path, service_map, site: ImpactSite, path: str, span: tuple[int, int], fixtures, allow_network,
+    original: str = "",
 ) -> list[tuple[str, str]]:
     """Argument kinds and attribute reads in the span that the new release's types rule out."""
     import ast
 
     from conduit.apply.signatures import _modules, new_release_wheel
-    from conduit.apply.typecheck import argument_breaks, attribute_breaks
+    from conduit.apply.typecheck import argument_breaks, attribute_breaks, dropped_arguments, original_arguments
 
     try:
         source = (root / path).read_text(encoding="utf-8")
@@ -157,6 +164,12 @@ def _type_breaks(
     try:
         modules = _modules(str(wheel))
         found: list[tuple[str, str]] = []
+        old_wheel = new_release_wheel(
+            site.dependency, site.from_version, fixtures=fixtures, allow_network=allow_network
+        )
+        passed_before = original_arguments(
+            original, site, _modules(str(old_wheel)) if old_wheel is not None else {}
+        )
         for chain in service_map.chains:
             if (
                 chain.call_rel.replace("\\", "/") == path
@@ -166,6 +179,10 @@ def _type_breaks(
             ):
                 for text in argument_breaks(
                     modules, tree, path, chain, site.dependency or "", site.to_version or ""
+                ):
+                    found.append((text, chain.sdk_method))
+                for text in dropped_arguments(
+                    modules, tree, path, chain, passed_before, site.dependency or "", site.to_version or ""
                 ):
                     found.append((text, chain.sdk_method))
         for text in attribute_breaks(
