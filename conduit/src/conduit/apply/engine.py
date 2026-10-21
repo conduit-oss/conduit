@@ -27,6 +27,22 @@ SiteClearedCheck = Callable[[Path, ImpactSite, str], bool]
 
 
 @dataclass
+class _RouteState:
+    """Accepted batch rewrites, and recheck findings that belong to one of them.
+
+    A masked or missing attribute read inside a helper is reported on the site
+    being checked. When that read sits in another site's rewrite, it is that
+    rewrite's finding: the site is retried with the text, and it is not verified
+    while the read is still in its rewrite.
+    """
+
+    accepted: dict[int, dict[str, Any]]
+    key: int = 0
+    pending: dict[int, list[str]] = field(default_factory=dict)
+    traced: dict[int, list[str]] = field(default_factory=dict)
+
+
+@dataclass
 class ApplyConfig:
     root: Path
     settings: TokenFactorySettings
@@ -41,6 +57,8 @@ class ApplyConfig:
     fixtures: Path | None = None
     allow_network: bool = False
     max_sites: int | None = None
+    #: Batch only: cross-site recheck findings routed back to the rewrite that contains them.
+    routes: _RouteState | None = None
 
 
 @dataclass
@@ -98,14 +116,17 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
 def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelClient, report: ApplyReport) -> None:
     """With a test command: rewrite every site (each must pass the static recheck),
     run the tests once, retry only the sites the failures point at, and revert
-    the ones that cannot be cleared. Tests see the whole migration at once, so
+    the ones that cannot be cleared. A masked or missing attribute read inside
+    another site's rewrite is retried on that rewrite, with the finding as
+    feedback, before the tests run. Tests see the whole migration at once, so
     an import every module needs no longer fails each site on its own."""
     with tempfile.TemporaryDirectory(prefix="conduit-apply-batch-") as tmp:
         scratch = Path(tmp) / "tree"
         shutil.copytree(config.root, scratch, ignore=shutil.ignore_patterns(*_SCRATCH_IGNORE))
-        work = replace(config, root=scratch, write=True, test_cmd=None)
         originals: dict[str, str] = {}
         accepted: dict[int, dict[str, Any]] = {}  # id(site) -> sink, in application order
+        routes = _RouteState(accepted=accepted)
+        work = replace(config, root=scratch, write=True, test_cmd=None, routes=routes)
         slots: dict[int, int] = {}
         texts_of: dict[int, str] = {}
         covered, texts = _one_per_function(config.root, selected)
@@ -120,11 +141,14 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             texts_of[id(site)] = texts.get(id(site), "")
             moved = _relocate(scratch, site, texts_of[id(site)])
             sink: dict[str, Any] = {"site": site}
+            routes.key = id(site)
             result = _apply_one(moved, work, client, report, sink=sink) if moved else None
             slots[id(site)] = len(report.results)
             report.results.append(result or SiteResult(site=site, status=SiteStatus.SKIPPED, why="line rewritten by an earlier fix in this file"))
             if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
                 accepted[id(site)] = sink
+        _retry_routed(work, client, report, originals, texts_of, slots)
+        _drop_traced_reads(work, report, originals, texts_of, slots)
         failure = ""
         for _round in range(config.settings.max_attempts + 1):
             ok, output = _run_cmd(config.test_cmd or "", scratch)
@@ -144,6 +168,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 retry_sink: dict[str, Any] = {"site": site}
                 result = None
                 used = report.results[slots[key]].attempts
+                routes.key = key
                 if moved is not None and used < config.settings.max_attempts and sink.get("tokens", 0) < config.settings.max_tokens_per_site:
                     feedback = (
                         "Your previous rewrite passed the static check but the tests failed:\n"
@@ -156,6 +181,9 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 else:
                     _rebuild(scratch, originals, accepted, texts_of, site.path)
                     report.results[slots[key]] = _reverted(result or report.results[slots[key]], site, note)
+            _retry_routed(work, client, report, originals, texts_of, slots)
+        _retry_routed(work, client, report, originals, texts_of, slots)
+        _drop_traced_reads(work, report, originals, texts_of, slots)
         if failure and accepted:
             # Revert what the last failure points at, then confirm the rest pass.
             for key in _blame(failure, scratch, accepted) or list(accepted):
@@ -476,17 +504,212 @@ def _verify_site_cleared(
         fixtures=config.fixtures,
         allow_network=config.allow_network,
     )
+    breaks = _route_breaks(config, site, patched, span, breaks)
     if breaks:
-        # Fed back to the model as the retry reason; the last one is the Why.
-        message = "rewrite still breaks against the new release:\n- " + "\n- ".join(
-            text for text, _symbol in breaks
-        )
+        # The finding is on the first line: a report cell keeps only that line.
+        message = _breaks_message([text for text, _symbol in breaks])
         signatures = _new_signatures(config, site, [symbol for _text, symbol in breaks])
         if signatures:
             message += "\nNew release signatures (read from its own code):\n" + "\n".join(
                 signatures.values()
             )
         raise RecheckError(message, [text for text, _symbol in breaks])
+
+
+def _breaks_message(texts: list[str]) -> str:
+    """Reason text whose first line contains the finding, not only the prefix."""
+    shown = [text.strip() for text in texts if text and text.strip()]
+    if not shown:
+        return "rewrite still breaks against the new release"
+    return "rewrite still breaks against the new release: " + "; ".join(shown)
+
+
+def _route_breaks(
+    config: ApplyConfig,
+    site: ImpactSite,
+    patched: str,
+    span: tuple[int, int],
+    breaks: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Hand a read that lives in another accepted rewrite back to that rewrite.
+
+    A finding inside this rewrite stays here. A finding in a helper this batch
+    did not rewrite stays here too, so the caller still has to stop passing the
+    value on. Only a read inside some other site's accepted rewrite moves.
+    """
+    routes = config.routes
+    if routes is None:
+        return breaks
+    kept: list[tuple[str, str]] = []
+    for text, symbol in breaks:
+        owner = _finding_owner(config.root, routes, site, patched, span, text)
+        if owner is None:
+            kept.append((text, symbol))
+            continue
+        for bucket in (routes.pending, routes.traced):
+            found = bucket.setdefault(owner, [])
+            if text not in found:
+                found.append(text)
+    return kept
+
+
+def _finding_owner(
+    root: Path,
+    routes: _RouteState,
+    site: ImpactSite,
+    patched: str,
+    span: tuple[int, int],
+    text: str,
+) -> int | None:
+    located = _finding_at(text)
+    if located is None:
+        return None
+    path, line = located
+    if _path_match(path, site.path) and span[0] <= line <= span[1]:
+        return None
+    for key, sink in routes.accepted.items():
+        if key == routes.key:
+            continue
+        site_path = sink["site"].path.replace("\\", "/")
+        if not _path_match(path, site_path):
+            continue
+        body = patched if _path_match(path, site.path) else _read(root / sink["site"].path)
+        bounds = _span_in(body, sink.get("block") or "")
+        if bounds is not None and bounds[0] <= line <= bounds[1]:
+            return key
+    return None
+
+
+def _finding_at(text: str) -> tuple[str, int] | None:
+    match = re.match(r"([^:\s].*?):(\d+)\b", text)
+    if match is None:
+        return None
+    return match.group(1).replace("\\", "/"), int(match.group(2))
+
+
+def _path_match(left: str, right: str) -> bool:
+    a = left.replace("\\", "/").lstrip("./")
+    b = right.replace("\\", "/").lstrip("./")
+    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
+
+
+def _span_in(text: str, block: str) -> tuple[int, int] | None:
+    if not block:
+        return None
+    at = text.find(block)
+    if at < 0:
+        return None
+    first = text.count("\n", 0, at) + 1
+    last = first + block.count("\n") - (1 if block.endswith("\n") else 0)
+    return first, max(last, first)
+
+
+def _expr_remains(block: str, finding: str) -> bool:
+    """True when ``finding`` names an attribute read that ``block`` still contains."""
+    if "no attribute " not in finding:
+        return False
+    match = re.match(r"^[^:\n]+:\d+\s+(.*?):\s", finding)
+    expr = match.group(1).strip() if match else ""
+    if not expr:
+        return False
+    # Quote style is not part of the read; the model may swap ' and ".
+    return expr.replace('"', "'") in block.replace('"', "'")
+
+
+def _retry_routed(
+    config: ApplyConfig,
+    client: ModelClient,
+    report: ApplyReport,
+    originals: dict[str, str],
+    texts: dict[int, str],
+    slots: dict[int, int],
+) -> None:
+    """Retry each rewrite a routed finding points at, with that finding as feedback."""
+    routes = config.routes
+    if routes is None:
+        return
+    accepted = routes.accepted
+    guard = 0
+    limit = max(4, len(slots) * (config.settings.max_attempts + 1))
+    while routes.pending and guard < limit:
+        guard += 1
+        key, findings = routes.pending.popitem()
+        sink = accepted.get(key)
+        if sink is None:
+            continue
+        accepted.pop(key)
+        site = sink["site"]
+        _rebuild(config.root, originals, accepted, texts, site.path)
+        moved = _relocate(config.root, site, texts.get(key, ""))
+        note = _breaks_message(findings)
+        block = sink.get("block") or ""
+        if block:
+            note += "\nThe rewrite this refers to:\n" + block
+        routes.key = key
+        retry_sink: dict[str, Any] = {"site": site}
+        result = None
+        used = report.results[slots[key]].attempts
+        if (
+            moved is not None
+            and used < config.settings.max_attempts
+            and sink.get("tokens", 0) < config.settings.max_tokens_per_site
+        ):
+            result = _apply_one(
+                moved,
+                config,
+                client,
+                report,
+                feedback=note,
+                spent=sink.get("tokens", 0),
+                used=used,
+                sink=retry_sink,
+            )
+        if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
+            accepted[key] = retry_sink
+            report.results[slots[key]] = result
+            continue
+        _rebuild(config.root, originals, accepted, texts, site.path)
+        previous = result or report.results[slots[key]]
+        error = previous.error if previous.error else note
+        report.results[slots[key]] = SiteResult(
+            site=site,
+            status=SiteStatus.NEEDS_HUMAN,
+            diff=previous.diff,
+            attempts=previous.attempts,
+            error=error,
+            context=previous.context,
+        )
+
+
+def _drop_traced_reads(
+    config: ApplyConfig,
+    report: ApplyReport,
+    originals: dict[str, str],
+    texts: dict[int, str],
+    slots: dict[int, int],
+) -> None:
+    """A site is not verified while a masked-read finding still matches its rewrite."""
+    routes = config.routes
+    if routes is None:
+        return
+    for key, findings in list(routes.traced.items()):
+        sink = routes.accepted.get(key)
+        if sink is None:
+            continue
+        lingering = [text for text in findings if _expr_remains(sink.get("block") or "", text)]
+        if not lingering:
+            continue
+        routes.accepted.pop(key)
+        _rebuild(config.root, originals, routes.accepted, texts, sink["site"].path)
+        previous = report.results[slots[key]]
+        report.results[slots[key]] = SiteResult(
+            site=sink["site"],
+            status=SiteStatus.NEEDS_HUMAN,
+            diff=previous.diff,
+            attempts=previous.attempts,
+            error=_breaks_message(lingering),
+            context=previous.context,
+        )
 
 
 class RecheckError(PatchError):
