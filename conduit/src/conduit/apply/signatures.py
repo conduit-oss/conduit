@@ -233,9 +233,12 @@ def resolve_callable(
 
 
 def _find_class(
-    modules: dict[str, ast.Module], name: str, near: str
+    modules: dict[str, ast.Module], name: str, near: str, strict: bool = False
 ) -> tuple[str, ast.ClassDef] | None:
-    """The class ``name``: imported into module ``near`` if possible, else closest module."""
+    """The class ``name``: imported into module ``near`` if possible, else closest module.
+
+    ``strict`` refuses a closest-module guess that ties with another class of
+    the same name (``Chat`` in ``chat`` and in ``beta.chat``)."""
     tree = modules.get(near)
     if tree is not None:
         for node in tree.body:
@@ -248,16 +251,21 @@ def _find_class(
                     if (alias.asname or alias.name) == name:
                         source = _absolute(near, node, is_package=_is_package(modules, near))
                         if source != near and source in modules:
-                            hit = _find_class(modules, alias.name, source)
+                            hit = _find_class(modules, alias.name, source, strict)
                             if hit is not None:
                                 return hit
     best: tuple[int, str, ast.ClassDef] | None = None
+    tied = False
     for module_name, module in modules.items():
         for node in module.body:
             if isinstance(node, ast.ClassDef) and node.name == name:
                 score = _shared_prefix(module_name.split("."), near.split("."))
                 if best is None or score > best[0]:
-                    best = (score, module_name, node)
+                    best, tied = (score, module_name, node), False
+                elif score == best[0]:
+                    tied = True
+    if strict and tied:
+        return None
     return (best[1], best[2]) if best else None
 
 
@@ -302,7 +310,7 @@ def missing_member(modules: dict[str, ast.Module], dotted: str) -> tuple[str, li
     for index in range(len(parts) - 2, 0, -1):
         if not parts[index][:1].isupper():
             continue
-        klass = _find_class(modules, parts[index], ".".join(parts[:index]))
+        klass = _find_class(modules, parts[index], ".".join(parts[:index]), strict=True)
         if klass is None:
             continue
         rest = parts[index + 1 :]
@@ -327,7 +335,7 @@ def _walk_to_class(modules, klass: tuple[str, ast.ClassDef], names: list[str]):
             return None
         annotation = member.returns if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) else member.annotation
         type_name = _type_name(annotation) or _constructed_return(member)
-        hit = _find_class(modules, type_name, module_name) if type_name else None
+        hit = _find_class(modules, type_name, module_name, strict=True) if type_name else None
         if hit is None:
             return None
         module_name, node = hit

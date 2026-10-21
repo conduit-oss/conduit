@@ -1136,3 +1136,22 @@ def test_one_rewrite_per_function_and_later_sites_follow_shifted_lines(tmp_path:
     assert statuses[1] == SiteStatus.SKIPPED and "same function as mod.py:7" in report.results[1].why
     assert seen == [7, 11], report.results[2].error  # also_ok's "return 2" moved down one line
     assert "return 3" in (root / "mod.py").read_text(encoding="utf-8")
+
+
+def test_missing_member_refuses_an_ambiguous_class_guess(tmp_path: Path):
+    from conduit.apply.signatures import _modules, missing_member
+
+    pkg = tmp_path / "wheel" / "sdk"
+    for sub, method in (("chat", "create"), ("beta", "stream")):
+        (pkg / sub).mkdir(parents=True)
+        (pkg / sub / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / sub / "chat.py").write_text(
+            f"class Completions:\n    def {method}(self):\n        pass\n\nclass Chat:\n    completions: Completions\n",
+            encoding="utf-8",
+        )
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "_client.py").write_text("from . import chat as resources\n\nclass Client:\n    chat: resources.Chat\n", encoding="utf-8")
+    modules = _modules(str(tmp_path / "wheel"))
+    # Chat is defined twice at the same distance from the client: no guess, no false "has no create".
+    assert missing_member(modules, "sdk._client.Client.chat.completions.create") is None
+    assert missing_member(modules, "sdk._client.Client.chat.completions.stream") is None
