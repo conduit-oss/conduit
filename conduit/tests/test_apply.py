@@ -391,7 +391,7 @@ def test_recheck_impact_uses_collect_impacts_on_scratch(tmp_path: Path, monkeypa
     sites = sites_from_payload(_impact_payload())
     calls: list[Path] = []
 
-    def fake_listed(scratch: Path, site, *, span, fixtures, allow_network) -> list[tuple[str, str]]:
+    def fake_listed(scratch: Path, site, *, span, fixtures, allow_network, original="") -> list[tuple[str, str]]:
         calls.append(scratch)
         text = (scratch / site.path).read_text(encoding="utf-8")
         return [("mod.py:7 client.old_call: renamed", "")] if "old_call" in text else []
@@ -616,7 +616,7 @@ def test_empty_module_statement_rewrite_deletes_it(tmp_path: Path):
     assert patched == "import os\n\nX = os.sep\n"
 
 
-def _hits_in_span(scratch: Path, site, *, span, fixtures, allow_network) -> list[tuple[str, str]]:
+def _hits_in_span(scratch: Path, site, *, span, fixtures, allow_network, original="") -> list[tuple[str, str]]:
     """Stand-in for impact: a removed ``timeout`` keyword inside the rewritten span."""
     lines = (scratch / site.path).read_text(encoding="utf-8").splitlines()
     return [
@@ -974,9 +974,13 @@ def test_attribute_check_flags_reads_the_new_return_type_lacks(tmp_path: Path):
         _chain("caller.py", 10, "client.open", "example_sdk.Client.open"),
     ]
     local = attribute_breaks(modules, root, "caller.py", caller, (3, 11), chains, "example-sdk", "2.0")
-    assert len(local) == 1, local
+    assert len(local) == 2, local
     assert "reply.gone" in local[0] and "no attribute gone" in local[0]
     assert "fields: text: str, parts: List[str]" in local[0]
+    # The helper this function hands the release value to reads a missing
+    # attribute through getattr with a default: flagged from the caller's span.
+    assert local[1].startswith("result.py:6 getattr(reply, 'completion', None)"), local[1]
+    assert "from_reply() gets reply = Reply" in local[1] and "no attribute completion" in local[1]
     # A parameter typed by its only caller, read through getattr with a literal name.
     passed = attribute_breaks(modules, root, "result.py", result, (4, 16), chains, "example-sdk", "2.0")
     assert len(passed) == 2, passed
@@ -1211,3 +1215,55 @@ def test_batch_retries_the_blamed_site_then_reverts_it(tmp_path: Path):
     assert second.status == SiteStatus.NEEDS_HUMAN and second.attempts == 3 and "reverted" in second.error
     assert "bad_call" in client.calls[4]["messages"][1].content  # the retry saw its rewrite and the failure
     assert "new_call(1)" in (root / "mod.py").read_text() and "old_call(2)" in (root / "two.py").read_text()
+
+
+def test_dropped_argument_the_new_target_still_accepts_is_flagged(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from conduit.apply.typecheck import dropped_arguments, original_arguments
+
+    modules = _typed_release(tmp_path)
+    before = "def run(client, rows):\n    return client.old_send(rows, note='n', limit=3, retries=2)\n"
+    old = _typed_release(tmp_path / "old")
+    # The old method is not in this wheel, so only keywords count; still enough.
+    site = SimpleNamespace(line=2, expr="client.old_send", symbol="example_sdk.Client.old_send")
+    passed = original_arguments(before, site, old)
+    assert passed == {"note", "limit", "retries"}
+    method = "example_sdk.Client.send"
+    after = ast.parse("def run(client, rows):\n    return client.send(items=rows, note='n')\n")
+    found = dropped_arguments(modules, after, "w.py", _chain("w.py", 2, "client.send", method), passed, "example-sdk", "2.0")
+    # limit is still accepted and no longer passed; retries is gone from the new method, so not demanded.
+    assert found == ["w.py:2 client.send: rewrite drops limit which Client.send in example-sdk 2.0 still accepts; keep passing it"]
+    kept = ast.parse("def run(client, rows):\n    return client.send(items=rows, note='n', limit=None)\n")
+    assert dropped_arguments(modules, kept, "w.py", _chain("w.py", 2, "client.send", method), passed, "example-sdk", "2.0") == []
+    # A new call sharing none of the original arguments is a different call, not compared.
+    other = ast.parse("def run(client, rows):\n    return client.send(items=rows)\n")
+    assert dropped_arguments(modules, other, "w.py", _chain("w.py", 2, "client.send", method), passed, "example-sdk", "2.0") == []
+
+
+def test_original_positionals_are_named_through_the_old_signature(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from conduit.apply.typecheck import original_arguments
+
+    old = _typed_release(tmp_path)
+    before = "def run(client):\n    return client.send(1, 2, 3)\n"
+    site = SimpleNamespace(line=2, expr="client.send", symbol="example_sdk.Client.send")
+    # send takes keyword-only arguments; positionals have no name to map.
+    assert original_arguments(before, site, old) == set()
+    before = "def run(client):\n    return client.open(**kw)\n"
+    site = SimpleNamespace(line=2, expr="client.open", symbol="example_sdk.Client.open")
+    assert original_arguments(before, site, old) == set()
+
+
+def test_hasattr_on_a_release_value_without_the_attribute_is_flagged(tmp_path: Path):
+    from conduit.apply.typecheck import attribute_breaks
+
+    modules = _typed_release(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    caller = "def call(client):\n    reply = client.send(items=[])\n    return reply.text if hasattr(reply, 'gone') else None\n"
+    (root / "caller.py").write_text(caller, encoding="utf-8")
+    chains = [_chain("caller.py", 2, "client.send", "example_sdk.Client.send")]
+    found = attribute_breaks(modules, root, "caller.py", caller, (1, 3), chains, "example-sdk", "2.0")
+    assert len(found) == 1 and "no attribute gone" in found[0], found
