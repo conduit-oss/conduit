@@ -150,6 +150,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 accepted[id(site)] = sink
         _retry_routed(work, client, report, originals, texts_of, slots)
         _drop_traced_reads(work, report, originals, texts_of, slots)
+        _final_recheck(config, scratch, report, originals, texts_of, slots, accepted)
         failure = ""
         for _round in range(config.settings.max_attempts + 1):
             ok, output = _run_cmd(config.test_cmd or "", scratch)
@@ -185,6 +186,9 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             _retry_routed(work, client, report, originals, texts_of, slots)
         _retry_routed(work, client, report, originals, texts_of, slots)
         _drop_traced_reads(work, report, originals, texts_of, slots)
+        if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted) and accepted and not failure:
+            ok, output = _run_cmd(config.test_cmd or "", scratch)
+            failure = "" if ok else output
         if failure and accepted:
             # Revert what the last failure points at, then confirm the rest pass.
             for key in _blame(failure, scratch, accepted) or list(accepted):
@@ -783,6 +787,57 @@ def _drop_traced_reads(
             error=_breaks_message(lingering),
             context=previous.context,
         )
+
+
+def _final_recheck(
+    config: ApplyConfig,
+    scratch: Path,
+    report: ApplyReport,
+    originals: dict[str, str],
+    texts: dict[int, str],
+    slots: dict[int, int],
+    accepted: dict[int, dict[str, Any]],
+) -> bool:
+    """Recheck every accepted rewrite against the finished migration.
+
+    Each site was checked when it was written, before later sites changed what
+    flows into it (a caller's new return type reaching an ``Any`` parameter).
+    Passing tests do not clear a finding: the site needs a human, with the
+    finding as its reason. True when a site was dropped."""
+    dropped = False
+    if config.site_cleared is not None or not config.recheck_impact:
+        return dropped
+    for key in list(accepted):
+        sink = accepted[key]
+        site = sink["site"]
+        body = _read(scratch / site.path)
+        span = _span_in(body, sink.get("block") or "")
+        if span is None:
+            continue
+        try:
+            breaks = remaining_breaks(
+                scratch, site, body, span=span, fixtures=config.fixtures,
+                allow_network=config.allow_network, original=originals.get(site.path, ""),
+            )
+        except Exception:  # noqa: BLE001 — a recheck that cannot run keeps the earlier verdict
+            continue
+        if not breaks:
+            continue
+        accepted.pop(key)
+        previous = report.results[slots[key]]
+        message = _breaks_message([text for text, _symbol in breaks])
+        report.results[slots[key]] = SiteResult(
+            site=site,
+            status=SiteStatus.NEEDS_HUMAN,
+            diff=previous.diff,
+            attempts=previous.attempts,
+            error=message,
+            why=message,
+            context=previous.context,
+        )
+        _rebuild(scratch, originals, accepted, texts, site.path)
+        dropped = True
+    return dropped
 
 
 class RecheckError(PatchError):

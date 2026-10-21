@@ -31,6 +31,7 @@ def remaining_breaks(
     span: tuple[int, int] | None = None,
     fixtures: Path | None = None,
     allow_network: bool = False,
+    original: str | None = None,
 ) -> list[tuple[str, str]]:
     """``(finding, symbol)`` pairs impact still reports for the original site or the rewritten span.
 
@@ -56,10 +57,11 @@ def remaining_breaks(
             ),
         )
         target = scratch / site.path
-        try:
-            original = target.read_text(encoding="utf-8")
-        except OSError:
-            original = ""
+        if original is None:
+            try:
+                original = target.read_text(encoding="utf-8")
+            except OSError:
+                original = ""
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(patched, encoding="utf-8")
         return _breaks_listed(

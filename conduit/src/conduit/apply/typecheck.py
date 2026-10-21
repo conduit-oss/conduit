@@ -527,10 +527,21 @@ def attribute_breaks(
                 if classes:
                     typed[node.targets[0].id] = classes
         for node in ast.walk(func):
+            # ``for block in result.content`` / comprehensions: the element type of the field.
+            if isinstance(node, (ast.For, ast.comprehension)) and isinstance(node.target, ast.Name):
+                classes = _element_classes(modules, typed, node.iter)
+                if classes:
+                    typed[node.target.id] = classes
+        for node in ast.walk(func):
             name, attr = _attribute_read(node)
             if not name or name not in typed or attr.startswith("__"):
                 continue
             classes = typed[name]
+            masked = _masked_read(modules, path, node, name, attr, classes, package, version)
+            if masked:
+                if masked not in out:
+                    out.append(masked)
+                continue
             if _has_attribute(modules, classes, attr) is not False:
                 continue
             names = ", ".join(sorted({klass.name for _module, klass in classes}))
@@ -549,6 +560,111 @@ def attribute_breaks(
             if text not in out:
                 out.append(text)
     return out
+
+
+def _masked_read(modules, path: str, node: ast.AST, name: str, attr: str, classes, package: str, version: str) -> str:
+    """A ``getattr(x, "a", default)`` / ``hasattr(x, "a")`` on a value whose type the release declares.
+
+    When some of its possible classes lack ``a`` the default hides that case; when
+    every class declares ``a`` the fallback is dead code that would hide a wrong
+    value. Either way the rewrite should read the declared type, not guess."""
+    if not isinstance(node, ast.Call):
+        return ""
+    func = node.func.id
+    if func == "getattr" and len(node.args) < 3:
+        return ""
+    results = [(klass.name, _class_has(modules, module_name, klass, attr, 0)) for module_name, klass in classes]
+    have = sorted({klass for klass, hit in results if hit is True})
+    lack = sorted({klass for klass, hit in results if hit is False})
+    unknown = any(hit is None for _klass, hit in results)
+    where = f"{path}:{node.lineno} {ast.unparse(node)[:80]}"
+    guard = "default" if func == "getattr" else "check"
+    if have and lack:
+        return (
+            f"{where}: {name} may be {_few(lack)} in {package} {version}, which lack "
+            f"{attr}; the {func} {guard} hides that, handle those types explicitly"
+        )
+    if have and not unknown:
+        return (
+            f"{where}: {name} is {', '.join(have)} in {package} {version}, which always has {attr}; "
+            f"the {func} {guard} is dead code that would hide a wrong value, read {name}.{attr} directly"
+        )
+    return ""
+
+
+def _few(names: list[str], limit: int = 3) -> str:
+    shown = ", ".join(names[:limit])
+    return shown + (f" and {len(names) - limit} more" if len(names) > limit else "")
+
+
+def _element_classes(modules, typed, iterable: ast.AST) -> list[tuple[str, ast.ClassDef]]:
+    """Classes of the items of ``name.field`` when the field is annotated as a one-argument container."""
+    if not (isinstance(iterable, ast.Attribute) and isinstance(iterable.value, ast.Name)):
+        return []
+    out: list[tuple[str, ast.ClassDef]] = []
+    for module_name, klass in typed.get(iterable.value.id, []):
+        found = _field_annotation(modules, module_name, klass, iterable.attr, 0)
+        if found is None:
+            continue
+        near, annotation = found
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                annotation = ast.parse(annotation.value.strip(), mode="eval").body
+            except SyntaxError:
+                continue
+        if not isinstance(annotation, ast.Subscript) or isinstance(annotation.slice, ast.Tuple):
+            continue
+        for item in _type_classes(modules, near, annotation.slice, 0):
+            if item not in out:
+                out.append(item)
+    return out
+
+
+def _field_annotation(modules, module_name: str, klass: ast.ClassDef, attr: str, depth: int):
+    for stmt in _class_statements(klass.body):
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id == attr:
+            return module_name, stmt.annotation
+    if depth > 4:
+        return None
+    for base in klass.bases:
+        name = _type_name(base.value if isinstance(base, ast.Subscript) else base)
+        hit = _find_class(modules, name, module_name) if name else None
+        if hit is not None and hit[1] is not klass:
+            found = _field_annotation(modules, hit[0], hit[1], attr, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _type_classes(modules, near: str, node: ast.AST, depth: int) -> list[tuple[str, ast.ClassDef]]:
+    """Release classes a type expression can be: unions and aliases expanded, metadata skipped."""
+    if depth > _MAX_DEPTH or node is None:
+        return []
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            node = ast.parse(node.value.strip(), mode="eval").body
+        except SyntaxError:
+            return []
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _type_classes(modules, near, node.left, depth + 1) + _type_classes(modules, near, node.right, depth + 1)
+    if isinstance(node, ast.Subscript):
+        parts = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if _type_name(node.value) == "Annotated":  # typing's own form: metadata after the type
+            parts = parts[:1]
+        out: list[tuple[str, ast.ClassDef]] = []
+        for part in parts:
+            for item in _type_classes(modules, near, part, depth + 1):
+                if item not in out:
+                    out.append(item)
+        return out
+    name = _type_name(node)
+    if not name or name in _ANY or name == "None":
+        return []
+    alias = _alias_value(modules, near, name)
+    if alias is not None and not isinstance(alias[1], ast.Call):
+        return _type_classes(modules, alias[0], alias[1], depth + 1)
+    hit = _find_class(modules, name, near)
+    return [hit] if hit else []
 
 
 def _callee_reads(modules, root: Path, trees, chains, path: str, func, typed, package: str, version: str) -> list[str]:

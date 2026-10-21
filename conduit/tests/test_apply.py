@@ -1552,3 +1552,152 @@ def test_loosened_any_hint_uses_the_callers_type(tmp_path: Path):
     assert "fixes the attribute" not in helper.why
     assert caller_result.status == SiteStatus.FIXED_VERIFIED
     assert caller_result.why == "switched the call"
+
+
+_UNION_WHEEL = """\
+from typing import Annotated, List, Union
+
+class Meta:
+    pass
+
+class TextBlock:
+    text: str
+
+class ToolBlock:
+    id: str
+
+Block = Annotated[Union[TextBlock, ToolBlock], Meta()]
+
+class Reply:
+    content: List[Block]
+
+class Messages:
+    def create(self, *, model: str) -> Reply:
+        return Reply()
+
+class Client:
+    @property
+    def messages(self):
+        return Messages(self)
+"""
+
+
+def test_masked_defaults_on_declared_types(tmp_path: Path):
+    """getattr default over union items that lack the field, and a hasattr on a field
+    the type always declares, are findings: the fallback hides a wrong value."""
+    from conduit.apply.signatures import _modules
+    from conduit.apply.typecheck import attribute_breaks
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(_UNION_WHEEL, encoding="utf-8")
+    modules = _modules(str(tmp_path / "wheel"))
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = textwrap.dedent(
+        """\
+        def post(client):
+            result = client.messages.create(model='m')
+            if hasattr(result, 'content') and result.content:
+                return "".join(getattr(block, 'text', str(block)) for block in result.content)
+            return str(result)
+        """
+    )
+    (root / "f.py").write_text(source, encoding="utf-8")
+    chains = [_chain("f.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")]
+    found = attribute_breaks(modules, root, "f.py", source, (1, 5), chains, "example-sdk", "2.0")
+    assert any("hasattr(result, 'content')" in text and "always has content" in text for text in found), found
+    assert any("getattr(block, 'text'" in text and "ToolBlock" in text and "TextBlock" not in text.split(" may be ")[1] for text in found), found
+    plain = source.replace("getattr(block, 'text', str(block))", "block.text").replace("hasattr(result, 'content') and ", "")
+    assert not [t for t in attribute_breaks(modules, root, "f.py", plain, (1, 5), chains, "example-sdk", "2.0") if "TextBlock" in t and "always" in t]
+
+
+def test_dropped_argument_silent_when_release_removed_it(tmp_path: Path):
+    """An argument the new callee no longer declares is not a drop finding."""
+    import ast
+
+    from conduit.apply.signatures import _modules
+    from conduit.apply.typecheck import dropped_arguments
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(_UNION_WHEEL, encoding="utf-8")
+    modules = _modules(str(tmp_path / "wheel"))
+    tree = ast.parse("def post(client):\n    return client.messages.create(model='m')\n")
+    chain = _chain("f.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")
+    assert dropped_arguments(modules, tree, "f.py", chain, {"model", "temperature"}, "example-sdk", "2.0") == []
+    tree = ast.parse("def post(client):\n    return client.messages.create()\n")
+    assert dropped_arguments(modules, tree, "f.py", chain, {"model"}, "example-sdk", "2.0") == []  # nothing kept: unrelated call
+
+
+def test_final_recheck_blocks_verified_after_tests_pass(tmp_path: Path, monkeypatch):
+    """A finding that only appears once the whole migration is in place (a caller's new
+    type flowing into an Any parameter) keeps the site from verified, even with passing tests."""
+    import conduit.apply.engine as engine
+
+    def fake(root, site, patched, *, span=None, fixtures=None, allow_network=False, original=None):
+        if original is None or site.path != "helper.py":
+            return []
+        return [("helper.py:2 result.completion: result is Reply in example-sdk 2.0, which has no attribute completion", "")]
+
+    monkeypatch.setattr(engine, "remaining_breaks", fake)
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "helper.py").write_text("def from_completion(result):\n    return result.completion\n", encoding="utf-8")
+    (root / "caller.py").write_text(
+        "def post(client):\n    result = client.old_call(1)\n    return from_completion(result)\n", encoding="utf-8"
+    )
+    payload = _impact_payload(path="helper.py", line=2)
+    payload["impacts"][0]["sites"][0]["expr"] = "result.completion"
+    payload["impacts"][0]["sites"].append(
+        {"path": "caller.py", "line": 2, "expr": "client.old_call", "confidence": "high", "via_wrapper": False}
+    )
+    client = FakeModelClient(
+        responses=[
+            _fn("def from_completion(result: Any):\n    return result.completion\n"), "widened",
+            _fn("def post(client):\n    result = client.new_call(1)\n    return from_completion(result)\n"), "switched",
+        ]
+    )
+    report = apply_sites(
+        sites_from_payload(payload),
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    helper, caller = report.results
+    assert helper.status == SiteStatus.NEEDS_HUMAN, (helper.status, helper.error)
+    assert "no attribute completion" in helper.why
+    assert caller.status == SiteStatus.FIXED_VERIFIED
+
+
+@pytest.mark.network
+def test_council_anthropic_1_0_rewrite_is_flagged(tmp_path: Path):
+    """Regression: the council rewrite Nemotron produced for anthropic 0.34.2 -> 1.0.0."""
+    from conduit.apply.signatures import _modules, new_release_wheel
+    from conduit.apply.typecheck import attribute_breaks
+
+    wheel = new_release_wheel("anthropic", "1.0.0", allow_network=True)
+    assert wheel is not None
+    modules = _modules(str(wheel))
+    root = tmp_path / "repo"
+    root.mkdir()
+    helper = textwrap.dedent(
+        """\
+        from typing import Any
+
+        def from_completion(result: Any):
+            if hasattr(result, 'content') and result.content:
+                completion_text = "".join(getattr(block, 'text', str(block)) for block in result.content)
+            else:
+                completion_text = str(result)
+            return completion_text
+        """
+    )
+    caller = "def post(client):\n    result = client.beta.messages.create(messages=[], model='m', max_tokens=1)\n    return from_completion(result)\n"
+    (root / "helper.py").write_text(helper, encoding="utf-8")
+    (root / "caller.py").write_text(caller, encoding="utf-8")
+    chains = [_chain("caller.py", 2, "client.beta.messages.create", "anthropic.resources.beta.beta.Beta.messages.create")]
+    found = attribute_breaks(modules, root, "helper.py", helper, (1, 8), chains, "anthropic", "1.0.0")
+    assert any("hasattr(result, 'content')" in text and "BetaMessage" in text for text in found), found
+    assert any("getattr(block, 'text'" in text and "no attribute text" not in text for text in found), found
