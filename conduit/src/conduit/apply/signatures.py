@@ -292,7 +292,11 @@ def _walk_members(
 
 
 def _constructed_return(node: ast.AST) -> str:
-    """Class an unannotated property returns: ``self.x = Cls(...)`` ... ``return self.x``."""
+    """Class an unannotated property returns.
+
+    Either ``self.x = Cls(...)`` followed by ``return self.x``, or a direct
+    ``return Cls(...)`` (a nested resource such as ``return Beta(self)``).
+    """
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return ""
     returned = {ast.unparse(item.value) for item in ast.walk(node) if isinstance(item, ast.Return) and item.value is not None}
@@ -300,6 +304,12 @@ def _constructed_return(node: ast.AST) -> str:
         if isinstance(item, ast.Assign) and isinstance(item.value, ast.Call) and len(item.targets) == 1:
             if ast.unparse(item.targets[0]) in returned:
                 return _type_name(item.value.func)
+    for stmt in node.body:
+        value = stmt.value if isinstance(stmt, ast.Return) else None
+        if isinstance(value, ast.Call):
+            name = _type_name(value.func)
+            if name[:1].isupper():
+                return name
     return ""
 
 

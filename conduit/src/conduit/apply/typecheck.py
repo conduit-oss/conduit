@@ -436,7 +436,10 @@ def dropped_arguments(
     node = found[1]
     order = [arg.arg for arg in (*node.args.posonlyargs, *node.args.args)]
     order = order[1:] if order and order[0] in {"self", "cls"} else order
-    accepted = set(order) | {arg.arg for arg in node.args.kwonlyargs}
+    accepted = _accepted_names(modules, found[0], node)
+    # ``**kwargs`` (on the implementation or an overload) accepts every name.
+    if accepted is None:
+        accepted = set(passed_before)
     passed = {kw.arg for kw in call.keywords if kw.arg} | set(order[: len(call.args)])
     if not passed & passed_before:
         return []
@@ -445,6 +448,36 @@ def dropped_arguments(
         f"{_owner(chain.sdk_method)} in {package} {version} still accepts; keep passing it"
         for name in sorted((passed_before & accepted) - passed)
     ]
+
+
+def _accepted_names(modules: dict[str, ast.Module], module_name: str, node: ast.AST) -> set[str] | None:
+    """Parameter names the callable accepts, or None when a variant takes ``**kwargs``.
+
+    The implementation and its ``@overload`` siblings are one signature: a
+    keyword-only name that exists only on an overload is still accepted.
+    """
+    variants = [node]
+    tree = modules.get(module_name)
+    if tree is not None and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        for klass in ast.walk(tree):
+            if isinstance(klass, ast.ClassDef) and any(child is node for child in klass.body):
+                variants = [
+                    child
+                    for child in klass.body
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == node.name
+                ]
+                break
+    names: set[str] = set()
+    for variant in variants:
+        args = getattr(variant, "args", None)
+        if args is None:
+            continue
+        if args.kwarg is not None:
+            return None
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+            if arg.arg not in {"self", "cls"}:
+                names.add(arg.arg)
+    return names
 
 
 # --- 2. attributes read on a return value --------------------------------
@@ -850,8 +883,37 @@ def _external_has(modules, module_name: str, base: ast.AST, attr: str) -> bool |
         return True
     for owner in klass.__mro__:
         if "__getattr__" in owner.__dict__ and owner is not object and not _guarded_getattr(owner):
+            if _getattr_rejects_unknown(owner):
+                # Raises for names it does not know: an undeclared attribute is missing.
+                continue
             # Unconditional dynamic lookup: anything may exist.
             return None
+    return False
+
+
+def _getattr_rejects_unknown(klass: type) -> bool:
+    """True when ``__getattr__`` raises AttributeError instead of answering every name."""
+    import inspect
+    import textwrap
+
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(klass)))
+    except (OSError, TypeError, SyntaxError):
+        return False
+    node = tree.body[0] if tree.body else None
+    if not isinstance(node, ast.ClassDef):
+        return False
+    for stmt in node.body:
+        if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) or stmt.name != "__getattr__":
+            continue
+        return any(
+            isinstance(sub, ast.Raise)
+            and (
+                sub.exc is None
+                or _type_name(sub.exc.func if isinstance(sub.exc, ast.Call) else sub.exc) == "AttributeError"
+            )
+            for sub in ast.walk(stmt)
+        )
     return False
 
 
