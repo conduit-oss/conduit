@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import shutil
 import subprocess
@@ -198,7 +199,8 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                     report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], trim_test_feedback(output))
         for key in accepted:
             done = report.results[slots[key]]
-            report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_VERIFIED)
+            why = _why_when_uncalled(accepted, key) or done.why
+            report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_VERIFIED, why=why)
         for path, before in originals.items():
             after = _read(scratch / path)
             for key in accepted:
@@ -679,6 +681,77 @@ def _retry_routed(
             error=error,
             context=previous.context,
         )
+
+
+_UNCALLED_WHY = "no rewritten site calls this function"
+
+
+def _why_when_uncalled(accepted: dict[int, dict[str, Any]], key: int) -> str:
+    """Why text when a loosened ``Any`` parameter is still attribute-read and no
+    other rewritten site calls the function. Otherwise empty, so the model's
+    sentence stands."""
+    name = _any_param_still_read(accepted.get(key, {}).get("block") or "")
+    if not name:
+        return ""
+    for other, sink in accepted.items():
+        if other != key and _calls(sink.get("block") or "", name):
+            return ""
+    return _UNCALLED_WHY
+
+
+def _any_param_still_read(source: str) -> str:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return ""
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = {
+            arg.arg
+            for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+            if _annotation_is_any(arg.annotation)
+        }
+        if not params:
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Attribute) and isinstance(child.value, ast.Name) and child.value.id in params:
+                return node.name
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id in {"getattr", "hasattr"}
+                and child.args
+                and isinstance(child.args[0], ast.Name)
+                and child.args[0].id in params
+            ):
+                return node.name
+    return ""
+
+
+def _annotation_is_any(node: ast.AST | None) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value.strip() in {"Any", "typing.Any"}
+    if isinstance(node, ast.Name):
+        return node.id == "Any"
+    if isinstance(node, ast.Attribute):
+        return node.attr == "Any"
+    return False
+
+
+def _calls(source: str, name: str) -> bool:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if called == name:
+            return True
+    return False
 
 
 def _drop_traced_reads(

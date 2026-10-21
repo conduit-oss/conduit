@@ -1387,3 +1387,168 @@ def test_hasattr_on_a_release_value_without_the_attribute_is_flagged(tmp_path: P
     chains = [_chain("caller.py", 2, "client.send", "example_sdk.Client.send")]
     found = attribute_breaks(modules, root, "caller.py", caller, (1, 3), chains, "example-sdk", "2.0")
     assert len(found) == 1 and "no attribute gone" in found[0], found
+
+
+def test_dropped_argument_on_a_nested_overload_is_still_flagged(tmp_path: Path):
+    """Keyword-only names on an overload still count when the implementation takes ``**kwargs``
+    and the callee is a nested resource returned as ``return Cls(self)`` with no annotation."""
+    from conduit.apply.signatures import _modules
+    from conduit.apply.typecheck import dropped_arguments
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .client import Client\n", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Literal, overload
+
+            class Reply:
+                content: str
+
+            class Messages:
+                @overload
+                def create(
+                    self, *, model: str, max_tokens: int, temperature: float = 1,
+                    top_k: int = 1, top_p: float = 1, stream: Literal[False] = False,
+                ) -> Reply: ...
+                @overload
+                def create(
+                    self, *, model: str, max_tokens: int, temperature: float = 1,
+                    top_k: int = 1, top_p: float = 1, stream: Literal[True],
+                ) -> Reply: ...
+                def create(self, *, model: str, max_tokens: int, stream: bool = False, **kwargs) -> Reply:
+                    return Reply()
+
+            class Beta:
+                @property
+                def messages(self):
+                    return Messages(self)
+
+            class Client:
+                @property
+                def beta(self):
+                    return Beta(self)
+            """
+        ),
+        encoding="utf-8",
+    )
+    modules = _modules(str(tmp_path / "wheel"))
+    method = "example_sdk.client.Client.beta.messages.create"
+    chain = _chain("w.py", 2, "client.beta.messages.create", method)
+    passed = {"model", "max_tokens", "temperature", "top_k", "top_p"}
+    dropped = ast.parse(
+        "def run(client):\n    return client.beta.messages.create(model='m', max_tokens=1)\n"
+    )
+    found = dropped_arguments(modules, dropped, "w.py", chain, passed, "example-sdk", "2.0")
+    assert found == [
+        "w.py:2 client.beta.messages.create: rewrite drops temperature which messages.create in example-sdk 2.0 still accepts; keep passing it",
+        "w.py:2 client.beta.messages.create: rewrite drops top_k which messages.create in example-sdk 2.0 still accepts; keep passing it",
+        "w.py:2 client.beta.messages.create: rewrite drops top_p which messages.create in example-sdk 2.0 still accepts; keep passing it",
+    ], found
+    kept = ast.parse(
+        "def run(client):\n    return client.beta.messages.create(model='m', max_tokens=1, temperature=0, top_k=1, top_p=1)\n"
+    )
+    assert dropped_arguments(modules, kept, "w.py", chain, passed, "example-sdk", "2.0") == []
+
+
+def test_loosened_any_hint_uses_the_callers_type(tmp_path: Path):
+    """A hint widened to Any still checks attribute reads against the type the rewritten caller passes.
+    When no rewritten site calls the function, the why text says so."""
+    import sys
+
+    from conduit.apply.typecheck import attribute_breaks
+
+    ext = tmp_path / "extbase.py"
+    ext.write_text(
+        "class Model:\n    def __getattr__(self, name):\n        raise AttributeError(name)\n",
+        encoding="utf-8",
+    )
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        textwrap.dedent(
+            """\
+            from extbase import Model
+
+            class Reply(Model):
+                content: str
+
+            class Messages:
+                def create(self, *, model: str) -> Reply:
+                    return Reply()
+
+            class Beta:
+                @property
+                def messages(self):
+                    return Messages(self)
+
+            class Client:
+                @property
+                def beta(self):
+                    return Beta(self)
+            """
+        ),
+        encoding="utf-8",
+    )
+    from conduit.apply.signatures import _modules
+
+    sys.path.insert(0, str(tmp_path))
+    sys.modules.pop("extbase", None)
+    try:
+        modules = _modules(str(tmp_path / "wheel"))
+        root = tmp_path / "repo"
+        root.mkdir()
+        helper = "from typing import Any\n\ndef from_completion(result: Any):\n    return result.completion\n"
+        caller = "def post(client):\n    result = client.beta.messages.create(model='m')\n    return from_completion(result)\n"
+        (root / "helper.py").write_text(helper, encoding="utf-8")
+        (root / "caller.py").write_text(caller, encoding="utf-8")
+        chains = [
+            _chain("caller.py", 2, "client.beta.messages.create", "example_sdk.client.Client.beta.messages.create")
+        ]
+        found = attribute_breaks(modules, root, "helper.py", helper, (1, 4), chains, "example-sdk", "2.0")
+        assert len(found) == 1 and "result.completion" in found[0] and "no attribute completion" in found[0], found
+        assert "Reply" in found[0]
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop("extbase", None)
+
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "helper.py").write_text(
+        "def from_completion(result):\n    return result.completion\n",
+        encoding="utf-8",
+    )
+    (root / "caller.py").write_text(
+        "def post(client):\n    result = client.old_call(1)\n    return from_completion(result)\n",
+        encoding="utf-8",
+    )
+    payload = _impact_payload(path="helper.py", line=2)
+    payload["impacts"][0]["sites"][0]["expr"] = "result.completion"
+    payload["impacts"][0]["sites"].append(
+        {"path": "caller.py", "line": 2, "expr": "client.old_call", "confidence": "high", "via_wrapper": False}
+    )
+    sites = sites_from_payload(payload)
+    helper_edit = _fn("def from_completion(result: Any):\n    return result.completion\n")
+    caller_edit = _fn("def post(client):\n    result = client.new_call(1)\n    return result.content\n")
+    client = FakeModelClient(
+        responses=[helper_edit, "Widened the hint, which fixes the attribute.", caller_edit, "switched the call"]
+    )
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(),
+            write=True,
+            test_cmd="python3 -c \"print('ok')\"",
+            client=client,
+            site_cleared=lambda *_a: True,
+        ),
+    )
+    helper, caller_result = report.results
+    assert helper.status == SiteStatus.FIXED_VERIFIED, helper.error
+    assert helper.why == "no rewritten site calls this function"
+    assert "fixes the attribute" not in helper.why
+    assert caller_result.status == SiteStatus.FIXED_VERIFIED
+    assert caller_result.why == "switched the call"
