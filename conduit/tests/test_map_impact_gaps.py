@@ -1436,3 +1436,140 @@ def test_runner_keeps_the_wheel_return_class(tmp_path: Path):
     )
     assert "openai" in diffed
     assert any("execute" in site.expr for item in impacts for site in item.sites)
+
+
+def test_removed_type_flags_its_import_and_annotations(tmp_path: Path):
+    from conduit.impact.run import _import_chains
+
+    _write(
+        tmp_path,
+        "app.py",
+        """
+        from openai.openai_object import OpenAIObject
+        import openai
+
+        def wrap(resp: OpenAIObject) -> OpenAIObject:
+            result: OpenAIObject = resp
+            return result
+
+        def ask(prompt):
+            return openai.Completion.create(model="x", prompt=prompt)
+
+        def later(resp: "OpenAIObject"):
+            return resp
+        """,
+    )
+    removed = ApiChange(
+        kind="removed",
+        symbol="openai.openai_object.OpenAIObject",
+        old="openai.openai_object.OpenAIObject",
+        new="",
+        detail="openai_object.OpenAIObject removed",
+        confidence="high",
+        source="wheel",
+    )
+    # The same class under a public re-export is one break per line, not two.
+    reexport = ApiChange(
+        kind="removed",
+        symbol="openai.OpenAIObject",
+        old="openai.OpenAIObject",
+        new="",
+        detail="openai.OpenAIObject removed",
+        confidence="high",
+        source="wheel",
+        aliases=("openai.openai_object.OpenAIObject",),
+    )
+    renamed_param = ApiChange(
+        kind="param_removed",
+        symbol="openai.openai_object.OpenAIObject",
+        old="api_key",
+        new="",
+        detail="OpenAIObject api_key removed",
+        confidence="high",
+        source="wheel",
+    )
+    service_map = analyze_repo(tmp_path)
+    impacts = intersect(
+        [removed, reexport, renamed_param],
+        (*service_map.chains, *_import_chains(service_map)),
+        dependency="openai",
+        from_version="0.28.1",
+        to_version="1.0.0",
+    )
+    hits = [(site.line, site.expr) for item in impacts for site in item.sites]
+    assert sorted(line for line, _expr in hits) == [1, 4, 5, 11]
+    assert (1, "import OpenAIObject") in hits
+    assert all(item.kind == "removed" for item in impacts)
+
+
+def test_two_removed_keywords_on_one_call_are_two_breaks(tmp_path: Path):
+    _write(
+        tmp_path,
+        "app.py",
+        """
+        import openai
+
+        def ask(prompt):
+            return openai.Completion.create(model="x", prompt=prompt)
+        """,
+    )
+    changes = [
+        ApiChange(
+            kind="param_removed",
+            symbol="openai.Completion.create",
+            old=name,
+            new="",
+            detail=f"parameter {name} removed from Completion.create",
+            confidence="high",
+            source="wheel",
+        )
+        for name in ("model", "prompt")
+    ]
+    impacts = intersect(
+        changes,
+        analyze_repo(tmp_path).chains,
+        dependency="openai",
+        from_version="0.28.1",
+        to_version="1.0.0",
+    )
+    assert sorted(item.change for item in impacts) == [
+        "parameter model removed from Completion.create",
+        "parameter prompt removed from Completion.create",
+    ]
+
+
+def test_wheel_without_top_level_txt_imports_as_its_package_and_templated_paths_are_a_product():
+    import ast as _ast
+
+    from conduit.outside_in.evidence import _declared_by_token, _path_templates, _roots_from_paths
+
+    assert _roots_from_paths(
+        ["auth0/__init__.py", "auth0/management/users.py", "auth0_python-5.0.0.dist-info/RECORD", "six.py"]
+    ) == ("auth0", "six")
+    tree = _ast.parse(
+        'def u(self):\n    return f"{self.protocol}://{self.domain}/api/v2/users"\n'
+        'def g(scheme, host, path):\n    return f"{scheme}://{host}{path}"\n'
+    )
+    assert _path_templates(tree) == {"/api/v2/users"}
+    assert _declared_by_token("auth0", {"auth0-python": "auth0-python", "fastapi": "fastapi"}) == "auth0-python"
+    assert _declared_by_token("google", {"google-auth": "a", "google-cloud-storage": "b"}) == ""
+
+
+def test_installed_declared_distribution_and_reads_on_a_removed_calls_result(monkeypatch):
+    from types import SimpleNamespace
+
+    from conduit.impact.intersect import _python_match
+    from conduit.outside_in import evidence
+
+    monkeypatch.setattr(evidence, "_INTERPRETER_INDEX", {"pay": "payup", "other": "not-declared"})
+    declared = {"payup": "payup", "requests": "requests"}
+    assert evidence._declared_installed("pay", declared) == "payup"
+    assert evidence._declared_installed("other", declared) == ""
+
+    change = ApiChange(kind="removed", symbol="pay.client.Client", old="", new="", detail="", confidence="high", source="wheel")
+    read = SimpleNamespace(kind="sdk_response", sdk_method="pay.client.Client.cards.create", response_fields=(".body['card']",), confidence="high")
+    assert _python_match(change, read, [change]) == "medium"
+    subscript = SimpleNamespace(kind="sdk_response", sdk_method="pay.client.Client.cards.create", response_fields=("['id']",), confidence="high")
+    assert _python_match(change, subscript, [change]) is None
+    changed = ApiChange(kind="param_removed", symbol="pay.client.Client", old="x", new="", detail="", confidence="high", source="wheel")
+    assert _python_match(changed, read, [changed]) is None

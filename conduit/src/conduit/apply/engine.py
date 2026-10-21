@@ -6,18 +6,19 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from conduit.apply.client import ChatMessage, ModelClient
 from conduit.apply.config import TokenFactorySettings
-from conduit.apply.context import ContextError, build_context_pack
+from conduit.apply.context import ContextError, build_context_pack, enclosing_function
 from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.prompts import propose_messages, summarize_messages
-from conduit.apply.splice import PatchError, parse_model_edit, splice_edit
-from conduit.apply.verify import site_cleared_by_impact
+from conduit.apply.splice import PatchError, parse_model_edit, splice_edit_with_span
+from conduit.apply.signatures import new_release_wheel, signatures_for
+from conduit.apply.verify import remaining_breaks
 
 # Optional hook: given root + site + patched file text, return True if the site
 # is no longer flagged. Unit tests inject this; the CLI uses impact re-check.
@@ -71,12 +72,68 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
         owns_client = True
     try:
         selected = sites if config.max_sites is None else sites[: config.max_sites]
-        for site in selected:
-            report.results.append(_apply_one(site, config, client, report))
+        covered, texts = _one_per_function(config.root, selected)
+        # Lines that import or construct a removed class go first, so later
+        # rechecks resolve calls through the new client instead of the old one.
+        for site in sorted(selected, key=lambda item: not _names_removed_class(item)):
+            if id(site) in covered:
+                report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
+                continue
+            moved = _relocate(config.root, site, texts.get(id(site), "")) if config.write else site
+            if moved is None:
+                why = "line rewritten by an earlier fix in this file"
+                report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=why))
+                continue
+            report.results.append(_apply_one(moved, config, client, report))
     finally:
         if owns_client and client is not None and hasattr(client, "close"):
             client.close()  # type: ignore[union-attr]
     return report
+
+
+def _names_removed_class(site: ImpactSite) -> bool:
+    tail = (site.expr.split() or [""])[-1].rsplit(".", 1)[-1]
+    return site.kind == "removed" and tail[:1].isupper() and tail == site.symbol.rsplit(".", 1)[-1]
+
+
+def _one_per_function(root: Path, sites: list[ImpactSite]) -> tuple[dict[int, str], dict[int, str]]:
+    """The rewrite replaces a whole function and the recheck covers its span,
+    so one site per enclosing function is enough; the rest point at it."""
+    first: dict[tuple[str, int], ImpactSite] = {}
+    covered: dict[int, str] = {}
+    texts: dict[int, str] = {}
+    for site in sites:
+        if site.via_wrapper:
+            continue
+        try:
+            lines = (root / site.path).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        try:
+            span = enclosing_function("\n".join(lines), site.line)
+        except ContextError:
+            span = None
+        key = (site.path, span[2] if span else -site.line)
+        lead = first.setdefault(key, site)
+        if lead is not site:
+            covered[id(site)] = f"same function as {lead.path}:{lead.line}; covered by that rewrite and its recheck"
+        elif 0 < site.line <= len(lines):
+            texts[id(site)] = lines[site.line - 1].strip()
+    return covered, texts
+
+
+def _relocate(root: Path, site: ImpactSite, text: str) -> ImpactSite | None:
+    """Earlier written fixes shift lines: find the site's original line text again."""
+    try:
+        lines = (root / site.path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return site
+    if not text or (0 < site.line <= len(lines) and lines[site.line - 1].strip() == text):
+        return site
+    hits = [number for number, line in enumerate(lines, 1) if line.strip() == text]
+    if not hits:
+        return None
+    return replace(site, line=min(hits, key=lambda number: abs(number - site.line)))
 
 
 def _apply_one(
@@ -112,9 +169,14 @@ def _apply_one(
             context=pack,
         )
 
+    target = _new_signatures(config, site, [site.symbol])
+    if target:
+        pack.release_diff["new_release_signatures"] = target
+
     feedback = ""
     last_error = ""
     last_diff = ""
+    earlier: list[str] = []
     attempts = 0
     site_tokens = 0
     for attempt in range(1, config.settings.max_attempts + 1):
@@ -134,9 +196,9 @@ def _apply_one(
             site_tokens += used
             report.tokens_used += used
             edit = parse_model_edit(edit_text)
-            patched, diff = splice_edit(pack, edit)
+            patched, diff, span = splice_edit_with_span(pack, edit)
             last_diff = diff
-            _verify_site_cleared(config, site, patched)
+            _verify_site_cleared(config, site, patched, span)
             tests_ok, test_err = _run_tests(config, site, patched)
             if not tests_ok:
                 feedback = trim_test_feedback(test_err or "tests failed")
@@ -165,6 +227,10 @@ def _apply_one(
                 attempts=attempts,
                 context=pack,
             )
+        except RecheckError as exc:
+            last_error = str(exc)
+            feedback = _with_earlier(last_error, exc.findings, earlier)
+            earlier.extend(text for text in exc.findings if text not in earlier)
         except PatchError as exc:
             last_error = str(exc)
             feedback = last_error
@@ -178,7 +244,7 @@ def _apply_one(
         why="",
         diff=last_diff,
         attempts=attempts,
-        error=last_error or "max attempts exhausted",
+        error=last_error.split("\nNew release signatures", 1)[0] or "max attempts exhausted",
         context=pack,
     )
 
@@ -227,21 +293,68 @@ def _summarize(
     return why, result.total_tokens
 
 
-def _verify_site_cleared(config: ApplyConfig, site: ImpactSite, patched: str) -> None:
+def _verify_site_cleared(
+    config: ApplyConfig, site: ImpactSite, patched: str, span: tuple[int, int]
+) -> None:
     if config.site_cleared is not None:
-        cleared = config.site_cleared(config.root, site, patched)
-    elif config.recheck_impact:
-        cleared = site_cleared_by_impact(
-            config.root,
-            site,
-            patched,
+        if not config.site_cleared(config.root, site, patched):
+            raise PatchError("impact site still flagged after patch")
+        return
+    if not config.recheck_impact:
+        return
+    breaks = remaining_breaks(
+        config.root,
+        site,
+        patched,
+        span=span,
+        fixtures=config.fixtures,
+        allow_network=config.allow_network,
+    )
+    if breaks:
+        # Fed back to the model as the retry reason; the last one is the Why.
+        message = "rewrite still breaks against the new release:\n- " + "\n- ".join(
+            text for text, _symbol in breaks
+        )
+        signatures = _new_signatures(config, site, [symbol for _text, symbol in breaks])
+        if signatures:
+            message += "\nNew release signatures (read from its own code):\n" + "\n".join(
+                signatures.values()
+            )
+        raise RecheckError(message, [text for text, _symbol in breaks])
+
+
+class RecheckError(PatchError):
+    """Recheck findings for one attempt; ``findings`` carries them one by one."""
+
+    def __init__(self, message: str, findings: list[str]) -> None:
+        super().__init__(message)
+        self.findings = findings
+
+
+def _with_earlier(message: str, current: list[str], earlier: list[str]) -> str:
+    """Remind the model of findings an earlier attempt hit that this one did not repeat."""
+    missing = [text for text in earlier if text not in current]
+    if not missing:
+        return message
+    head, sep, tail = message.partition("\nNew release signatures")
+    head += "\nEarlier attempts also broke (keep these fixed):\n- " + "\n- ".join(missing)
+    return head + sep + tail
+
+
+def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -> dict[str, str]:
+    """Signatures of ``symbols`` in the new release's own code, when it defines them."""
+    if not config.recheck_impact or not any(symbols):
+        return {}
+    try:
+        wheel = new_release_wheel(
+            site.dependency,
+            site.to_version,
             fixtures=config.fixtures,
             allow_network=config.allow_network,
         )
-    else:
-        return
-    if not cleared:
-        raise PatchError("impact site still flagged after patch")
+        return signatures_for(wheel, [symbol for symbol in symbols if symbol])
+    except Exception:  # noqa: BLE001 — prompt context only; never blocks a fix
+        return {}
 
 
 def _run_tests(

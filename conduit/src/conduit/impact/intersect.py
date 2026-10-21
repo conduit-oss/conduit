@@ -24,7 +24,7 @@ def intersect(
     covered: list[tuple[str, str]] = []
     # Two removed symbols can share one detail and one call. Emit that
     # file:line once per change text. A different change on the same line stays.
-    emitted: set[tuple[str, int, str]] = set()
+    emitted: set[tuple] = set()
     ordered = sorted(changes, key=lambda item: (0 if item.confidence != "low" else 1, item.detail))
     for change in ordered:
         if change.confidence == "low" and any(change.old and change.old == old for old, _site in covered):
@@ -38,11 +38,22 @@ def intersect(
             methods or {},
         )
         fresh: list[SiteHit] = []
+        # One removed name can appear under its defining path and a public
+        # re-export (``types.completion.Completion`` and ``types.Completion``).
+        # The parameter (``old``) stays in the key: two removed keywords on one
+        # call are two breaks.
+        short = (
+            change.kind,
+            (change.symbol or "").rsplit(".", 1)[-1],
+            (change.old or "").rsplit(".", 1)[-1],
+        )
         for site in sites:
             key = (site.path, site.line, change.detail)
-            if key in emitted:
+            same = (site.path, site.line, site.expr, *short)
+            if key in emitted or same in emitted:
                 continue
             emitted.add(key)
+            emitted.add(same)
             fresh.append(site)
         sites = fresh
         if not sites:
@@ -266,6 +277,15 @@ def _python_match(
         base = change.confidence if how == "exact" else min_confidence(change.confidence, "medium")
         return min_confidence(base, chain.confidence)
     if chain.kind.endswith("_response"):
+        # A removed call's result object goes with it: an attribute read on
+        # that result (``.body``, ``.errors``) breaks. Plain subscripts are left
+        # to response_shape changes.
+        if change.kind != "removed" or not any(field.startswith(".") for field in chain.response_fields):
+            return None
+        how = _method_match(chain.sdk_method, change.symbol, change, peers, return_classes, surviving, methods)
+        return None if how is None else min_confidence(min_confidence(change.confidence, "medium"), chain.confidence)
+    if chain.kind.endswith("_alias") and change.kind not in {"removed", "renamed"}:
+        # An import line only breaks when the imported name is gone.
         return None
     how = _method_match(
         chain.sdk_method, change.symbol, change, peers, return_classes, surviving, methods
@@ -309,6 +329,15 @@ def _method_match(
         for name in (symbol, *change.aliases):
             if name and (candidate == name or candidate.endswith("." + name)):
                 return "exact"
+    if (
+        change.kind == "removed"
+        and symbol.rsplit(".", 1)[-1][:1].isupper()
+        and any(candidate.startswith(symbol + ".") for candidate in candidates)
+        and not any(peer.symbol in candidates for peer in peers)
+    ):
+        # A call on a removed class whose method the old release never defined
+        # statically (generated at runtime, e.g. ``get_async``) breaks with it.
+        return "pair"
     if _still_exported(sdk_method, surviving or set()):
         return None
     pair = _last_two(symbol)

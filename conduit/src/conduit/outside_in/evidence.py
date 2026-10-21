@@ -141,6 +141,8 @@ class _Direct:
     domain_candidates: dict[str, set[str]] = field(default_factory=dict)
     domain_strong: set[str] = field(default_factory=set)
     http_surface: bool = False
+    #: Fixed API paths written after a templated ``{scheme}://{host}`` (a tenant-hosted product).
+    path_templates: set[str] = field(default_factory=set)
     constructed_roots: set[str] = field(default_factory=set)
     #: Public Client/Session classes that are not HTTP verb surfaces.
     client_classes: set[str] = field(default_factory=set)
@@ -290,7 +292,12 @@ def specs_for_repo(root: Path) -> tuple[ServiceSpec, ...]:
         top = module.split(".", 1)[0]
         if is_stdlib_module(top) or _is_local_module(root, top):
             continue
-        dist = index.get(top) or declared.get(normalize_dist(top)) or ""
+        dist = (
+            index.get(top)
+            or declared.get(normalize_dist(top))
+            or _declared_by_token(top, declared)
+            or _declared_installed(top, declared)
+        )
         if dist:
             add(dist, pins.get(normalize_dist(dist)), module=module)
             continue
@@ -301,6 +308,28 @@ def specs_for_repo(root: Path) -> tuple[ServiceSpec, ...]:
     for token in _webhook_tokens(root):
         add(token, pins.get(normalize_dist(token)))
     return tuple(specs)
+
+
+def _declared_by_token(top: str, declared: dict[str, str]) -> str:
+    """A declared distribution whose name has the import root as one dash token
+    (``auth0`` -> ``auth0-python``). ``add`` still checks the wheel provides it."""
+    token = normalize_dist(top)
+    hits = [name for norm, name in declared.items() if token in norm.split("-") and norm != token]
+    return hits[0] if len(hits) == 1 else ""
+
+
+def _declared_installed(top: str, declared: dict[str, str]) -> str:
+    """A declared distribution the running interpreter says provides ``top``
+    (``square`` -> ``squareup`` when the repo's requirements are installed)."""
+    global _INTERPRETER_INDEX
+    if _INTERPRETER_INDEX is None:
+        from conduit.outside_in.distributions import _interpreter_import_index
+
+        _INTERPRETER_INDEX = _interpreter_import_index()
+    return declared.get(_INTERPRETER_INDEX.get(top, ""), "")
+
+
+_INTERPRETER_INDEX: dict[str, str] | None = None
 
 
 def _as_spec(found: Classification) -> ServiceSpec:
@@ -394,7 +423,9 @@ def _finish(
                 evidence = f"{norm} -> {sorted(direct.hosts)[0]}"
     elif direct.http_surface and (direct.strong or transports):
         kind = "api"
-        transport = True
+        # A transport takes the whole URL from its caller. A client that writes
+        # its own endpoint paths after a templated host is the product.
+        transport = len(direct.path_templates) < _MIN_PATH_TEMPLATES
         if transports:
             evidence = f"{norm} -> {transports[0].evidence}"
         elif direct.stdlib:
@@ -667,6 +698,7 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
         return
     aliases, internal = _aliases(tree, own)
     direct.hosts.update(_assigned_hosts(tree))
+    direct.path_templates.update(_path_templates(tree))
     local_funcs: set[str] = set()
     class_methods: dict[str, set[str]] = {}
     class_nodes: list[ast.ClassDef] = []
@@ -1113,6 +1145,27 @@ def _stdlib_of(expanded: str) -> str:
     return ""
 
 
+_MIN_PATH_TEMPLATES = 3
+
+
+def _path_templates(tree: ast.AST) -> set[str]:
+    """Literal paths in f-strings shaped ``{..}://{..}/fixed/path`` (host is a placeholder)."""
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.JoinedStr):
+            continue
+        parts = node.values
+        for index, part in enumerate(parts[:-1]):
+            text = part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else ""
+            if not text.endswith("://") or not isinstance(parts[index + 1], ast.FormattedValue):
+                continue
+            tail = parts[index + 2] if index + 2 < len(parts) else None
+            path = tail.value if isinstance(tail, ast.Constant) and isinstance(tail.value, str) else ""
+            if re.match(r"/[A-Za-z]", path):
+                found.add(path.split("?", 1)[0])
+    return found
+
+
 def _assigned_hosts(tree: ast.AST) -> set[str]:
     """Hosts written into an endpoint default, not a documentation link.
 
@@ -1367,6 +1420,8 @@ def _read_archive(
                     files.append((member.name.split("/", 1)[-1], blob))
     except (OSError, zipfile.BadZipFile, tarfile.TarError):
         return None
+    if not top_level and path.name.endswith(".whl"):
+        top_level = _roots_from_paths(name for name, _blob in files)
     if not files and not meta_text:
         return None
     meta = _meta_from_text(meta_text)
@@ -1580,11 +1635,30 @@ def _meta_from_text(text: str) -> dict[str, str]:
 def _top_level_file(info: Path) -> tuple[str, ...]:
     path = info / "top_level.txt"
     if not path.is_file():
-        return ()
+        # Wheels built without top_level.txt (e.g. poetry): the import roots are
+        # whatever the installed RECORD puts at site-packages level.
+        try:
+            record = (info / "RECORD").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ()
+        return _roots_from_paths(line.split(",", 1)[0] for line in record.splitlines())
     try:
         return _lines(path.read_bytes())
     except OSError:
         return ()
+
+
+def _roots_from_paths(paths) -> tuple[str, ...]:
+    """Top-level packages (``x/__init__.py``) and modules (``x.py``) in a flat wheel layout."""
+    roots: list[str] = []
+    for item in paths:
+        parts = item.split("/")
+        if parts[0].endswith((".dist-info", ".data")) or parts[0] in {"..", "__pycache__"}:
+            continue
+        name = parts[0][:-3] if len(parts) == 1 and parts[0].endswith(".py") else parts[0]
+        if (len(parts) == 1 or parts[-1] == "__init__.py") and name.isidentifier() and name not in roots:
+            roots.append(name)
+    return tuple(roots)
 
 
 def _lines(blob: bytes) -> tuple[str, ...]:

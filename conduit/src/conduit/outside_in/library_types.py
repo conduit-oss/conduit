@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import json
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.request import urlopen
@@ -19,6 +20,38 @@ from conduit.analysis_cache import cache_root, file_sha256, read_json, write_jso
 from conduit.deps.manifests import read_installed
 
 _MAX_FILES = 800
+#: Import name -> release whose own code types the repo's calls (``--from``).
+_TYPED_FROM: dict[str, str] = {}
+
+
+@contextmanager
+def types_from(versions: dict[str, str]):
+    """Type calls against these releases instead of whatever is installed.
+
+    Impact compares the repo's pinned (``--from``) release with a newer one.
+    When CI has already installed the newer release, call sites must still be
+    typed by the release the code was written for, or a removed attribute
+    leaves the call unresolved and live runs find less than offline runs.
+    """
+    previous = dict(_TYPED_FROM)
+    _TYPED_FROM.update(
+        {name.lower().replace("-", "_"): version for name, version in versions.items() if version}
+    )
+    try:
+        yield
+    finally:
+        _TYPED_FROM.clear()
+        _TYPED_FROM.update(previous)
+
+
+def installed_version(dist: str) -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version(dist)
+    except PackageNotFoundError:
+        return ""
+
 _MAX_DOWNLOAD = 8_000_000
 _DEPTH = 8
 # Cap retained distribution ASTs. Each entry can hold hundreds of modules; an
@@ -747,13 +780,16 @@ class LibraryTypes:
             return cached
         if top in self._dist:
             return {}
-        pin = self._pins.get(top, "")
+        pin = _TYPED_FROM.get(top) or self._pins.get(top, "")
         from conduit.analysis_cache import cache_enabled
 
         # An importable tree on sys.path (tests, editable installs) wins over a
-        # same-named wheel sitting in the cache directory.
+        # same-named wheel sitting in the cache directory, unless impact asked
+        # for the ``--from`` release's own code.
         installed = _installed_root(top)
         wheel = _resolve_wheel(top, pin)
+        if top in _TYPED_FROM and wheel is not None:
+            installed = None
         if installed is None and wheel is not None and cache_enabled():
             digest = file_sha256(wheel)
             hit = read_json("libtypes", digest)
