@@ -356,7 +356,8 @@ def test_test_failure_feedback_fed_to_model_is_trimmed(tmp_path: Path):
     huge = "\n".join(f"noise-{i}" for i in range(200))
     log_file = tmp_path / "huge.log"
     log_file.write_text(huge + "\n", encoding="utf-8")
-    client = FakeModelClient(responses=[_good_edit(), _good_edit(), "fixed after retry"])
+    # Batch mode: propose + summary, the whole-tree test run fails once, then one retry.
+    client = FakeModelClient(responses=[_good_edit(), "why", _good_edit(), "fixed after retry"])
     fail_once = tmp_path / "fail_once.sh"
     marker = tmp_path / "ran"
     fail_once.write_text(
@@ -377,7 +378,7 @@ def test_test_failure_feedback_fed_to_model_is_trimmed(tmp_path: Path):
         ),
     )
     assert report.results[0].status == SiteStatus.FIXED_VERIFIED, report.results[0].error
-    second_user = client.calls[1]["messages"][1].content
+    second_user = client.calls[2]["messages"][1].content
     assert "noise-0" not in second_user
     assert "earlier lines omitted" in second_user
     assert "noise-199" in second_user
@@ -1155,3 +1156,58 @@ def test_missing_member_refuses_an_ambiguous_class_guess(tmp_path: Path):
     # Chat is defined twice at the same distance from the client: no guess, no false "has no create".
     assert missing_member(modules, "sdk._client.Client.chat.completions.create") is None
     assert missing_member(modules, "sdk._client.Client.chat.completions.stream") is None
+
+
+def _two_file_repo(tmp_path: Path) -> tuple[Path, list]:
+    root = _repo_with_break(tmp_path)
+    (root / "two.py").write_text("def second(client):\n    return client.old_call(2)\n", encoding="utf-8")
+    payload = _impact_payload(line=7)
+    payload["impacts"][0]["sites"].append(dict(payload["impacts"][0]["sites"][0], path="two.py", line=2))
+    return root, sites_from_payload(payload)
+
+
+def _edit(name: str, body: str) -> str:
+    return json.dumps({"function_source": f"def {name}(client):\n    return {body}\n", "new_imports": []})
+
+
+def test_batch_runs_tests_once_after_every_site_is_rewritten(tmp_path: Path):
+    root, sites = _two_file_repo(tmp_path)
+    # Passes only when neither file still has the old call: each fix alone fails.
+    check = "python3 -c \"import pathlib,sys; sys.exit(any('old_call' in pathlib.Path(p).read_text() for p in ('mod.py','two.py')))\""
+    client = FakeModelClient(responses=[_edit("broken", "client.new_call(1)"), "why", _edit("second", "client.new_call(2)"), "why"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=check, client=client, site_cleared=lambda *_a: True),
+    )
+    assert [r.status for r in report.results] == [SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_VERIFIED]
+    assert "old_call" not in (root / "mod.py").read_text() + (root / "two.py").read_text()
+
+
+def test_batch_retries_the_blamed_site_then_reverts_it(tmp_path: Path):
+    root, sites = _two_file_repo(tmp_path)
+    # Fails while two.py calls bad_call, naming its file and line like a traceback.
+    script = tmp_path / "check.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        "lines = pathlib.Path('two.py').read_text().splitlines()\n"
+        "bad = [n for n, line in enumerate(lines, 1) if 'bad_call' in line]\n"
+        "if bad:\n"
+        "    print(f'  File \"two.py\", line {bad[0]}, in second')\n"
+        "    print(\"AttributeError: 'Client' object has no attribute 'bad_call'\")\n"
+        "    sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    client = FakeModelClient(
+        responses=[_edit("broken", "client.new_call(1)"), "why", _edit("second", "client.bad_call(2)"), "why",
+                   _edit("second", "client.bad_call(3)"), "why", _edit("second", "client.bad_call(4)"), "why"]
+    )
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(max_attempts=3), write=True, test_cmd=f"python3 {script}", client=client,
+                    site_cleared=lambda *_a: True),
+    )
+    first, second = report.results
+    assert first.status == SiteStatus.FIXED_VERIFIED
+    assert second.status == SiteStatus.NEEDS_HUMAN and second.attempts == 3 and "reverted" in second.error
+    assert "bad_call" in client.calls[4]["messages"][1].content  # the retry saw its rewrite and the failure
+    assert "new_call(1)" in (root / "mod.py").read_text() and "old_call(2)" in (root / "two.py").read_text()
