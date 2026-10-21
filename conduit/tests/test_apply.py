@@ -657,6 +657,10 @@ def test_recheck_rejects_rewrite_that_uses_a_removed_param(tmp_path: Path, monke
     assert result.status == SiteStatus.NEEDS_HUMAN
     assert "parameter timeout removed" in result.error
     assert result.attempts == 2
+    # A report cell keeps the first line, so the finding has to be on it.
+    first = result.error.splitlines()[0]
+    assert first.startswith("rewrite still breaks against the new release: ")
+    assert "parameter timeout removed" in first
     # The finding went back to the model as the retry reason.
     retry_prompt = client.calls[1]["messages"][-1].content
     assert "parameter timeout removed" in retry_prompt
@@ -1254,6 +1258,122 @@ def test_original_positionals_are_named_through_the_old_signature(tmp_path: Path
     before = "def run(client):\n    return client.open(**kw)\n"
     site = SimpleNamespace(line=2, expr="client.open", symbol="example_sdk.Client.open")
     assert original_arguments(before, site, old) == set()
+
+
+def _masked_read_repo(tmp_path: Path) -> tuple[Path, list]:
+    """A helper rewrite reads an attribute; a later site passes a new-release value into it."""
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "helper.py").write_text(
+        "def from_completion(result):\n    return result.completion\n",
+        encoding="utf-8",
+    )
+    (root / "caller.py").write_text(
+        "def post(client):\n    result = client.old_call(1)\n    return from_completion(result)\n",
+        encoding="utf-8",
+    )
+    payload = _impact_payload(path="helper.py", line=2)
+    payload["impacts"][0]["sites"][0]["expr"] = "result.completion"
+    payload["impacts"][0]["sites"].append(
+        {
+            "path": "caller.py",
+            "line": 2,
+            "expr": "client.old_call",
+            "confidence": "high",
+            "via_wrapper": False,
+        }
+    )
+    return root, sites_from_payload(payload)
+
+
+def _fn(source: str) -> str:
+    return json.dumps({"function_source": source, "new_imports": []})
+
+
+_MASKED = "def from_completion(result):\n    return getattr(result, 'completion', str(result))\n"
+_READ_TEXT = "def from_completion(result):\n    return result.content[0].text\n"
+_CALLER_EDIT = "def post(client):\n    result = client.new_call(1)\n    return from_completion(result)\n"
+_MASKED_EXPR = "getattr(result, 'completion', str(result))"
+
+
+def _masked_finding(scratch: Path) -> str:
+    helper = (scratch / "helper.py").read_text(encoding="utf-8")
+    line = next(number for number, row in enumerate(helper.splitlines(), 1) if _MASKED_EXPR in row)
+    return (
+        f"helper.py:{line} {_MASKED_EXPR}: from_completion() gets result = BetaMessage "
+        "from caller.py:2 in example-sdk 2.0, which has no attribute completion (fields: content)"
+    )
+
+
+def _masked_breaks(scratch: Path, site, *, span, fixtures, allow_network, original=""):
+    """The caller's recheck flags the masked read in the helper. The helper's own recheck stays quiet."""
+    helper = (scratch / "helper.py").read_text(encoding="utf-8")
+    caller = (scratch / "caller.py").read_text(encoding="utf-8")
+    if site.path.endswith("caller.py") and _MASKED_EXPR in helper and "new_call" in caller:
+        return [(_masked_finding(scratch), "")]
+    return []
+
+
+def test_batch_routes_masked_read_back_to_the_feeding_rewrite(tmp_path: Path, monkeypatch):
+    from conduit.apply import verify as verify_mod
+
+    root, sites = _masked_read_repo(tmp_path)
+    monkeypatch.setattr(verify_mod, "_breaks_listed", _masked_breaks)
+    client = FakeModelClient(
+        responses=[_fn(_MASKED), "why", _fn(_CALLER_EDIT), "why", _fn(_READ_TEXT), "why"]
+    )
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(),
+            write=True,
+            test_cmd="python3 -c \"print('ok')\"",
+            client=client,
+            recheck_impact=True,
+        ),
+    )
+    helper, caller = report.results
+    assert helper.site.path == "helper.py" and caller.site.path == "caller.py"
+    assert helper.status == SiteStatus.FIXED_VERIFIED, helper.error
+    assert caller.status == SiteStatus.FIXED_VERIFIED, caller.error
+    assert "result.content[0].text" in (root / "helper.py").read_text(encoding="utf-8")
+    assert _MASKED_EXPR not in (root / "helper.py").read_text(encoding="utf-8")
+    retry = client.calls[4]["messages"][-1].content
+    assert "no attribute completion" in retry
+    assert "BetaMessage" in retry
+    assert _MASKED_EXPR in retry
+
+
+def test_routed_masked_read_is_not_verified_and_names_the_finding(tmp_path: Path, monkeypatch):
+    from conduit.apply import verify as verify_mod
+
+    root, sites = _masked_read_repo(tmp_path)
+    monkeypatch.setattr(verify_mod, "_breaks_listed", _masked_breaks)
+    # The retry keeps the masked read, and the helper's own recheck does not repeat it.
+    client = FakeModelClient(
+        responses=[_fn(_MASKED), "why", _fn(_CALLER_EDIT), "why", _fn(_MASKED), "why"]
+    )
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(),
+            write=True,
+            test_cmd="python3 -c \"print('ok')\"",
+            client=client,
+            recheck_impact=True,
+        ),
+    )
+    helper, caller = report.results
+    assert caller.status == SiteStatus.FIXED_VERIFIED, caller.error
+    assert helper.status == SiteStatus.NEEDS_HUMAN
+    first = helper.error.splitlines()[0]
+    assert first.startswith("rewrite still breaks against the new release: ")
+    assert "no attribute completion" in first
+    assert _MASKED_EXPR in first
+    assert _MASKED_EXPR not in (root / "helper.py").read_text(encoding="utf-8")
+    assert "new_call" in (root / "caller.py").read_text(encoding="utf-8")
 
 
 def test_hasattr_on_a_release_value_without_the_attribute_is_flagged(tmp_path: Path):
