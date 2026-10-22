@@ -1998,3 +1998,108 @@ def test_filter_guard_on_an_attribute_no_item_type_has_is_rejected(tmp_path: Pat
         tmp_path, "return ''.join(block.body for block in result.content if hasattr(block, 'body'))\n"
     )
     assert any("hasattr(block, 'body')" in text and "no attribute body" in text for text in found), found
+
+
+_CHAIN_WHEEL = """\
+from typing import Optional
+
+class Usage:
+    input_tokens: int
+
+class Reply:
+    usage: Optional[Usage]
+
+class Messages:
+    def create(self, *, model: str) -> Reply:
+        return Reply()
+
+class Client:
+    @property
+    def messages(self):
+        return Messages(self)
+"""
+
+
+def test_getattr_default_on_an_attribute_chain_is_checked(tmp_path: Path):
+    """``getattr(result.usage, "x", 0)``: the chain's type comes from the release's field annotations."""
+    from conduit.apply.signatures import _modules
+    from conduit.apply.typecheck import attribute_breaks
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(_CHAIN_WHEEL, encoding="utf-8")
+    modules = _modules(str(tmp_path / "wheel"))
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = textwrap.dedent(
+        """\
+        def post(client):
+            result = client.messages.create(model='m')
+            made_up = getattr(result.usage, 'cache_tokens', 0)
+            dead = getattr(result.usage, 'input_tokens', 0)
+            return made_up, dead, result.usage.input_tokens
+        """
+    )
+    (root / "f.py").write_text(source, encoding="utf-8")
+    chains = [_chain("f.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")]
+    found = attribute_breaks(modules, root, "f.py", source, (1, 5), chains, "example-sdk", "2.0")
+    assert any("getattr(result.usage, 'cache_tokens', 0)" in t and "result.usage is Usage" in t and "no attribute cache_tokens" in t for t in found), found
+    assert any("getattr(result.usage, 'input_tokens', 0)" in t and "always has input_tokens" in t for t in found), found
+    assert len(found) == 2, found
+
+
+def test_calls_into_the_repos_own_code_are_checked_against_its_signature(tmp_path: Path):
+    from conduit.apply.typecheck import repo_call_breaks
+
+    root = tmp_path / "repo"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "usage.py").write_text(
+        "class Usage:\n    def __init__(self, prompt_tokens: int, completion_tokens: int, cached: int = 0):\n        pass\n",
+        encoding="utf-8",
+    )
+    calls = {
+        "Usage(input_tokens=1, completion_tokens=2)": "takes no keyword input_tokens",
+        "Usage(prompt_tokens=1)": "requires completion_tokens",
+        "Usage(1, 2, 3, 4)": "takes 3 positional arguments",
+        "Usage(1, completion_tokens=2, cached=3)": "",
+    }
+    for call, expected in calls.items():
+        source = f"from pkg.usage import Usage\n\ndef build():\n    return {call}\n"
+        found = repo_call_breaks(root, "pkg/build.py", source, (3, 4))
+        if expected:
+            assert len(found) == 1 and expected in found[0] and "Usage in this repo" in found[0], (call, found)
+        else:
+            assert found == [], (call, found)
+
+
+def test_site_fed_by_a_caller_that_needs_a_human_is_not_verified(tmp_path: Path, monkeypatch):
+    """The helper's rewrite expects the caller's new value; the caller was never fixed."""
+    import conduit.apply.engine as engine
+
+    def fake(root, site, patched, *, span=None, fixtures=None, allow_network=False, original=None):
+        if site.path == "caller.py" and "new_call" in patched:
+            return [("caller.py:2 client.new_call(1): new_call takes no positional arguments", "")]
+        return []
+
+    monkeypatch.setattr(engine, "remaining_breaks", fake)
+    root, sites = _masked_read_repo(tmp_path)
+    client = FakeModelClient(responses=[_fn(_CALLER_EDIT)] * 3 + [_fn(_READ_TEXT), "reads content"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    helper, caller = report.results
+    assert caller.status == SiteStatus.NEEDS_HUMAN
+    assert helper.status == SiteStatus.NEEDS_HUMAN, (helper.status, helper.why)
+    assert helper.why.startswith("its caller caller.py:2 was not fixed"), helper.why
+    assert "result.completion" in (root / "helper.py").read_text(encoding="utf-8")  # reverted
+
+
+def test_rewrite_that_repeats_a_decorator_is_rejected():
+    from conduit.apply.engine import _repeated_decorator
+
+    doubled = "class A:\n    @staticmethod\n    @staticmethod\n    def f(x):\n        return x\n"
+    assert _repeated_decorator(doubled, (2, 5)) == "@staticmethod on f"
+    assert _repeated_decorator(doubled.replace("    @staticmethod\n", "", 1), (2, 4)) == ""

@@ -547,9 +547,12 @@ def attribute_breaks(
         parents = {child: parent for parent in ast.walk(func) for child in ast.iter_child_nodes(parent)}
         for node in ast.walk(func):
             name, attr = _attribute_read(node)
-            if not name or name not in typed or attr.startswith("__"):
+            classes = typed.get(name, []) if name else []
+            if not name:
+                # ``getattr(result.usage, "x", 0)``: the chain's type, field by field.
+                name, attr, classes = _chain_guard(modules, typed, node)
+            if not name or not classes or attr.startswith("__"):
                 continue
-            classes = typed[name]
             if _filters_items(parents, node, name) and _has_attribute(modules, classes, attr) is True:
                 # Items without ``attr`` are skipped, and some item types have it:
                 # nothing is made up for the others.
@@ -576,6 +579,92 @@ def attribute_breaks(
         for text in _callee_reads(modules, root, trees, chains, path, func, typed, package, version, flows):
             if text not in out:
                 out.append(text)
+    return out
+
+
+def _chain_guard(modules, typed, node: ast.AST) -> tuple[str, str, list[tuple[str, ast.ClassDef]]]:
+    """``getattr``/``hasattr`` on an attribute chain rooted in a typed name: (chain, attr, its classes)."""
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"getattr", "hasattr"}
+        and len(node.args) >= 2
+        and isinstance(node.args[0], ast.Attribute)
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    ):
+        return "", "", []
+    classes = _expr_classes(modules, typed, node.args[0], 0)
+    return (ast.unparse(node.args[0]), node.args[1].value, classes) if classes else ("", "", [])
+
+
+def _expr_classes(modules, typed, expr: ast.AST, depth: int) -> list[tuple[str, ast.ClassDef]]:
+    """Release classes of ``name.a.b``: each field's annotation in the new release."""
+    if isinstance(expr, ast.Name):
+        return typed.get(expr.id, [])
+    if not isinstance(expr, ast.Attribute) or depth > _MAX_DEPTH:
+        return []
+    out: list[tuple[str, ast.ClassDef]] = []
+    for module_name, klass in _expr_classes(modules, typed, expr.value, depth + 1):
+        found = _field_annotation(modules, module_name, klass, expr.attr, 0)
+        if found is None:
+            return []  # one possible owner does not declare it: unknown, stay quiet
+        for item in _type_classes(modules, found[0], found[1], 0):
+            if item not in out:
+                out.append(item)
+    return out
+
+
+def repo_call_breaks(root: Path, path: str, source: str, span: tuple[int, int]) -> list[str]:
+    """Calls in the span to a class or function this repo defines, checked against its own
+    signature: a keyword it does not take, or a required argument left out."""
+    tree = ast.parse(source)
+    trees = {path: tree}
+    defs: dict[str, list[ast.AST]] = {}
+    for _rel, module in _repo_trees(root, trees):
+        for node in module.body:
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                defs.setdefault(node.name, []).append(node)
+    out: list[str] = []
+    for call in ast.walk(tree):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and span[0] <= call.lineno <= span[1]):
+            continue
+        if any(isinstance(arg, ast.Starred) for arg in call.args) or any(kw.arg is None for kw in call.keywords):
+            continue
+        found = defs.get(call.func.id, [])
+        if len(found) != 1:
+            continue
+        target = found[0]
+        if isinstance(target, ast.ClassDef):
+            init = next(
+                (stmt for stmt in target.body if isinstance(stmt, ast.FunctionDef) and stmt.name == "__init__"), None
+            )
+            if init is None or target.decorator_list:
+                continue  # inherited or generated constructor: unknown
+            args, skip = init.args, 1
+        else:
+            args, skip = target.args, 0
+        if args.kwarg is not None:
+            continue
+        positional = [arg.arg for arg in (*args.posonlyargs, *args.args)][skip:]
+        names = set(positional[len(args.posonlyargs):]) | {arg.arg for arg in args.kwonlyargs}
+        where = f"{path}:{call.lineno} {ast.unparse(call.func)}(...)"
+        unknown = [kw.arg for kw in call.keywords if kw.arg not in names]
+        if unknown:
+            out.append(
+                f"{where}: {call.func.id} in this repo takes no keyword {', '.join(unknown)} "
+                f"(its parameters: {', '.join(positional + [arg.arg for arg in args.kwonlyargs]) or 'none'})"
+            )
+            continue
+        if args.vararg is None and len(call.args) > len(positional):
+            out.append(f"{where}: {call.func.id} in this repo takes {len(positional)} positional arguments, the rewrite passes {len(call.args)}")
+            continue
+        required = positional[: len(positional) - len(args.defaults)]
+        given = set(positional[: len(call.args)]) | {kw.arg for kw in call.keywords}
+        missing = [name for name in required if name not in given]
+        missing += [arg.arg for arg, default in zip(args.kwonlyargs, args.kw_defaults) if default is None and arg.arg not in given]
+        if missing:
+            out.append(f"{where}: {call.func.id} in this repo requires {', '.join(missing)}, which the rewrite does not pass")
     return out
 
 
