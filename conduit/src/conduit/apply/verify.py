@@ -151,21 +151,32 @@ def _type_breaks(
     import ast
 
     from conduit.apply.signatures import _modules, new_release_wheel
-    from conduit.apply.typecheck import argument_breaks, attribute_breaks, dropped_arguments, original_arguments
+    from conduit.apply.typecheck import (
+        argument_breaks,
+        attribute_breaks,
+        dropped_arguments,
+        original_arguments,
+        repo_call_breaks,
+    )
 
     try:
         source = (root / path).read_text(encoding="utf-8")
         tree = ast.parse(source)
     except (OSError, SyntaxError, UnicodeDecodeError):
         return []
+    try:
+        # Calls into this repo's own classes and functions, against their own signatures.
+        local = [(text, "") for text in repo_call_breaks(root, path, source, span)]
+    except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
+        local = []
     wheel = new_release_wheel(
         site.dependency, site.to_version, fixtures=fixtures, allow_network=allow_network
     )
     if wheel is None:
-        return []
+        return local
     try:
         modules = _modules(str(wheel))
-        found: list[tuple[str, str]] = []
+        found: list[tuple[str, str]] = list(local)
         old_wheel = new_release_wheel(
             site.dependency, site.from_version, fixtures=fixtures, allow_network=allow_network
         )
@@ -194,7 +205,7 @@ def _type_breaks(
             found.append((text, ""))
         return found
     except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
-        return []
+        return local
 
 
 def _unknown_keyword_breaks(
