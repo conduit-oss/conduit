@@ -688,20 +688,22 @@ def _callee_reads(modules, root: Path, trees, chains, path: str, func, typed, pa
         if not given:
             continue
         defs = [
-            (rel, node)
+            (rel, tree, node)
             for rel, tree in _repo_trees(root, trees)
             for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == callee
         ]
         if len(defs) != 1:
             continue
-        rel, target = defs[0]
+        rel, home, target = defs[0]
         params = _positional(target)
         for index, classes in given:
             param = params[index] if isinstance(index, int) and index < len(params) else next(
                 (arg for arg in (*params, *target.args.kwonlyargs) if arg.arg == index), None
             )
-            if param is None or _annotated_elsewhere(param.annotation, ""):
+            if param is None:
+                continue
+            if _annotated_elsewhere(param.annotation, "") and not _stale_annotation(modules, home, param.annotation, package):
                 continue
             names = ", ".join(sorted({klass.name for _module, klass in classes}))
             for node in ast.walk(target):
@@ -718,6 +720,69 @@ def _callee_reads(modules, root: Path, trees, chains, path: str, func, typed, pa
                 if text not in out:
                     out.append(text)
     return out
+
+
+def _stale_annotation(modules, tree: ast.Module, annotation: ast.AST | None, package: str) -> bool:
+    """An annotation that names nothing real any more: its name is bound nowhere in
+    the module (the import was removed with the old release), or it is imported
+    from the release, which no longer defines it. It says nothing about the value,
+    so the value the caller passes decides."""
+    node = annotation
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            node = ast.parse(node.value.strip(), mode="eval").body
+        except SyntaxError:
+            return False
+    if isinstance(node, ast.Subscript):
+        node = node.value
+    head = node
+    while isinstance(head, ast.Attribute):
+        head = head.value
+    if not isinstance(head, ast.Name):
+        return False
+    name = head.id
+    import builtins
+
+    if hasattr(builtins, name):
+        return False
+    top = package.lower().replace("-", "_")
+    bound = False
+    for item in ast.walk(tree):
+        if isinstance(item, (ast.Import, ast.ImportFrom)):
+            for alias in item.names:
+                if (alias.asname or alias.name.split(".")[0]) != name:
+                    continue
+                bound = True
+                module = item.module if isinstance(item, ast.ImportFrom) else ""
+                if (
+                    isinstance(item, ast.ImportFrom) and not item.level and module
+                    and module.split(".")[0] == top and node is head
+                    and not _module_binds(modules.get(module), alias.name)
+                ):
+                    return True
+        elif isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == name:
+            bound = True
+        elif isinstance(item, (ast.Assign, ast.AnnAssign)):
+            targets = item.targets if isinstance(item, ast.Assign) else [item.target]
+            if any(isinstance(t, ast.Name) and t.id == name for t in targets):
+                bound = True
+    return not bound
+
+
+def _module_binds(tree: ast.Module | None, name: str) -> bool:
+    """``name`` is defined or re-exported at the top of a release module."""
+    if tree is None:
+        return False
+    for node in tree.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return True
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and any((a.asname or a.name) == name for a in node.names):
+            return True
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return True
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+            return True
+    return False
 
 
 def _functions_in_span(tree: ast.Module, span: tuple[int, int]) -> list[ast.AST]:
