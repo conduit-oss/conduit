@@ -57,6 +57,8 @@ class ContextPack:
     new_signature: str
     new_docstring: str
     candidates: list[dict[str, Any]] = field(default_factory=list)
+    #: Batch only: values other rewritten sites now pass into this function.
+    connected: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {

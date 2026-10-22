@@ -8,6 +8,7 @@ Anything that cannot be resolved is treated as unknown and never flagged.
 from __future__ import annotations
 
 import ast
+from contextvars import ContextVar
 from pathlib import Path
 
 from conduit.apply.signatures import (
@@ -18,6 +19,10 @@ from conduit.apply.signatures import (
     missing_member,
     resolve_callable,
 )
+
+#: Set by the apply engine around a recheck: collects the release values a
+#: rewrite passes into repo functions (see ``_callee_reads``).
+FLOWS: ContextVar[list[dict] | None] = ContextVar("conduit_flows", default=None)
 
 # Python's own typing vocabulary (not any library's API).
 _BUILTINS = {"str", "bytes", "int", "float", "bool", "list", "tuple", "dict", "set"}
@@ -492,8 +497,13 @@ def attribute_breaks(
     chains,
     package: str,
     version: str,
+    flows: list[dict] | None = None,
 ) -> list[str]:
     """Attributes read on a value typed by the new release that its class lacks.
+
+    ``flows``, when given, collects each release value this span passes into a
+    repo function (see ``_callee_reads``), so a later rewrite of that function
+    can be told what it now receives.
 
     The value is a call into the release (local variable or argument passed to
     the rewritten function by a caller in this repo), or a parameter annotated
@@ -502,6 +512,8 @@ def attribute_breaks(
     tree = ast.parse(source)
     top = package.lower().replace("-", "_")
     trees = {path: tree}
+    if flows is None:
+        flows = FLOWS.get()
     out: list[str] = []
     for func in _functions_in_span(tree, span):
         typed: dict[str, list[tuple[str, ast.ClassDef]]] = {}
@@ -515,7 +527,7 @@ def attribute_breaks(
                         f"{path}:{arg.lineno} {arg.arg}: {ast.unparse(arg.annotation)}: annotated "
                         f"{', '.join(k.name for _m, k in classes)} but callers pass "
                         f"{', '.join(k.name for _m, k in passed)} from {package} {version} "
-                        f"(fields: {', '.join(_fields(passed))})"
+                        f"{_fields_note(passed)}"
                     )
                     classes = passed
                 classes = classes or passed
@@ -551,12 +563,12 @@ def attribute_breaks(
                 f"{version}, which has no attribute {attr}"
             )
             if fields:
-                text += f" (fields: {', '.join(fields)})"
+                text += f" {_fields_note(classes)}"
             if isinstance(node, ast.Call):
                 text += f"; a {node.func.id} check on it is dead code, drop that branch"
             if text not in out:
                 out.append(text)
-        for text in _callee_reads(modules, root, trees, chains, path, func, typed, package, version):
+        for text in _callee_reads(modules, root, trees, chains, path, func, typed, package, version, flows):
             if text not in out:
                 out.append(text)
     return out
@@ -667,7 +679,9 @@ def _type_classes(modules, near: str, node: ast.AST, depth: int) -> list[tuple[s
     return [hit] if hit else []
 
 
-def _callee_reads(modules, root: Path, trees, chains, path: str, func, typed, package: str, version: str) -> list[str]:
+def _callee_reads(
+    modules, root: Path, trees, chains, path: str, func, typed, package: str, version: str, flows: list[dict] | None = None
+) -> list[str]:
     """Attributes a repo function reads on a release value this function passes it.
 
     ``helper(result)`` where ``result`` comes from the release: the helper's
@@ -706,6 +720,20 @@ def _callee_reads(modules, root: Path, trees, chains, path: str, func, typed, pa
             if _annotated_elsewhere(param.annotation, "") and not _stale_annotation(modules, home, param.annotation, package):
                 continue
             names = ", ".join(sorted({klass.name for _module, klass in classes}))
+            if flows is not None:
+                record = {
+                    "callee_path": rel,
+                    "callee": target.name,
+                    "start": min([target.lineno, *[deco.lineno for deco in target.decorator_list]]),
+                    "end": target.end_lineno or target.lineno,
+                    "param": param.arg,
+                    "types": names,
+                    "fields": _fields(classes),
+                    "from": f"{path}:{call.lineno}",
+                    "release": f"{package} {version}",
+                }
+                if record not in flows:
+                    flows.append(record)
             for node in ast.walk(target):
                 name, attr = _attribute_read(node)
                 if name != param.arg or attr.startswith("__") or _has_attribute(modules, classes, attr) is not False:
@@ -716,7 +744,7 @@ def _callee_reads(modules, root: Path, trees, chains, path: str, func, typed, pa
                 )
                 fields = _fields(classes)
                 if fields:
-                    text += f" (fields: {', '.join(fields)}); read what you need here instead of passing it on"
+                    text += f" {_fields_note(classes)}; read what you need here instead of passing it on"
                 if text not in out:
                     out.append(text)
     return out
@@ -783,6 +811,12 @@ def _module_binds(tree: ast.Module | None, name: str) -> bool:
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
             return True
     return False
+
+
+def _fields_note(classes) -> str:
+    """``(Name fields: a: int, ...)``: the type is named so a report can list it once."""
+    names = ", ".join(sorted({klass.name for _module, klass in classes}))
+    return f"({names} fields: {', '.join(_fields(classes))})"
 
 
 def _functions_in_span(tree: ast.Module, span: tuple[int, int]) -> list[ast.AST]:
