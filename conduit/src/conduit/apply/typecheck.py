@@ -544,11 +544,16 @@ def attribute_breaks(
                 classes = _element_classes(modules, typed, node.iter)
                 if classes:
                     typed[node.target.id] = classes
+        parents = {child: parent for parent in ast.walk(func) for child in ast.iter_child_nodes(parent)}
         for node in ast.walk(func):
             name, attr = _attribute_read(node)
             if not name or name not in typed or attr.startswith("__"):
                 continue
             classes = typed[name]
+            if _filters_items(parents, node, name) and _has_attribute(modules, classes, attr) is True:
+                # Items without ``attr`` are skipped, and some item types have it:
+                # nothing is made up for the others.
+                continue
             masked = _masked_read(modules, path, node, name, attr, classes, package, version)
             if masked:
                 if masked not in out:
@@ -572,6 +577,56 @@ def attribute_breaks(
             if text not in out:
                 out.append(text)
     return out
+
+
+def _filters_items(parents: dict[ast.AST, ast.AST], node: ast.AST, name: str) -> bool:
+    """``node`` is a ``hasattr``/``getattr`` guard that only skips items of a loop or comprehension.
+
+    It is the condition (alone, or under ``and`` / ``not``) of a comprehension's
+    ``if`` over ``name``, or of an ``if`` inside a ``for`` over ``name`` whose
+    chain has no ``else`` (a negated guard must just ``continue``). A guard with
+    an ``else``, a conditional expression, or a ``getattr`` default used as a
+    value supplies a stand-in value instead, and is not a filter."""
+    if not isinstance(node, ast.Call):
+        return False
+    root, negated = node, False
+    while isinstance(parents.get(root), (ast.BoolOp, ast.UnaryOp)):
+        parent = parents[root]
+        if isinstance(parent, ast.BoolOp) and not isinstance(parent.op, ast.And):
+            return False
+        if isinstance(parent, ast.UnaryOp):
+            if not isinstance(parent.op, ast.Not):
+                return False
+            negated = not negated
+        root = parent
+    holder = parents.get(root)
+    if isinstance(holder, ast.comprehension):
+        return root in holder.ifs and _targets(holder.target, name)
+    if not isinstance(holder, ast.If) or holder.test is not root:
+        return False
+    if negated:
+        if not (len(holder.body) == 1 and isinstance(holder.body[0], ast.Continue) and not holder.orelse):
+            return False
+    elif _chain_has_else(holder):
+        return False
+    loop = parents.get(holder)
+    while loop is not None and not isinstance(loop, (ast.For, ast.AsyncFor)):
+        if not isinstance(loop, ast.If):
+            return False
+        loop = parents.get(loop)
+    return loop is not None and _targets(loop.target, name)
+
+
+def _chain_has_else(node: ast.If) -> bool:
+    if not node.orelse:
+        return False
+    if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+        return _chain_has_else(node.orelse[0])
+    return True
+
+
+def _targets(target: ast.AST, name: str) -> bool:
+    return isinstance(target, ast.Name) and target.id == name
 
 
 def _masked_read(modules, path: str, node: ast.AST, name: str, attr: str, classes, package: str, version: str) -> str:
