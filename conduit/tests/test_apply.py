@@ -2103,3 +2103,18 @@ def test_rewrite_that_repeats_a_decorator_is_rejected():
     doubled = "class A:\n    @staticmethod\n    @staticmethod\n    def f(x):\n        return x\n"
     assert _repeated_decorator(doubled, (2, 5)) == "@staticmethod on f"
     assert _repeated_decorator(doubled.replace("    @staticmethod\n", "", 1), (2, 4)) == ""
+
+
+def test_repo_call_check_uses_the_definition_the_module_sees(tmp_path: Path):
+    """Two classes share a name: the caller's own module (or its import) decides which one."""
+    from conduit.apply.typecheck import repo_call_breaks
+
+    root = tmp_path / "repo"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "other.py").write_text("class Usage:\n    def __init__(self, input_tokens):\n        pass\n", encoding="utf-8")
+    (root / "pkg" / "usage.py").write_text("class Usage:\n    def __init__(self, prompt_tokens):\n        pass\n", encoding="utf-8")
+    same = "class Usage:\n    def __init__(self, prompt_tokens):\n        pass\n\ndef build():\n    return Usage(input_tokens=1)\n"
+    assert any("takes no keyword input_tokens" in t for t in repo_call_breaks(root, "pkg/mine.py", same, (5, 6)))
+    imported = "from .usage import Usage\n\ndef build():\n    return Usage(input_tokens=1)\n"
+    assert any("takes no keyword input_tokens" in t for t in repo_call_breaks(root, "pkg/mine.py", imported, (3, 4)))
+    assert repo_call_breaks(root, "pkg/mine.py", imported.replace("input_tokens", "prompt_tokens"), (3, 4)) == []
