@@ -49,6 +49,8 @@ class _RouteState:
     deferred: dict[int, list[str]] = field(default_factory=dict)
     #: Sites already given their one final-recheck retry.
     retried: set[int] = field(default_factory=set)
+    #: key -> keys of the sites whose function calls this site's function.
+    feeders: dict[int, list[int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -142,7 +144,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         texts_of: dict[int, str] = {}
         covered, texts = _one_per_function(config.root, selected)
         base = sorted(selected, key=lambda item: not _names_removed_class(item))
-        ordered = _producer_first(config.root, base, covered)
+        ordered = _producer_first(config.root, base, covered, routes.feeders)
         rank = {id(site): index for index, site in enumerate(base)}
         ranks: list[int] = []  # report order stays the usual one
         for site in ordered:
@@ -420,6 +422,12 @@ def _apply_one(
             edit = parse_model_edit(edit_text)
             patched, diff, span = splice_edit_with_span(pack, edit)
             last_diff = diff
+            repeated = _repeated_decorator(patched, span)
+            if repeated:
+                raise PatchError(
+                    f"rewrite repeats a decorator the function already has ({repeated}); "
+                    "give function_source without the existing decorators or list each once"
+                )
             flows = _verify_site_cleared(config, site, patched, span)
             tests_ok, test_err = _run_tests(config, site, patched)
             if not tests_ok:
@@ -953,6 +961,19 @@ def _final_recheck(
                 continue
             sink = accepted[key]
             site = sink["site"]
+            feeder = _unfixed_feeder(work, report, slots, accepted, key)
+            if feeder:
+                # What this function receives is still the old release's value.
+                accepted.pop(key)
+                previous = report.results[slots[key]]
+                message = f"its caller {feeder} was not fixed (needs a human), so the value this rewrite expects never arrives"
+                report.results[slots[key]] = SiteResult(
+                    site=site, status=SiteStatus.NEEDS_HUMAN, diff=previous.diff, attempts=previous.attempts,
+                    error=message, why=message, context=previous.context,
+                )
+                _rebuild(scratch, originals, accepted, texts, site.path)
+                dropped = changed = True
+                continue
             body = _read(scratch / site.path)
             span = _span_in(body, sink.get("block") or "")
             if span is None:
@@ -996,6 +1017,39 @@ def _final_recheck(
             _rebuild(scratch, originals, accepted, texts, site.path)
             dropped = changed = True
     return dropped
+
+
+def _unfixed_feeder(
+    work: ApplyConfig | None, report: ApplyReport, slots: dict[int, int], accepted: dict[int, dict[str, Any]], key: int
+) -> str:
+    """``path:line`` of a site that calls this site's function and ended needs-human."""
+    routes = work.routes if work is not None else None
+    if routes is None:
+        return ""
+    for other in routes.feeders.get(key, []):
+        if other in accepted or other not in slots:
+            continue
+        result = report.results[slots[other]]
+        if result.status == SiteStatus.NEEDS_HUMAN:
+            return f"{result.site.path}:{result.site.line}"
+    return ""
+
+
+def _repeated_decorator(patched: str, span: tuple[int, int]) -> str:
+    """A decorator listed twice on a rewritten def (the splice kept the old one too)."""
+    try:
+        tree = ast.parse(patched)
+    except SyntaxError:
+        return ""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and span[0] <= node.lineno <= span[1]:
+            seen: list[str] = []
+            for deco in node.decorator_list:
+                text = ast.unparse(deco)
+                if text in seen:
+                    return f"@{text} on {node.name}"
+                seen.append(text)
+    return ""
 
 
 def _accepted_owner(
@@ -1056,7 +1110,9 @@ def _retry_final(
     return True
 
 
-def _producer_first(root: Path, sites: list[ImpactSite], covered: dict[int, str]) -> list[ImpactSite]:
+def _producer_first(
+    root: Path, sites: list[ImpactSite], covered: dict[int, str], feeders: dict[int, list[int]] | None = None
+) -> list[ImpactSite]:
     """Order so a site whose function calls another site's function is rewritten first.
 
     The producer's rewrite decides what value the consumer receives; the
@@ -1090,6 +1146,8 @@ def _producer_first(root: Path, sites: list[ImpactSite], covered: dict[int, str]
             other for other in sites
             if other is not consumer and id(other) in info and name in info[id(other)][1]
         ]
+    if feeders is not None:
+        feeders.update({key: [id(other) for other in found] for key, found in producers.items() if found})
     out: list[ImpactSite] = []
     done: set[int] = set()
 
