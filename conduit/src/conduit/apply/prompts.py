@@ -43,6 +43,13 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "candidates": pack.candidates,
         "call_kwargs": pack.release_diff.get("call_kwargs") or [],
     }
+    if pack.connected:
+        system += (
+            "- connected_rewrites lists values that other, already rewritten sites now pass\n"
+            "  into this function, with their new-release type and fields: read those, not the\n"
+            "  old type's attributes.\n"
+        )
+        user["connected_rewrites"] = pack.connected
     helpers = same_file_helpers(pack)
     if helpers:
         # Read-only: shows how this function's inputs are shaped.
