@@ -2515,3 +2515,16 @@ def test_optional_finding_in_final_recheck_gets_one_retry(tmp_path: Path, monkey
         assert result.status == SiteStatus.NEEDS_HUMAN
         assert result.why == "`cache` can be None in 2.0, but `Tokens` adds it up.", result.why
         assert "or 0" in result.error
+
+
+def test_plain_why_for_a_wrong_argument_kind():
+    from conduit.apply.plain import plain_why
+
+    raw = (
+        "rewrite still breaks against the new release: pkg/llm.py:30 self._client.beta.messages.create: messages= "
+        "passes a str but messages.create in anthropic 1.0.0 expects Iterable[BetaMessageParam], i.e. a list like "
+        "[{\"content\": <Union[str, Iterable[BetaContentBlockParam]]>}] (prompt = self.f(messages))"
+    )
+    assert plain_why(raw, "pkg/llm.py") == (
+        "Line 30 passes a `str` as `messages=`, but `messages.create` expects `Iterable[BetaMessageParam]` in 1.0.0."
+    )
