@@ -621,17 +621,36 @@ def repo_call_breaks(root: Path, path: str, source: str, span: tuple[int, int]) 
     tree = ast.parse(source)
     trees = {path: tree}
     defs: dict[str, list[ast.AST]] = {}
-    for _rel, module in _repo_trees(root, trees):
+    by_file: dict[str, dict[str, ast.AST]] = {}
+    for rel, module in _repo_trees(root, trees):
         for node in module.body:
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 defs.setdefault(node.name, []).append(node)
+                by_file.setdefault(rel, {})[node.name] = node
+    # The definition this module sees: its own, or the one it imports by name.
+    seen: dict[str, ast.AST] = {
+        node.name: node for node in tree.body if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            base = path.rsplit("/", 1)[0].split("/") if "/" in path else []
+            if node.level:
+                parts = base[: len(base) - (node.level - 1)] if node.level > 1 else base
+            else:
+                parts = []
+            parts = parts + (node.module.split(".") if node.module else [])
+            for alias in node.names:
+                for rel in ("/".join(parts) + ".py", "/".join(parts) + "/__init__.py"):
+                    hit = by_file.get(rel, {}).get(alias.name)
+                    if hit is not None:
+                        seen[alias.asname or alias.name] = hit
     out: list[str] = []
     for call in ast.walk(tree):
         if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and span[0] <= call.lineno <= span[1]):
             continue
         if any(isinstance(arg, ast.Starred) for arg in call.args) or any(kw.arg is None for kw in call.keywords):
             continue
-        found = defs.get(call.func.id, [])
+        found = [seen[call.func.id]] if call.func.id in seen else defs.get(call.func.id, [])
         if len(found) != 1:
             continue
         target = found[0]
