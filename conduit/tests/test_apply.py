@@ -2097,9 +2097,11 @@ def test_site_fed_by_a_caller_that_needs_a_human_is_not_verified(tmp_path: Path,
     helper, caller = report.results
     assert caller.status == SiteStatus.NEEDS_HUMAN
     assert helper.status == SiteStatus.NEEDS_HUMAN, (helper.status, helper.why)
-    assert helper.why == "Its caller caller.py:2 was not fixed, so the new value never arrives.", helper.why
+    # The caller is its producer and was fixed first: the helper is not rewritten against it.
+    assert helper.why == "Not rewritten: its caller caller.py:2 was not fixed.", helper.why
     assert helper.error.startswith("its caller caller.py:2 was not fixed"), helper.error
-    assert "result.completion" in (root / "helper.py").read_text(encoding="utf-8")  # reverted
+    assert helper.diff == ""
+    assert "result.completion" in (root / "helper.py").read_text(encoding="utf-8")  # untouched
 
 
 def test_rewrite_that_repeats_a_decorator_is_rejected():
@@ -2195,3 +2197,173 @@ def test_plain_why_is_one_short_sentence_without_field_lists_or_instructions():
     assert plain_why("reverted: the tests still fail with this rewrite\nTraceback ...", "x.py") == "Reverted: the tests failed with this rewrite."
     odd = "token budget exhausted for this site"
     assert plain_why(odd, "x.py") == "token budget exhausted for this site."
+
+
+def _removed_import_repo(tmp_path: Path, *, caller: bool = False):
+    """``from sdk import Old`` is removed; ``use`` still has it as an annotation."""
+    root = tmp_path / "app"
+    root.mkdir()
+    body = "from __future__ import annotations\nfrom sdk import Old\n\n\ndef use(x: Old):\n    return x\n"
+    if caller:
+        body += "\n\ndef run(client):\n    return use(client.make())\n"
+    (root / "mod.py").write_text(body, encoding="utf-8")
+    payload = _impact_payload(path="mod.py", line=2)
+    payload["dependency"] = "sdk"
+    impact = payload["impacts"][0]
+    impact.update(dependency="sdk", kind="removed", symbol="sdk.types.old.Old", change="old.Old removed")
+    impact["sites"][0]["expr"] = "import Old"
+    return root, sites_from_payload(payload)
+
+
+def test_removed_name_context_lists_every_use_and_the_type_that_now_arrives(tmp_path: Path):
+    """Fix 1: an import site sees the annotation that still names the removed type,
+    and the new-release type an accepted rewrite now passes there (with its import)."""
+    from conduit.apply.context import build_context_pack
+    from conduit.apply.engine import _RouteState, _with_received_types
+    from conduit.apply.prompts import propose_messages
+
+    root, (site,) = _removed_import_repo(tmp_path)
+    pack = build_context_pack(root, site)
+    assert pack.removed_name_uses == [
+        {"name": "Old", "line": 5, "code": "def use(x: Old):", "in_this_function": False, "function": "use", "param": "x"}
+    ]
+    flow = {"callee_path": "mod.py", "callee": "use", "param": "x", "types": "New", "fields": ["text: str"],
+            "from": "mod.py:10", "release": "sdk 2.0", "imports": ["from sdk.types import New"]}
+    routes = _RouteState(accepted={1: {"site": site, "flows": [flow]}}, key=2)
+    config = ApplyConfig(root=root, settings=_settings(), routes=routes)
+    (use,) = _with_received_types(config, site, pack.removed_name_uses)
+    assert use["now_receives"] == "New (sdk 2.0), passed from mod.py:10"
+    assert use["import_for_it"] == ["from sdk.types import New"]
+    pack.removed_name_uses = [use]
+    system, user = (text for _role, text in propose_messages(pack))
+    assert "removed_name_uses" in system and "line_edits" in system
+    assert '"now_receives": "New (sdk 2.0), passed from mod.py:10"' in user
+
+
+def test_line_edits_change_only_listed_lines_and_survive_a_rebuild(tmp_path: Path):
+    """Fix 1: the import site may also rewrite the annotation line it lists, one line for one."""
+    from conduit.apply.context import build_context_pack
+    from conduit.apply.splice import PatchError, parse_model_edit, resolve_line_edits, splice_edit_with_span
+
+    root, (site,) = _removed_import_repo(tmp_path)
+    pack = build_context_pack(root, site)
+    reply = json.dumps({"function_source": "from sdk.types import New", "new_imports": [],
+                        "line_edits": [{"line": 5, "new": "def use(x: New):"}]})
+    edit = resolve_line_edits(pack, parse_model_edit(reply))
+    assert edit.line_edits == ((5, "def use(x: Old):", "def use(x: New):"),)
+    patched, _diff, _span = splice_edit_with_span(pack, edit)
+    assert "from sdk.types import New\n" in patched and "def use(x: New):" in patched and "Old" not in patched
+    # A rebuild finds the line by its text, even after other lines moved.
+    shifted = pack.full_source.replace("\n\n\ndef use", "\n\n\n\n\ndef use")
+    (root / "mod.py").write_text(shifted, encoding="utf-8")
+    again, _diff, _span = splice_edit_with_span(build_context_pack(root, site), edit)
+    assert "def use(x: New):" in again and "Old" not in again
+    bad = json.dumps({"function_source": "", "new_imports": [], "line_edits": [{"line": 1, "new": "x = 1"}]})
+    with pytest.raises(PatchError, match="only change lines listed"):
+        resolve_line_edits(pack, parse_model_edit(bad))
+
+
+def test_import_site_rewritten_with_its_use_is_verified(tmp_path: Path, monkeypatch):
+    """Fix 1 end to end: the import and the annotation change together; nothing is left undefined."""
+    import conduit.apply.engine as engine
+
+    monkeypatch.setattr(engine, "remaining_breaks", lambda *a, **k: [])
+    root, sites = _removed_import_repo(tmp_path)
+    reply = json.dumps({"function_source": "from sdk.types import New", "new_imports": [],
+                        "line_edits": [{"line": 5, "new": "def use(x: New):"}]})
+    client = FakeModelClient(responses=[reply, "imports the new type"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    (result,) = report.results
+    assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    text = (root / "mod.py").read_text(encoding="utf-8")
+    assert "from sdk.types import New" in text and "def use(x: New):" in text and "Old" not in text
+    assert "removed_name_uses" in client.calls[0]["messages"][-1].content
+
+
+def _graph_repo(tmp_path: Path):
+    """``run`` calls ``use``; ``use`` is annotated with the removed ``Old``, imported on line 2."""
+    root, (import_site,) = _removed_import_repo(tmp_path, caller=True)
+    payload = _impact_payload(path="mod.py", line=5)
+    payload["dependency"] = "sdk"
+    impact = payload["impacts"][0]
+    impact.update(dependency="sdk", kind="removed", symbol="sdk.types.old.Old", change="old.Old removed")
+    impact["sites"] = [
+        {"path": "mod.py", "line": 5, "expr": "Old"},
+        {"path": "mod.py", "line": 10, "expr": "client.make"},
+    ]
+    use_site, run_site = sites_from_payload(payload)
+    return root, import_site, use_site, run_site
+
+
+def test_dependency_order_puts_producers_first_and_groups_cycles(tmp_path: Path):
+    """Fix 2: callers first, then the import whose replacement type they decide, then its use."""
+    from conduit.apply.engine import _RouteState, _dependency_order
+
+    root, import_site, use_site, run_site = _graph_repo(tmp_path)
+    routes = _RouteState(accepted={})
+    order = _dependency_order(root, [use_site, import_site, run_site], {}, routes)
+    assert [site.line for site in order] == [10, 2, 5]
+    assert sorted(routes.feeders[id(use_site)]) == sorted([id(import_site), id(run_site)])
+    assert routes.edge_kind[(id(use_site), id(import_site))] == "import"
+    assert routes.edge_kind[(id(use_site), id(run_site))] == "call"
+    assert id(import_site) not in routes.feeders  # the caller only orders the import, it does not block it
+    # Two functions that call each other are one group: given order, no blocking between them.
+    (root / "loop.py").write_text("def a(n):\n    return b(n)\n\n\ndef b(n):\n    return a(n)\n", encoding="utf-8")
+    payload = _impact_payload(path="loop.py", line=2)
+    payload["impacts"][0]["sites"] = [{"path": "loop.py", "line": 2, "expr": "b"}, {"path": "loop.py", "line": 6, "expr": "a"}]
+    first, second = sites_from_payload(payload)
+    routes = _RouteState(accepted={})
+    assert [site.line for site in _dependency_order(root, [first, second], {}, routes)] == [2, 6]
+    assert routes.feeders == {}
+
+
+def test_a_site_whose_import_needs_a_human_is_not_rewritten(tmp_path: Path, monkeypatch):
+    """Fix 2: the import site fails, so its use is flagged naming it, not rewritten on a broken base."""
+    import conduit.apply.engine as engine
+
+    monkeypatch.setattr(engine, "remaining_breaks", lambda *a, **k: [])
+    root, import_site, use_site, _run = _graph_repo(tmp_path)
+    client = FakeModelClient(responses=["not json"] * 3)
+    report = apply_sites(
+        [import_site, use_site],
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    first, second = report.results
+    assert first.site.line == 2 and first.status == SiteStatus.NEEDS_HUMAN
+    assert second.status == SiteStatus.NEEDS_HUMAN and second.diff == ""
+    assert second.why == "Not rewritten: the import or definition at line 2 it uses was not fixed.", second.why
+    assert len(client.calls) == 3  # only the import site's attempts
+
+
+def test_decorators_are_kept_once_when_the_model_repeats_them(tmp_path: Path):
+    """Fix 3: the def goes out without its decorators; copies the model sends back are dropped."""
+    from conduit.apply.context import build_context_pack
+    from conduit.apply.prompts import propose_messages
+    from conduit.apply.splice import ModelEdit, splice_edit_with_span, strip_kept_decorators
+
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text(
+        "import functools\n\n\nclass A:\n    @staticmethod\n    @functools.cache\n    def f(x):\n        return x.old\n",
+        encoding="utf-8",
+    )
+    payload = _impact_payload(path="mod.py", line=8)
+    (site,) = sites_from_payload(payload)
+    pack = build_context_pack(root, site)
+    assert pack.function_source.lstrip().startswith("def f(x):")
+    assert pack.decorators == ["staticmethod", "functools.cache"]
+    system, user = (text for _role, text in propose_messages(pack))
+    assert "decorators_kept" in system and '"@staticmethod"' in user
+    repeated = "@staticmethod\n@functools.cache\n@other\ndef f(x):\n    return x.new\n"
+    assert strip_kept_decorators(repeated, pack.decorators) == "@other\ndef f(x):\n    return x.new\n"
+    patched, _diff, span = splice_edit_with_span(pack, ModelEdit(repeated.replace("@other\n", ""), ()))
+    assert patched.count("@staticmethod") == 1 and patched.count("@functools.cache") == 1
+    assert "return x.new" in patched
+    from conduit.apply.engine import _repeated_decorator
+
+    assert _repeated_decorator(patched, (span[0] - 2, span[1])) == ""  # the backstop stays quiet
