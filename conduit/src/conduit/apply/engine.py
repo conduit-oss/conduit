@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -14,12 +15,25 @@ from typing import Any
 
 from conduit.apply.client import ChatMessage, ModelClient
 from conduit.apply.config import TokenFactorySettings
-from conduit.apply.context import ContextError, build_context_pack, enclosing_function
+from conduit.apply.context import (
+    ContextError,
+    build_context_pack,
+    enclosing_function,
+    module_statement,
+    name_uses,
+    removed_names,
+)
 from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.plain import plain_why
 from conduit.apply.prompts import propose_messages, summarize_messages
-from conduit.apply.splice import PatchError, parse_model_edit, splice_edit_with_span, unified_diff_for
+from conduit.apply.splice import (
+    PatchError,
+    parse_model_edit,
+    resolve_line_edits,
+    splice_edit_with_span,
+    unified_diff_for,
+)
 from conduit.apply.signatures import new_release_wheel, signatures_for
 from conduit.apply.typecheck import FLOWS
 from conduit.apply.verify import remaining_breaks
@@ -50,8 +64,13 @@ class _RouteState:
     deferred: dict[int, list[str]] = field(default_factory=dict)
     #: Sites already given their one final-recheck retry.
     retried: set[int] = field(default_factory=set)
-    #: key -> keys of the sites whose function calls this site's function.
+    #: key -> keys of the sites this one depends on (its callers, or the import
+    #: or definition it uses), outside its own dependency cycle.
     feeders: dict[int, list[int]] = field(default_factory=dict)
+    #: (consumer, producer) -> "call" or "import", for the reason text.
+    edge_kind: dict[tuple[int, int], str] = field(default_factory=dict)
+    #: key -> every site rewritten before it whose finished code it builds on.
+    producers: dict[int, list[int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -145,7 +164,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         texts_of: dict[int, str] = {}
         covered, texts = _one_per_function(config.root, selected)
         base = sorted(selected, key=lambda item: not _names_removed_class(item))
-        ordered = _producer_first(config.root, base, covered, routes.feeders)
+        ordered = _dependency_order(config.root, base, covered, routes)
         rank = {id(site): index for index, site in enumerate(base)}
         ranks: list[int] = []  # report order stays the usual one
         for site in ordered:
@@ -165,7 +184,12 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             moved = _relocate(scratch, site, texts_of[id(site)])
             sink: dict[str, Any] = {"site": site}
             routes.key = id(site)
-            result = _apply_one(moved, work, client, report, sink=sink) if moved else None
+            blocked = _unfixed_feeder(work, report, slots, accepted, id(site), upfront=True)
+            if blocked:
+                # Not rewritten against a base that is still broken.
+                result = SiteResult(site=site, status=SiteStatus.NEEDS_HUMAN, error=blocked, why=blocked)
+            else:
+                result = _apply_one(moved, work, client, report, sink=sink) if moved else None
             slots[id(site)] = len(report.results)
             report.results.append(result or SiteResult(site=site, status=SiteStatus.SKIPPED, why="line rewritten by an earlier fix in this file"))
             if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
@@ -401,6 +425,8 @@ def _apply_one(
     if target:
         pack.release_diff["new_release_signatures"] = target
     pack.connected = _connected(config, site, pack)
+    pack.removed_name_uses = _with_received_types(config, site, pack.removed_name_uses)
+    pack.producer_rewrites = _producer_rewrites(config, pack)
 
     last_error = ""
     last_diff = ""
@@ -424,7 +450,7 @@ def _apply_one(
             )
             site_tokens += used
             report.tokens_used += used
-            edit = parse_model_edit(edit_text)
+            edit = resolve_line_edits(pack, parse_model_edit(edit_text))
             patched, diff, span = splice_edit_with_span(pack, edit)
             last_diff = diff
             repeated = _repeated_decorator(patched, span)
@@ -972,12 +998,11 @@ def _final_recheck(
             site = sink["site"]
             if sink.get("hold"):
                 continue
-            feeder = _unfixed_feeder(work, report, slots, accepted, key)
-            if feeder:
-                # What this function receives is still the old release's value.
+            message = _unfixed_feeder(work, report, slots, accepted, key)
+            if message:
+                # What this function receives or uses is still the old release's.
                 accepted.pop(key)
                 previous = report.results[slots[key]]
-                message = f"its caller {feeder} was not fixed (needs a human), so the value this rewrite expects never arrives"
                 report.results[slots[key]] = SiteResult(
                     site=site, status=SiteStatus.NEEDS_HUMAN, diff=previous.diff, attempts=previous.attempts,
                     error=message, why=message, context=previous.context,
@@ -1141,9 +1166,17 @@ def _bound_by_line(text: str) -> set[str]:
 
 
 def _unfixed_feeder(
-    work: ApplyConfig | None, report: ApplyReport, slots: dict[int, int], accepted: dict[int, dict[str, Any]], key: int
+    work: ApplyConfig | None,
+    report: ApplyReport,
+    slots: dict[int, int],
+    accepted: dict[int, dict[str, Any]],
+    key: int,
+    *,
+    upfront: bool = False,
 ) -> str:
-    """``path:line`` of a site that calls this site's function and ended needs-human."""
+    """Reason text when a site this one depends on ended needs-human; else empty.
+
+    ``upfront``: checked before the rewrite, which then does not happen."""
     routes = work.routes if work is not None else None
     if routes is None:
         return ""
@@ -1151,8 +1184,18 @@ def _unfixed_feeder(
         if other in accepted or other not in slots:
             continue
         result = report.results[slots[other]]
-        if result.status == SiteStatus.NEEDS_HUMAN:
-            return f"{result.site.path}:{result.site.line}"
+        if result.status != SiteStatus.NEEDS_HUMAN:
+            continue
+        where = f"{result.site.path}:{result.site.line}"
+        if routes.edge_kind.get((key, other)) == "import":
+            head = f"the import or definition at {where} that it uses was not fixed (needs a human)"
+        else:
+            head = f"its caller {where} was not fixed (needs a human)"
+        if upfront:
+            return head + ", so this site was not rewritten against it"
+        if routes.edge_kind.get((key, other)) == "import":
+            return head + ", so this rewrite builds on code that is not there"
+        return head + ", so the value this rewrite expects never arrives"
     return ""
 
 
@@ -1231,59 +1274,227 @@ def _retry_final(
     return True
 
 
-def _producer_first(
-    root: Path, sites: list[ImpactSite], covered: dict[int, str], feeders: dict[int, list[int]] | None = None
+def _dependency_order(
+    root: Path, sites: list[ImpactSite], covered: dict[int, str], routes: _RouteState | None = None
 ) -> list[ImpactSite]:
-    """Order so a site whose function calls another site's function is rewritten first.
+    """Rewrite order from a dependency graph across the sites: producers first.
 
-    The producer's rewrite decides what value the consumer receives; the
-    consumer is then rewritten with that value's new-release type in view.
-    Otherwise the given order stands."""
-    info: dict[int, tuple[str, set[str]]] = {}
+    A site depends on another when it calls the other's function (the caller
+    decides what value arrives), and when its code uses a name another site's
+    module-level line binds (the import or definition it uses). An import of a
+    removed name also waits for the callers of a function that has the name as
+    a parameter annotation, so the type that now arrives there is known; that
+    edge only orders, it does not block. A cycle is one group, rewritten in the
+    given order. ``routes`` gets each site's blocking producers (outside its
+    group), the kind of each edge, and every producer whose code it builds on."""
+    info: dict[int, dict[str, Any]] = {}
     for site in sites:
         if id(site) in covered or site.via_wrapper:
             continue
         source = _read(root / site.path)
         try:
-            found = enclosing_function(source, site.line)
             tree = ast.parse(source)
+            found = enclosing_function(source, site.line)
         except (ContextError, SyntaxError):
             continue
-        if not found:
-            continue
+        binds: set[str] = set()
+        if found is None:
+            found = module_statement(source, site.line)
+            if found is None:
+                continue
+            try:
+                binds = _bound_names(ast.parse(textwrap.dedent(found[1])))
+            except SyntaxError:
+                binds = set()
         name, _text, start, end = found
         calls = {
             node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and start <= node.lineno <= end
         }
-        info[id(site)] = (name, calls - {name, ""})
-    producers: dict[int, list[ImpactSite]] = {}
-    for consumer in sites:
-        if id(consumer) not in info:
+        loads = {used for used, line in _used_in_span(tree, (start, end))}
+        annotated = {
+            use["function"]
+            for use in name_uses(source, removed_names(source, site), (start, end))
+            if use.get("param") and not use.get("in_this_function")
+        } if binds else set()
+        info[id(site)] = {
+            "site": site, "name": name, "calls": calls - {name, ""}, "loads": loads - binds,
+            "binds": binds, "annotated": annotated,
+        }
+    nodes = [site for site in sites if id(site) in info]
+    hard: dict[int, dict[int, str]] = {id(site): {} for site in nodes}
+    soft: dict[int, set[int]] = {id(site): set() for site in nodes}
+    for consumer in nodes:
+        mine = info[id(consumer)]
+        for producer in nodes:
+            if producer is consumer:
+                continue
+            theirs = info[id(producer)]
+            if mine["name"] and mine["name"] in theirs["calls"]:
+                hard[id(consumer)].setdefault(id(producer), "call")
+            elif theirs["binds"] and producer.path == consumer.path and theirs["binds"] & mine["loads"]:
+                hard[id(consumer)].setdefault(id(producer), "import")
+            if mine["annotated"] and mine["annotated"] & theirs["calls"]:
+                soft[id(consumer)].add(id(producer))
+    edges = {key: set(hard[key]) | soft[key] for key in hard}
+    group = _cycle_groups([id(site) for site in nodes], edges)
+    rank = {id(site): index for index, site in enumerate(sites)}
+    members: dict[int, list[int]] = {}
+    for key in sorted(group, key=lambda item: rank[item]):
+        members.setdefault(group[key], []).append(key)
+    waiting = {
+        number: {group[p] for key in keys for p in edges[key] if group[p] != number}
+        for number, keys in members.items()
+    }
+    order: list[int] = []
+    placed: set[int] = set()
+    while len(placed) < len(members):
+        ready = [number for number in members if number not in placed and waiting[number] <= placed]
+        if not ready:  # cannot happen once cycles are grouped; keep the given order
+            ready = [number for number in members if number not in placed]
+        best = min(ready, key=lambda number: rank[members[number][0]])
+        placed.add(best)
+        order.extend(members[best])
+    if routes is not None:
+        for key in hard:
+            outside = [p for p in hard[key] if group[p] != group[key]]
+            if outside:
+                routes.feeders[key] = sorted(outside, key=lambda item: order.index(item))
+            for p, kind in hard[key].items():
+                routes.edge_kind[(key, p)] = kind
+            routes.producers[key] = sorted(edges[key], key=lambda item: order.index(item))
+    by_key = {id(site): site for site in nodes}
+    out = [by_key[key] for key in order]
+    # Sites outside the graph (covered lines, wrappers, unparsable) keep their place after.
+    out += [site for site in sites if id(site) not in by_key]
+    return out
+
+
+def _cycle_groups(keys: list[int], edges: dict[int, set[int]]) -> dict[int, int]:
+    """Strongly connected components (Tarjan): key -> group number."""
+    index: dict[int, int] = {}
+    low: dict[int, int] = {}
+    stack: list[int] = []
+    on: set[int] = set()
+    group: dict[int, int] = {}
+    counter = [0, 0]
+
+    def visit(key: int) -> None:
+        index[key] = low[key] = counter[0]
+        counter[0] += 1
+        stack.append(key)
+        on.add(key)
+        for other in edges.get(key, ()):
+            if other not in index:
+                visit(other)
+                low[key] = min(low[key], low[other])
+            elif other in on:
+                low[key] = min(low[key], index[other])
+        if low[key] == index[key]:
+            while True:
+                item = stack.pop()
+                on.discard(item)
+                group[item] = counter[1]
+                if item == key:
+                    break
+            counter[1] += 1
+
+    for key in keys:
+        if key not in index:
+            visit(key)
+    return group
+
+
+def _used_in_span(tree: ast.Module, span: tuple[int, int]) -> set[tuple[str, int]]:
+    """Names loaded in ``span`` (string annotations included), with their lines."""
+    return {
+        (name, line)
+        for name, lines in _name_lines(tree).items()
+        for line in lines
+        if span[0] <= line <= span[1]
+    }
+
+
+def _name_lines(tree: ast.Module) -> dict[str, set[int]]:
+    out: dict[str, set[int]] = {}
+
+    def add(node: ast.AST, line: int) -> None:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                out.setdefault(sub.id, set()).add(line or sub.lineno)
+            elif isinstance(sub, ast.Constant) and isinstance(sub.value, str) and line:
+                try:
+                    add(ast.parse(sub.value.strip(), mode="eval"), line)
+                except SyntaxError:
+                    pass
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            out.setdefault(node.id, set()).add(node.lineno)
+        for annotation in _annotations_of(node):
+            add(annotation, annotation.lineno)
+    return out
+
+
+def _annotations_of(node: ast.AST) -> list[ast.AST]:
+    if isinstance(node, ast.arg) and node.annotation is not None:
+        return [node.annotation]
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+        return [node.returns]
+    if isinstance(node, ast.AnnAssign):
+        return [node.annotation]
+    return []
+
+
+def _with_received_types(config: ApplyConfig, site: ImpactSite, uses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add the new-release type an accepted rewrite now passes to each annotated use."""
+    routes = config.routes
+    if routes is None or not uses:
+        return uses
+    out: list[dict[str, Any]] = []
+    for use in uses:
+        item = dict(use)
+        for key, sink in routes.accepted.items():
+            if key == routes.key or "now_receives" in item:
+                continue
+            for flow in sink.get("flows") or []:
+                if (
+                    item.get("param")
+                    and flow.get("callee") == item.get("function")
+                    and flow.get("param") == item["param"]
+                    and _path_match(flow.get("callee_path", ""), site.path)
+                ):
+                    item["now_receives"] = f"{flow['types']} ({flow['release']}), passed from {flow['from']}"
+                    if flow.get("imports"):
+                        item["import_for_it"] = list(flow["imports"])
+                    break
+        out.append(item)
+    return out
+
+
+def _producer_rewrites(config: ApplyConfig, pack: ContextPack) -> list[dict[str, Any]]:
+    """Finished new code of the sites this one depends on, not already shown."""
+    routes = config.routes
+    if routes is None:
+        return []
+    shown = {item.get("rewritten_code") for item in pack.connected}
+    out: list[dict[str, Any]] = []
+    for other in routes.producers.get(routes.key, []):
+        sink = routes.accepted.get(other)
+        if sink is None or other == routes.key:
             continue
-        name = info[id(consumer)][0]
-        producers[id(consumer)] = [
-            other for other in sites
-            if other is not consumer and id(other) in info and name in info[id(other)][1]
-        ]
-    if feeders is not None:
-        feeders.update({key: [id(other) for other in found] for key, found in producers.items() if found})
-    out: list[ImpactSite] = []
-    done: set[int] = set()
-
-    def visit(site: ImpactSite, stack: set[int]) -> None:
-        if id(site) in done or id(site) in stack:
-            return
-        stack.add(id(site))
-        for producer in producers.get(id(site), []):
-            visit(producer, stack)
-        stack.discard(id(site))
-        done.add(id(site))
-        out.append(site)
-
-    for site in sites:
-        visit(site, set())
+        block = sink.get("block") or ""
+        if not block or block in shown:
+            continue
+        item: dict[str, Any] = {
+            "site": f"{sink['site'].path}:{sink['site'].line}",
+            "rewritten_code": block,
+        }
+        edits = getattr(sink.get("edit"), "line_edits", ()) or ()
+        if edits:
+            item["also_changed_lines"] = [new.strip() for _line, _old, new in edits]
+        out.append(item)
     return out
 
 

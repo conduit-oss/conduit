@@ -55,10 +55,15 @@ def plain_why(raw: str, site_path: str) -> str:
     if first.startswith("rewrite repeats a decorator"):
         match = re.search(r"\((@[\w.]+) on (\w+)\)", first)
         return f"The rewrite added a second `{match.group(1)}`." if match else "The rewrite repeated a decorator."
-    if first.startswith("its caller "):
-        match = re.match(r"its caller (\S+) was not fixed", first)
-        where = _short(match.group(1), site_path) if match else "its caller"
-        return f"Its caller {where} was not fixed, so the new value never arrives."
+    producer = re.match(r"(its caller|the import or definition at) (\S+)(?: that it uses)? was not fixed", first)
+    if producer:
+        where = _short(producer.group(2), site_path)
+        what = f"its caller {where}" if producer.group(1) == "its caller" else f"the import or definition at {where} it uses"
+        if "was not rewritten against it" in first:
+            return f"Not rewritten: {what} was not fixed."
+        if producer.group(1) == "its caller":
+            return f"Its caller {where} was not fixed, so the new value never arrives."
+        return f"{what[0].upper()}{what[1:]} was not fixed, so this rewrite builds on code that is not there."
     depends = _DEPENDS.search(first)
     body = first[: depends.start()] if depends else first
     body = body.split("rewrite still breaks against the new release: ", 1)[-1]

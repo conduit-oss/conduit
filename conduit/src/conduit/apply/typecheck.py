@@ -894,6 +894,7 @@ def _callee_reads(
                     "fields": _fields(classes),
                     "from": f"{path}:{call.lineno}",
                     "release": f"{package} {version}",
+                    "imports": _import_lines_for(modules, classes, package),
                 }
                 if record not in flows:
                     flows.append(record)
@@ -910,6 +911,24 @@ def _callee_reads(
                     text += f" {_fields_note(classes)}; read what you need here instead of passing it on"
                 if text not in out:
                     out.append(text)
+    return out
+
+
+def _import_lines_for(modules, classes, package: str) -> list[str]:
+    """``from <module> import <Name>`` for each class, from the shortest module of
+    the release that binds the name at its top (its public path)."""
+    top = package.lower().replace("-", "_")
+    out: list[str] = []
+    for module_name, klass in classes:
+        homes = [
+            name for name, tree in modules.items()
+            if name.split(".")[0] == top and not any(part.startswith("_") for part in name.split("."))
+            and _module_binds(tree, klass.name)
+        ] or [module_name]
+        home = min(homes, key=lambda name: (name.count("."), len(name), name))
+        line = f"from {home} import {klass.name}"
+        if line not in out:
+            out.append(line)
     return out
 
 
