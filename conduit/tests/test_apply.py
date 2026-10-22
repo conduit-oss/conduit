@@ -1919,3 +1919,82 @@ def test_a_type_field_list_is_printed_once_across_the_report():
     assert one.why.count("(BetaMessage fields: ") == 1, one.why
     assert "(BetaMessage fields: " not in two.why and "(BetaMessage fields: " not in two.error
     assert "(BetaMessage fields listed at anthropic.py:60); read it here" in two.why, two.why
+
+
+def _union_modules(tmp_path: Path):
+    from conduit.apply.signatures import _modules
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(_UNION_WHEEL, encoding="utf-8")
+    return _modules(str(tmp_path / "wheel"))
+
+
+def _guard_findings(tmp_path: Path, body: str) -> list[str]:
+    from conduit.apply.typecheck import attribute_breaks
+
+    modules = _union_modules(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir(exist_ok=True)
+    source = "def post(client):\n    result = client.messages.create(model='m')\n" + textwrap.indent(textwrap.dedent(body), "    ")
+    (root / "f.py").write_text(source, encoding="utf-8")
+    chains = [_chain("f.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")]
+    return attribute_breaks(modules, root, "f.py", source, (1, len(source.splitlines())), chains, "example-sdk", "2.0")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "return ''.join(block.text for block in result.content if hasattr(block, 'text'))\n",
+        """\
+        parts = []
+        for block in result.content:
+            if hasattr(block, 'text'):
+                parts.append(block.text)
+        return ''.join(parts)
+        """,
+        """\
+        parts = []
+        for block in result.content:
+            if not hasattr(block, 'text'):
+                continue
+            parts.append(block.text)
+        return ''.join(parts)
+        """,
+    ],
+)
+def test_filter_only_guard_is_accepted(tmp_path: Path, body: str):
+    """A guard that only skips items lacking the attribute makes nothing up for them."""
+    found = _guard_findings(tmp_path, body)
+    assert not [text for text in found if "'text'" in text or ".text" in text], found
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "return ''.join(getattr(block, 'text', str(block)) for block in result.content)\n",
+        "return ''.join(block.text if hasattr(block, 'text') else str(block) for block in result.content)\n",
+        """\
+        parts = []
+        for block in result.content:
+            if hasattr(block, 'text'):
+                parts.append(block.text)
+            else:
+                parts.append('')
+        return ''.join(parts)
+        """,
+    ],
+)
+def test_fallback_default_guard_is_rejected(tmp_path: Path, body: str):
+    """A guard that puts a stand-in value where the attribute is missing is still a finding."""
+    found = _guard_findings(tmp_path, body)
+    assert any("'text'" in text and "ToolBlock" in text for text in found), found
+
+
+def test_filter_guard_on_an_attribute_no_item_type_has_is_rejected(tmp_path: Path):
+    """Filtering on an attribute none of the release's item types declare drops every item."""
+    found = _guard_findings(
+        tmp_path, "return ''.join(block.body for block in result.content if hasattr(block, 'body'))\n"
+    )
+    assert any("hasattr(block, 'body')" in text and "no attribute body" in text for text in found), found
