@@ -579,6 +579,12 @@ def attribute_breaks(
         for text in _callee_reads(modules, root, trees, chains, path, func, typed, package, version, flows):
             if text not in out:
                 out.append(text)
+        from conduit.apply.nonecheck import NONE_CHECK, none_breaks
+
+        if NONE_CHECK.get():
+            for text in none_breaks(modules, root, trees, path, tree, func, typed, package, version):
+                if text not in out:
+                    out.append(text)
     return out
 
 
@@ -760,10 +766,19 @@ def _masked_read(modules, path: str, node: ast.AST, name: str, attr: str, classe
             f"{attr}; the {func} {guard} hides that, handle those types explicitly"
         )
     if have and not unknown:
-        return (
+        from conduit.apply.nonecheck import allows_none, field_decl
+
+        declared = [field_decl(modules, module_name, klass, attr) for module_name, klass in classes]
+        maybe_none = any(item is not None and allows_none(item[0]) for item in declared)
+        text = (
             f"{where}: {name} is {', '.join(have)} in {package} {version}, which always has {attr}; "
             f"the {func} {guard} is dead code that would hide a wrong value, read {name}.{attr} directly"
         )
+        if maybe_none:
+            # The attribute is always there, but its value may be None: handling that
+            # (``or 0``, an is None check) is not masking.
+            text += f" (its value may be None: handle that with `{name}.{attr} or ...` or an is None check)"
+        return text
     return ""
 
 
