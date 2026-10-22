@@ -19,6 +19,8 @@ _VERSION = r"(?P<pkg>[\w.\-]+) (?P<ver>[\w.\-+]+)"
 _SHAPES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?P<callee>\w+)\(\) gets (?P<param>\w+) = (?P<types>[\w, ]+?) from (?P<src>\S+) in " + _VERSION + r", which has no attribute (?P<attr>\w+)"),
      "`{callee}()` reads `.{attr}`, which the `{types}` this line now passes doesn't have in {ver}"),
+    (re.compile(r"(?P<kw>\w+)= passes an? (?P<got>[\w.]+) but (?P<callee>[\w.]+) in " + _VERSION + r" expects (?P<want>[\w.\[\], ]+?)(?:, i\.e\.|[;(]|$)"),
+     "{at} passes a `{got}` as `{kw}=`, but `{callee}` expects `{want}` in {ver}"),
     (re.compile(r"(?P<field>\w+) may be None \((?P<ann>[^)]*)\) in " + _VERSION + r", but (?P<sink>[^;]+)"),
      "`{field}` can be None in {ver}, but {sink}"),
     (re.compile(r"(?P<name>[\w.]+) may be (?P<types>.+?) in " + _VERSION + r", which lack (?P<attr>\w+); the (?P<func>\w+)"),
