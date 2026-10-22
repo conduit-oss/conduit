@@ -94,6 +94,7 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
         selected = sites if config.max_sites is None else sites[: config.max_sites]
         if config.test_cmd and not config.dry_run and client is not None:
             _apply_batch(selected, config, client, report)
+            _fill_why(report)
             return report
         covered, texts = _one_per_function(config.root, selected)
         # Lines that import or construct a removed class go first, so later
@@ -108,6 +109,7 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
                 report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=why))
                 continue
             report.results.append(_apply_one(moved, config, client, report))
+        _fill_why(report)
     finally:
         if owns_client and client is not None and hasattr(client, "close"):
             client.close()  # type: ignore[union-attr]
@@ -196,6 +198,9 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 _rebuild(scratch, originals, accepted, texts_of, sink["site"].path)
                 report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], trim_test_feedback(failure))
             ok, output = _run_cmd(config.test_cmd or "", scratch) if accepted else (True, "")
+            if ok and accepted and _final_recheck(config, scratch, report, originals, texts_of, slots, accepted) and accepted:
+                # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
+                ok, output = _run_cmd(config.test_cmd or "", scratch)
             if not ok:
                 for key in list(accepted):
                     sink = accepted.pop(key)
@@ -524,10 +529,61 @@ def _verify_site_cleared(
 
 def _breaks_message(texts: list[str]) -> str:
     """Reason text whose first line contains the finding, not only the prefix."""
-    shown = [text.strip() for text in texts if text and text.strip()]
+    shown: list[str] = []
+    for text in texts:
+        text = (text or "").strip()
+        if text and text not in shown:
+            shown.append(text)
     if not shown:
         return "rewrite still breaks against the new release"
-    return "rewrite still breaks against the new release: " + "; ".join(shown)
+    return _fields_once("rewrite still breaks against the new release: " + "; ".join(shown))
+
+
+def _fields_once(text: str) -> str:
+    """Keep each ``(fields: ...)`` list the first time it appears; later copies say so."""
+    seen: set[str] = set()
+    out: list[str] = []
+    at = 0
+    while True:
+        start = text.find("(fields: ", at)
+        if start < 0:
+            out.append(text[at:])
+            return "".join(out)
+        depth, end = 0, start
+        while end < len(text):
+            depth += {"(": 1, ")": -1}.get(text[end], 0)
+            end += 1
+            if depth == 0:
+                break
+        group = text[start:end]
+        out.append(text[at:start])
+        out.append("(fields as above)" if group in seen else group)
+        seen.add(group)
+        at = end
+
+
+def _fill_why(report: ApplyReport) -> None:
+    """No fixed or needs-human result goes out without a reason."""
+    for index, result in enumerate(report.results):
+        if result.why.strip() or result.status not in {
+            SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED, SiteStatus.NEEDS_HUMAN
+        }:
+            continue
+        if result.status == SiteStatus.NEEDS_HUMAN and result.error.strip():
+            why = result.error.strip()
+        else:
+            why = _change_summary(result)
+        report.results[index] = replace(result, why=why)
+
+
+def _change_summary(result: SiteResult) -> str:
+    """A short reason built from the impact record when the model gave none."""
+    site = result.site
+    what = f"`{site.expr}`" if site.expr else f"{site.path}:{site.line}"
+    because = f" ({site.change})" if site.change else ""
+    if result.status == SiteStatus.NEEDS_HUMAN:
+        return f"needs a human: {what}{because} was not fixed"
+    return f"rewrote {what} for the new release{because}"
 
 
 def _route_breaks(
@@ -807,37 +863,77 @@ def _final_recheck(
     dropped = False
     if config.site_cleared is not None or not config.recheck_impact:
         return dropped
-    for key in list(accepted):
-        sink = accepted[key]
-        site = sink["site"]
-        body = _read(scratch / site.path)
-        span = _span_in(body, sink.get("block") or "")
-        if span is None:
-            continue
-        try:
-            breaks = remaining_breaks(
-                scratch, site, body, span=span, fixtures=config.fixtures,
-                allow_network=config.allow_network, original=originals.get(site.path, ""),
+    # Dropping one rewrite restores its original code, which can break a rewrite
+    # that calls it and was already rechecked: repeat until nothing more drops.
+    changed = True
+    while changed and accepted:
+        changed = False
+        for key in list(accepted):
+            sink = accepted[key]
+            site = sink["site"]
+            body = _read(scratch / site.path)
+            span = _span_in(body, sink.get("block") or "")
+            if span is None:
+                continue
+            try:
+                breaks = remaining_breaks(
+                    scratch, site, body, span=span, fixtures=config.fixtures,
+                    allow_network=config.allow_network, original=originals.get(site.path, ""),
+                )
+            except Exception:  # noqa: BLE001 — a recheck that cannot run keeps the earlier verdict
+                continue
+            if not breaks:
+                continue
+            accepted.pop(key)
+            previous = report.results[slots[key]]
+            findings = [text for text, _symbol in breaks]
+            message = _breaks_message(findings)
+            depends = _unresolved_dependencies(scratch, report, texts, slots, accepted, findings)
+            if depends:
+                message += "; depends on " + ", ".join(depends) + ", whose fix was not applied (needs a human)"
+            report.results[slots[key]] = SiteResult(
+                site=site,
+                status=SiteStatus.NEEDS_HUMAN,
+                diff=previous.diff,
+                attempts=previous.attempts,
+                error=message,
+                why=message,
+                context=previous.context,
             )
-        except Exception:  # noqa: BLE001 — a recheck that cannot run keeps the earlier verdict
-            continue
-        if not breaks:
-            continue
-        accepted.pop(key)
-        previous = report.results[slots[key]]
-        message = _breaks_message([text for text, _symbol in breaks])
-        report.results[slots[key]] = SiteResult(
-            site=site,
-            status=SiteStatus.NEEDS_HUMAN,
-            diff=previous.diff,
-            attempts=previous.attempts,
-            error=message,
-            why=message,
-            context=previous.context,
-        )
-        _rebuild(scratch, originals, accepted, texts, site.path)
-        dropped = True
+            _rebuild(scratch, originals, accepted, texts, site.path)
+            dropped = changed = True
     return dropped
+
+
+def _unresolved_dependencies(
+    scratch: Path,
+    report: ApplyReport,
+    texts: dict[int, str],
+    slots: dict[int, int],
+    accepted: dict[int, dict[str, Any]],
+    findings: list[str],
+) -> list[str]:
+    """Sites left for a human whose function holds a finding: the rewrite leans on them."""
+    out: list[str] = []
+    for key, index in slots.items():
+        result = report.results[index]
+        if key in accepted or result.status != SiteStatus.NEEDS_HUMAN:
+            continue
+        moved = _relocate(scratch, result.site, texts.get(key, "")) or result.site
+        body = _read(scratch / moved.path)
+        try:
+            span = enclosing_function(body, moved.line)
+        except ContextError:
+            span = None
+        first, last = (span[2], span[3]) if span else (moved.line, moved.line)
+        for text in findings:
+            located = _finding_at(text)
+            if located and _path_match(located[0], moved.path) and first <= located[1] <= last:
+                label = f"{result.site.path}:{result.site.line}"
+                if label not in out:
+                    out.append(label)
+                break
+    return out
 
 
 class RecheckError(PatchError):

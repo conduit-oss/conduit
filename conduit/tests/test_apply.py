@@ -1701,3 +1701,101 @@ def test_council_anthropic_1_0_rewrite_is_flagged(tmp_path: Path):
     found = attribute_breaks(modules, root, "helper.py", helper, (1, 8), chains, "anthropic", "1.0.0")
     assert any("hasattr(result, 'content')" in text and "BetaMessage" in text for text in found), found
     assert any("getattr(block, 'text'" in text and "no attribute text" not in text for text in found), found
+
+
+def test_callee_reads_follow_the_value_past_a_stale_annotation(tmp_path: Path):
+    """A helper parameter annotated with a type nothing defines any more (its import went
+    with the old release) says nothing about the value: the caller's release type decides."""
+    from conduit.apply.typecheck import attribute_breaks
+
+    modules = _typed_release(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    caller = "def call(client):\n    reply = client.send(items=[])\n    return from_old(reply)\n"
+    chains = [_chain("caller.py", 2, "client.send", "example_sdk.Client.send")]
+    (root / "caller.py").write_text(caller, encoding="utf-8")
+    helpers = {
+        # import removed: the name is bound nowhere
+        "def from_old(reply: Completion):\n    return reply.completion\n": True,
+        # imported from the release, which no longer defines it
+        "from example_sdk.client import Completion\n\ndef from_old(reply: Completion):\n    return reply.completion\n": True,
+        # a real local type: trusted, callers are not consulted
+        "class Completion:\n    completion = ''\n\ndef from_old(reply: Completion):\n    return reply.completion\n": False,
+    }
+    for helper, flagged in helpers.items():
+        (root / "helper.py").write_text(helper, encoding="utf-8")
+        found = attribute_breaks(modules, root, "caller.py", caller, (1, 3), chains, "example-sdk", "2.0")
+        hit = any("from_old() gets reply = Reply" in text and "no attribute completion" in text for text in found)
+        assert hit is flagged, (helper, found)
+
+
+def test_final_recheck_drops_a_rewrite_whose_dependency_was_reverted(tmp_path: Path, monkeypatch):
+    """The caller passed its recheck while the helper's rewrite was in place; once the helper
+    is reverted the caller is rechecked again, and it names the site it depends on."""
+    import conduit.apply.engine as engine
+
+    def fake(root, site, patched, *, span=None, fixtures=None, allow_network=False, original=None):
+        if original is None:
+            return []
+        if site.path == "helper.py":
+            return [("helper.py:2 result.content: masked read", "")]
+        if "result.completion" in (Path(root) / "helper.py").read_text(encoding="utf-8"):
+            return [("helper.py:2 result.completion: from_completion() gets result = Reply from caller.py:2, which has no attribute completion", "")]
+        return []
+
+    monkeypatch.setattr(engine, "remaining_breaks", fake)
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "helper.py").write_text("def from_completion(result):\n    return result.completion\n", encoding="utf-8")
+    (root / "caller.py").write_text(
+        "def post(client):\n    result = client.old_call(1)\n    return from_completion(result)\n", encoding="utf-8"
+    )
+    payload = _impact_payload(path="caller.py", line=2)
+    payload["impacts"][0]["sites"][0]["expr"] = "client.old_call"
+    payload["impacts"][0]["sites"].append(
+        {"path": "helper.py", "line": 2, "expr": "result.completion", "confidence": "high", "via_wrapper": False}
+    )
+    client = FakeModelClient(
+        responses=[
+            _fn("def post(client):\n    result = client.new_call(1)\n    return from_completion(result)\n"), "",
+            _fn("def from_completion(result):\n    return result.content\n"), "read content",
+        ]
+    )
+    report = apply_sites(
+        sites_from_payload(payload),
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    caller, helper = report.results
+    assert helper.status == SiteStatus.NEEDS_HUMAN, (helper.status, helper.error)
+    assert caller.status == SiteStatus.NEEDS_HUMAN, (caller.status, caller.why)
+    assert "no attribute completion" in caller.why and "depends on helper.py:2" in caller.why, caller.why
+    assert "result.completion" in (root / "helper.py").read_text(encoding="utf-8")
+
+
+def test_fixed_result_never_has_an_empty_why(tmp_path: Path):
+    """The model's one-line summary can come back empty: the impact record fills the reason."""
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "caller.py").write_text("def post(client):\n    return client.old_call(1)\n", encoding="utf-8")
+    payload = _impact_payload(path="caller.py", line=2)
+    payload["impacts"][0]["sites"][0]["expr"] = "client.old_call"
+    client = FakeModelClient(responses=[_fn("def post(client):\n    return client.new_call(1)\n"), ""])
+    report = apply_sites(
+        sites_from_payload(payload),
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"", client=client),
+    )
+    (result,) = report.results
+    assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    assert result.why.startswith("rewrote `client.old_call`"), result.why
+
+
+def test_breaks_message_lists_each_finding_and_field_list_once():
+    from conduit.apply.engine import _breaks_message
+
+    fields = "(fields: id: str, content: List[Block], role: Literal['assistant'])"
+    first = f"f.py:3 hasattr(r, 'completion'): r is Msg, which has no attribute completion {fields}; drop that branch"
+    second = f"f.py:4 r.completion: r is Msg, which has no attribute completion {fields}"
+    message = _breaks_message([first, second, first])
+    assert message.count("f.py:3") == 1 and message.count("f.py:4") == 1, message
+    assert message.count("(fields: ") == 1 and "(fields as above)" in message, message
