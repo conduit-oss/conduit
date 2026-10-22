@@ -17,6 +17,7 @@ from conduit.apply.config import TokenFactorySettings
 from conduit.apply.context import ContextError, build_context_pack, enclosing_function
 from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
+from conduit.apply.plain import plain_why
 from conduit.apply.prompts import propose_messages, summarize_messages
 from conduit.apply.splice import PatchError, parse_model_edit, splice_edit_with_span, unified_diff_for
 from conduit.apply.signatures import new_release_wheel, signatures_for
@@ -227,6 +228,10 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                     report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], trim_test_feedback(output))
         for key in accepted:
             done = report.results[slots[key]]
+            hold = accepted[key].get("hold")
+            if hold:
+                report.results[slots[key]] = replace(done, status=SiteStatus.NEEDS_HUMAN, error=hold, why=hold)
+                continue
             why = _why_when_uncalled(accepted, key) or done.why
             report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_VERIFIED, why=why)
         for path, before in originals.items():
@@ -629,17 +634,17 @@ def _fields_once(text: str, earlier: dict[str, str] | None = None) -> str:
 
 def _fill_why(report: ApplyReport) -> None:
     """No fixed or needs-human result goes out without a reason, and a type's
-    field list is printed once across the whole report."""
+    field list is printed once across the whole report.
+
+    A needs-human ``why`` is one plain sentence for people; the full finding,
+    with field lists and the instructions retry prompts carry, stays in ``error``."""
     listed: dict[str, str] = {}
     for index, result in enumerate(report.results):
         why = result.why
-        if not why.strip() and result.status in {
-            SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED, SiteStatus.NEEDS_HUMAN
-        }:
-            if result.status == SiteStatus.NEEDS_HUMAN and result.error.strip():
-                why = result.error.strip()
-            else:
-                why = _change_summary(result)
+        if result.status == SiteStatus.NEEDS_HUMAN:
+            why = plain_why(result.error or result.why, result.site.path) or _change_summary(result)
+        elif not why.strip() and result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED}:
+            why = _change_summary(result)
         shown_why, shown_error = _fields_once(why, listed), _fields_once(result.error, listed)
         label = f"{Path(result.site.path).name}:{result.site.line}"
         for text in (why, result.error):
@@ -956,11 +961,17 @@ def _final_recheck(
     changed = True
     while changed and accepted:
         changed = False
+        for owner, texts_found in _undefined_names(scratch, originals, accepted, texts).items():
+            for text in texts_found:
+                if text not in handed.setdefault(owner, []):
+                    handed[owner].append(text)
         for key in list(accepted):
             if key not in accepted:
                 continue
             sink = accepted[key]
             site = sink["site"]
+            if sink.get("hold"):
+                continue
             feeder = _unfixed_feeder(work, report, slots, accepted, key)
             if feeder:
                 # What this function receives is still the old release's value.
@@ -976,15 +987,18 @@ def _final_recheck(
                 continue
             body = _read(scratch / site.path)
             span = _span_in(body, sink.get("block") or "")
-            if span is None:
+            breaks: list[tuple[str, str]] = []
+            if span is None and not handed.get(key):
                 continue
             try:
-                breaks = remaining_breaks(
-                    scratch, site, body, span=span, fixtures=config.fixtures,
-                    allow_network=config.allow_network, original=originals.get(site.path, ""),
-                )
+                if span is not None:
+                    breaks = remaining_breaks(
+                        scratch, site, body, span=span, fixtures=config.fixtures,
+                        allow_network=config.allow_network, original=originals.get(site.path, ""),
+                    )
             except Exception:  # noqa: BLE001 — a recheck that cannot run keeps the earlier verdict
                 breaks = []
+            span = span or (site.line, site.line)
             findings: list[str] = []
             for text, _symbol in breaks:
                 owner = _accepted_owner(scratch, accepted, key, span, site.path, text)
@@ -1002,6 +1016,14 @@ def _final_recheck(
             if _retry_final(work, client, report, originals, texts, slots, key, sink, message):
                 dropped = changed = True
                 continue
+            if all(_UNDEFINED in text for text in findings):
+                # Reverting would bring back an import the new release no longer
+                # has; the rewrite stays in the diff, but it is not verified.
+                sink["hold"] = message
+                accepted[key] = sink
+                _rebuild(scratch, originals, accepted, texts, site.path)
+                changed = True
+                continue
             depends = _unresolved_dependencies(scratch, report, texts, slots, accepted, findings)
             if depends:
                 message += "; depends on " + ", ".join(depends) + ", whose fix was not applied (needs a human)"
@@ -1017,6 +1039,105 @@ def _final_recheck(
             _rebuild(scratch, originals, accepted, texts, site.path)
             dropped = changed = True
     return dropped
+
+
+_UNDEFINED = " is no longer imported or defined after the rewrite at "
+
+
+def _undefined_names(
+    scratch: Path, originals: dict[str, str], accepted: dict[int, dict[str, Any]], texts: dict[int, str]
+) -> dict[int, list[str]]:
+    """Names a changed file still uses (annotations included, even when they are
+    never evaluated) that it no longer imports or defines, by the site whose
+    original line bound them."""
+    out: dict[int, list[str]] = {}
+    by_path: dict[str, list[int]] = {}
+    for key, sink in accepted.items():
+        if not sink.get("hold"):
+            by_path.setdefault(sink["site"].path, []).append(key)
+    for path, keys in by_path.items():
+        before, after = originals.get(path, ""), _read(scratch / path)
+        if before == after:
+            continue
+        try:
+            old_tree, new_tree = ast.parse(before), ast.parse(after)
+        except SyntaxError:
+            continue
+        lost = _bound_names(old_tree) - _bound_names(new_tree)
+        if not lost:
+            continue
+        uses = _used_names(new_tree)
+        for name in sorted(lost):
+            if name not in uses:
+                continue
+            owner = next((key for key in keys if name in _bound_by_line(texts.get(key, ""))), None)
+            if owner is None:
+                continue
+            site = accepted[owner]["site"]
+            line = uses[name]
+            out.setdefault(owner, []).append(
+                f"{path}:{line} {name}: name {name} is no longer imported or defined after the rewrite at "
+                f"{path}:{site.line} removed it, but line {line} still uses it; it is not in the new release "
+                f"under that import: keep the name defined, or use the type the call now returns, read from "
+                f"the new release's code"
+            )
+    return out
+
+
+def _bound_names(tree: ast.Module) -> set[str]:
+    """Every name the module binds anywhere: imports, defs, classes, arguments, targets."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+    return names
+
+
+def _used_names(tree: ast.Module) -> dict[str, int]:
+    """Loaded names (first line), including those inside string annotations."""
+    uses: dict[str, int] = {}
+
+    def add(node: ast.AST, line: int) -> None:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                uses.setdefault(sub.id, line or getattr(sub, "lineno", 0))
+            elif isinstance(sub, ast.Constant) and isinstance(sub.value, str) and line:
+                try:
+                    add(ast.parse(sub.value.strip(), mode="eval"), line)
+                except SyntaxError:
+                    pass
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            uses.setdefault(node.id, node.lineno)
+        annotations: list[ast.AST] = []
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            annotations.append(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+            annotations.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            annotations.append(node.annotation)
+        for annotation in annotations:
+            add(annotation, annotation.lineno)
+    return uses
+
+
+def _bound_by_line(text: str) -> set[str]:
+    """Names the site's original line binds (an import, def or assignment)."""
+    try:
+        return _bound_names(ast.parse(text.strip()))
+    except SyntaxError:
+        return set()
 
 
 def _unfixed_feeder(
