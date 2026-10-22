@@ -24,6 +24,7 @@ from conduit.apply.context import (
     removed_names,
 )
 from conduit.apply.feedback import trim_test_feedback
+from conduit.apply.nonecheck import NONE_CHECK
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.plain import plain_why
 from conduit.apply.prompts import propose_messages, summarize_messages
@@ -1017,10 +1018,15 @@ def _final_recheck(
                 continue
             try:
                 if span is not None:
-                    breaks = remaining_breaks(
-                        scratch, site, body, span=span, fixtures=config.fixtures,
-                        allow_network=config.allow_network, original=originals.get(site.path, ""),
-                    )
+                    # The finished migration: Optional values that reach a place None breaks count too.
+                    none_token = NONE_CHECK.set(True)
+                    try:
+                        breaks = remaining_breaks(
+                            scratch, site, body, span=span, fixtures=config.fixtures,
+                            allow_network=config.allow_network, original=originals.get(site.path, ""),
+                        )
+                    finally:
+                        NONE_CHECK.reset(none_token)
             except Exception:  # noqa: BLE001 — a recheck that cannot run keeps the earlier verdict
                 breaks = []
             span = span or (site.line, site.line)

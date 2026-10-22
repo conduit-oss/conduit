@@ -2367,3 +2367,164 @@ def test_decorators_are_kept_once_when_the_model_repeats_them(tmp_path: Path):
     from conduit.apply.engine import _repeated_decorator
 
     assert _repeated_decorator(patched, (span[0] - 2, span[1])) == ""  # the backstop stays quiet
+
+
+_OPTIONAL_RELEASE = textwrap.dedent(
+    """\
+    from typing import Optional, Union
+
+    class BaseModel:
+        pass
+
+    class Usage(BaseModel):
+        input_tokens: int
+        cache_read_input_tokens: Optional[int] = None
+        cache_creation_input_tokens: int | None = None
+        server: Union[str, None]
+        tier: str = None
+    """
+)
+
+
+def _none_findings(tmp_path: Path, body: str, repo_usage: str = "") -> list[str]:
+    import ast as _ast
+
+    from conduit.apply.nonecheck import none_breaks
+
+    modules = {"sdk.types": _ast.parse(_OPTIONAL_RELEASE)}
+    klass = next(node for node in modules["sdk.types"].body if isinstance(node, _ast.ClassDef) and node.name == "Usage")
+    root = tmp_path / "repo"
+    root.mkdir(exist_ok=True)
+    usage = repo_usage or (
+        "class Tokens:\n    def __init__(self, prompt: int, cached: int):\n"
+        "        self.total = prompt + cached\n"
+    )
+    (root / "tokens.py").write_text(usage, encoding="utf-8")
+    source = "from tokens import Tokens\n\n" + textwrap.dedent(body)
+    (root / "mod.py").write_text(source, encoding="utf-8")
+    tree = _ast.parse(source)
+    func = next(node for node in tree.body if isinstance(node, _ast.FunctionDef))
+    typed = {"u": [("sdk.types", klass)]}
+    return none_breaks(modules, root, {"mod.py": tree}, "mod.py", tree, func, typed, "sdk", "2.0")
+
+
+def test_optional_field_passed_where_the_callee_adds_it_up_is_flagged(tmp_path: Path):
+    from conduit.apply.plain import plain_why
+
+    found = _none_findings(tmp_path, "def f(u):\n    return Tokens(prompt=u.input_tokens, cached=u.cache_read_input_tokens)\n")
+    assert len(found) == 1 and "cache_read_input_tokens may be None (Optional[int]) in sdk 2.0" in found[0], found
+    assert "`Tokens` adds it up" in found[0] and "or 0" in found[0]
+    why = plain_why("rewrite still breaks against the new release: " + found[0], "mod.py")
+    assert why == "`cache_read_input_tokens` can be None in 2.0, but `Tokens` adds it up.", why
+    # Positional, an alias, the `X | None` spelling and a None default on a plain annotation all count.
+    assert _none_findings(tmp_path, "def f(u):\n    return Tokens(1, u.cache_creation_input_tokens)\n")
+    assert _none_findings(tmp_path, "def f(u):\n    t = u.cache_read_input_tokens\n    return Tokens(1, t)\n")
+    assert _none_findings(tmp_path, "def f(u):\n    return Tokens(1, u.tier)\n")
+    # A non-Optional field is fine.
+    assert _none_findings(tmp_path, "def f(u):\n    return Tokens(1, u.input_tokens)\n") == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "def f(u):\n    return Tokens(1, u.cache_read_input_tokens or 0)\n",
+        "def f(u):\n    c = u.cache_read_input_tokens\n    return Tokens(1, c if c is not None else 0)\n",
+        "def f(u):\n    if u.cache_read_input_tokens is None:\n        return None\n    return Tokens(1, u.cache_read_input_tokens)\n",
+        "def f(u):\n    if u.cache_read_input_tokens:\n        return Tokens(1, u.cache_read_input_tokens)\n",
+    ],
+)
+def test_handled_none_is_not_flagged(tmp_path: Path, body: str):
+    assert _none_findings(tmp_path, body) == []
+
+
+def test_callee_that_accepts_none_or_only_stores_it_is_fine(tmp_path: Path):
+    body = "def f(u):\n    return Tokens(1, u.cache_read_input_tokens)\n"
+    optional = "from typing import Optional\n\nclass Tokens:\n    def __init__(self, prompt: int, cached: Optional[int]):\n        self.total = prompt + (cached or 0)\n"
+    assert _none_findings(tmp_path, body, optional) == []
+    stores = "class Tokens:\n    def __init__(self, prompt, cached):\n        self.cached = cached\n"
+    assert _none_findings(tmp_path, body, stores) == []
+    guarded = "class Tokens:\n    def __init__(self, prompt: int, cached=None):\n        self.total = prompt + cached\n"
+    assert _none_findings(tmp_path, body, guarded) == []  # its parameter takes None by default
+    annotated = "class Tokens:\n    def __init__(self, prompt: int, cached: int):\n        self.cached = cached\n"
+    (only,) = _none_findings(tmp_path, body, annotated)
+    assert "`Tokens` takes it as `int`" in only
+
+
+def test_direct_arithmetic_comparison_and_annotated_return_are_flagged(tmp_path: Path):
+    add = _none_findings(tmp_path, "def f(u):\n    return u.input_tokens + u.cache_read_input_tokens\n")
+    assert len(add) == 1 and "but line 4 adds it up" in add[0], add
+    aug = _none_findings(tmp_path, "def f(u):\n    total = 0\n    total += u.cache_read_input_tokens\n    return total\n")
+    assert aug and "adds it up" in aug[0]
+    cmp = _none_findings(tmp_path, "def f(u):\n    return u.cache_read_input_tokens > 3\n")
+    assert cmp and "compares it" in cmp[0]
+    assert _none_findings(tmp_path, "def f(u):\n    return u.cache_read_input_tokens is None\n") == []
+    ret = _none_findings(tmp_path, "def f(u) -> int:\n    return u.cache_read_input_tokens\n")
+    assert ret and "`f` returns it as `int`" in ret[0]
+    assert _none_findings(tmp_path, "def f(u) -> 'int | None':\n    return u.cache_read_input_tokens\n") == []
+
+
+def test_or_zero_on_an_optional_count_is_not_masking():
+    """`x or 0` handles None the new type allows; the getattr masking rule is about guessing a field exists."""
+    import ast as _ast
+
+    from conduit.apply.typecheck import _masked_read
+
+    modules = {"sdk.types": _ast.parse(_OPTIONAL_RELEASE)}
+    klass = next(node for node in modules["sdk.types"].body if isinstance(node, _ast.ClassDef) and node.name == "Usage")
+    call = _ast.parse("getattr(u, 'cache_read_input_tokens', 0)", mode="eval").body
+    text = _masked_read(modules, "mod.py", call, "u", "cache_read_input_tokens", [("sdk.types", klass)], "sdk", "2.0")
+    assert "dead code" in text and "its value may be None" in text and "or ..." in text, text
+    plain = _ast.parse("u.cache_read_input_tokens or 0", mode="eval").body
+    assert _masked_read(modules, "mod.py", plain, "u", "cache_read_input_tokens", [("sdk.types", klass)], "sdk", "2.0") == ""
+
+
+@pytest.mark.parametrize("retry, verified", [("unguarded", False), ("guarded", True)])
+def test_optional_finding_in_final_recheck_gets_one_retry(tmp_path: Path, monkeypatch, retry, verified):
+    """The None check runs on the finished migration: one retry with the finding, else needs-human."""
+    import conduit.apply.engine as engine
+    from conduit.apply.nonecheck import NONE_CHECK
+
+    seen: list[bool] = []
+
+    def fake(root, site, patched, *, span=None, fixtures=None, allow_network=False, original=None):
+        seen.append(NONE_CHECK.get())
+        if NONE_CHECK.get() and "new_call(x.cache)" in patched:
+            return [(f"{site.path}:2 x.cache: cache may be None (Optional[int]) in example-sdk 2.0, but "
+                     "`Tokens` adds it up; handle None where it is read (`x.cache or 0`, ...)", "")]
+        return []
+
+    monkeypatch.setattr(engine, "remaining_breaks", fake)
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text("def f(x):\n    return x.old_call(x.cache)\n", encoding="utf-8")
+    sites = sites_from_payload(_impact_payload(path="mod.py", line=2))
+    first = "def f(x):\n    return x.new_call(x.cache)\n"
+    second = first if retry == "unguarded" else "def f(x):\n    return x.new_call(x.cache or 0)\n"
+    client = FakeModelClient(responses=[_fn(first), "uses new_call", _fn(second), "guards None"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    (result,) = report.results
+    assert False in seen and True in seen  # per-site check without it, final recheck with it
+    assert "cache may be None" in client.calls[2]["messages"][-1].content
+    if verified:
+        assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    else:
+        assert result.status == SiteStatus.NEEDS_HUMAN
+        assert result.why == "`cache` can be None in 2.0, but `Tokens` adds it up.", result.why
+        assert "or 0" in result.error
+
+
+def test_plain_why_for_a_wrong_argument_kind():
+    from conduit.apply.plain import plain_why
+
+    raw = (
+        "rewrite still breaks against the new release: pkg/llm.py:30 self._client.beta.messages.create: messages= "
+        "passes a str but messages.create in anthropic 1.0.0 expects Iterable[BetaMessageParam], i.e. a list like "
+        "[{\"content\": <Union[str, Iterable[BetaContentBlockParam]]>}] (prompt = self.f(messages))"
+    )
+    assert plain_why(raw, "pkg/llm.py") == (
+        "Line 30 passes a `str` as `messages=`, but `messages.create` expects `Iterable[BetaMessageParam]` in 1.0.0."
+    )
