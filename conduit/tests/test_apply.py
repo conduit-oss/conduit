@@ -1673,7 +1673,8 @@ def test_final_recheck_blocks_verified_after_tests_pass(tmp_path: Path, monkeypa
     )
     helper, caller = report.results
     assert helper.status == SiteStatus.NEEDS_HUMAN, (helper.status, helper.error)
-    assert "no attribute completion" in helper.why
+    assert "no attribute completion" in helper.error
+    assert helper.why == "Line 2 reads `.completion`, which `Reply` doesn't have in 2.0."
     assert caller.status == SiteStatus.FIXED_VERIFIED
 
 
@@ -1916,9 +1917,12 @@ def test_a_type_field_list_is_printed_once_across_the_report():
     ])
     _fill_why(report)
     one, two = report.results
-    assert one.why.count("(BetaMessage fields: ") == 1, one.why
-    assert "(BetaMessage fields: " not in two.why and "(BetaMessage fields: " not in two.error
-    assert "(BetaMessage fields listed at anthropic.py:60); read it here" in two.why, two.why
+    # The full findings (model-facing, in ``error``) list the fields once ...
+    assert one.error.count("(BetaMessage fields: ") == 1, one.error
+    assert "(BetaMessage fields: " not in two.error
+    assert "(BetaMessage fields listed at anthropic.py:60); read it here" in two.error, two.error
+    # ... and the human ``why`` lists none.
+    assert "fields" not in one.why and "fields" not in two.why, (one.why, two.why)
 
 
 def _union_modules(tmp_path: Path):
@@ -2093,7 +2097,8 @@ def test_site_fed_by_a_caller_that_needs_a_human_is_not_verified(tmp_path: Path,
     helper, caller = report.results
     assert caller.status == SiteStatus.NEEDS_HUMAN
     assert helper.status == SiteStatus.NEEDS_HUMAN, (helper.status, helper.why)
-    assert helper.why.startswith("its caller caller.py:2 was not fixed"), helper.why
+    assert helper.why == "Its caller caller.py:2 was not fixed, so the new value never arrives.", helper.why
+    assert helper.error.startswith("its caller caller.py:2 was not fixed"), helper.error
     assert "result.completion" in (root / "helper.py").read_text(encoding="utf-8")  # reverted
 
 
@@ -2118,3 +2123,75 @@ def test_repo_call_check_uses_the_definition_the_module_sees(tmp_path: Path):
     imported = "from .usage import Usage\n\ndef build():\n    return Usage(input_tokens=1)\n"
     assert any("takes no keyword input_tokens" in t for t in repo_call_breaks(root, "pkg/mine.py", imported, (3, 4)))
     assert repo_call_breaks(root, "pkg/mine.py", imported.replace("input_tokens", "prompt_tokens"), (3, 4)) == []
+
+
+def _import_site_repo(tmp_path: Path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text(
+        "from __future__ import annotations\nfrom sdk import Old\n\n\ndef use(x: Old):\n    return x\n", encoding="utf-8"
+    )
+    payload = _impact_payload(path="mod.py", line=2)
+    payload["impacts"][0]["sites"][0]["expr"] = "import Old"
+    return root, sites_from_payload(payload)
+
+
+@pytest.mark.parametrize("retry, verified", [("", False), ("Old = object", True)])
+def test_a_removed_import_still_used_gets_one_retry_then_needs_a_human(tmp_path: Path, monkeypatch, retry, verified):
+    """The rewrite drops an import an annotation still names (never evaluated under
+    ``from __future__ import annotations``): one retry with the hint, else needs-human."""
+    import conduit.apply.engine as engine
+
+    monkeypatch.setattr(engine, "remaining_breaks", lambda *a, **k: [])
+    root, sites = _import_site_repo(tmp_path)
+    client = FakeModelClient(responses=[_fn(""), "removed the import", _fn(retry), "retried"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    (result,) = report.results
+    hint = client.calls[2]["messages"][-1].content
+    assert "name Old is no longer imported or defined" in hint and "new release" in hint, hint
+    text = (root / "mod.py").read_text(encoding="utf-8")
+    assert "from sdk import Old" not in text  # the removal stays in the diff either way
+    if verified:
+        assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    else:
+        assert result.status == SiteStatus.NEEDS_HUMAN, (result.status, result.why)
+        assert result.why == "Line 4 still uses `Old`, which this rewrite stopped importing or defining.", result.why
+        assert "use the type the call now returns" in result.error
+
+
+def test_undefined_names_cover_string_annotations_and_ignore_names_still_bound():
+    import ast as _ast
+
+    from conduit.apply.engine import _bound_names, _used_names
+
+    before = _ast.parse("from x import A, B\n\ndef f(a: 'A', b: B):\n    return a\n")
+    after = _ast.parse("from x import B\n\ndef f(a: 'A', b: B):\n    return a\n")
+    lost = _bound_names(before) - _bound_names(after)
+    uses = _used_names(after)
+    assert lost == {"A"} and uses["A"] == 3 and "B" in uses
+
+
+def test_plain_why_is_one_short_sentence_without_field_lists_or_instructions():
+    from conduit.apply.plain import plain_why
+
+    fields = "(BetaMessage fields: id: str, content: List[BetaContentBlock])"
+    raw = (
+        "rewrite still breaks against the new release: pkg/a.py:61 result.completion: from_completion() gets "
+        f"result = BetaMessage from pkg/b.py:36 in anthropic 1.0.0, which has no attribute completion {fields}; "
+        "read what you need here instead of passing it on; depends on pkg/a.py:60, whose fix was not applied (needs a human)"
+    )
+    assert plain_why(raw, "pkg/b.py") == (
+        "`from_completion()` reads `.completion`, which the `BetaMessage` this line now passes doesn't have "
+        "in 1.0.0; depends on a.py:60 (not fixed)."
+    )
+    assert plain_why("rewrite repeats a decorator the function already has (@staticmethod on f); give "
+                     "function_source without the existing decorators", "x.py") == "The rewrite added a second `@staticmethod`."
+    same = "rewrite still breaks against the new release: pkg/a.py:61 result.completion: result is BetaMessage in anthropic 1.0.0, which has no attribute completion " + fields
+    assert plain_why(same, "pkg/a.py") == "Line 61 reads `.completion`, which `BetaMessage` doesn't have in 1.0.0."
+    assert plain_why("reverted: the tests still fail with this rewrite\nTraceback ...", "x.py") == "Reverted: the tests failed with this rewrite."
+    odd = "token budget exhausted for this site"
+    assert plain_why(odd, "x.py") == "token budget exhausted for this site."
