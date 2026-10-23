@@ -106,6 +106,10 @@ class SiteResult:
     attempts: int = 0
     error: str = ""
     context: ContextPack | None = None
+    #: Arguments the original call passed that the rewrite no longer does, and
+    #: the one-sentence note about them (also appended to ``why``).
+    dropped: list[str] = field(default_factory=list)
+    dropped_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,4 +123,6 @@ class SiteResult:
             "attempts": self.attempts,
             "error": self.error,
             "via_wrapper": self.site.via_wrapper,
+            "dropped": list(self.dropped),
+            "dropped_note": self.dropped_note,
         }
