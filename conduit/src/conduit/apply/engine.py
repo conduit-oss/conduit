@@ -36,6 +36,7 @@ from conduit.apply.splice import (
     unified_diff_for,
 )
 from conduit.apply.signatures import new_release_wheel, signatures_for
+from conduit.apply.dropped import DROPPED, import_swap_why
 from conduit.apply.typecheck import FLOWS
 from conduit.apply.verify import remaining_breaks
 
@@ -460,7 +461,8 @@ def _apply_one(
                     f"rewrite repeats a decorator the function already has ({repeated}); "
                     "give function_source without the existing decorators or list each once"
                 )
-            flows = _verify_site_cleared(config, site, patched, span)
+            drops: dict[str, Any] = {}
+            flows = _verify_site_cleared(config, site, patched, span, drops)
             tests_ok, test_err = _run_tests(config, site, patched)
             if not tests_ok:
                 feedback = trim_test_feedback(test_err or "tests failed")
@@ -474,6 +476,8 @@ def _apply_one(
                 )
                 site_tokens += why_tokens
                 report.tokens_used += why_tokens
+            # An import line reads from the two sources, not from the model's sentence.
+            why = import_swap_why(pack.full_source, patched, site.line, site.change) or why
             status = (
                 SiteStatus.FIXED_VERIFIED
                 if config.test_cmd
@@ -491,6 +495,8 @@ def _apply_one(
                 diff=diff,
                 attempts=attempts,
                 context=pack,
+                dropped=list(drops.get("names") or []),
+                dropped_note=drops.get("note") or "",
             )
         except RecheckError as exc:
             last_error = str(exc)
@@ -560,19 +566,29 @@ def _summarize(
 
 
 def _verify_site_cleared(
-    config: ApplyConfig, site: ImpactSite, patched: str, span: tuple[int, int]
+    config: ApplyConfig,
+    site: ImpactSite,
+    patched: str,
+    span: tuple[int, int],
+    dropped: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Raise when the rewrite still breaks; return the release values it passes on."""
+    """Raise when the rewrite still breaks; return the release values it passes on.
+
+    ``dropped`` is filled with the arguments the rewrite stopped passing."""
     flows: list[dict[str, Any]] = []
-    if config.site_cleared is None and config.recheck_impact and config.routes is not None:
-        token = FLOWS.set(flows)
-        try:
-            _verify_against_release(config, site, patched, span)
-        finally:
-            FLOWS.reset(token)
+    drop_token = DROPPED.set(dropped)
+    try:
+        if config.site_cleared is None and config.recheck_impact and config.routes is not None:
+            token = FLOWS.set(flows)
+            try:
+                _verify_against_release(config, site, patched, span)
+            finally:
+                FLOWS.reset(token)
+            return flows
+        _verify_against_release(config, site, patched, span)
         return flows
-    _verify_against_release(config, site, patched, span)
-    return flows
+    finally:
+        DROPPED.reset(drop_token)
 
 
 def _verify_against_release(config: ApplyConfig, site: ImpactSite, patched: str, span: tuple[int, int]) -> None:
@@ -672,6 +688,10 @@ def _fill_why(report: ApplyReport) -> None:
             why = plain_why(result.error or result.why, result.site.path) or _change_summary(result)
         elif not why.strip() and result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED}:
             why = _change_summary(result)
+        if result.dropped_note and result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED}:
+            # One line: a report cell keeps only the first line of ``why``.
+            if result.dropped_note not in why:
+                why = " ".join(why.split()) + " " + result.dropped_note
         shown_why, shown_error = _fields_once(why, listed), _fields_once(result.error, listed)
         label = f"{Path(result.site.path).name}:{result.site.line}"
         for text in (why, result.error):

@@ -2528,3 +2528,182 @@ def test_plain_why_for_a_wrong_argument_kind():
     assert plain_why(raw, "pkg/llm.py") == (
         "Line 30 passes a `str` as `messages=`, but `messages.create` expects `Iterable[BetaMessageParam]` in 1.0.0."
     )
+
+
+# --- dropped arguments and import-swap why ---------------------------------
+
+
+def _old_call(source: str, expr: str = "client.send", line: int = 2):
+    from conduit.apply.typecheck import _call_at
+
+    return _call_at(ast.parse(source), line, expr)
+
+
+def _drops(before: str, after: str, expr: str = "client.send", order: list[str] | None = None):
+    from conduit.apply.dropped import dropped_from
+
+    tree = ast.parse(after)
+    names, call = dropped_from(_old_call(before, expr), tree, (1, len(after.splitlines())), order)
+    return names, call
+
+
+def test_dropped_keywords_are_found_and_moved_values_are_not():
+    before = "def f(client, cfg, p):\n    return client.send(prompt=p, model=cfg.model, limit=cfg.limit, temp=cfg.temp, top=cfg.top)\n"
+    after = (
+        "def f(client, cfg, p):\n"
+        "    msgs = [p]\n"
+        "    return client.post(messages=msgs, model=cfg.model, max=cfg.limit)\n"
+    )
+    names, call = _drops(before, after)
+    # limit moved to ``max=``; prompt went into ``msgs`` but ``p`` is still read; temp and top are gone.
+    assert names == ["temp", "top"], names
+    assert call is not None and call.func.attr == "post"
+
+
+def test_a_value_read_elsewhere_in_the_function_is_not_dropped_but_a_constant_must_stay_in_the_call():
+    before = "def f(client, cfg):\n    return client.send(model='m', temp=cfg.temp, mode='fast')\n"
+    after = "def f(client, cfg):\n    extra = {'t': cfg.temp}\n    return client.send(model='m', **extra)\n"
+    # ``**extra`` may pass anything: the call is not judged.
+    assert _drops(before, after)[0] == []
+    after = "def f(client, cfg):\n    t = cfg.temp\n    return client.send(model='m', body=t)\n"
+    assert _drops(before, after)[0] == ["mode"]
+
+
+def test_dropped_positional_arguments_are_named_through_the_old_signature():
+    before = "def f(client, a, b):\n    return client.send(a, b)\n"
+    after = "def f(client, a, b):\n    return client.send(a)\n"
+    assert _drops(before, after, order=["first", "second"])[0] == ["second"]
+    assert _drops(before, after)[0] == ["positional argument 2"]
+    moved = "def f(client, a, b):\n    return client.send(second=b, first=a)\n"
+    assert _drops(before, moved, order=["first", "second"])[0] == []
+
+
+def test_call_with_nothing_in_common_is_not_compared():
+    before = "def f(client, a):\n    return client.send(a, limit=1)\n"
+    after = "def f(client, a):\n    return other(3)\n"
+    assert _drops(before, after) == ([], None)
+
+
+def test_dropped_note_says_what_the_new_release_shows():
+    from conduit.apply.dropped import note_for
+
+    assert note_for(["temperature", "top_k"], ["temperature", "top_k"], "messages.create") == (
+        "Dropped `temperature`, `top_k`: the new release's `messages.create` doesn't accept them, "
+        "so these settings are now ignored."
+    )
+    assert note_for(["x"], [], "") == "Dropped `x`: removed without a matching parameter in the new call."
+    assert note_for(["a", "b"], ["a"], "m.go") == (
+        "Dropped `a`: the new release's `m.go` doesn't accept it, so this setting is now ignored. "
+        "Dropped `b`: removed without a matching parameter in the new call."
+    )
+    assert note_for([], [], "m.go") == ""
+
+
+def test_record_drops_reads_the_new_callees_parameters(tmp_path: Path, monkeypatch):
+    import conduit.apply.signatures as signatures
+    from conduit.apply.dropped import DROPPED
+    from conduit.apply.verify import _record_drops
+    from types import SimpleNamespace
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .client import Client\n", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        "class Messages:\n    def create(self, *, model: str, max_tokens: int, timeout: float = 1.0):\n        return 1\n\n"
+        "class Client:\n    messages: Messages\n",
+        encoding="utf-8",
+    )
+    wheel = tmp_path / "wheel"
+    monkeypatch.setattr(signatures, "new_release_wheel", lambda dep, ver, **kw: wheel if ver == "2.0" else None)
+    before = (
+        "def f(client, cfg):\n"
+        "    return client.completions.create(prompt='p', model=cfg.model, max_tokens_to_sample=cfg.n,"
+        " temperature=cfg.t, top_k=cfg.k)\n"
+    )
+    after = (
+        "def f(client, cfg):\n"
+        "    return client.messages.create(model=cfg.model, max_tokens=cfg.n)\n"
+    )
+    site = sites_from_payload(_impact_payload(path="mod.py", line=2))[0]
+    from dataclasses import replace
+
+    site = replace(site, expr="client.completions.create", symbol="")
+    chain = _chain("mod.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")
+    sink: dict = {}
+    token = DROPPED.set(sink)
+    try:
+        _record_drops(site, before, ast.parse(after), (1, 2), SimpleNamespace(chains=[chain]), wheel, None, False)
+    finally:
+        DROPPED.reset(token)
+    assert sink["names"] == ["prompt", "temperature", "top_k"], sink
+    assert sink["note"] == (
+        "Dropped `prompt`, `temperature`, `top_k`: the new release's `messages.create` doesn't accept them, "
+        "so these settings are now ignored."
+    ), sink["note"]
+
+
+def test_dropped_note_is_in_the_why_and_the_json_and_status_stays_verified(tmp_path: Path, monkeypatch):
+    import conduit.apply.engine as engine
+    from conduit.apply.dropped import DROPPED
+
+    def fake(root, site, patched, *, span=None, fixtures=None, allow_network=False, original=None):
+        sink = DROPPED.get()
+        if sink is not None and "new_call" in patched:
+            sink["names"] = ["old_extra"]
+            sink["note"] = "Dropped `old_extra`: removed without a matching parameter in the new call."
+        return []
+
+    monkeypatch.setattr(engine, "remaining_breaks", fake)
+    # The per-site check only reads the sink in _type_breaks, so call the real verify path through the fake.
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text("def f(x):\n    return x.old_call(1, old_extra=2)\n", encoding="utf-8")
+    sites = sites_from_payload(_impact_payload(path="mod.py", line=2))
+    client = FakeModelClient(responses=[_fn("def f(x):\n    return x.new_call(1)\n"), "Switched to new_call.\nSecond line."])
+    config = ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                         client=client, recheck_impact=True)
+    report = apply_sites(sites, config)
+    (result,) = report.results
+    assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    assert result.dropped == ["old_extra"]
+    assert result.why == "Switched to new_call. Dropped `old_extra`: removed without a matching parameter in the new call."
+    assert "\n" not in result.why
+    data = result.to_dict()
+    assert data["dropped"] == ["old_extra"] and data["dropped_note"].startswith("Dropped `old_extra`")
+    from conduit.apply.report import format_report
+
+    assert "Dropped `old_extra`" in format_report(report)
+    engine._fill_why(report)  # idempotent
+    assert report.results[0].why.count("Dropped") == 1
+
+
+def test_a_result_with_no_dropped_arguments_has_an_empty_note(tmp_path: Path, monkeypatch):
+    import conduit.apply.engine as engine
+
+    monkeypatch.setattr(engine, "remaining_breaks", lambda *a, **k: [])
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text("def f(x):\n    return x.old_call(1)\n", encoding="utf-8")
+    sites = sites_from_payload(_impact_payload(path="mod.py", line=2))
+    client = FakeModelClient(responses=[_fn("def f(x):\n    return x.new_call(1)\n"), "Uses new_call."])
+    report = apply_sites(sites, ApplyConfig(root=root, settings=_settings(), write=True,
+                                            test_cmd="python3 -c \"print('ok')\"", client=client, recheck_impact=True))
+    (result,) = report.results
+    assert (result.dropped, result.dropped_note, result.why) == ([], "", "Uses new_call.")
+
+
+def test_import_swap_why_comes_from_the_diff_not_the_model():
+    from conduit.apply.dropped import import_swap_why
+
+    before = "import os\nfrom pkg.types import Completion\n\n\ndef f(x: Completion):\n    return x\n"
+    after = "import os\nfrom pkg.types.beta import BetaMessage\n\n\ndef f(x: BetaMessage):\n    return x\n"
+    assert import_swap_why(before, after, 2, "completion.Completion removed") == (
+        "Replaced the import `from pkg.types import Completion` with `from pkg.types.beta import BetaMessage` "
+        "(completion.Completion removed)."
+    )
+    alias = "import os\nfrom pkg.types import Message as Completion\n\n\ndef f(x: Completion):\n    return x\n"
+    assert "Message as Completion" in import_swap_why(before, alias, 2)
+    assert import_swap_why(before, before, 2) == ""  # unchanged import: nothing to say
+    assert import_swap_why(before, after, 5) == ""  # not an import line
+    dropped = "import os\n\n\ndef f(x):\n    return x\n"
+    assert import_swap_why(before, dropped, 2).startswith("Removed the import `from pkg.types import Completion`")
