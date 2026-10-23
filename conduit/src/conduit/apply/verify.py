@@ -172,6 +172,7 @@ def _type_breaks(
     wheel = new_release_wheel(
         site.dependency, site.to_version, fixtures=fixtures, allow_network=allow_network
     )
+    _record_drops(site, original, tree, span, service_map, wheel, fixtures, allow_network)
     if wheel is None:
         return local
     try:
@@ -206,6 +207,43 @@ def _type_breaks(
         return found
     except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
         return local
+
+
+def _record_drops(site, original: str, tree, span, service_map, wheel, fixtures, allow_network) -> None:
+    """Note, for the per-site check only, the arguments the rewrite stopped passing."""
+    import ast
+
+    from conduit.apply.dropped import DROPPED, dropped_from, note_for
+    from conduit.apply.signatures import _modules, new_release_wheel, resolve_callable, unknown_keywords
+    from conduit.apply.typecheck import _call_at
+
+    sink = DROPPED.get()
+    if sink is None:
+        return
+    try:
+        old = _call_at(ast.parse(original), site.line, (site.expr or "").strip())
+        if old is None:
+            return
+        order: list[str] = []
+        old_wheel = new_release_wheel(
+            site.dependency, site.from_version, fixtures=fixtures, allow_network=allow_network
+        )
+        found = resolve_callable(_modules(str(old_wheel)), site.symbol) if old_wheel is not None and site.symbol else None
+        if found is not None:
+            order = [arg.arg for arg in (*found[1].args.posonlyargs, *found[1].args.args)]
+            order = order[1:] if order and order[0] in {"self", "cls"} else order
+        names, new = dropped_from(old, tree, span, order)
+        if not names or new is None:
+            return
+        owner, rejected = "", []
+        for chain in service_map.chains:
+            if chain.call_lineno == new.lineno and chain.call_expr == ast.unparse(new.func) and not chain.via_wrapper:
+                owner, rejected = unknown_keywords(wheel, chain.sdk_method, tuple(names))
+                break
+        sink["names"] = names
+        sink["note"] = note_for(names, rejected, owner)
+    except Exception:  # noqa: BLE001 — a note that cannot be built is left out
+        return
 
 
 def _unknown_keyword_breaks(
