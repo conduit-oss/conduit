@@ -26,5 +26,7 @@ def format_report(report: ApplyReport, *, include_context: bool = False) -> str:
             lines.append(f"# release_diff: {pack.release_diff.get('change')}")
             lines.append(pack.function_source.rstrip())
             lines.append("")
+    if report.preexisting:
+        lines.append(report.preexisting_note)
     lines.append(f"tokens_used: {report.tokens_used}")
     return "\n".join(lines).rstrip() + "\n"
