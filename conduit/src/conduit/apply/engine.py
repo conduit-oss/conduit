@@ -35,7 +35,7 @@ from conduit.apply.splice import (
     splice_edit_with_span,
     unified_diff_for,
 )
-from conduit.apply.signatures import new_release_wheel, signatures_for
+from conduit.apply.signatures import _modules, literal_value, new_release_wheel, signatures_for
 from conduit.apply.testrun import Baseline, describe_preexisting, focus, judge, run_tests
 from conduit.apply.dropped import DROPPED, import_swap_why
 from conduit.apply.typecheck import FLOWS
@@ -456,6 +456,7 @@ def _apply_one(
     target = _new_signatures(config, site, [site.symbol])
     if target:
         pack.release_diff["new_release_signatures"] = target
+    pack.release_diff.update(_constant_values(config, site))
     pack.connected = _connected(config, site, pack)
     pack.removed_name_uses = _with_received_types(config, site, pack.removed_name_uses)
     pack.producer_rewrites = _producer_rewrites(config, pack)
@@ -1665,6 +1666,34 @@ def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -
         return signatures_for(wheel, [symbol for symbol in symbols if symbol])
     except Exception:  # noqa: BLE001 — prompt context only; never blocks a fix
         return {}
+
+
+def _constant_values(config: ApplyConfig, site: ImpactSite) -> dict[str, str]:
+    """The literal a flagged constant held in the old release, and in the new one if it changed.
+
+    A removed constant otherwise reaches the prompt as a bare name; its old
+    value is what a faithful inline replacement has to reproduce."""
+    if not config.recheck_impact or not site.symbol or not site.from_version:
+        return {}
+    try:
+        old_wheel = new_release_wheel(
+            site.dependency, site.from_version, fixtures=config.fixtures, allow_network=config.allow_network
+        )
+        old = literal_value(_modules(str(old_wheel)), site.symbol) if old_wheel is not None else ""
+        if not old:
+            return {}
+        new_wheel = new_release_wheel(
+            site.dependency, site.to_version, fixtures=config.fixtures, allow_network=config.allow_network
+        )
+        new = literal_value(_modules(str(new_wheel)), site.symbol) if new_wheel is not None else ""
+    except Exception:  # noqa: BLE001 — prompt context only; never blocks a fix
+        return {}
+    if new == old:
+        return {}
+    out = {"old_value": f"{site.symbol} = {old}"}
+    if new:
+        out["new_value"] = f"{site.symbol} = {new}"
+    return out
 
 
 def _run_tests(
