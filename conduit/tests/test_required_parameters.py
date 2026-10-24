@@ -1,4 +1,4 @@
-"""What a new-release callable requires reaches the prompt, read from its own code."""
+"""What a new-release callable requires reaches the model, read from its own code."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from conduit.apply.models import SiteStatus
 from conduit.apply.signatures import _modules
 from conduit.apply.typecheck import parameter_brief
 
+from test_apply import _sent
 from test_apply import (
     _good_edit,
     _hits_in_span,
@@ -46,7 +47,7 @@ def _removed_site_payload() -> dict:
     return payload
 
 
-def test_first_prompt_carries_what_a_replacement_candidate_requires(tmp_path: Path, monkeypatch):
+def test_first_attempt_carries_what_a_replacement_candidate_requires(tmp_path: Path, monkeypatch):
     root = _repo_with_break(tmp_path)
     fixtures = _new_release_fixture(tmp_path)
     monkeypatch.setattr(verify_mod, "_breaks_listed", _hits_in_span)
@@ -55,7 +56,7 @@ def test_first_prompt_carries_what_a_replacement_candidate_requires(tmp_path: Pa
         sites_from_payload(_removed_site_payload()),
         ApplyConfig(root=root, settings=_settings(), client=client, recheck_impact=True, fixtures=fixtures),
     )
-    first = client.calls[0]["messages"][-1].content
+    first = _sent(client, 0)
     pack = json.loads(first.split("Context pack (JSON):", 1)[1].rsplit("Return JSON", 1)[0])
     requires = pack["release_diff"]["new_release_requires"]
     # The re-export reads the same, so it is listed once.
@@ -78,6 +79,6 @@ def test_recheck_retry_carries_what_the_called_callable_requires(tmp_path: Path,
         ApplyConfig(root=root, settings=_settings(max_attempts=3), client=client, recheck_impact=True, fixtures=fixtures),
     )
     assert report.results[0].status == SiteStatus.FIXED_UNVERIFIED, report.results[0].error
-    retry = client.calls[1]["messages"][-1].content
+    retry = _sent(client, 1)
     assert "What it requires (read from its own code):" in retry
     assert _SHAPE in retry

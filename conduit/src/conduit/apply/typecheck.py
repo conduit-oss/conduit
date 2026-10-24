@@ -1382,7 +1382,7 @@ def _fields(classes) -> list[str]:
     return names[:12]
 
 
-# --- 3. what a new-release callable needs (for the first prompt) -----------
+# --- 3. what a new-release callable needs (context for the first attempt) -----------
 
 _MAX_BRIEF = 1200
 
@@ -1648,3 +1648,66 @@ def _missing_keys(modules, near: str, annotation: ast.AST | None, expr: ast.AST)
         if all(gaps):
             return ", ".join(gaps[0]) + f" of {classes[0].name}"
     return ""
+
+
+def structured_requirements(modules: dict[str, ast.Module], dotted: str) -> list[dict]:
+    """Required parameters whose type is structured: a TypedDict or a class the
+    new release defines, directly or as the element of an Iterable/list.
+
+    ``[{"param", "annotation", "names", "iterable"}]``; ``[]`` when unresolved."""
+    found = resolve_callable(modules, dotted)
+    if found is None:
+        return []
+    module_name, node = found
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return []
+    args = node.args
+    plain = [*args.posonlyargs, *args.args]
+    required = [arg for index, arg in enumerate(plain) if index < len(plain) - len(args.defaults)]
+    required += [arg for arg, default in zip(args.kwonlyargs, args.kw_defaults) if default is None]
+    out: list[dict] = []
+    for arg in required:
+        if arg.arg in {"self", "cls"} or arg.annotation is None:
+            continue
+        element = _element_annotation(modules, module_name, arg.annotation)
+        near, target = element if element is not None else (module_name, arg.annotation)
+        names = _structured_names(modules, near, target)
+        if names:
+            out.append(
+                {
+                    "param": arg.arg,
+                    "annotation": ast.unparse(arg.annotation)[:120],
+                    "names": sorted(names),
+                    "iterable": element is not None,
+                }
+            )
+    return out
+
+
+def _structured_names(modules: dict[str, ast.Module], near: str, node: ast.AST, depth: int = 0) -> set[str]:
+    """Names of TypedDicts / release classes an annotation is made of (Union members too)."""
+    if depth > _MAX_DEPTH:
+        return set()
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            node = ast.parse(node.value.strip(), mode="eval").body
+        except SyntaxError:
+            return set()
+    if isinstance(node, ast.Subscript):
+        base = _type_name(node.value)
+        items = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if base in _UNWRAP or base == "Union":
+            return set().union(*(_structured_names(modules, near, item, depth + 1) for item in items))
+        return set()
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _structured_names(modules, near, node.left, depth + 1) | _structured_names(modules, near, node.right, depth + 1)
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        name = _type_name(node).split(".")[-1]
+        if name in _BUILTINS or name in _ANY or name in _ITERABLES or name in _MAPPINGS or name == "None":
+            return set()
+        if _typed_dict_class(modules, name) is not None or _find_class(modules, name, near) is not None:
+            return {name}
+        alias = _alias_value(modules, near, name)
+        if alias is not None:
+            return _structured_names(modules, alias[0], alias[1], depth + 1)
+    return set()

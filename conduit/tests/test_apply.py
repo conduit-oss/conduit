@@ -616,6 +616,11 @@ def test_empty_module_statement_rewrite_deletes_it(tmp_path: Path):
     assert patched == "import os\n\nX = os.sep\n"
 
 
+def _sent(client: FakeModelClient, call: int) -> str:
+    """Text of the last turn the fake client received on the given call."""
+    return client.calls[call]["messages"][-1].content
+
+
 def _hits_in_span(scratch: Path, site, *, span, fixtures, allow_network, original="") -> list[tuple[str, str]]:
     """Stand-in for impact: a removed ``timeout`` keyword inside the rewritten span."""
     lines = (scratch / site.path).read_text(encoding="utf-8").splitlines()
