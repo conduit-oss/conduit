@@ -471,6 +471,7 @@ def _apply_one(
     last_error = ""
     last_diff = ""
     earlier: list[str] = []
+    mismatched: set[tuple[str, str, str]] = set()
     attempts = used
     site_tokens = spent
     sink = sink if sink is not None else {}
@@ -538,6 +539,13 @@ def _apply_one(
             )
         except RecheckError as exc:
             last_error = str(exc)
+            repeated = _type_mismatches(exc.findings) & mismatched
+            if repeated:
+                # A plain type mismatch was already explained once: a further
+                # attempt rarely does better, so a human takes it from here.
+                last_error = "argument type still incompatible after one retry: " + last_error
+                break
+            mismatched |= _type_mismatches(exc.findings)
             feedback = _with_earlier(last_error, exc.findings, earlier)
             earlier.extend(text for text in exc.findings if text not in earlier)
         except PatchError as exc:
@@ -554,7 +562,8 @@ def _apply_one(
         why="",
         diff=last_diff,
         attempts=attempts,
-        error=last_error.split("\nNew release signatures", 1)[0] or "max attempts exhausted",
+        error=last_error.split("\nNew release signatures", 1)[0].split("\nWhat it requires", 1)[0]
+        or "max attempts exhausted",
         context=pack,
     )
 
@@ -1679,6 +1688,18 @@ def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -
 
 
 _MAX_REQUIRES = 2
+# A recheck finding from ``typecheck.argument_breaks``: ``path:line expr: kw= passes ...``.
+_MISMATCH = re.compile(r"^(?P<path>\S+?):\d+ .*?: (?P<kw>\w+)= passes .*? but (?P<owner>[\w.]+) in ")
+
+
+def _type_mismatches(findings: list[str]) -> set[tuple[str, str, str]]:
+    """``(path, keyword, callable)`` of each argument-type finding (lines move between attempts)."""
+    out: set[tuple[str, str, str]] = set()
+    for text in findings:
+        match = _MISMATCH.match(text or "")
+        if match:
+            out.add((match["path"], match["kw"], match["owner"]))
+    return out
 
 
 def _required_parameters(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -> list[str]:
