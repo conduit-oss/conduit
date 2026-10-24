@@ -38,7 +38,7 @@ from conduit.apply.splice import (
 from conduit.apply.signatures import _modules, literal_value, new_release_wheel, signatures_for
 from conduit.apply.testrun import Baseline, describe_preexisting, focus, judge, run_tests
 from conduit.apply.dropped import DROPPED, import_swap_why
-from conduit.apply.typecheck import FLOWS
+from conduit.apply.typecheck import FLOWS, parameter_brief
 from conduit.apply.verify import remaining_breaks
 
 # Optional hook: given root + site + patched file text, return True if the site
@@ -456,6 +456,13 @@ def _apply_one(
     target = _new_signatures(config, site, [site.symbol])
     if target:
         pack.release_diff["new_release_signatures"] = target
+    requires = _required_parameters(config, site, [site.symbol])
+    if not requires:
+        # A removed callable: what each replacement candidate needs, so the first
+        # rewrite builds the arguments it takes instead of keeping the old ones.
+        requires = _required_parameters(config, site, [c.get("symbol", "") for c in pack.candidates])
+    if requires:
+        pack.release_diff["new_release_requires"] = requires
     pack.release_diff.update(_constant_values(config, site))
     pack.connected = _connected(config, site, pack)
     pack.removed_name_uses = _with_received_types(config, site, pack.removed_name_uses)
@@ -646,6 +653,9 @@ def _verify_against_release(config: ApplyConfig, site: ImpactSite, patched: str,
             message += "\nNew release signatures (read from its own code):\n" + "\n".join(
                 signatures.values()
             )
+        requires = _required_parameters(config, site, [symbol for _text, symbol in breaks])
+        if requires:
+            message += "\nWhat it requires (read from its own code):\n" + "\n".join(requires)
         raise RecheckError(message, [text for text, _symbol in breaks])
 
 
@@ -1666,6 +1676,41 @@ def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -
         return signatures_for(wheel, [symbol for symbol in symbols if symbol])
     except Exception:  # noqa: BLE001 — prompt context only; never blocks a fix
         return {}
+
+
+_MAX_REQUIRES = 2
+
+
+def _required_parameters(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -> list[str]:
+    """For new-release callables: required parameters with their annotated types
+    (TypedDict structure expanded) and the other names they accept.
+
+    Distinct texts only (an async twin or re-export reads the same), at most
+    ``_MAX_REQUIRES``."""
+    symbols = [symbol for symbol in symbols if symbol]
+    if not config.recheck_impact or not symbols:
+        return []
+    try:
+        wheel = new_release_wheel(
+            site.dependency, site.to_version, fixtures=config.fixtures, allow_network=config.allow_network
+        )
+        if wheel is None:
+            return []
+        modules = _modules(str(wheel))
+        out: list[str] = []
+        seen: set[str] = set()
+        for symbol in symbols:
+            brief = parameter_brief(modules, symbol)
+            body = brief.split(" requires: ", 1)[-1]
+            if not brief or body in seen:
+                continue
+            seen.add(body)
+            out.append(brief)
+            if len(out) >= _MAX_REQUIRES:
+                break
+        return out
+    except Exception:  # noqa: BLE001 — prompt context only; never blocks a fix
+        return []
 
 
 def _constant_values(config: ApplyConfig, site: ImpactSite) -> dict[str, str]:
