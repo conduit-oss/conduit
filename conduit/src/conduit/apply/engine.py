@@ -36,6 +36,7 @@ from conduit.apply.splice import (
     unified_diff_for,
 )
 from conduit.apply.signatures import new_release_wheel, signatures_for
+from conduit.apply.testrun import Baseline, describe_preexisting, focus, judge, run_tests
 from conduit.apply.dropped import DROPPED, import_swap_why
 from conduit.apply.typecheck import FLOWS
 from conduit.apply.verify import remaining_breaks
@@ -92,15 +93,26 @@ class ApplyConfig:
     max_sites: int | None = None
     #: Batch only: cross-site recheck findings routed back to the rewrite that contains them.
     routes: _RouteState | None = None
+    #: Per-test outcomes on the PR's base state; tests that failed there do not
+    #: count against a rewrite (see ``conduit.apply.testrun``).
+    baseline: Baseline | None = None
 
 
 @dataclass
 class ApplyReport:
     results: list[SiteResult] = field(default_factory=list)
     tokens_used: int = 0
+    #: Set only when a baseline was given: failures of the last test run that
+    #: also failed on the base, and those that did not.
+    preexisting: list[str] | None = None
+    new_failures: list[str] | None = None
+
+    @property
+    def preexisting_note(self) -> str:
+        return describe_preexisting(self.preexisting or [])
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "results": [item.to_dict() for item in self.results],
             "tokens_used": self.tokens_used,
             "summary": {
@@ -108,6 +120,11 @@ class ApplyReport:
                 for status in SiteStatus
             },
         }
+        if self.preexisting is not None:
+            data["preexisting_failures"] = list(self.preexisting)
+            data["preexisting_note"] = self.preexisting_note
+            data["new_failures"] = list(self.new_failures or [])
+        return data
 
 
 def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
@@ -201,7 +218,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
         failure = ""
         for _round in range(config.settings.max_attempts + 1):
-            ok, output = _run_cmd(config.test_cmd or "", scratch)
+            ok, output = _check(config, scratch, report)
             if ok or not accepted:
                 failure = "" if ok else output
                 break
@@ -235,7 +252,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _retry_routed(work, client, report, originals, texts_of, slots)
         _drop_traced_reads(work, report, originals, texts_of, slots)
         if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted and not failure:
-            ok, output = _run_cmd(config.test_cmd or "", scratch)
+            ok, output = _check(config, scratch, report)
             failure = "" if ok else output
         if failure and accepted:
             # Revert what the last failure points at, then confirm the rest pass.
@@ -243,10 +260,10 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 sink = accepted.pop(key)
                 _rebuild(scratch, originals, accepted, texts_of, sink["site"].path)
                 report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], trim_test_feedback(failure))
-            ok, output = _run_cmd(config.test_cmd or "", scratch) if accepted else (True, "")
+            ok, output = _check(config, scratch, report) if accepted else (True, "")
             if ok and accepted and _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted:
                 # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
-                ok, output = _run_cmd(config.test_cmd or "", scratch)
+                ok, output = _check(config, scratch, report)
             if not ok:
                 for key in list(accepted):
                     sink = accepted.pop(key)
@@ -284,6 +301,19 @@ def _read(path: Path) -> str:
 def _run_cmd(command: str, cwd: Path) -> tuple[bool, str]:
     proc = subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, check=False)
     return proc.returncode == 0, ((proc.stdout or "") + (proc.stderr or "")).strip()
+
+
+def _check(config: ApplyConfig, scratch: Path, report: ApplyReport) -> tuple[bool, str]:
+    """Run the tests. Without a baseline, the exit code decides. With one, only
+    failures that did not already happen on the base count; the text returned
+    for blame and feedback then holds just those."""
+    if config.baseline is None:
+        return _run_cmd(config.test_cmd or "", scratch)
+    run = run_tests(config.test_cmd or "", scratch)
+    verdict = judge(run, config.baseline)
+    report.preexisting = verdict.preexisting
+    report.new_failures = verdict.new + verdict.missing
+    return verdict.passed, ("" if verdict.passed else focus(run, verdict))
 
 
 def _rebuild(scratch: Path, originals: dict[str, str], accepted: dict[int, dict[str, Any]], texts: dict[int, str], path: str) -> None:

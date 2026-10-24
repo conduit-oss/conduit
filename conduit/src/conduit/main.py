@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -309,6 +310,12 @@ def apply_cmd(
         "--max-attempts",
         help="Retries per site after verification failure (default 3)",
     ),
+    baseline: Optional[Path] = typer.Option(
+        None,
+        "--baseline",
+        help="JSON from `conduit baseline`: tests already failing on the base "
+        "state are reported, not blamed on a fix",
+    ),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable report"),
 ) -> None:
     """Fix impact call sites with a Token Factory chat-completions model.
@@ -347,6 +354,16 @@ def apply_cmd(
             console.print(f"[red]Fixtures directory not found:[/red] {fixture_root}")
             raise typer.Exit(2)
 
+    base_state = None
+    if baseline is not None:
+        from conduit.apply.testrun import Baseline
+
+        try:
+            base_state = Baseline.load(baseline.expanduser().resolve())
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            console.print(f"[red]Could not read baseline JSON:[/red] {exc}")
+            raise typer.Exit(2) from exc
+
     settings = TokenFactorySettings.from_env(
         base_url=base_url,
         model=model,
@@ -367,6 +384,7 @@ def apply_cmd(
             recheck_impact=True,
             fixtures=fixture_root,
             allow_network=fixture_root is None,
+            baseline=base_state,
         ),
     )
     if json_out:
@@ -390,6 +408,47 @@ def apply_cmd(
         item.status.value == "needs-human" for item in report.results
     )
     raise typer.Exit(1 if needs_human and not dry_run else 0)
+
+
+@app.command("baseline")
+def baseline_cmd(
+    test_cmd: str = typer.Option(..., "--test-cmd", help="The same test command `apply` will run"),
+    out: Path = typer.Option(..., "--out", help="Where to write the baseline JSON"),
+    path: Path = typer.Option(Path("."), "--path", help="Repo root"),
+    ref: Optional[str] = typer.Option(
+        None,
+        "--ref",
+        help="Git ref of the base code (default: the working tree as it is)",
+    ),
+) -> None:
+    """Record which tests pass and fail on the PR's base state.
+
+    Run it with the old dependency versions installed, before the PR's pins.
+    The tests run in a scratch copy (or the files at ``--ref``), so the tree
+    is not touched. ``conduit apply --baseline`` then blames a fix only for
+    tests that did not already fail here. Always exits 0: failing tests are
+    what it records.
+    """
+    from conduit.apply.testrun import record_baseline
+
+    root = _resolve_root(path)
+    try:
+        result = record_baseline(test_cmd, root, ref)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        console.print(f"[red]Could not run the baseline:[/red] {exc}")
+        raise typer.Exit(2) from exc
+    target = out.expanduser().resolve()
+    target.write_text(json.dumps(result.to_dict(), indent=2) + "\n", encoding="utf-8")
+    failing = sorted(result.failing)
+    console.print(
+        f"baseline: {len(result.outcomes)} tests, {len(failing)} failing "
+        f"(exit {result.exit_code}, from {result.source}) -> {target}",
+        markup=False,
+        highlight=False,
+        soft_wrap=True,
+    )
+    for test in failing:
+        console.print(f"  already failing: {test}", markup=False, highlight=False, soft_wrap=True)
 
 
 @app.command("impact")
