@@ -348,16 +348,29 @@ def infer_kind(expr: ast.AST, tree: ast.Module, func: ast.AST | None, line: int,
     if isinstance(expr, ast.Call):
         if isinstance(expr.func, ast.Name) and expr.func.id in _BUILTINS:
             return expr.func.id
-        name = expr.func.attr if isinstance(expr.func, ast.Attribute) else getattr(expr.func, "id", "")
-        defs = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
-        ]
+        defs = _reachable_defs(expr.func, tree, line)
         kinds = {_builtin_of(node.returns) for node in defs}
         if len(kinds) == 1:
             return kinds.pop()
     return None
+
+
+def _reachable_defs(func: ast.AST, tree: ast.Module, line: int) -> list[ast.AST]:
+    """This module's definitions a call can only mean: ``name()`` a module function,
+    ``self.name()``/``cls.name()`` a method of the enclosing class, ``Cls.name()`` a
+    method of a class defined here. Any other receiver is unknown (empty)."""
+    kinds = (ast.FunctionDef, ast.AsyncFunctionDef)
+    if isinstance(func, ast.Name):
+        return [node for node in tree.body if isinstance(node, kinds) and node.name == func.id]
+    if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+        return []
+    owner = func.value.id
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    if owner in {"self", "cls"}:
+        targets = [c for c in classes if c.lineno <= line <= (c.end_lineno or c.lineno)]
+    else:
+        targets = [c for c in classes if c.name == owner]
+    return [node for c in targets for node in c.body if isinstance(node, kinds) and node.name == func.attr]
 
 
 def _builtin_of(annotation: ast.AST | None) -> str | None:

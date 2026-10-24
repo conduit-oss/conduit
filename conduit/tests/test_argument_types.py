@@ -163,3 +163,21 @@ def test_same_type_mismatch_twice_is_handed_off_after_one_retry(tmp_path: Path, 
     assert result.status == SiteStatus.NEEDS_HUMAN
     assert result.attempts == 2
     assert result.error.startswith("argument type still incompatible after one retry")
+
+
+
+def test_a_same_named_function_on_another_class_is_unknown_not_a_mismatch():
+    """``Other.render()`` is not this class's ``render -> str``; ``self.render()`` is."""
+    local = """
+        class Local:
+            def render(self, points) -> str:
+                return ""
+
+            def f(self, router, points):
+                stops = {receiver}.render(points)
+                return router.route(stops=stops)
+        """
+    assert _flagged(local.replace("{receiver}", "Other")) == set()
+    assert _flagged(local.replace("{receiver}", "self")) == {"stops"}
+    assert _flagged(local.replace("{receiver}", "Local")) == {"stops"}
+    assert _flagged(local.replace("{receiver}", "self.other")) == set()
