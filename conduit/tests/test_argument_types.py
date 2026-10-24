@@ -149,7 +149,7 @@ def test_a_known_return_annotation_is_used():
     ) == {"stops"}
 
 
-def test_same_type_mismatch_twice_goes_to_a_human_after_one_retry(tmp_path: Path, monkeypatch):
+def test_same_type_mismatch_twice_is_handed_off_after_one_retry(tmp_path: Path, monkeypatch):
     root = _repo_with_break(tmp_path)
     finding = "mod.py:7 client.new_call: items= passes a str but Client.new_call in example-sdk 2.0 expects Iterable[ItemParam]"
     monkeypatch.setattr(engine_mod, "remaining_breaks", lambda *a, **k: [(finding, "example_sdk.Client.new_call")])

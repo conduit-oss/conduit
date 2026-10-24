@@ -38,7 +38,8 @@ from conduit.apply.splice import (
 from conduit.apply.signatures import _modules, literal_value, new_release_wheel, signatures_for
 from conduit.apply.testrun import Baseline, describe_preexisting, focus, judge, run_tests
 from conduit.apply.dropped import DROPPED, import_swap_why
-from conduit.apply.typecheck import FLOWS, parameter_brief
+from conduit.apply.producers import repo_producers
+from conduit.apply.typecheck import FLOWS, parameter_brief, structured_requirements
 from conduit.apply.verify import remaining_breaks
 
 # Optional hook: given root + site + patched file text, return True if the site
@@ -463,6 +464,14 @@ def _apply_one(
         requires = _required_parameters(config, site, [c.get("symbol", "") for c in pack.candidates])
     if requires:
         pack.release_diff["new_release_requires"] = requires
+        helpers = _repo_helpers(
+            config,
+            site,
+            (pack.function_start_line, pack.function_end_line or pack.function_start_line),
+            [site.symbol, *[c.get("symbol", "") for c in pack.candidates]],
+        )
+        if helpers:
+            pack.release_diff["existing_repo_helpers_that_produce_this_type"] = helpers
     pack.release_diff.update(_constant_values(config, site))
     pack.connected = _connected(config, site, pack)
     pack.removed_name_uses = _with_received_types(config, site, pack.removed_name_uses)
@@ -542,7 +551,7 @@ def _apply_one(
             repeated = _type_mismatches(exc.findings) & mismatched
             if repeated:
                 # A plain type mismatch was already explained once: a further
-                # attempt rarely does better, so a human takes it from here.
+                # attempt rarely does better, so it is handed off for review.
                 last_error = "argument type still incompatible after one retry: " + last_error
                 break
             mismatched |= _type_mismatches(exc.findings)
@@ -665,6 +674,16 @@ def _verify_against_release(config: ApplyConfig, site: ImpactSite, patched: str,
         requires = _required_parameters(config, site, [symbol for _text, symbol in breaks])
         if requires:
             message += "\nWhat it requires (read from its own code):\n" + "\n".join(requires)
+            helpers = _repo_helpers(config, site, span, [symbol for _text, symbol in breaks])
+            if helpers:
+                message += "\nExisting repo helpers that produce this type:\n" + "\n".join(
+                    f"- {item['helper']} ({item['import']}"
+                    + (f"; call as {item['call']}" if item.get("call") else "")
+                    + (f"; {item['note']}" if item.get("note") else "")
+                    + ")"
+                    + (f"\n  Caution: {item['caution']}" if item.get("caution") else "")
+                    for item in helpers
+                )
         raise RecheckError(message, [text for text, _symbol in breaks])
 
 
@@ -1683,7 +1702,7 @@ def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -
             allow_network=config.allow_network,
         )
         return signatures_for(wheel, [symbol for symbol in symbols if symbol])
-    except Exception:  # noqa: BLE001 — prompt context only; never blocks a fix
+    except Exception:  # noqa: BLE001 — extra context only; never blocks a fix
         return {}
 
 
@@ -1730,7 +1749,40 @@ def _required_parameters(config: ApplyConfig, site: ImpactSite, symbols: list[st
             if len(out) >= _MAX_REQUIRES:
                 break
         return out
-    except Exception:  # noqa: BLE001 — prompt context only; never blocks a fix
+    except Exception:  # noqa: BLE001 — extra context only; never blocks a fix
+        return []
+
+
+def _repo_helpers(
+    config: ApplyConfig, site: ImpactSite, span: tuple[int, int] | None, symbols: list[str]
+) -> list[dict]:
+    """Repo functions that already return a structured type the new callable requires."""
+    symbols = [symbol for symbol in symbols if symbol]
+    if not config.recheck_impact or not symbols:
+        return []
+    try:
+        wheel = new_release_wheel(
+            site.dependency, site.to_version, fixtures=config.fixtures, allow_network=config.allow_network
+        )
+        if wheel is None:
+            return []
+        modules = _modules(str(wheel))
+        requirements: list[dict] = []
+        method = ""
+        for symbol in symbols:
+            found = structured_requirements(modules, symbol)
+            if not found:
+                continue
+            method = method or symbol.rsplit(".", 1)[-1]
+            for req in found:
+                same = next((r for r in requirements if r["param"] == req["param"]), None)
+                if same is None:
+                    requirements.append(dict(req))
+                else:
+                    same["names"] = sorted(set(same["names"]) | set(req["names"]))
+        exclude = (site.path, span[0], span[1]) if span and span[0] else None
+        return repo_producers(Path(config.root), requirements, method, exclude)
+    except Exception:  # noqa: BLE001 — extra context only; never blocks a fix
         return []
 
 
@@ -1752,7 +1804,7 @@ def _constant_values(config: ApplyConfig, site: ImpactSite) -> dict[str, str]:
             site.dependency, site.to_version, fixtures=config.fixtures, allow_network=config.allow_network
         )
         new = literal_value(_modules(str(new_wheel)), site.symbol) if new_wheel is not None else ""
-    except Exception:  # noqa: BLE001 — prompt context only; never blocks a fix
+    except Exception:  # noqa: BLE001 — extra context only; never blocks a fix
         return {}
     if new == old:
         return {}
