@@ -81,9 +81,25 @@ def argument_breaks(
         param = params.get(keyword.arg or "")
         if param is None or param.annotation is None:
             continue
+        missing = _missing_keys(modules, module_name, param.annotation, keyword.value)
+        if missing:
+            out.append(
+                f"{path}:{call.lineno} {chain.call_expr}: {keyword.arg}= passes a dict missing required "
+                f"key(s) {missing} but {_owner(chain.sdk_method)} in {package} {version} expects "
+                f"{ast.unparse(param.annotation)}"
+            )
+            continue
         kind = infer_kind(keyword.value, tree, func, call.lineno)
         if kind is None:
             continue
+        if isinstance(keyword.value, ast.Constant) and kind != "None":
+            verdict = _value_accepted(modules, module_name, param.annotation, keyword.value.value, kind)
+            if verdict is False and accepts(modules, module_name, param.annotation, kind) is not False:
+                out.append(
+                    f"{path}:{call.lineno} {chain.call_expr}: {keyword.arg}= passes {keyword.value.value!r} but "
+                    f"{_owner(chain.sdk_method)} in {package} {version} expects {ast.unparse(param.annotation)}"
+                )
+                continue
         if accepts(modules, module_name, param.annotation, kind) is not False:
             continue
         expected = ast.unparse(param.annotation)
@@ -161,6 +177,8 @@ def accepts(
     """True / False when the annotation decides it, None when unknown."""
     if node is None or depth > _MAX_DEPTH:
         return None
+    if kind == "None":
+        return _accepts_none(modules, near, node, depth)
     if isinstance(node, ast.Constant):
         if node.value is None:
             return False
@@ -294,7 +312,8 @@ def infer_kind(expr: ast.AST, tree: ast.Module, func: ast.AST | None, line: int,
         if isinstance(expr.value, bool):
             return "bool"
         if expr.value is None:
-            return None
+            # Only a None written at the call itself: a variable may be rebound.
+            return "None" if depth == 0 else None
         name = type(expr.value).__name__
         return name if name in _BUILTINS else None
     if isinstance(expr, ast.JoinedStr):
@@ -321,20 +340,37 @@ def infer_kind(expr: ast.AST, tree: ast.Module, func: ast.AST | None, line: int,
             return None
         if isinstance(value, ast.AST) and not isinstance(value, ast.expr):
             return _builtin_of(value.annotation)  # AnnAssign
-        return infer_kind(value, tree, func, getattr(value, "lineno", line), depth + 1)
+        kind = infer_kind(value, tree, func, getattr(value, "lineno", line), depth + 1)
+        # "Clearly assigned": every binding of the name in the function agrees.
+        if kind is not None and _bindings_agree(tree, func, expr.id, kind, depth):
+            return kind
+        return None
     if isinstance(expr, ast.Call):
         if isinstance(expr.func, ast.Name) and expr.func.id in _BUILTINS:
             return expr.func.id
-        name = expr.func.attr if isinstance(expr.func, ast.Attribute) else getattr(expr.func, "id", "")
-        defs = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
-        ]
+        defs = _reachable_defs(expr.func, tree, line)
         kinds = {_builtin_of(node.returns) for node in defs}
         if len(kinds) == 1:
             return kinds.pop()
     return None
+
+
+def _reachable_defs(func: ast.AST, tree: ast.Module, line: int) -> list[ast.AST]:
+    """This module's definitions a call can only mean: ``name()`` a module function,
+    ``self.name()``/``cls.name()`` a method of the enclosing class, ``Cls.name()`` a
+    method of a class defined here. Any other receiver is unknown (empty)."""
+    kinds = (ast.FunctionDef, ast.AsyncFunctionDef)
+    if isinstance(func, ast.Name):
+        return [node for node in tree.body if isinstance(node, kinds) and node.name == func.id]
+    if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+        return []
+    owner = func.value.id
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    if owner in {"self", "cls"}:
+        targets = [c for c in classes if c.lineno <= line <= (c.end_lineno or c.lineno)]
+    else:
+        targets = [c for c in classes if c.name == owner]
+    return [node for c in targets for node in c.body if isinstance(node, kinds) and node.name == func.attr]
 
 
 def _builtin_of(annotation: ast.AST | None) -> str | None:
@@ -1357,3 +1393,334 @@ def _fields(classes) -> list[str]:
                 if text not in names:
                     names.append(text)
     return names[:12]
+
+
+# --- 3. what a new-release callable needs (context for the first attempt) -----------
+
+_MAX_BRIEF = 1200
+
+
+def parameter_brief(modules: dict[str, ast.Module], dotted: str) -> str:
+    """Required parameters of a new-release callable with their annotated types,
+    a sketch of TypedDict-based types, and the other names it accepts.
+
+    Read only from the wheel's code; ``""`` when the callable does not resolve."""
+    found = resolve_callable(modules, dotted)
+    if found is None:
+        return ""
+    module_name, node = found
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return ""
+    args = node.args
+    positional = [arg for arg in (*args.posonlyargs, *args.args) if arg.arg not in {"self", "cls"}]
+    first_default = len([*args.posonlyargs, *args.args]) - len(args.defaults)
+    required = [arg for index, arg in enumerate([*args.posonlyargs, *args.args]) if index < first_default and arg in positional]
+    required += [arg for arg, default in zip(args.kwonlyargs, args.kw_defaults) if default is None]
+    parts: list[str] = []
+    for arg in required:
+        text = arg.arg
+        if arg.annotation is not None:
+            text += f": {ast.unparse(arg.annotation)[:120]}"
+            shape = _shape(modules, module_name, arg.annotation)
+            if shape:
+                text += f", i.e. {shape}"
+            fields = _typed_dict_fields(modules, module_name, arg.annotation)
+            if fields:
+                text += " (" + "; ".join(fields) + ")"
+        parts.append(text)
+    label = ".".join(dotted.split(".")[-2:])
+    brief = f"{label} requires: " + ("; ".join(parts) if parts else "nothing")
+    accepted = _accepted_names(modules, module_name, node)
+    if accepted is None:
+        brief += ". Also accepts any keyword (**kwargs)."
+    else:
+        others = sorted(accepted - {arg.arg for arg in required})
+        if others:
+            brief += ". Other parameters it accepts (no others): " + ", ".join(others)
+    return brief[:_MAX_BRIEF]
+
+
+# --- 4. generic type-mismatch helpers ----------------------------------------
+
+
+def _bindings_agree(tree: ast.Module, func: ast.AST, name: str, kind: str, depth: int) -> bool:
+    """True when every binding of ``name`` in ``func`` gives the same builtin kind."""
+    for node in ast.walk(func):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    if infer_kind(node.value, tree, func, node.lineno, depth + 1) != kind:
+                        return False
+                elif any(isinstance(sub, ast.Name) and sub.id == name for sub in ast.walk(target)):
+                    return False  # unpacking: unknown
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+            if _builtin_of(node.annotation) != kind:
+                return False
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith, ast.NamedExpr, ast.comprehension)):
+            targets = [node.target] if hasattr(node, "target") else [item.optional_vars for item in node.items]
+            if any(t is not None and any(isinstance(sub, ast.Name) and sub.id == name for sub in ast.walk(t)) for t in targets):
+                return False
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+            return False
+    return True
+
+
+def _accepts_none(modules: dict[str, ast.Module], near: str, node: ast.AST, depth: int) -> bool | None:
+    """Whether ``None`` fits an annotation: False only for plainly non-optional types."""
+    if depth > _MAX_DEPTH:
+        return None
+    if isinstance(node, ast.Constant):
+        if node.value is None:
+            return True
+        if isinstance(node.value, str):
+            try:
+                return _accepts_none(modules, near, ast.parse(node.value.strip(), mode="eval").body, depth + 1)
+            except SyntaxError:
+                return None
+        return None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _any_of([_accepts_none(modules, near, side, depth + 1) for side in (node.left, node.right)])
+    if isinstance(node, ast.Subscript):
+        base = _type_name(node.value)
+        items = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if base == "Optional":
+            return True
+        if base == "Union":
+            return _any_of([_accepts_none(modules, near, item, depth + 1) for item in items])
+        if base in {"Required", "NotRequired", "Annotated", "ReadOnly", "Final"}:
+            return _accepts_none(modules, near, items[0], depth + 1)
+        if base == "Literal":
+            return any(isinstance(item, ast.Constant) and item.value is None for item in items)
+        if base in _ITERABLES or base in _MAPPINGS:
+            return False
+        return None
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        name = _type_name(node)
+        if name in _ANY or name == "None":
+            return True
+        if name in _BUILTINS or name in _ITERABLES or name in _MAPPINGS:
+            return False
+        if _typed_dict_class(modules, name) is not None:
+            return False
+        alias = _alias_value(modules, near, name)
+        if alias is not None:
+            return _accepts_none(modules, alias[0], alias[1], depth + 1)
+    return None
+
+
+def _value_accepted(
+    modules: dict[str, ast.Module], near: str, node: ast.AST | None, value, kind: str, depth: int = 0
+) -> bool | None:
+    """Like ``accepts`` for a literal value, also checking ``Literal[...]`` members."""
+    if node is None or depth > _MAX_DEPTH:
+        return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            return _value_accepted(modules, near, ast.parse(node.value.strip(), mode="eval").body, value, kind, depth + 1)
+        except SyntaxError:
+            return None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _any_of([_value_accepted(modules, near, side, value, kind, depth + 1) for side in (node.left, node.right)])
+    if isinstance(node, ast.Subscript):
+        base = _type_name(node.value)
+        items = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if base == "Literal":
+            if not all(isinstance(item, ast.Constant) for item in items):
+                return None
+            return any(type(item.value) is type(value) and item.value == value for item in items)
+        if base == "Union":
+            return _any_of([_value_accepted(modules, near, item, value, kind, depth + 1) for item in items])
+        if base in _UNWRAP:
+            return _value_accepted(modules, near, items[0], value, kind, depth + 1)
+        return accepts(modules, near, node, kind, depth + 1)
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        name = _type_name(node)
+        if name not in _BUILTINS and name not in _ANY and _typed_dict_class(modules, name) is None:
+            alias = _alias_value(modules, near, name)
+            if alias is not None:
+                return _value_accepted(modules, alias[0], alias[1], value, kind, depth + 1)
+    return accepts(modules, near, node, kind, depth + 1)
+
+
+def _required_keys(modules: dict[str, ast.Module], klass: ast.ClassDef, depth: int = 0) -> set[str] | None:
+    """Required keys of a TypedDict, bases included; None when a base does not resolve."""
+    if depth > _MAX_DEPTH:
+        return None
+    total = True
+    for keyword in klass.keywords:
+        if keyword.arg == "total" and isinstance(keyword.value, ast.Constant):
+            total = bool(keyword.value.value)
+    keys: set[str] = set()
+    for base in klass.bases:
+        name = _type_name(base) if isinstance(base, (ast.Name, ast.Attribute)) else ""
+        if name.split(".")[-1] == "TypedDict":
+            continue
+        parent = _typed_dict_class(modules, name.split(".")[-1]) if name else None
+        if parent is None:
+            return None
+        inherited = _required_keys(modules, parent, depth + 1)
+        if inherited is None:
+            return None
+        keys |= inherited
+    for stmt in klass.body:
+        if not (isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)):
+            continue
+        wrapper = _type_name(stmt.annotation.value) if isinstance(stmt.annotation, ast.Subscript) else ""
+        if wrapper == "Required" or (total and wrapper != "NotRequired"):
+            keys.add(stmt.target.id)
+    return keys
+
+
+def _typed_dict_targets(modules, near: str, node: ast.AST | None, depth: int = 0) -> list[ast.ClassDef] | None:
+    """The TypedDicts an annotation names directly (Union members), else None."""
+    if node is None or depth > _MAX_DEPTH:
+        return None
+    if isinstance(node, ast.Subscript):
+        base = _type_name(node.value)
+        items = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if base in _UNWRAP:
+            return _typed_dict_targets(modules, near, items[0], depth + 1)
+        if base == "Union":
+            found: list[ast.ClassDef] = []
+            for item in items:
+                sub = _typed_dict_targets(modules, near, item, depth + 1)
+                if sub is None:
+                    return None
+                found.extend(sub)
+            return found
+        return None
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        name = _type_name(node)
+        klass = _typed_dict_class(modules, name)
+        if klass is not None:
+            return [klass]
+        alias = _alias_value(modules, near, name)
+        if alias is not None:
+            return _typed_dict_targets(modules, alias[0], alias[1], depth + 1)
+    return None
+
+
+def _element_annotation(modules, near: str, node: ast.AST | None, depth: int = 0) -> tuple[str, ast.AST] | None:
+    """``(module, element annotation)`` of an Iterable-like annotation."""
+    if node is None or depth > _MAX_DEPTH:
+        return None
+    if isinstance(node, ast.Subscript):
+        base = _type_name(node.value)
+        items = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if base in _UNWRAP:
+            return _element_annotation(modules, near, items[0], depth + 1)
+        if base in _ITERABLES and len(items) == 1:
+            return near, items[0]
+        return None
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        alias = _alias_value(modules, near, _type_name(node))
+        if alias is not None:
+            return _element_annotation(modules, alias[0], alias[1], depth + 1)
+    return None
+
+
+def _dict_keys(expr: ast.AST) -> set[str] | None:
+    """Keys of a dict display when all are string literals and nothing is spread in."""
+    if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "dict" and not expr.args:
+        if any(keyword.arg is None for keyword in expr.keywords):
+            return None
+        return {keyword.arg for keyword in expr.keywords if keyword.arg}
+    if not isinstance(expr, ast.Dict):
+        return None
+    keys: set[str] = set()
+    for key in expr.keys:
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            return None  # ``**spread`` or a computed key: unknown
+        keys.add(key.value)
+    return keys
+
+
+def _missing_keys(modules, near: str, annotation: ast.AST | None, expr: ast.AST) -> str:
+    """Required TypedDict keys a dict display (or a list of them) plainly lacks."""
+    displays = [expr]
+    target = annotation
+    if isinstance(expr, (ast.List, ast.Tuple)):
+        element = _element_annotation(modules, near, annotation)
+        if element is None:
+            return ""
+        near, target = element
+        displays = list(expr.elts)
+    classes = _typed_dict_targets(modules, near, target)
+    if not classes:
+        return ""
+    for display in displays:
+        keys = _dict_keys(display)
+        if keys is None:
+            continue
+        gaps = []
+        for klass in classes:
+            required = _required_keys(modules, klass)
+            if required is None:
+                return ""
+            gaps.append(sorted(required - keys))
+        if all(gaps):
+            return ", ".join(gaps[0]) + f" of {classes[0].name}"
+    return ""
+
+
+def structured_requirements(modules: dict[str, ast.Module], dotted: str) -> list[dict]:
+    """Required parameters whose type is structured: a TypedDict or a class the
+    new release defines, directly or as the element of an Iterable/list.
+
+    ``[{"param", "annotation", "names", "iterable"}]``; ``[]`` when unresolved."""
+    found = resolve_callable(modules, dotted)
+    if found is None:
+        return []
+    module_name, node = found
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return []
+    args = node.args
+    plain = [*args.posonlyargs, *args.args]
+    required = [arg for index, arg in enumerate(plain) if index < len(plain) - len(args.defaults)]
+    required += [arg for arg, default in zip(args.kwonlyargs, args.kw_defaults) if default is None]
+    out: list[dict] = []
+    for arg in required:
+        if arg.arg in {"self", "cls"} or arg.annotation is None:
+            continue
+        element = _element_annotation(modules, module_name, arg.annotation)
+        near, target = element if element is not None else (module_name, arg.annotation)
+        names = _structured_names(modules, near, target)
+        if names:
+            out.append(
+                {
+                    "param": arg.arg,
+                    "annotation": ast.unparse(arg.annotation)[:120],
+                    "names": sorted(names),
+                    "iterable": element is not None,
+                }
+            )
+    return out
+
+
+def _structured_names(modules: dict[str, ast.Module], near: str, node: ast.AST, depth: int = 0) -> set[str]:
+    """Names of TypedDicts / release classes an annotation is made of (Union members too)."""
+    if depth > _MAX_DEPTH:
+        return set()
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            node = ast.parse(node.value.strip(), mode="eval").body
+        except SyntaxError:
+            return set()
+    if isinstance(node, ast.Subscript):
+        base = _type_name(node.value)
+        items = list(node.slice.elts) if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if base in _UNWRAP or base == "Union":
+            return set().union(*(_structured_names(modules, near, item, depth + 1) for item in items))
+        return set()
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _structured_names(modules, near, node.left, depth + 1) | _structured_names(modules, near, node.right, depth + 1)
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        name = _type_name(node).split(".")[-1]
+        if name in _BUILTINS or name in _ANY or name in _ITERABLES or name in _MAPPINGS or name == "None":
+            return set()
+        if _typed_dict_class(modules, name) is not None or _find_class(modules, name, near) is not None:
+            return {name}
+        alias = _alias_value(modules, near, name)
+        if alias is not None:
+            return _structured_names(modules, alias[0], alias[1], depth + 1)
+    return set()

@@ -178,12 +178,19 @@ def _typed_dicts(modules: dict[str, ast.Module], node: ast.AST) -> list[str]:
     return out
 
 
-def _typed_dict_class(modules: dict[str, ast.Module], name: str) -> ast.ClassDef | None:
+def _typed_dict_class(modules: dict[str, ast.Module], name: str, depth: int = 0) -> ast.ClassDef | None:
+    """The class ``name`` when it is a TypedDict (directly, or through TypedDict bases)."""
+    if depth > 6:
+        return None
     for tree in modules.values():
         for node in tree.body:
             if isinstance(node, ast.ClassDef) and node.name == name:
-                bases = [ast.unparse(base) for base in node.bases]
-                if any(base.split(".")[-1] == "TypedDict" for base in bases):
+                bases = [ast.unparse(base).split(".")[-1] for base in node.bases]
+                if "TypedDict" in bases:
+                    return node
+                if bases and any(
+                    base != name and _typed_dict_class(modules, base, depth + 1) is not None for base in bases
+                ):
                     return node
     return None
 
