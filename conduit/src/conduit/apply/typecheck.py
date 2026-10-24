@@ -1357,3 +1357,48 @@ def _fields(classes) -> list[str]:
                 if text not in names:
                     names.append(text)
     return names[:12]
+
+
+# --- 3. what a new-release callable needs (for the first prompt) -----------
+
+_MAX_BRIEF = 1200
+
+
+def parameter_brief(modules: dict[str, ast.Module], dotted: str) -> str:
+    """Required parameters of a new-release callable with their annotated types,
+    a sketch of TypedDict-based types, and the other names it accepts.
+
+    Read only from the wheel's code; ``""`` when the callable does not resolve."""
+    found = resolve_callable(modules, dotted)
+    if found is None:
+        return ""
+    module_name, node = found
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return ""
+    args = node.args
+    positional = [arg for arg in (*args.posonlyargs, *args.args) if arg.arg not in {"self", "cls"}]
+    first_default = len([*args.posonlyargs, *args.args]) - len(args.defaults)
+    required = [arg for index, arg in enumerate([*args.posonlyargs, *args.args]) if index < first_default and arg in positional]
+    required += [arg for arg, default in zip(args.kwonlyargs, args.kw_defaults) if default is None]
+    parts: list[str] = []
+    for arg in required:
+        text = arg.arg
+        if arg.annotation is not None:
+            text += f": {ast.unparse(arg.annotation)[:120]}"
+            shape = _shape(modules, module_name, arg.annotation)
+            if shape:
+                text += f", i.e. {shape}"
+            fields = _typed_dict_fields(modules, module_name, arg.annotation)
+            if fields:
+                text += " (" + "; ".join(fields) + ")"
+        parts.append(text)
+    label = ".".join(dotted.split(".")[-2:])
+    brief = f"{label} requires: " + ("; ".join(parts) if parts else "nothing")
+    accepted = _accepted_names(modules, module_name, node)
+    if accepted is None:
+        brief += ". Also accepts any keyword (**kwargs)."
+    else:
+        others = sorted(accepted - {arg.arg for arg in required})
+        if others:
+            brief += ". Other parameters it accepts (no others): " + ", ".join(others)
+    return brief[:_MAX_BRIEF]
