@@ -28,6 +28,7 @@ from conduit.apply.nonecheck import NONE_CHECK
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.plain import plain_why
 from conduit.apply.prompts import propose_messages, summarize_messages
+from conduit.apply.unused import drop_unused_imports
 from conduit.apply.splice import (
     PatchError,
     parse_model_edit,
@@ -328,7 +329,9 @@ def _rebuild(scratch: Path, originals: dict[str, str], accepted: dict[int, dict[
         try:
             if moved is None:
                 raise PatchError("site line not found")
-            patched, _diff, _span = splice_edit_with_span(build_context_pack(scratch, moved), sink["edit"])
+            pack = build_context_pack(scratch, moved)
+            patched, _diff, span = splice_edit_with_span(pack, sink["edit"])
+            patched, _span = drop_unused_imports(pack.full_source, patched, span, path, scratch)
         except (PatchError, ContextError):
             accepted.pop(key)
             continue
@@ -502,6 +505,9 @@ def _apply_one(
             report.tokens_used += used
             edit = resolve_line_edits(pack, parse_model_edit(edit_text))
             patched, diff, span = splice_edit_with_span(pack, edit)
+            cleaned, span = drop_unused_imports(pack.full_source, patched, span, site.path, config.root)
+            if cleaned != patched:
+                patched, diff = cleaned, unified_diff_for(pack.file_path, pack.full_source, cleaned)
             last_diff = diff
             repeated = _repeated_decorator(patched, span)
             if repeated:

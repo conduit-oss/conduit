@@ -173,6 +173,7 @@ def _type_breaks(
         site.dependency, site.to_version, fixtures=fixtures, allow_network=allow_network
     )
     _record_drops(site, original, tree, span, service_map, wheel, fixtures, allow_network)
+    local.extend(_declared_breaks(root, service_map, path, source, span, original, wheel))
     if wheel is None:
         return local
     try:
@@ -207,6 +208,32 @@ def _type_breaks(
         return found
     except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
         return local
+
+
+def _declared_breaks(root: Path, service_map, path: str, source: str, span, original: str, wheel) -> list[tuple[str, str]]:
+    """Values whose declared class is not the class the callee declares (see ``declared``)."""
+    import ast
+
+    from conduit.apply.declared import declared_type_breaks
+    from conduit.apply.signatures import _modules, resolve_callable
+
+    try:
+        modules = _modules(str(wheel)) if wheel is not None else {}
+        traced: dict[tuple[int, str], tuple[str, ast.AST]] = {}
+        for chain in service_map.chains:
+            if (
+                modules
+                and chain.call_rel.replace("\\", "/") == path
+                and span[0] <= chain.call_lineno <= span[1]
+                and not chain.via_wrapper
+                and chain.kind.endswith("_call")
+            ):
+                found = resolve_callable(modules, chain.sdk_method)
+                if found is not None:
+                    traced[(chain.call_lineno, chain.call_expr)] = found
+        return [(text, "") for text in declared_type_breaks(modules, root, path, source, span, original, traced)]
+    except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
+        return []
 
 
 def _record_drops(site, original: str, tree, span, service_map, wheel, fixtures, allow_network) -> None:
