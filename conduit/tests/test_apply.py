@@ -1683,36 +1683,171 @@ def test_final_recheck_blocks_verified_after_tests_pass(tmp_path: Path, monkeypa
     assert caller.status == SiteStatus.FIXED_VERIFIED
 
 
+#: council-test (a council fork) before its anthropic 0.34.2 -> 1.0.0 bump, and the
+#: impact Conduit mapped for that bump at this commit.
+_COUNCIL_REPO = "https://github.com/conduit-oss/council-test.git"
+_COUNCIL_SHA = "7dba3aac2a97b5b2ea9848d6989b6d2af1f23359"
+_COUNCIL_IMPACT = Path(__file__).resolve().parents[1] / "fixtures" / "apply" / "council-anthropic-0.34.2-1.0.0-impact.json"
+
+
+def _council_python(tmp_path: Path, repo: Path) -> str:
+    """An interpreter with council's requirements and anthropic 1.0.0.
+
+    ``CONDUIT_COUNCIL_PYTHON`` names one; otherwise a venv is built once and
+    kept under ``~/.cache/conduit/`` (keyed by the pinned commit)."""
+    import os
+    import subprocess
+    import sys
+
+    given = os.environ.get("CONDUIT_COUNCIL_PYTHON", "").strip()
+    if given:
+        return given
+    env_dir = Path.home() / ".cache" / "conduit" / f"council-env-{_COUNCIL_SHA[:12]}"
+    python = env_dir / "bin" / "python"
+    if not (env_dir / ".ready").is_file():
+        reqs = (repo / "requirements.txt").read_text(encoding="utf-8")
+        bumped = "\n".join(
+            "anthropic==1.0.0" if line.strip().lower().startswith("anthropic") else line for line in reqs.splitlines()
+        )
+        pinned = tmp_path / "requirements-1.0.0.txt"
+        pinned.write_text(bumped + "\n", encoding="utf-8")
+        subprocess.run([sys.executable, "-m", "venv", "--clear", str(env_dir)], check=True)
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "-q", "-r", str(pinned), "pytest==7.4.4"], check=True, cwd=repo
+        )
+        (env_dir / ".ready").write_text("", encoding="utf-8")
+    return str(python)
+
+
+def _enclosing_span(source: str, line: int) -> tuple[str, tuple[int, int]] | None:
+    """Name and span of the innermost function around ``line``."""
+    best = None
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+            if start <= line <= (node.end_lineno or node.lineno):
+                if best is None or start >= best[1][0]:
+                    best = (node.name, (start, node.end_lineno or node.lineno))
+    return best
+
+
+def _function_span(source: str, name: str) -> tuple[int, int] | None:
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return min([node.lineno, *(d.lineno for d in node.decorator_list)]), node.end_lineno or node.lineno
+    return None
+
+
+def _call_keywords(source: str, span: tuple[int, int], attr: str) -> set[str]:
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == attr
+            and span[0] <= node.lineno <= span[1]
+        ):
+            found |= {kw.arg for kw in node.keywords if kw.arg}
+    return found
+
+
 @pytest.mark.network
-def test_council_anthropic_1_0_rewrite_is_flagged(tmp_path: Path):
-    """Regression: the council rewrite Nemotron produced for anthropic 0.34.2 -> 1.0.0."""
-    from conduit.apply.signatures import _modules, new_release_wheel
-    from conduit.apply.typecheck import attribute_breaks
+def test_council_anthropic_1_0_bump_is_fixed_or_honestly_flagged(tmp_path: Path):
+    """Demo regression, end to end against Token Factory: council-test's anthropic
+    0.34.2 -> 1.0.0 sites. The model may fix a line or not, so this checks what must
+    hold either way: a line is "fixed (verified)" only when Conduit's own checks pass
+    on the written file and the tests show nothing new failing; anything not fixed
+    says why; dropped arguments are reported; the wrapper caller is skipped."""
+    import os
+    import shlex
+    import shutil
+    import subprocess
 
-    wheel = new_release_wheel("anthropic", "1.0.0", allow_network=True)
-    assert wheel is not None
-    modules = _modules(str(wheel))
-    root = tmp_path / "repo"
-    root.mkdir()
-    helper = textwrap.dedent(
-        """\
-        from typing import Any
+    from conduit.apply.config import TokenFactorySettings
+    from conduit.apply.impact_input import load_impact_sites
+    from conduit.apply.testrun import judge, record_baseline, run_tests
+    from conduit.apply.verify import remaining_breaks
 
-        def from_completion(result: Any):
-            if hasattr(result, 'content') and result.content:
-                completion_text = "".join(getattr(block, 'text', str(block)) for block in result.content)
-            else:
-                completion_text = str(result)
-            return completion_text
-        """
+    if not os.environ.get("NEBIUS_API_KEY"):
+        pytest.skip("NEBIUS_API_KEY is not set")
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    repo = tmp_path / "council"
+    source = os.environ.get("CONDUIT_COUNCIL_REPO", _COUNCIL_REPO)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "fetch", "-q", "--depth", "1", source, _COUNCIL_SHA], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "FETCH_HEAD"], check=True)
+    python = _council_python(tmp_path, repo)
+    test_cmd = f"{shlex.quote(python)} -m pytest -q tests/unit"
+
+    sites = load_impact_sites(_COUNCIL_IMPACT)
+    pristine = {site.path: (repo / site.path).read_text(encoding="utf-8") for site in sites}
+    baseline = record_baseline(test_cmd, repo)
+    assert baseline.usable, "council's tests did not run on the base commit"
+
+    settings = TokenFactorySettings.from_env(enable_thinking=False)
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=repo,
+            settings=settings,
+            write=True,
+            test_cmd=test_cmd,
+            recheck_impact=True,
+            allow_network=True,
+            baseline=baseline,
+        ),
     )
-    caller = "def post(client):\n    result = client.beta.messages.create(messages=[], model='m', max_tokens=1)\n    return from_completion(result)\n"
-    (root / "helper.py").write_text(helper, encoding="utf-8")
-    (root / "caller.py").write_text(caller, encoding="utf-8")
-    chains = [_chain("caller.py", 2, "client.beta.messages.create", "anthropic.resources.beta.beta.Beta.messages.create")]
-    found = attribute_breaks(modules, root, "helper.py", helper, (1, 8), chains, "anthropic", "1.0.0")
-    assert any("hasattr(result, 'content')" in text and "BetaMessage" in text for text in found), found
-    assert any("getattr(block, 'text'" in text and "no attribute text" not in text for text in found), found
+    for result in report.results:
+        print(f"{result.site.path}:{result.site.line} {result.status.value} attempts={result.attempts} dropped={result.dropped}")
+    print(f"tokens={report.tokens_used} new_failures={report.new_failures}")
+    assert len(report.results) == len(sites)
+    assert report.new_failures == [], report.new_failures
+
+    # The tree as written (verified fixes only): nothing fails that passed on the base.
+    after = run_tests(test_cmd, repo)
+    verdict = judge(after, baseline)
+    assert verdict.new == [] and verdict.missing == [], (verdict.new, verdict.missing[:10])
+
+    for result in report.results:
+        site, label = result.site, f"{result.site.path}:{result.site.line} {result.status.value}"
+        assert result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.NEEDS_HUMAN, SiteStatus.SKIPPED}, label
+        assert result.why.strip(), label
+        if site.via_wrapper:
+            # The wrapper caller (anthropic_llm.py:34) is fixed at the SDK line, never rewritten.
+            assert result.status == SiteStatus.SKIPPED, label
+            assert result.diff == "", label
+            continue
+        if result.status == SiteStatus.SKIPPED:
+            # e.g. another site's rewrite already covered this line: it must say so.
+            continue
+        if result.status == SiteStatus.NEEDS_HUMAN:
+            assert result.error.strip(), label
+            continue
+        # Fixed (verified): written, parses, and Conduit's checks still pass on the final file.
+        assert result.diff.strip(), label
+        final = (repo / site.path).read_text(encoding="utf-8")
+        ast.parse(final)
+        assert final != pristine[site.path], label
+        span = None
+        around = _enclosing_span(pristine[site.path], site.line)
+        if around is not None:
+            span = _function_span(final, around[0])
+            assert span is not None, label
+        left = remaining_breaks(repo, site, final, span=span, allow_network=True, original=pristine[site.path])
+        assert left == [], (label, left)
+        # An argument the original call passed and the rewrite no longer does is reported.
+        if around is not None:
+            before_kw = _call_keywords(pristine[site.path], around[1], "create")
+            after_kw = _call_keywords(final, span, "create")
+            gone = before_kw - after_kw
+            settings_gone = gone & {"temperature", "top_k", "top_p"}
+            assert settings_gone <= set(result.dropped), (label, gone, result.dropped)
+            for name in result.dropped:
+                assert f"`{name}`" in result.dropped_note and result.dropped_note in result.why, (label, name)
+
+    wrapper = [r for r in report.results if r.site.via_wrapper]
+    assert [(r.site.path.rsplit("/", 1)[-1], r.site.line) for r in wrapper] == [("anthropic_llm.py", 34)]
 
 
 def test_callee_reads_follow_the_value_past_a_stale_annotation(tmp_path: Path):
