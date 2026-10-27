@@ -50,6 +50,28 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
             "  old type's attributes.\n"
         )
         user["connected_rewrites"] = pack.connected
+    if pack.decorators:
+        system += (
+            "- function_source starts at the def line. The decorators in decorators_kept stay\n"
+            "  on the def as they are: do not write them in function_source.\n"
+        )
+        user["decorators_kept"] = ["@" + text for text in pack.decorators]
+    if pack.removed_name_uses:
+        system += (
+            "- removed_name_uses lists every line of this file that still uses a name this\n"
+            "  change removes. now_receives / returns_now give the new-release type that reaches\n"
+            "  it, with the import for it, when known. Update every such use together with this\n"
+            "  site: inside function_source for lines in this function, and for any other listed\n"
+            '  line add {"line": N, "new": "<the full new line>"} to "line_edits" in your JSON.\n'
+            "  Use only types given here or read from the new release's code.\n"
+        )
+        user["removed_name_uses"] = pack.removed_name_uses
+    if pack.producer_rewrites:
+        system += (
+            "- producer_rewrites is the finished new code of the sites this one depends on\n"
+            "  (callers, or imports it uses): build on that code as it now is.\n"
+        )
+        user["producer_rewrites"] = pack.producer_rewrites
     helpers = same_file_helpers(pack)
     if helpers:
         # Read-only: shows how this function's inputs are shaped.

@@ -20,6 +20,10 @@ class PatchError(ValueError):
 class ModelEdit:
     function_source: str
     new_imports: tuple[str, ...]
+    #: ``(line, old line text, new line text)`` for lines outside the rewritten
+    #: function that still use a name the change removes. ``old`` is filled in
+    #: by ``resolve_line_edits`` so a later rebuild finds the line by its text.
+    line_edits: tuple[tuple[int, str, str], ...] = ()
 
 
 def parse_model_edit(text: str) -> ModelEdit:
@@ -44,7 +48,14 @@ def parse_model_edit(text: str) -> ModelEdit:
             import_lines = tuple(str(item).strip() for item in imports if str(item).strip())
         else:
             raise PatchError("new_imports must be a list of strings or a string")
-        return ModelEdit(function_source=str(data["function_source"]), new_imports=import_lines)
+        edits: list[tuple[int, str, str]] = []
+        for item in data.get("line_edits") or []:
+            if not isinstance(item, dict) or not str(item.get("line", "")).strip().isdigit():
+                raise PatchError('line_edits items must be {"line": N, "new": "<the full new line>"}')
+            edits.append((int(str(item["line"]).strip()), "", str(item.get("new", ""))))
+        return ModelEdit(
+            function_source=str(data["function_source"]), new_imports=import_lines, line_edits=tuple(edits)
+        )
 
     blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
     if blocks:
@@ -94,6 +105,71 @@ def validate_function_source(function_source: str, *, expected_name: str) -> str
     return text
 
 
+def resolve_line_edits(pack: ContextPack, edit: ModelEdit) -> ModelEdit:
+    """Pin each line edit to the text of the line it replaces.
+
+    Only a line listed in ``removed_name_uses`` outside the rewritten function
+    may change, one line for one line."""
+    if not edit.line_edits:
+        return edit
+    allowed = {item["line"] for item in pack.removed_name_uses if not item.get("in_this_function")}
+    lines = pack.full_source.splitlines()
+    resolved: list[tuple[int, str, str]] = []
+    for line, old, new in edit.line_edits:
+        if old:
+            resolved.append((line, old, new))
+            continue
+        if line not in allowed or not 0 < line <= len(lines):
+            raise PatchError(
+                f"line_edits may only change lines listed in removed_name_uses outside this function (got line {line})"
+            )
+        if "\n" in new.strip("\n") or not new.strip():
+            raise PatchError(f"line_edits line {line}: give one full replacement line")
+        resolved.append((line, lines[line - 1], new.strip("\n")))
+    return ModelEdit(edit.function_source, edit.new_imports, tuple(resolved))
+
+
+def _apply_line_edits(lines: list[str], edits: tuple[tuple[int, str, str], ...], skip: tuple[int, int]) -> list[str]:
+    """Replace each pinned line (outside ``skip``, 0-based [start, end)), nearest
+    its recorded number. A line no longer there was rewritten since: left alone."""
+    out = list(lines)
+    for line, old, new in edits:
+        hits = [
+            index for index, text in enumerate(out)
+            if not skip[0] <= index < skip[1] and text.rstrip("\r\n") == old.rstrip("\r\n")
+        ]
+        if not hits:
+            continue
+        index = min(hits, key=lambda at: abs(at + 1 - line))
+        ending = out[index][len(out[index].rstrip("\r\n")):] or "\n"
+        out[index] = _leading_ws(old) + new.strip() + ending
+    return out
+
+
+def strip_kept_decorators(function_source: str, kept: list[str]) -> str:
+    """Drop decorators the model repeated: the def's own stay in the file above it."""
+    if not kept:
+        return function_source
+    try:
+        tree = ast.parse(function_source)
+    except SyntaxError:
+        return function_source
+    node = next((item for item in tree.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
+    if node is None or not node.decorator_list:
+        return function_source
+    remaining = list(kept)
+    drop: set[int] = set()
+    for deco in node.decorator_list:
+        text = ast.unparse(deco)
+        if text in remaining:
+            remaining.remove(text)
+            drop.update(range(deco.lineno - 1, (deco.end_lineno or deco.lineno)))
+    if not drop:
+        return function_source
+    lines = function_source.splitlines(keepends=True)
+    return "".join(line for index, line in enumerate(lines) if index not in drop)
+
+
 def splice_edit(pack: ContextPack, edit: ModelEdit) -> tuple[str, str]:
     """Return ``(patched_source, unified_diff)`` built by Conduit (not the model)."""
     patched, diff, _span = splice_edit_with_span(pack, edit)
@@ -105,9 +181,12 @@ def splice_edit_with_span(
 ) -> tuple[str, str, tuple[int, int]]:
     """Like ``splice_edit`` plus the rewritten lines' 1-based span in the patch."""
     new_fn = validate_function_source(edit.function_source, expected_name=pack.function_name)
+    if pack.function_name:
+        new_fn = strip_kept_decorators(new_fn, pack.decorators)
     lines = pack.full_source.splitlines(keepends=True)
     start = pack.function_start_line - 1
     end = pack.function_end_line
+    lines = _apply_line_edits(lines, edit.line_edits, (start, end))
     original_def = lines[start] if 0 <= start < len(lines) else ""
     indent = _leading_ws(original_def)
     fn_lines = _reindent_function_lines(new_fn, indent) if new_fn else []

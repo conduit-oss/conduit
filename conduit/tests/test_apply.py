@@ -616,6 +616,11 @@ def test_empty_module_statement_rewrite_deletes_it(tmp_path: Path):
     assert patched == "import os\n\nX = os.sep\n"
 
 
+def _sent(client: FakeModelClient, call: int) -> str:
+    """Text of the last turn the fake client received on the given call."""
+    return client.calls[call]["messages"][-1].content
+
+
 def _hits_in_span(scratch: Path, site, *, span, fixtures, allow_network, original="") -> list[tuple[str, str]]:
     """Stand-in for impact: a removed ``timeout`` keyword inside the rewritten span."""
     lines = (scratch / site.path).read_text(encoding="utf-8").splitlines()
@@ -1673,40 +1678,176 @@ def test_final_recheck_blocks_verified_after_tests_pass(tmp_path: Path, monkeypa
     )
     helper, caller = report.results
     assert helper.status == SiteStatus.NEEDS_HUMAN, (helper.status, helper.error)
-    assert "no attribute completion" in helper.why
+    assert "no attribute completion" in helper.error
+    assert helper.why == "Line 2 reads `.completion`, which `Reply` doesn't have in 2.0."
     assert caller.status == SiteStatus.FIXED_VERIFIED
 
 
+#: council-test (a council fork) before its anthropic 0.34.2 -> 1.0.0 bump, and the
+#: impact Conduit mapped for that bump at this commit.
+_COUNCIL_REPO = "https://github.com/conduit-oss/council-test.git"
+_COUNCIL_SHA = "7dba3aac2a97b5b2ea9848d6989b6d2af1f23359"
+_COUNCIL_IMPACT = Path(__file__).resolve().parents[1] / "fixtures" / "apply" / "council-anthropic-0.34.2-1.0.0-impact.json"
+
+
+def _council_python(tmp_path: Path, repo: Path) -> str:
+    """An interpreter with council's requirements and anthropic 1.0.0.
+
+    ``CONDUIT_COUNCIL_PYTHON`` names one; otherwise a venv is built once and
+    kept under ``~/.cache/conduit/`` (keyed by the pinned commit)."""
+    import os
+    import subprocess
+    import sys
+
+    given = os.environ.get("CONDUIT_COUNCIL_PYTHON", "").strip()
+    if given:
+        return given
+    env_dir = Path.home() / ".cache" / "conduit" / f"council-env-{_COUNCIL_SHA[:12]}"
+    python = env_dir / "bin" / "python"
+    if not (env_dir / ".ready").is_file():
+        reqs = (repo / "requirements.txt").read_text(encoding="utf-8")
+        bumped = "\n".join(
+            "anthropic==1.0.0" if line.strip().lower().startswith("anthropic") else line for line in reqs.splitlines()
+        )
+        pinned = tmp_path / "requirements-1.0.0.txt"
+        pinned.write_text(bumped + "\n", encoding="utf-8")
+        subprocess.run([sys.executable, "-m", "venv", "--clear", str(env_dir)], check=True)
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "-q", "-r", str(pinned), "pytest==7.4.4"], check=True, cwd=repo
+        )
+        (env_dir / ".ready").write_text("", encoding="utf-8")
+    return str(python)
+
+
+def _enclosing_span(source: str, line: int) -> tuple[str, tuple[int, int]] | None:
+    """Name and span of the innermost function around ``line``."""
+    best = None
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+            if start <= line <= (node.end_lineno or node.lineno):
+                if best is None or start >= best[1][0]:
+                    best = (node.name, (start, node.end_lineno or node.lineno))
+    return best
+
+
+def _function_span(source: str, name: str) -> tuple[int, int] | None:
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return min([node.lineno, *(d.lineno for d in node.decorator_list)]), node.end_lineno or node.lineno
+    return None
+
+
+def _call_keywords(source: str, span: tuple[int, int], attr: str) -> set[str]:
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == attr
+            and span[0] <= node.lineno <= span[1]
+        ):
+            found |= {kw.arg for kw in node.keywords if kw.arg}
+    return found
+
+
 @pytest.mark.network
-def test_council_anthropic_1_0_rewrite_is_flagged(tmp_path: Path):
-    """Regression: the council rewrite Nemotron produced for anthropic 0.34.2 -> 1.0.0."""
-    from conduit.apply.signatures import _modules, new_release_wheel
-    from conduit.apply.typecheck import attribute_breaks
+def test_council_anthropic_1_0_bump_is_fixed_or_honestly_flagged(tmp_path: Path):
+    """Demo regression, end to end against Token Factory: council-test's anthropic
+    0.34.2 -> 1.0.0 sites. The model may fix a line or not, so this checks what must
+    hold either way: a line is "fixed (verified)" only when Conduit's own checks pass
+    on the written file and the tests show nothing new failing; anything not fixed
+    says why; dropped arguments are reported; the wrapper caller is skipped."""
+    import os
+    import shlex
+    import shutil
+    import subprocess
 
-    wheel = new_release_wheel("anthropic", "1.0.0", allow_network=True)
-    assert wheel is not None
-    modules = _modules(str(wheel))
-    root = tmp_path / "repo"
-    root.mkdir()
-    helper = textwrap.dedent(
-        """\
-        from typing import Any
+    from conduit.apply.config import TokenFactorySettings
+    from conduit.apply.impact_input import load_impact_sites
+    from conduit.apply.testrun import judge, record_baseline, run_tests
+    from conduit.apply.verify import remaining_breaks
 
-        def from_completion(result: Any):
-            if hasattr(result, 'content') and result.content:
-                completion_text = "".join(getattr(block, 'text', str(block)) for block in result.content)
-            else:
-                completion_text = str(result)
-            return completion_text
-        """
+    if not os.environ.get("NEBIUS_API_KEY"):
+        pytest.skip("NEBIUS_API_KEY is not set")
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    repo = tmp_path / "council"
+    source = os.environ.get("CONDUIT_COUNCIL_REPO", _COUNCIL_REPO)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "fetch", "-q", "--depth", "1", source, _COUNCIL_SHA], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "FETCH_HEAD"], check=True)
+    python = _council_python(tmp_path, repo)
+    test_cmd = f"{shlex.quote(python)} -m pytest -q tests/unit"
+
+    sites = load_impact_sites(_COUNCIL_IMPACT)
+    pristine = {site.path: (repo / site.path).read_text(encoding="utf-8") for site in sites}
+    baseline = record_baseline(test_cmd, repo)
+    assert baseline.usable, "council's tests did not run on the base commit"
+
+    settings = TokenFactorySettings.from_env(enable_thinking=False)
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=repo,
+            settings=settings,
+            write=True,
+            test_cmd=test_cmd,
+            recheck_impact=True,
+            allow_network=True,
+            baseline=baseline,
+        ),
     )
-    caller = "def post(client):\n    result = client.beta.messages.create(messages=[], model='m', max_tokens=1)\n    return from_completion(result)\n"
-    (root / "helper.py").write_text(helper, encoding="utf-8")
-    (root / "caller.py").write_text(caller, encoding="utf-8")
-    chains = [_chain("caller.py", 2, "client.beta.messages.create", "anthropic.resources.beta.beta.Beta.messages.create")]
-    found = attribute_breaks(modules, root, "helper.py", helper, (1, 8), chains, "anthropic", "1.0.0")
-    assert any("hasattr(result, 'content')" in text and "BetaMessage" in text for text in found), found
-    assert any("getattr(block, 'text'" in text and "no attribute text" not in text for text in found), found
+    for result in report.results:
+        print(f"{result.site.path}:{result.site.line} {result.status.value} attempts={result.attempts} dropped={result.dropped}")
+    print(f"tokens={report.tokens_used} new_failures={report.new_failures}")
+    assert len(report.results) == len(sites)
+    assert report.new_failures == [], report.new_failures
+
+    # The tree as written (verified fixes only): nothing fails that passed on the base.
+    after = run_tests(test_cmd, repo)
+    verdict = judge(after, baseline)
+    assert verdict.new == [] and verdict.missing == [], (verdict.new, verdict.missing[:10])
+
+    for result in report.results:
+        site, label = result.site, f"{result.site.path}:{result.site.line} {result.status.value}"
+        assert result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.NEEDS_HUMAN, SiteStatus.SKIPPED}, label
+        assert result.why.strip(), label
+        if site.via_wrapper:
+            # The wrapper caller (anthropic_llm.py:34) is fixed at the SDK line, never rewritten.
+            assert result.status == SiteStatus.SKIPPED, label
+            assert result.diff == "", label
+            continue
+        if result.status == SiteStatus.SKIPPED:
+            # e.g. another site's rewrite already covered this line: it must say so.
+            continue
+        if result.status == SiteStatus.NEEDS_HUMAN:
+            assert result.error.strip(), label
+            continue
+        # Fixed (verified): written, parses, and Conduit's checks still pass on the final file.
+        assert result.diff.strip(), label
+        final = (repo / site.path).read_text(encoding="utf-8")
+        ast.parse(final)
+        assert final != pristine[site.path], label
+        span = None
+        around = _enclosing_span(pristine[site.path], site.line)
+        if around is not None:
+            span = _function_span(final, around[0])
+            assert span is not None, label
+        left = remaining_breaks(repo, site, final, span=span, allow_network=True, original=pristine[site.path])
+        assert left == [], (label, left)
+        # An argument the original call passed and the rewrite no longer does is reported.
+        if around is not None:
+            before_kw = _call_keywords(pristine[site.path], around[1], "create")
+            after_kw = _call_keywords(final, span, "create")
+            gone = before_kw - after_kw
+            settings_gone = gone & {"temperature", "top_k", "top_p"}
+            assert settings_gone <= set(result.dropped), (label, gone, result.dropped)
+            for name in result.dropped:
+                assert f"`{name}`" in result.dropped_note and result.dropped_note in result.why, (label, name)
+
+    wrapper = [r for r in report.results if r.site.via_wrapper]
+    assert [(r.site.path.rsplit("/", 1)[-1], r.site.line) for r in wrapper] == [("anthropic_llm.py", 34)]
 
 
 def test_callee_reads_follow_the_value_past_a_stale_annotation(tmp_path: Path):
@@ -1916,6 +2057,793 @@ def test_a_type_field_list_is_printed_once_across_the_report():
     ])
     _fill_why(report)
     one, two = report.results
-    assert one.why.count("(BetaMessage fields: ") == 1, one.why
-    assert "(BetaMessage fields: " not in two.why and "(BetaMessage fields: " not in two.error
-    assert "(BetaMessage fields listed at anthropic.py:60); read it here" in two.why, two.why
+    # The full findings (model-facing, in ``error``) list the fields once ...
+    assert one.error.count("(BetaMessage fields: ") == 1, one.error
+    assert "(BetaMessage fields: " not in two.error
+    assert "(BetaMessage fields listed at anthropic.py:60); read it here" in two.error, two.error
+    # ... and the human ``why`` lists none.
+    assert "fields" not in one.why and "fields" not in two.why, (one.why, two.why)
+
+
+def _union_modules(tmp_path: Path):
+    from conduit.apply.signatures import _modules
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(_UNION_WHEEL, encoding="utf-8")
+    return _modules(str(tmp_path / "wheel"))
+
+
+def _guard_findings(tmp_path: Path, body: str) -> list[str]:
+    from conduit.apply.typecheck import attribute_breaks
+
+    modules = _union_modules(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir(exist_ok=True)
+    source = "def post(client):\n    result = client.messages.create(model='m')\n" + textwrap.indent(textwrap.dedent(body), "    ")
+    (root / "f.py").write_text(source, encoding="utf-8")
+    chains = [_chain("f.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")]
+    return attribute_breaks(modules, root, "f.py", source, (1, len(source.splitlines())), chains, "example-sdk", "2.0")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "return ''.join(block.text for block in result.content if hasattr(block, 'text'))\n",
+        """\
+        parts = []
+        for block in result.content:
+            if hasattr(block, 'text'):
+                parts.append(block.text)
+        return ''.join(parts)
+        """,
+        """\
+        parts = []
+        for block in result.content:
+            if not hasattr(block, 'text'):
+                continue
+            parts.append(block.text)
+        return ''.join(parts)
+        """,
+    ],
+)
+def test_filter_only_guard_is_accepted(tmp_path: Path, body: str):
+    """A guard that only skips items lacking the attribute makes nothing up for them."""
+    found = _guard_findings(tmp_path, body)
+    assert not [text for text in found if "'text'" in text or ".text" in text], found
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "return ''.join(getattr(block, 'text', str(block)) for block in result.content)\n",
+        "return ''.join(block.text if hasattr(block, 'text') else str(block) for block in result.content)\n",
+        """\
+        parts = []
+        for block in result.content:
+            if hasattr(block, 'text'):
+                parts.append(block.text)
+            else:
+                parts.append('')
+        return ''.join(parts)
+        """,
+    ],
+)
+def test_fallback_default_guard_is_rejected(tmp_path: Path, body: str):
+    """A guard that puts a stand-in value where the attribute is missing is still a finding."""
+    found = _guard_findings(tmp_path, body)
+    assert any("'text'" in text and "ToolBlock" in text for text in found), found
+
+
+def test_filter_guard_on_an_attribute_no_item_type_has_is_rejected(tmp_path: Path):
+    """Filtering on an attribute none of the release's item types declare drops every item."""
+    found = _guard_findings(
+        tmp_path, "return ''.join(block.body for block in result.content if hasattr(block, 'body'))\n"
+    )
+    assert any("hasattr(block, 'body')" in text and "no attribute body" in text for text in found), found
+
+
+_CHAIN_WHEEL = """\
+from typing import Optional
+
+class Usage:
+    input_tokens: int
+
+class Reply:
+    usage: Optional[Usage]
+
+class Messages:
+    def create(self, *, model: str) -> Reply:
+        return Reply()
+
+class Client:
+    @property
+    def messages(self):
+        return Messages(self)
+"""
+
+
+def test_getattr_default_on_an_attribute_chain_is_checked(tmp_path: Path):
+    """``getattr(result.usage, "x", 0)``: the chain's type comes from the release's field annotations."""
+    from conduit.apply.signatures import _modules
+    from conduit.apply.typecheck import attribute_breaks
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(_CHAIN_WHEEL, encoding="utf-8")
+    modules = _modules(str(tmp_path / "wheel"))
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = textwrap.dedent(
+        """\
+        def post(client):
+            result = client.messages.create(model='m')
+            made_up = getattr(result.usage, 'cache_tokens', 0)
+            dead = getattr(result.usage, 'input_tokens', 0)
+            return made_up, dead, result.usage.input_tokens
+        """
+    )
+    (root / "f.py").write_text(source, encoding="utf-8")
+    chains = [_chain("f.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")]
+    found = attribute_breaks(modules, root, "f.py", source, (1, 5), chains, "example-sdk", "2.0")
+    assert any("getattr(result.usage, 'cache_tokens', 0)" in t and "result.usage is Usage" in t and "no attribute cache_tokens" in t for t in found), found
+    assert any("getattr(result.usage, 'input_tokens', 0)" in t and "always has input_tokens" in t for t in found), found
+    assert len(found) == 2, found
+
+
+def test_calls_into_the_repos_own_code_are_checked_against_its_signature(tmp_path: Path):
+    from conduit.apply.typecheck import repo_call_breaks
+
+    root = tmp_path / "repo"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "usage.py").write_text(
+        "class Usage:\n    def __init__(self, prompt_tokens: int, completion_tokens: int, cached: int = 0):\n        pass\n",
+        encoding="utf-8",
+    )
+    calls = {
+        "Usage(input_tokens=1, completion_tokens=2)": "takes no keyword input_tokens",
+        "Usage(prompt_tokens=1)": "requires completion_tokens",
+        "Usage(1, 2, 3, 4)": "takes 3 positional arguments",
+        "Usage(1, completion_tokens=2, cached=3)": "",
+    }
+    for call, expected in calls.items():
+        source = f"from pkg.usage import Usage\n\ndef build():\n    return {call}\n"
+        found = repo_call_breaks(root, "pkg/build.py", source, (3, 4))
+        if expected:
+            assert len(found) == 1 and expected in found[0] and "Usage in this repo" in found[0], (call, found)
+        else:
+            assert found == [], (call, found)
+
+
+def test_site_fed_by_a_caller_that_needs_a_human_is_not_verified(tmp_path: Path, monkeypatch):
+    """The helper's rewrite expects the caller's new value; the caller was never fixed."""
+    import conduit.apply.engine as engine
+
+    def fake(root, site, patched, *, span=None, fixtures=None, allow_network=False, original=None):
+        if site.path == "caller.py" and "new_call" in patched:
+            return [("caller.py:2 client.new_call(1): new_call takes no positional arguments", "")]
+        return []
+
+    monkeypatch.setattr(engine, "remaining_breaks", fake)
+    root, sites = _masked_read_repo(tmp_path)
+    client = FakeModelClient(responses=[_fn(_CALLER_EDIT)] * 3 + [_fn(_READ_TEXT), "reads content"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    helper, caller = report.results
+    assert caller.status == SiteStatus.NEEDS_HUMAN
+    assert helper.status == SiteStatus.NEEDS_HUMAN, (helper.status, helper.why)
+    # The caller is its producer and was fixed first: the helper is not rewritten against it.
+    assert helper.why == "Not rewritten: its caller caller.py:2 was not fixed.", helper.why
+    assert helper.error.startswith("its caller caller.py:2 was not fixed"), helper.error
+    assert helper.diff == ""
+    assert "result.completion" in (root / "helper.py").read_text(encoding="utf-8")  # untouched
+
+
+def test_rewrite_that_repeats_a_decorator_is_rejected():
+    from conduit.apply.engine import _repeated_decorator
+
+    doubled = "class A:\n    @staticmethod\n    @staticmethod\n    def f(x):\n        return x\n"
+    assert _repeated_decorator(doubled, (2, 5)) == "@staticmethod on f"
+    assert _repeated_decorator(doubled.replace("    @staticmethod\n", "", 1), (2, 4)) == ""
+
+
+def test_repo_call_check_uses_the_definition_the_module_sees(tmp_path: Path):
+    """Two classes share a name: the caller's own module (or its import) decides which one."""
+    from conduit.apply.typecheck import repo_call_breaks
+
+    root = tmp_path / "repo"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "other.py").write_text("class Usage:\n    def __init__(self, input_tokens):\n        pass\n", encoding="utf-8")
+    (root / "pkg" / "usage.py").write_text("class Usage:\n    def __init__(self, prompt_tokens):\n        pass\n", encoding="utf-8")
+    same = "class Usage:\n    def __init__(self, prompt_tokens):\n        pass\n\ndef build():\n    return Usage(input_tokens=1)\n"
+    assert any("takes no keyword input_tokens" in t for t in repo_call_breaks(root, "pkg/mine.py", same, (5, 6)))
+    imported = "from .usage import Usage\n\ndef build():\n    return Usage(input_tokens=1)\n"
+    assert any("takes no keyword input_tokens" in t for t in repo_call_breaks(root, "pkg/mine.py", imported, (3, 4)))
+    assert repo_call_breaks(root, "pkg/mine.py", imported.replace("input_tokens", "prompt_tokens"), (3, 4)) == []
+
+
+def _import_site_repo(tmp_path: Path):
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text(
+        "from __future__ import annotations\nfrom sdk import Old\n\n\ndef use(x: Old):\n    return x\n", encoding="utf-8"
+    )
+    payload = _impact_payload(path="mod.py", line=2)
+    payload["impacts"][0]["sites"][0]["expr"] = "import Old"
+    return root, sites_from_payload(payload)
+
+
+@pytest.mark.parametrize("retry, verified", [("", False), ("Old = object", True)])
+def test_a_removed_import_still_used_gets_one_retry_then_needs_a_human(tmp_path: Path, monkeypatch, retry, verified):
+    """The rewrite drops an import an annotation still names (never evaluated under
+    ``from __future__ import annotations``): one retry with the hint, else needs-human."""
+    import conduit.apply.engine as engine
+
+    monkeypatch.setattr(engine, "remaining_breaks", lambda *a, **k: [])
+    root, sites = _import_site_repo(tmp_path)
+    client = FakeModelClient(responses=[_fn(""), "removed the import", _fn(retry), "retried"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    (result,) = report.results
+    hint = client.calls[2]["messages"][-1].content
+    assert "name Old is no longer imported or defined" in hint and "new release" in hint, hint
+    text = (root / "mod.py").read_text(encoding="utf-8")
+    assert "from sdk import Old" not in text  # the removal stays in the diff either way
+    if verified:
+        assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    else:
+        assert result.status == SiteStatus.NEEDS_HUMAN, (result.status, result.why)
+        assert result.why == "Line 4 still uses `Old`, which this rewrite stopped importing or defining.", result.why
+        assert "use the type the call now returns" in result.error
+
+
+def test_undefined_names_cover_string_annotations_and_ignore_names_still_bound():
+    import ast as _ast
+
+    from conduit.apply.engine import _bound_names, _used_names
+
+    before = _ast.parse("from x import A, B\n\ndef f(a: 'A', b: B):\n    return a\n")
+    after = _ast.parse("from x import B\n\ndef f(a: 'A', b: B):\n    return a\n")
+    lost = _bound_names(before) - _bound_names(after)
+    uses = _used_names(after)
+    assert lost == {"A"} and uses["A"] == 3 and "B" in uses
+
+
+def test_plain_why_is_one_short_sentence_without_field_lists_or_instructions():
+    from conduit.apply.plain import plain_why
+
+    fields = "(BetaMessage fields: id: str, content: List[BetaContentBlock])"
+    raw = (
+        "rewrite still breaks against the new release: pkg/a.py:61 result.completion: from_completion() gets "
+        f"result = BetaMessage from pkg/b.py:36 in anthropic 1.0.0, which has no attribute completion {fields}; "
+        "read what you need here instead of passing it on; depends on pkg/a.py:60, whose fix was not applied (needs a human)"
+    )
+    assert plain_why(raw, "pkg/b.py") == (
+        "`from_completion()` reads `.completion`, which the `BetaMessage` this line now passes doesn't have "
+        "in 1.0.0; depends on a.py:60 (not fixed)."
+    )
+    assert plain_why("rewrite repeats a decorator the function already has (@staticmethod on f); give "
+                     "function_source without the existing decorators", "x.py") == "The rewrite added a second `@staticmethod`."
+    same = "rewrite still breaks against the new release: pkg/a.py:61 result.completion: result is BetaMessage in anthropic 1.0.0, which has no attribute completion " + fields
+    assert plain_why(same, "pkg/a.py") == "Line 61 reads `.completion`, which `BetaMessage` doesn't have in 1.0.0."
+    assert plain_why("reverted: the tests still fail with this rewrite\nTraceback ...", "x.py") == "Reverted: the tests failed with this rewrite."
+    odd = "token budget exhausted for this site"
+    assert plain_why(odd, "x.py") == "token budget exhausted for this site."
+
+
+def _removed_import_repo(tmp_path: Path, *, caller: bool = False):
+    """``from sdk import Old`` is removed; ``use`` still has it as an annotation."""
+    root = tmp_path / "app"
+    root.mkdir()
+    body = "from __future__ import annotations\nfrom sdk import Old\n\n\ndef use(x: Old):\n    return x\n"
+    if caller:
+        body += "\n\ndef run(client):\n    return use(client.make())\n"
+    (root / "mod.py").write_text(body, encoding="utf-8")
+    payload = _impact_payload(path="mod.py", line=2)
+    payload["dependency"] = "sdk"
+    impact = payload["impacts"][0]
+    impact.update(dependency="sdk", kind="removed", symbol="sdk.types.old.Old", change="old.Old removed")
+    impact["sites"][0]["expr"] = "import Old"
+    return root, sites_from_payload(payload)
+
+
+def test_removed_name_context_lists_every_use_and_the_type_that_now_arrives(tmp_path: Path):
+    """Fix 1: an import site sees the annotation that still names the removed type,
+    and the new-release type an accepted rewrite now passes there (with its import)."""
+    from conduit.apply.context import build_context_pack
+    from conduit.apply.engine import _RouteState, _with_received_types
+    from conduit.apply.prompts import propose_messages
+
+    root, (site,) = _removed_import_repo(tmp_path)
+    pack = build_context_pack(root, site)
+    assert pack.removed_name_uses == [
+        {"name": "Old", "line": 5, "code": "def use(x: Old):", "in_this_function": False, "function": "use", "param": "x"}
+    ]
+    flow = {"callee_path": "mod.py", "callee": "use", "param": "x", "types": "New", "fields": ["text: str"],
+            "from": "mod.py:10", "release": "sdk 2.0", "imports": ["from sdk.types import New"]}
+    routes = _RouteState(accepted={1: {"site": site, "flows": [flow]}}, key=2)
+    config = ApplyConfig(root=root, settings=_settings(), routes=routes)
+    (use,) = _with_received_types(config, site, pack.removed_name_uses)
+    assert use["now_receives"] == "New (sdk 2.0), passed from mod.py:10"
+    assert use["import_for_it"] == ["from sdk.types import New"]
+    pack.removed_name_uses = [use]
+    system, user = (text for _role, text in propose_messages(pack))
+    assert "removed_name_uses" in system and "line_edits" in system
+    assert '"now_receives": "New (sdk 2.0), passed from mod.py:10"' in user
+
+
+def test_line_edits_change_only_listed_lines_and_survive_a_rebuild(tmp_path: Path):
+    """Fix 1: the import site may also rewrite the annotation line it lists, one line for one."""
+    from conduit.apply.context import build_context_pack
+    from conduit.apply.splice import PatchError, parse_model_edit, resolve_line_edits, splice_edit_with_span
+
+    root, (site,) = _removed_import_repo(tmp_path)
+    pack = build_context_pack(root, site)
+    reply = json.dumps({"function_source": "from sdk.types import New", "new_imports": [],
+                        "line_edits": [{"line": 5, "new": "def use(x: New):"}]})
+    edit = resolve_line_edits(pack, parse_model_edit(reply))
+    assert edit.line_edits == ((5, "def use(x: Old):", "def use(x: New):"),)
+    patched, _diff, _span = splice_edit_with_span(pack, edit)
+    assert "from sdk.types import New\n" in patched and "def use(x: New):" in patched and "Old" not in patched
+    # A rebuild finds the line by its text, even after other lines moved.
+    shifted = pack.full_source.replace("\n\n\ndef use", "\n\n\n\n\ndef use")
+    (root / "mod.py").write_text(shifted, encoding="utf-8")
+    again, _diff, _span = splice_edit_with_span(build_context_pack(root, site), edit)
+    assert "def use(x: New):" in again and "Old" not in again
+    bad = json.dumps({"function_source": "", "new_imports": [], "line_edits": [{"line": 1, "new": "x = 1"}]})
+    with pytest.raises(PatchError, match="only change lines listed"):
+        resolve_line_edits(pack, parse_model_edit(bad))
+
+
+def test_import_site_rewritten_with_its_use_is_verified(tmp_path: Path, monkeypatch):
+    """Fix 1 end to end: the import and the annotation change together; nothing is left undefined."""
+    import conduit.apply.engine as engine
+
+    monkeypatch.setattr(engine, "remaining_breaks", lambda *a, **k: [])
+    root, sites = _removed_import_repo(tmp_path)
+    reply = json.dumps({"function_source": "from sdk.types import New", "new_imports": [],
+                        "line_edits": [{"line": 5, "new": "def use(x: New):"}]})
+    client = FakeModelClient(responses=[reply, "imports the new type"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    (result,) = report.results
+    assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    text = (root / "mod.py").read_text(encoding="utf-8")
+    assert "from sdk.types import New" in text and "def use(x: New):" in text and "Old" not in text
+    assert "removed_name_uses" in client.calls[0]["messages"][-1].content
+
+
+def _graph_repo(tmp_path: Path):
+    """``run`` calls ``use``; ``use`` is annotated with the removed ``Old``, imported on line 2."""
+    root, (import_site,) = _removed_import_repo(tmp_path, caller=True)
+    payload = _impact_payload(path="mod.py", line=5)
+    payload["dependency"] = "sdk"
+    impact = payload["impacts"][0]
+    impact.update(dependency="sdk", kind="removed", symbol="sdk.types.old.Old", change="old.Old removed")
+    impact["sites"] = [
+        {"path": "mod.py", "line": 5, "expr": "Old"},
+        {"path": "mod.py", "line": 10, "expr": "client.make"},
+    ]
+    use_site, run_site = sites_from_payload(payload)
+    return root, import_site, use_site, run_site
+
+
+def test_dependency_order_puts_producers_first_and_groups_cycles(tmp_path: Path):
+    """Fix 2: callers first, then the import whose replacement type they decide, then its use."""
+    from conduit.apply.engine import _RouteState, _dependency_order
+
+    root, import_site, use_site, run_site = _graph_repo(tmp_path)
+    routes = _RouteState(accepted={})
+    order = _dependency_order(root, [use_site, import_site, run_site], {}, routes)
+    assert [site.line for site in order] == [10, 2, 5]
+    assert sorted(routes.feeders[id(use_site)]) == sorted([id(import_site), id(run_site)])
+    assert routes.edge_kind[(id(use_site), id(import_site))] == "import"
+    assert routes.edge_kind[(id(use_site), id(run_site))] == "call"
+    assert id(import_site) not in routes.feeders  # the caller only orders the import, it does not block it
+    # Two functions that call each other are one group: given order, no blocking between them.
+    (root / "loop.py").write_text("def a(n):\n    return b(n)\n\n\ndef b(n):\n    return a(n)\n", encoding="utf-8")
+    payload = _impact_payload(path="loop.py", line=2)
+    payload["impacts"][0]["sites"] = [{"path": "loop.py", "line": 2, "expr": "b"}, {"path": "loop.py", "line": 6, "expr": "a"}]
+    first, second = sites_from_payload(payload)
+    routes = _RouteState(accepted={})
+    assert [site.line for site in _dependency_order(root, [first, second], {}, routes)] == [2, 6]
+    assert routes.feeders == {}
+
+
+def test_a_site_whose_import_needs_a_human_is_not_rewritten(tmp_path: Path, monkeypatch):
+    """Fix 2: the import site fails, so its use is flagged naming it, not rewritten on a broken base."""
+    import conduit.apply.engine as engine
+
+    monkeypatch.setattr(engine, "remaining_breaks", lambda *a, **k: [])
+    root, import_site, use_site, _run = _graph_repo(tmp_path)
+    client = FakeModelClient(responses=["not json"] * 3)
+    report = apply_sites(
+        [import_site, use_site],
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    first, second = report.results
+    assert first.site.line == 2 and first.status == SiteStatus.NEEDS_HUMAN
+    assert second.status == SiteStatus.NEEDS_HUMAN and second.diff == ""
+    assert second.why == "Not rewritten: the import or definition at line 2 it uses was not fixed.", second.why
+    assert len(client.calls) == 3  # only the import site's attempts
+
+
+def test_decorators_are_kept_once_when_the_model_repeats_them(tmp_path: Path):
+    """Fix 3: the def goes out without its decorators; copies the model sends back are dropped."""
+    from conduit.apply.context import build_context_pack
+    from conduit.apply.prompts import propose_messages
+    from conduit.apply.splice import ModelEdit, splice_edit_with_span, strip_kept_decorators
+
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text(
+        "import functools\n\n\nclass A:\n    @staticmethod\n    @functools.cache\n    def f(x):\n        return x.old\n",
+        encoding="utf-8",
+    )
+    payload = _impact_payload(path="mod.py", line=8)
+    (site,) = sites_from_payload(payload)
+    pack = build_context_pack(root, site)
+    assert pack.function_source.lstrip().startswith("def f(x):")
+    assert pack.decorators == ["staticmethod", "functools.cache"]
+    system, user = (text for _role, text in propose_messages(pack))
+    assert "decorators_kept" in system and '"@staticmethod"' in user
+    repeated = "@staticmethod\n@functools.cache\n@other\ndef f(x):\n    return x.new\n"
+    assert strip_kept_decorators(repeated, pack.decorators) == "@other\ndef f(x):\n    return x.new\n"
+    patched, _diff, span = splice_edit_with_span(pack, ModelEdit(repeated.replace("@other\n", ""), ()))
+    assert patched.count("@staticmethod") == 1 and patched.count("@functools.cache") == 1
+    assert "return x.new" in patched
+    from conduit.apply.engine import _repeated_decorator
+
+    assert _repeated_decorator(patched, (span[0] - 2, span[1])) == ""  # the backstop stays quiet
+
+
+_OPTIONAL_RELEASE = textwrap.dedent(
+    """\
+    from typing import Optional, Union
+
+    class BaseModel:
+        pass
+
+    class Usage(BaseModel):
+        input_tokens: int
+        cache_read_input_tokens: Optional[int] = None
+        cache_creation_input_tokens: int | None = None
+        server: Union[str, None]
+        tier: str = None
+    """
+)
+
+
+def _none_findings(tmp_path: Path, body: str, repo_usage: str = "") -> list[str]:
+    import ast as _ast
+
+    from conduit.apply.nonecheck import none_breaks
+
+    modules = {"sdk.types": _ast.parse(_OPTIONAL_RELEASE)}
+    klass = next(node for node in modules["sdk.types"].body if isinstance(node, _ast.ClassDef) and node.name == "Usage")
+    root = tmp_path / "repo"
+    root.mkdir(exist_ok=True)
+    usage = repo_usage or (
+        "class Tokens:\n    def __init__(self, prompt: int, cached: int):\n"
+        "        self.total = prompt + cached\n"
+    )
+    (root / "tokens.py").write_text(usage, encoding="utf-8")
+    source = "from tokens import Tokens\n\n" + textwrap.dedent(body)
+    (root / "mod.py").write_text(source, encoding="utf-8")
+    tree = _ast.parse(source)
+    func = next(node for node in tree.body if isinstance(node, _ast.FunctionDef))
+    typed = {"u": [("sdk.types", klass)]}
+    return none_breaks(modules, root, {"mod.py": tree}, "mod.py", tree, func, typed, "sdk", "2.0")
+
+
+def test_optional_field_passed_where_the_callee_adds_it_up_is_flagged(tmp_path: Path):
+    from conduit.apply.plain import plain_why
+
+    found = _none_findings(tmp_path, "def f(u):\n    return Tokens(prompt=u.input_tokens, cached=u.cache_read_input_tokens)\n")
+    assert len(found) == 1 and "cache_read_input_tokens may be None (Optional[int]) in sdk 2.0" in found[0], found
+    assert "`Tokens` adds it up" in found[0] and "or 0" in found[0]
+    why = plain_why("rewrite still breaks against the new release: " + found[0], "mod.py")
+    assert why == "`cache_read_input_tokens` can be None in 2.0, but `Tokens` adds it up.", why
+    # Positional, an alias, the `X | None` spelling and a None default on a plain annotation all count.
+    assert _none_findings(tmp_path, "def f(u):\n    return Tokens(1, u.cache_creation_input_tokens)\n")
+    assert _none_findings(tmp_path, "def f(u):\n    t = u.cache_read_input_tokens\n    return Tokens(1, t)\n")
+    assert _none_findings(tmp_path, "def f(u):\n    return Tokens(1, u.tier)\n")
+    # A non-Optional field is fine.
+    assert _none_findings(tmp_path, "def f(u):\n    return Tokens(1, u.input_tokens)\n") == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "def f(u):\n    return Tokens(1, u.cache_read_input_tokens or 0)\n",
+        "def f(u):\n    c = u.cache_read_input_tokens\n    return Tokens(1, c if c is not None else 0)\n",
+        "def f(u):\n    if u.cache_read_input_tokens is None:\n        return None\n    return Tokens(1, u.cache_read_input_tokens)\n",
+        "def f(u):\n    if u.cache_read_input_tokens:\n        return Tokens(1, u.cache_read_input_tokens)\n",
+    ],
+)
+def test_handled_none_is_not_flagged(tmp_path: Path, body: str):
+    assert _none_findings(tmp_path, body) == []
+
+
+def test_callee_that_accepts_none_or_only_stores_it_is_fine(tmp_path: Path):
+    body = "def f(u):\n    return Tokens(1, u.cache_read_input_tokens)\n"
+    optional = "from typing import Optional\n\nclass Tokens:\n    def __init__(self, prompt: int, cached: Optional[int]):\n        self.total = prompt + (cached or 0)\n"
+    assert _none_findings(tmp_path, body, optional) == []
+    stores = "class Tokens:\n    def __init__(self, prompt, cached):\n        self.cached = cached\n"
+    assert _none_findings(tmp_path, body, stores) == []
+    guarded = "class Tokens:\n    def __init__(self, prompt: int, cached=None):\n        self.total = prompt + cached\n"
+    assert _none_findings(tmp_path, body, guarded) == []  # its parameter takes None by default
+    annotated = "class Tokens:\n    def __init__(self, prompt: int, cached: int):\n        self.cached = cached\n"
+    (only,) = _none_findings(tmp_path, body, annotated)
+    assert "`Tokens` takes it as `int`" in only
+
+
+def test_direct_arithmetic_comparison_and_annotated_return_are_flagged(tmp_path: Path):
+    add = _none_findings(tmp_path, "def f(u):\n    return u.input_tokens + u.cache_read_input_tokens\n")
+    assert len(add) == 1 and "but line 4 adds it up" in add[0], add
+    aug = _none_findings(tmp_path, "def f(u):\n    total = 0\n    total += u.cache_read_input_tokens\n    return total\n")
+    assert aug and "adds it up" in aug[0]
+    cmp = _none_findings(tmp_path, "def f(u):\n    return u.cache_read_input_tokens > 3\n")
+    assert cmp and "compares it" in cmp[0]
+    assert _none_findings(tmp_path, "def f(u):\n    return u.cache_read_input_tokens is None\n") == []
+    ret = _none_findings(tmp_path, "def f(u) -> int:\n    return u.cache_read_input_tokens\n")
+    assert ret and "`f` returns it as `int`" in ret[0]
+    assert _none_findings(tmp_path, "def f(u) -> 'int | None':\n    return u.cache_read_input_tokens\n") == []
+
+
+def test_or_zero_on_an_optional_count_is_not_masking():
+    """`x or 0` handles None the new type allows; the getattr masking rule is about guessing a field exists."""
+    import ast as _ast
+
+    from conduit.apply.typecheck import _masked_read
+
+    modules = {"sdk.types": _ast.parse(_OPTIONAL_RELEASE)}
+    klass = next(node for node in modules["sdk.types"].body if isinstance(node, _ast.ClassDef) and node.name == "Usage")
+    call = _ast.parse("getattr(u, 'cache_read_input_tokens', 0)", mode="eval").body
+    text = _masked_read(modules, "mod.py", call, "u", "cache_read_input_tokens", [("sdk.types", klass)], "sdk", "2.0")
+    assert "dead code" in text and "its value may be None" in text and "or ..." in text, text
+    plain = _ast.parse("u.cache_read_input_tokens or 0", mode="eval").body
+    assert _masked_read(modules, "mod.py", plain, "u", "cache_read_input_tokens", [("sdk.types", klass)], "sdk", "2.0") == ""
+
+
+@pytest.mark.parametrize("retry, verified", [("unguarded", False), ("guarded", True)])
+def test_optional_finding_in_final_recheck_gets_one_retry(tmp_path: Path, monkeypatch, retry, verified):
+    """The None check runs on the finished migration: one retry with the finding, else needs-human."""
+    import conduit.apply.engine as engine
+    from conduit.apply.nonecheck import NONE_CHECK
+
+    seen: list[bool] = []
+
+    def fake(root, site, patched, *, span=None, fixtures=None, allow_network=False, original=None):
+        seen.append(NONE_CHECK.get())
+        if NONE_CHECK.get() and "new_call(x.cache)" in patched:
+            return [(f"{site.path}:2 x.cache: cache may be None (Optional[int]) in example-sdk 2.0, but "
+                     "`Tokens` adds it up; handle None where it is read (`x.cache or 0`, ...)", "")]
+        return []
+
+    monkeypatch.setattr(engine, "remaining_breaks", fake)
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text("def f(x):\n    return x.old_call(x.cache)\n", encoding="utf-8")
+    sites = sites_from_payload(_impact_payload(path="mod.py", line=2))
+    first = "def f(x):\n    return x.new_call(x.cache)\n"
+    second = first if retry == "unguarded" else "def f(x):\n    return x.new_call(x.cache or 0)\n"
+    client = FakeModelClient(responses=[_fn(first), "uses new_call", _fn(second), "guards None"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    (result,) = report.results
+    assert False in seen and True in seen  # per-site check without it, final recheck with it
+    assert "cache may be None" in client.calls[2]["messages"][-1].content
+    if verified:
+        assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    else:
+        assert result.status == SiteStatus.NEEDS_HUMAN
+        assert result.why == "`cache` can be None in 2.0, but `Tokens` adds it up.", result.why
+        assert "or 0" in result.error
+
+
+def test_plain_why_for_a_wrong_argument_kind():
+    from conduit.apply.plain import plain_why
+
+    raw = (
+        "rewrite still breaks against the new release: pkg/llm.py:30 self._client.beta.messages.create: messages= "
+        "passes a str but messages.create in anthropic 1.0.0 expects Iterable[BetaMessageParam], i.e. a list like "
+        "[{\"content\": <Union[str, Iterable[BetaContentBlockParam]]>}] (prompt = self.f(messages))"
+    )
+    assert plain_why(raw, "pkg/llm.py") == (
+        "Line 30 passes a `str` as `messages=`, but `messages.create` expects `Iterable[BetaMessageParam]` in 1.0.0."
+    )
+
+
+# --- dropped arguments and import-swap why ---------------------------------
+
+
+def _old_call(source: str, expr: str = "client.send", line: int = 2):
+    from conduit.apply.typecheck import _call_at
+
+    return _call_at(ast.parse(source), line, expr)
+
+
+def _drops(before: str, after: str, expr: str = "client.send", order: list[str] | None = None):
+    from conduit.apply.dropped import dropped_from
+
+    tree = ast.parse(after)
+    names, call = dropped_from(_old_call(before, expr), tree, (1, len(after.splitlines())), order)
+    return names, call
+
+
+def test_dropped_keywords_are_found_and_moved_values_are_not():
+    before = "def f(client, cfg, p):\n    return client.send(prompt=p, model=cfg.model, limit=cfg.limit, temp=cfg.temp, top=cfg.top)\n"
+    after = (
+        "def f(client, cfg, p):\n"
+        "    msgs = [p]\n"
+        "    return client.post(messages=msgs, model=cfg.model, max=cfg.limit)\n"
+    )
+    names, call = _drops(before, after)
+    # limit moved to ``max=``; prompt went into ``msgs`` but ``p`` is still read; temp and top are gone.
+    assert names == ["temp", "top"], names
+    assert call is not None and call.func.attr == "post"
+
+
+def test_a_value_read_elsewhere_in_the_function_is_not_dropped_but_a_constant_must_stay_in_the_call():
+    before = "def f(client, cfg):\n    return client.send(model='m', temp=cfg.temp, mode='fast')\n"
+    after = "def f(client, cfg):\n    extra = {'t': cfg.temp}\n    return client.send(model='m', **extra)\n"
+    # ``**extra`` may pass anything: the call is not judged.
+    assert _drops(before, after)[0] == []
+    after = "def f(client, cfg):\n    t = cfg.temp\n    return client.send(model='m', body=t)\n"
+    assert _drops(before, after)[0] == ["mode"]
+
+
+def test_dropped_positional_arguments_are_named_through_the_old_signature():
+    before = "def f(client, a, b):\n    return client.send(a, b)\n"
+    after = "def f(client, a, b):\n    return client.send(a)\n"
+    assert _drops(before, after, order=["first", "second"])[0] == ["second"]
+    assert _drops(before, after)[0] == ["positional argument 2"]
+    moved = "def f(client, a, b):\n    return client.send(second=b, first=a)\n"
+    assert _drops(before, moved, order=["first", "second"])[0] == []
+
+
+def test_call_with_nothing_in_common_is_not_compared():
+    before = "def f(client, a):\n    return client.send(a, limit=1)\n"
+    after = "def f(client, a):\n    return other(3)\n"
+    assert _drops(before, after) == ([], None)
+
+
+def test_dropped_note_says_what_the_new_release_shows():
+    from conduit.apply.dropped import note_for
+
+    assert note_for(["temperature", "top_k"], ["temperature", "top_k"], "messages.create") == (
+        "Dropped `temperature`, `top_k`: the new release's `messages.create` doesn't accept them, "
+        "so these settings are now ignored."
+    )
+    assert note_for(["x"], [], "") == "Dropped `x`: removed without a matching parameter in the new call."
+    assert note_for(["a", "b"], ["a"], "m.go") == (
+        "Dropped `a`: the new release's `m.go` doesn't accept it, so this setting is now ignored. "
+        "Dropped `b`: removed without a matching parameter in the new call."
+    )
+    assert note_for([], [], "m.go") == ""
+
+
+def test_record_drops_reads_the_new_callees_parameters(tmp_path: Path, monkeypatch):
+    import conduit.apply.signatures as signatures
+    from conduit.apply.dropped import DROPPED
+    from conduit.apply.verify import _record_drops
+    from types import SimpleNamespace
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .client import Client\n", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        "class Messages:\n    def create(self, *, model: str, max_tokens: int, timeout: float = 1.0):\n        return 1\n\n"
+        "class Client:\n    messages: Messages\n",
+        encoding="utf-8",
+    )
+    wheel = tmp_path / "wheel"
+    monkeypatch.setattr(signatures, "new_release_wheel", lambda dep, ver, **kw: wheel if ver == "2.0" else None)
+    before = (
+        "def f(client, cfg):\n"
+        "    return client.completions.create(prompt='p', model=cfg.model, max_tokens_to_sample=cfg.n,"
+        " temperature=cfg.t, top_k=cfg.k)\n"
+    )
+    after = (
+        "def f(client, cfg):\n"
+        "    return client.messages.create(model=cfg.model, max_tokens=cfg.n)\n"
+    )
+    site = sites_from_payload(_impact_payload(path="mod.py", line=2))[0]
+    from dataclasses import replace
+
+    site = replace(site, expr="client.completions.create", symbol="")
+    chain = _chain("mod.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")
+    sink: dict = {}
+    token = DROPPED.set(sink)
+    try:
+        _record_drops(site, before, ast.parse(after), (1, 2), SimpleNamespace(chains=[chain]), wheel, None, False)
+    finally:
+        DROPPED.reset(token)
+    assert sink["names"] == ["prompt", "temperature", "top_k"], sink
+    assert sink["note"] == (
+        "Dropped `prompt`, `temperature`, `top_k`: the new release's `messages.create` doesn't accept them, "
+        "so these settings are now ignored."
+    ), sink["note"]
+
+
+def test_dropped_note_is_in_the_why_and_the_json_and_status_stays_verified(tmp_path: Path, monkeypatch):
+    import conduit.apply.engine as engine
+    from conduit.apply.dropped import DROPPED
+
+    def fake(root, site, patched, *, span=None, fixtures=None, allow_network=False, original=None):
+        sink = DROPPED.get()
+        if sink is not None and "new_call" in patched:
+            sink["names"] = ["old_extra"]
+            sink["note"] = "Dropped `old_extra`: removed without a matching parameter in the new call."
+        return []
+
+    monkeypatch.setattr(engine, "remaining_breaks", fake)
+    # The per-site check only reads the sink in _type_breaks, so call the real verify path through the fake.
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text("def f(x):\n    return x.old_call(1, old_extra=2)\n", encoding="utf-8")
+    sites = sites_from_payload(_impact_payload(path="mod.py", line=2))
+    client = FakeModelClient(responses=[_fn("def f(x):\n    return x.new_call(1)\n"), "Switched to new_call.\nSecond line."])
+    config = ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                         client=client, recheck_impact=True)
+    report = apply_sites(sites, config)
+    (result,) = report.results
+    assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    assert result.dropped == ["old_extra"]
+    assert result.why == "Switched to new_call. Dropped `old_extra`: removed without a matching parameter in the new call."
+    assert "\n" not in result.why
+    data = result.to_dict()
+    assert data["dropped"] == ["old_extra"] and data["dropped_note"].startswith("Dropped `old_extra`")
+    from conduit.apply.report import format_report
+
+    assert "Dropped `old_extra`" in format_report(report)
+    engine._fill_why(report)  # idempotent
+    assert report.results[0].why.count("Dropped") == 1
+
+
+def test_a_result_with_no_dropped_arguments_has_an_empty_note(tmp_path: Path, monkeypatch):
+    import conduit.apply.engine as engine
+
+    monkeypatch.setattr(engine, "remaining_breaks", lambda *a, **k: [])
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text("def f(x):\n    return x.old_call(1)\n", encoding="utf-8")
+    sites = sites_from_payload(_impact_payload(path="mod.py", line=2))
+    client = FakeModelClient(responses=[_fn("def f(x):\n    return x.new_call(1)\n"), "Uses new_call."])
+    report = apply_sites(sites, ApplyConfig(root=root, settings=_settings(), write=True,
+                                            test_cmd="python3 -c \"print('ok')\"", client=client, recheck_impact=True))
+    (result,) = report.results
+    assert (result.dropped, result.dropped_note, result.why) == ([], "", "Uses new_call.")
+
+
+def test_import_swap_why_comes_from_the_diff_not_the_model():
+    from conduit.apply.dropped import import_swap_why
+
+    before = "import os\nfrom pkg.types import Completion\n\n\ndef f(x: Completion):\n    return x\n"
+    after = "import os\nfrom pkg.types.beta import BetaMessage\n\n\ndef f(x: BetaMessage):\n    return x\n"
+    assert import_swap_why(before, after, 2, "completion.Completion removed") == (
+        "Replaced the import `from pkg.types import Completion` with `from pkg.types.beta import BetaMessage` "
+        "(completion.Completion removed)."
+    )
+    alias = "import os\nfrom pkg.types import Message as Completion\n\n\ndef f(x: Completion):\n    return x\n"
+    assert "Message as Completion" in import_swap_why(before, alias, 2)
+    assert import_swap_why(before, before, 2) == ""  # unchanged import: nothing to say
+    assert import_swap_why(before, after, 5) == ""  # not an import line
+    dropped = "import os\n\n\ndef f(x):\n    return x\n"
+    assert import_swap_why(before, dropped, 2).startswith("Removed the import `from pkg.types import Completion`")

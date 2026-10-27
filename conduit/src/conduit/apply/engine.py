@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -14,13 +15,32 @@ from typing import Any
 
 from conduit.apply.client import ChatMessage, ModelClient
 from conduit.apply.config import TokenFactorySettings
-from conduit.apply.context import ContextError, build_context_pack, enclosing_function
+from conduit.apply.context import (
+    ContextError,
+    build_context_pack,
+    enclosing_function,
+    module_statement,
+    name_uses,
+    removed_names,
+)
 from conduit.apply.feedback import trim_test_feedback
+from conduit.apply.nonecheck import NONE_CHECK
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
+from conduit.apply.plain import plain_why
 from conduit.apply.prompts import propose_messages, summarize_messages
-from conduit.apply.splice import PatchError, parse_model_edit, splice_edit_with_span, unified_diff_for
-from conduit.apply.signatures import new_release_wheel, signatures_for
-from conduit.apply.typecheck import FLOWS
+from conduit.apply.unused import drop_unused_imports
+from conduit.apply.splice import (
+    PatchError,
+    parse_model_edit,
+    resolve_line_edits,
+    splice_edit_with_span,
+    unified_diff_for,
+)
+from conduit.apply.signatures import _modules, literal_value, new_release_wheel, signatures_for
+from conduit.apply.testrun import Baseline, describe_preexisting, focus, judge, run_tests
+from conduit.apply.dropped import DROPPED, import_swap_why
+from conduit.apply.producers import repo_producers
+from conduit.apply.typecheck import FLOWS, parameter_brief, structured_requirements
 from conduit.apply.verify import remaining_breaks
 
 # Optional hook: given root + site + patched file text, return True if the site
@@ -49,6 +69,13 @@ class _RouteState:
     deferred: dict[int, list[str]] = field(default_factory=dict)
     #: Sites already given their one final-recheck retry.
     retried: set[int] = field(default_factory=set)
+    #: key -> keys of the sites this one depends on (its callers, or the import
+    #: or definition it uses), outside its own dependency cycle.
+    feeders: dict[int, list[int]] = field(default_factory=dict)
+    #: (consumer, producer) -> "call" or "import", for the reason text.
+    edge_kind: dict[tuple[int, int], str] = field(default_factory=dict)
+    #: key -> every site rewritten before it whose finished code it builds on.
+    producers: dict[int, list[int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -68,15 +95,26 @@ class ApplyConfig:
     max_sites: int | None = None
     #: Batch only: cross-site recheck findings routed back to the rewrite that contains them.
     routes: _RouteState | None = None
+    #: Per-test outcomes on the PR's base state; tests that failed there do not
+    #: count against a rewrite (see ``conduit.apply.testrun``).
+    baseline: Baseline | None = None
 
 
 @dataclass
 class ApplyReport:
     results: list[SiteResult] = field(default_factory=list)
     tokens_used: int = 0
+    #: Set only when a baseline was given: failures of the last test run that
+    #: also failed on the base, and those that did not.
+    preexisting: list[str] | None = None
+    new_failures: list[str] | None = None
+
+    @property
+    def preexisting_note(self) -> str:
+        return describe_preexisting(self.preexisting or [])
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "results": [item.to_dict() for item in self.results],
             "tokens_used": self.tokens_used,
             "summary": {
@@ -84,6 +122,11 @@ class ApplyReport:
                 for status in SiteStatus
             },
         }
+        if self.preexisting is not None:
+            data["preexisting_failures"] = list(self.preexisting)
+            data["preexisting_note"] = self.preexisting_note
+            data["new_failures"] = list(self.new_failures or [])
+        return data
 
 
 def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
@@ -142,7 +185,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         texts_of: dict[int, str] = {}
         covered, texts = _one_per_function(config.root, selected)
         base = sorted(selected, key=lambda item: not _names_removed_class(item))
-        ordered = _producer_first(config.root, base, covered)
+        ordered = _dependency_order(config.root, base, covered, routes)
         rank = {id(site): index for index, site in enumerate(base)}
         ranks: list[int] = []  # report order stays the usual one
         for site in ordered:
@@ -162,7 +205,12 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             moved = _relocate(scratch, site, texts_of[id(site)])
             sink: dict[str, Any] = {"site": site}
             routes.key = id(site)
-            result = _apply_one(moved, work, client, report, sink=sink) if moved else None
+            blocked = _unfixed_feeder(work, report, slots, accepted, id(site), upfront=True)
+            if blocked:
+                # Not rewritten against a base that is still broken.
+                result = SiteResult(site=site, status=SiteStatus.NEEDS_HUMAN, error=blocked, why=blocked)
+            else:
+                result = _apply_one(moved, work, client, report, sink=sink) if moved else None
             slots[id(site)] = len(report.results)
             report.results.append(result or SiteResult(site=site, status=SiteStatus.SKIPPED, why="line rewritten by an earlier fix in this file"))
             if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
@@ -172,7 +220,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
         failure = ""
         for _round in range(config.settings.max_attempts + 1):
-            ok, output = _run_cmd(config.test_cmd or "", scratch)
+            ok, output = _check(config, scratch, report)
             if ok or not accepted:
                 failure = "" if ok else output
                 break
@@ -206,7 +254,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _retry_routed(work, client, report, originals, texts_of, slots)
         _drop_traced_reads(work, report, originals, texts_of, slots)
         if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted and not failure:
-            ok, output = _run_cmd(config.test_cmd or "", scratch)
+            ok, output = _check(config, scratch, report)
             failure = "" if ok else output
         if failure and accepted:
             # Revert what the last failure points at, then confirm the rest pass.
@@ -214,10 +262,10 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 sink = accepted.pop(key)
                 _rebuild(scratch, originals, accepted, texts_of, sink["site"].path)
                 report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], trim_test_feedback(failure))
-            ok, output = _run_cmd(config.test_cmd or "", scratch) if accepted else (True, "")
+            ok, output = _check(config, scratch, report) if accepted else (True, "")
             if ok and accepted and _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted:
                 # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
-                ok, output = _run_cmd(config.test_cmd or "", scratch)
+                ok, output = _check(config, scratch, report)
             if not ok:
                 for key in list(accepted):
                     sink = accepted.pop(key)
@@ -225,6 +273,10 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                     report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], trim_test_feedback(output))
         for key in accepted:
             done = report.results[slots[key]]
+            hold = accepted[key].get("hold")
+            if hold:
+                report.results[slots[key]] = replace(done, status=SiteStatus.NEEDS_HUMAN, error=hold, why=hold)
+                continue
             why = _why_when_uncalled(accepted, key) or done.why
             report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_VERIFIED, why=why)
         for path, before in originals.items():
@@ -253,6 +305,19 @@ def _run_cmd(command: str, cwd: Path) -> tuple[bool, str]:
     return proc.returncode == 0, ((proc.stdout or "") + (proc.stderr or "")).strip()
 
 
+def _check(config: ApplyConfig, scratch: Path, report: ApplyReport) -> tuple[bool, str]:
+    """Run the tests. Without a baseline, the exit code decides. With one, only
+    failures that did not already happen on the base count; the text returned
+    for blame and feedback then holds just those."""
+    if config.baseline is None:
+        return _run_cmd(config.test_cmd or "", scratch)
+    run = run_tests(config.test_cmd or "", scratch)
+    verdict = judge(run, config.baseline)
+    report.preexisting = verdict.preexisting
+    report.new_failures = verdict.new + verdict.missing
+    return verdict.passed, ("" if verdict.passed else focus(run, verdict))
+
+
 def _rebuild(scratch: Path, originals: dict[str, str], accepted: dict[int, dict[str, Any]], texts: dict[int, str], path: str) -> None:
     """The file as its original plus every accepted edit, re-spliced in order."""
     _write_file(scratch, path, originals[path])
@@ -264,7 +329,9 @@ def _rebuild(scratch: Path, originals: dict[str, str], accepted: dict[int, dict[
         try:
             if moved is None:
                 raise PatchError("site line not found")
-            patched, _diff, _span = splice_edit_with_span(build_context_pack(scratch, moved), sink["edit"])
+            pack = build_context_pack(scratch, moved)
+            patched, _diff, span = splice_edit_with_span(pack, sink["edit"])
+            patched, _span = drop_unused_imports(pack.full_source, patched, span, path, scratch)
         except (PatchError, ContextError):
             accepted.pop(key)
             continue
@@ -393,11 +460,30 @@ def _apply_one(
     target = _new_signatures(config, site, [site.symbol])
     if target:
         pack.release_diff["new_release_signatures"] = target
+    requires = _required_parameters(config, site, [site.symbol])
+    if not requires:
+        # A removed callable: what each replacement candidate needs, so the first
+        # rewrite builds the arguments it takes instead of keeping the old ones.
+        requires = _required_parameters(config, site, [c.get("symbol", "") for c in pack.candidates])
+    if requires:
+        pack.release_diff["new_release_requires"] = requires
+        helpers = _repo_helpers(
+            config,
+            site,
+            (pack.function_start_line, pack.function_end_line or pack.function_start_line),
+            [site.symbol, *[c.get("symbol", "") for c in pack.candidates]],
+        )
+        if helpers:
+            pack.release_diff["existing_repo_helpers_that_produce_this_type"] = helpers
+    pack.release_diff.update(_constant_values(config, site))
     pack.connected = _connected(config, site, pack)
+    pack.removed_name_uses = _with_received_types(config, site, pack.removed_name_uses)
+    pack.producer_rewrites = _producer_rewrites(config, pack)
 
     last_error = ""
     last_diff = ""
     earlier: list[str] = []
+    mismatched: set[tuple[str, str, str]] = set()
     attempts = used
     site_tokens = spent
     sink = sink if sink is not None else {}
@@ -417,10 +503,20 @@ def _apply_one(
             )
             site_tokens += used
             report.tokens_used += used
-            edit = parse_model_edit(edit_text)
+            edit = resolve_line_edits(pack, parse_model_edit(edit_text))
             patched, diff, span = splice_edit_with_span(pack, edit)
+            cleaned, span = drop_unused_imports(pack.full_source, patched, span, site.path, config.root)
+            if cleaned != patched:
+                patched, diff = cleaned, unified_diff_for(pack.file_path, pack.full_source, cleaned)
             last_diff = diff
-            flows = _verify_site_cleared(config, site, patched, span)
+            repeated = _repeated_decorator(patched, span)
+            if repeated:
+                raise PatchError(
+                    f"rewrite repeats a decorator the function already has ({repeated}); "
+                    "give function_source without the existing decorators or list each once"
+                )
+            drops: dict[str, Any] = {}
+            flows = _verify_site_cleared(config, site, patched, span, drops)
             tests_ok, test_err = _run_tests(config, site, patched)
             if not tests_ok:
                 feedback = trim_test_feedback(test_err or "tests failed")
@@ -434,6 +530,8 @@ def _apply_one(
                 )
                 site_tokens += why_tokens
                 report.tokens_used += why_tokens
+            # An import line reads from the two sources, not from the model's sentence.
+            why = import_swap_why(pack.full_source, patched, site.line, site.change) or why
             status = (
                 SiteStatus.FIXED_VERIFIED
                 if config.test_cmd
@@ -451,9 +549,18 @@ def _apply_one(
                 diff=diff,
                 attempts=attempts,
                 context=pack,
+                dropped=list(drops.get("names") or []),
+                dropped_note=drops.get("note") or "",
             )
         except RecheckError as exc:
             last_error = str(exc)
+            repeated = _type_mismatches(exc.findings) & mismatched
+            if repeated:
+                # A plain type mismatch was already explained once: a further
+                # attempt rarely does better, so it is handed off for review.
+                last_error = "argument type still incompatible after one retry: " + last_error
+                break
+            mismatched |= _type_mismatches(exc.findings)
             feedback = _with_earlier(last_error, exc.findings, earlier)
             earlier.extend(text for text in exc.findings if text not in earlier)
         except PatchError as exc:
@@ -470,7 +577,8 @@ def _apply_one(
         why="",
         diff=last_diff,
         attempts=attempts,
-        error=last_error.split("\nNew release signatures", 1)[0] or "max attempts exhausted",
+        error=last_error.split("\nNew release signatures", 1)[0].split("\nWhat it requires", 1)[0]
+        or "max attempts exhausted",
         context=pack,
     )
 
@@ -520,19 +628,29 @@ def _summarize(
 
 
 def _verify_site_cleared(
-    config: ApplyConfig, site: ImpactSite, patched: str, span: tuple[int, int]
+    config: ApplyConfig,
+    site: ImpactSite,
+    patched: str,
+    span: tuple[int, int],
+    dropped: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Raise when the rewrite still breaks; return the release values it passes on."""
+    """Raise when the rewrite still breaks; return the release values it passes on.
+
+    ``dropped`` is filled with the arguments the rewrite stopped passing."""
     flows: list[dict[str, Any]] = []
-    if config.site_cleared is None and config.recheck_impact and config.routes is not None:
-        token = FLOWS.set(flows)
-        try:
-            _verify_against_release(config, site, patched, span)
-        finally:
-            FLOWS.reset(token)
+    drop_token = DROPPED.set(dropped)
+    try:
+        if config.site_cleared is None and config.recheck_impact and config.routes is not None:
+            token = FLOWS.set(flows)
+            try:
+                _verify_against_release(config, site, patched, span)
+            finally:
+                FLOWS.reset(token)
+            return flows
+        _verify_against_release(config, site, patched, span)
         return flows
-    _verify_against_release(config, site, patched, span)
-    return flows
+    finally:
+        DROPPED.reset(drop_token)
 
 
 def _verify_against_release(config: ApplyConfig, site: ImpactSite, patched: str, span: tuple[int, int]) -> None:
@@ -559,6 +677,19 @@ def _verify_against_release(config: ApplyConfig, site: ImpactSite, patched: str,
             message += "\nNew release signatures (read from its own code):\n" + "\n".join(
                 signatures.values()
             )
+        requires = _required_parameters(config, site, [symbol for _text, symbol in breaks])
+        if requires:
+            message += "\nWhat it requires (read from its own code):\n" + "\n".join(requires)
+            helpers = _repo_helpers(config, site, span, [symbol for _text, symbol in breaks])
+            if helpers:
+                message += "\nExisting repo helpers that produce this type:\n" + "\n".join(
+                    f"- {item['helper']} ({item['import']}"
+                    + (f"; call as {item['call']}" if item.get("call") else "")
+                    + (f"; {item['note']}" if item.get("note") else "")
+                    + ")"
+                    + (f"\n  Caution: {item['caution']}" if item.get("caution") else "")
+                    for item in helpers
+                )
         raise RecheckError(message, [text for text, _symbol in breaks])
 
 
@@ -621,17 +752,21 @@ def _fields_once(text: str, earlier: dict[str, str] | None = None) -> str:
 
 def _fill_why(report: ApplyReport) -> None:
     """No fixed or needs-human result goes out without a reason, and a type's
-    field list is printed once across the whole report."""
+    field list is printed once across the whole report.
+
+    A needs-human ``why`` is one plain sentence for people; the full finding,
+    with field lists and the instructions retry prompts carry, stays in ``error``."""
     listed: dict[str, str] = {}
     for index, result in enumerate(report.results):
         why = result.why
-        if not why.strip() and result.status in {
-            SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED, SiteStatus.NEEDS_HUMAN
-        }:
-            if result.status == SiteStatus.NEEDS_HUMAN and result.error.strip():
-                why = result.error.strip()
-            else:
-                why = _change_summary(result)
+        if result.status == SiteStatus.NEEDS_HUMAN:
+            why = plain_why(result.error or result.why, result.site.path) or _change_summary(result)
+        elif not why.strip() and result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED}:
+            why = _change_summary(result)
+        if result.dropped_note and result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED}:
+            # One line: a report cell keeps only the first line of ``why``.
+            if result.dropped_note not in why:
+                why = " ".join(why.split()) + " " + result.dropped_note
         shown_why, shown_error = _fields_once(why, listed), _fields_once(result.error, listed)
         label = f"{Path(result.site.path).name}:{result.site.line}"
         for text in (why, result.error):
@@ -948,22 +1083,48 @@ def _final_recheck(
     changed = True
     while changed and accepted:
         changed = False
+        for owner, texts_found in _undefined_names(scratch, originals, accepted, texts).items():
+            for text in texts_found:
+                if text not in handed.setdefault(owner, []):
+                    handed[owner].append(text)
         for key in list(accepted):
             if key not in accepted:
                 continue
             sink = accepted[key]
             site = sink["site"]
+            if sink.get("hold"):
+                continue
+            message = _unfixed_feeder(work, report, slots, accepted, key)
+            if message:
+                # What this function receives or uses is still the old release's.
+                accepted.pop(key)
+                previous = report.results[slots[key]]
+                report.results[slots[key]] = SiteResult(
+                    site=site, status=SiteStatus.NEEDS_HUMAN, diff=previous.diff, attempts=previous.attempts,
+                    error=message, why=message, context=previous.context,
+                )
+                _rebuild(scratch, originals, accepted, texts, site.path)
+                dropped = changed = True
+                continue
             body = _read(scratch / site.path)
             span = _span_in(body, sink.get("block") or "")
-            if span is None:
+            breaks: list[tuple[str, str]] = []
+            if span is None and not handed.get(key):
                 continue
             try:
-                breaks = remaining_breaks(
-                    scratch, site, body, span=span, fixtures=config.fixtures,
-                    allow_network=config.allow_network, original=originals.get(site.path, ""),
-                )
+                if span is not None:
+                    # The finished migration: Optional values that reach a place None breaks count too.
+                    none_token = NONE_CHECK.set(True)
+                    try:
+                        breaks = remaining_breaks(
+                            scratch, site, body, span=span, fixtures=config.fixtures,
+                            allow_network=config.allow_network, original=originals.get(site.path, ""),
+                        )
+                    finally:
+                        NONE_CHECK.reset(none_token)
             except Exception:  # noqa: BLE001 — a recheck that cannot run keeps the earlier verdict
                 breaks = []
+            span = span or (site.line, site.line)
             findings: list[str] = []
             for text, _symbol in breaks:
                 owner = _accepted_owner(scratch, accepted, key, span, site.path, text)
@@ -981,6 +1142,14 @@ def _final_recheck(
             if _retry_final(work, client, report, originals, texts, slots, key, sink, message):
                 dropped = changed = True
                 continue
+            if all(_UNDEFINED in text for text in findings):
+                # Reverting would bring back an import the new release no longer
+                # has; the rewrite stays in the diff, but it is not verified.
+                sink["hold"] = message
+                accepted[key] = sink
+                _rebuild(scratch, originals, accepted, texts, site.path)
+                changed = True
+                continue
             depends = _unresolved_dependencies(scratch, report, texts, slots, accepted, findings)
             if depends:
                 message += "; depends on " + ", ".join(depends) + ", whose fix was not applied (needs a human)"
@@ -996,6 +1165,156 @@ def _final_recheck(
             _rebuild(scratch, originals, accepted, texts, site.path)
             dropped = changed = True
     return dropped
+
+
+_UNDEFINED = " is no longer imported or defined after the rewrite at "
+
+
+def _undefined_names(
+    scratch: Path, originals: dict[str, str], accepted: dict[int, dict[str, Any]], texts: dict[int, str]
+) -> dict[int, list[str]]:
+    """Names a changed file still uses (annotations included, even when they are
+    never evaluated) that it no longer imports or defines, by the site whose
+    original line bound them."""
+    out: dict[int, list[str]] = {}
+    by_path: dict[str, list[int]] = {}
+    for key, sink in accepted.items():
+        if not sink.get("hold"):
+            by_path.setdefault(sink["site"].path, []).append(key)
+    for path, keys in by_path.items():
+        before, after = originals.get(path, ""), _read(scratch / path)
+        if before == after:
+            continue
+        try:
+            old_tree, new_tree = ast.parse(before), ast.parse(after)
+        except SyntaxError:
+            continue
+        lost = _bound_names(old_tree) - _bound_names(new_tree)
+        if not lost:
+            continue
+        uses = _used_names(new_tree)
+        for name in sorted(lost):
+            if name not in uses:
+                continue
+            owner = next((key for key in keys if name in _bound_by_line(texts.get(key, ""))), None)
+            if owner is None:
+                continue
+            site = accepted[owner]["site"]
+            line = uses[name]
+            out.setdefault(owner, []).append(
+                f"{path}:{line} {name}: name {name} is no longer imported or defined after the rewrite at "
+                f"{path}:{site.line} removed it, but line {line} still uses it; it is not in the new release "
+                f"under that import: keep the name defined, or use the type the call now returns, read from "
+                f"the new release's code"
+            )
+    return out
+
+
+def _bound_names(tree: ast.Module) -> set[str]:
+    """Every name the module binds anywhere: imports, defs, classes, arguments, targets."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+    return names
+
+
+def _used_names(tree: ast.Module) -> dict[str, int]:
+    """Loaded names (first line), including those inside string annotations."""
+    uses: dict[str, int] = {}
+
+    def add(node: ast.AST, line: int) -> None:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                uses.setdefault(sub.id, line or getattr(sub, "lineno", 0))
+            elif isinstance(sub, ast.Constant) and isinstance(sub.value, str) and line:
+                try:
+                    add(ast.parse(sub.value.strip(), mode="eval"), line)
+                except SyntaxError:
+                    pass
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            uses.setdefault(node.id, node.lineno)
+        annotations: list[ast.AST] = []
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            annotations.append(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+            annotations.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            annotations.append(node.annotation)
+        for annotation in annotations:
+            add(annotation, annotation.lineno)
+    return uses
+
+
+def _bound_by_line(text: str) -> set[str]:
+    """Names the site's original line binds (an import, def or assignment)."""
+    try:
+        return _bound_names(ast.parse(text.strip()))
+    except SyntaxError:
+        return set()
+
+
+def _unfixed_feeder(
+    work: ApplyConfig | None,
+    report: ApplyReport,
+    slots: dict[int, int],
+    accepted: dict[int, dict[str, Any]],
+    key: int,
+    *,
+    upfront: bool = False,
+) -> str:
+    """Reason text when a site this one depends on ended needs-human; else empty.
+
+    ``upfront``: checked before the rewrite, which then does not happen."""
+    routes = work.routes if work is not None else None
+    if routes is None:
+        return ""
+    for other in routes.feeders.get(key, []):
+        if other in accepted or other not in slots:
+            continue
+        result = report.results[slots[other]]
+        if result.status != SiteStatus.NEEDS_HUMAN:
+            continue
+        where = f"{result.site.path}:{result.site.line}"
+        if routes.edge_kind.get((key, other)) == "import":
+            head = f"the import or definition at {where} that it uses was not fixed (needs a human)"
+        else:
+            head = f"its caller {where} was not fixed (needs a human)"
+        if upfront:
+            return head + ", so this site was not rewritten against it"
+        if routes.edge_kind.get((key, other)) == "import":
+            return head + ", so this rewrite builds on code that is not there"
+        return head + ", so the value this rewrite expects never arrives"
+    return ""
+
+
+def _repeated_decorator(patched: str, span: tuple[int, int]) -> str:
+    """A decorator listed twice on a rewritten def (the splice kept the old one too)."""
+    try:
+        tree = ast.parse(patched)
+    except SyntaxError:
+        return ""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and span[0] <= node.lineno <= span[1]:
+            seen: list[str] = []
+            for deco in node.decorator_list:
+                text = ast.unparse(deco)
+                if text in seen:
+                    return f"@{text} on {node.name}"
+                seen.append(text)
+    return ""
 
 
 def _accepted_owner(
@@ -1056,55 +1375,227 @@ def _retry_final(
     return True
 
 
-def _producer_first(root: Path, sites: list[ImpactSite], covered: dict[int, str]) -> list[ImpactSite]:
-    """Order so a site whose function calls another site's function is rewritten first.
+def _dependency_order(
+    root: Path, sites: list[ImpactSite], covered: dict[int, str], routes: _RouteState | None = None
+) -> list[ImpactSite]:
+    """Rewrite order from a dependency graph across the sites: producers first.
 
-    The producer's rewrite decides what value the consumer receives; the
-    consumer is then rewritten with that value's new-release type in view.
-    Otherwise the given order stands."""
-    info: dict[int, tuple[str, set[str]]] = {}
+    A site depends on another when it calls the other's function (the caller
+    decides what value arrives), and when its code uses a name another site's
+    module-level line binds (the import or definition it uses). An import of a
+    removed name also waits for the callers of a function that has the name as
+    a parameter annotation, so the type that now arrives there is known; that
+    edge only orders, it does not block. A cycle is one group, rewritten in the
+    given order. ``routes`` gets each site's blocking producers (outside its
+    group), the kind of each edge, and every producer whose code it builds on."""
+    info: dict[int, dict[str, Any]] = {}
     for site in sites:
         if id(site) in covered or site.via_wrapper:
             continue
         source = _read(root / site.path)
         try:
-            found = enclosing_function(source, site.line)
             tree = ast.parse(source)
+            found = enclosing_function(source, site.line)
         except (ContextError, SyntaxError):
             continue
-        if not found:
-            continue
+        binds: set[str] = set()
+        if found is None:
+            found = module_statement(source, site.line)
+            if found is None:
+                continue
+            try:
+                binds = _bound_names(ast.parse(textwrap.dedent(found[1])))
+            except SyntaxError:
+                binds = set()
         name, _text, start, end = found
         calls = {
             node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and start <= node.lineno <= end
         }
-        info[id(site)] = (name, calls - {name, ""})
-    producers: dict[int, list[ImpactSite]] = {}
-    for consumer in sites:
-        if id(consumer) not in info:
+        loads = {used for used, line in _used_in_span(tree, (start, end))}
+        annotated = {
+            use["function"]
+            for use in name_uses(source, removed_names(source, site), (start, end))
+            if use.get("param") and not use.get("in_this_function")
+        } if binds else set()
+        info[id(site)] = {
+            "site": site, "name": name, "calls": calls - {name, ""}, "loads": loads - binds,
+            "binds": binds, "annotated": annotated,
+        }
+    nodes = [site for site in sites if id(site) in info]
+    hard: dict[int, dict[int, str]] = {id(site): {} for site in nodes}
+    soft: dict[int, set[int]] = {id(site): set() for site in nodes}
+    for consumer in nodes:
+        mine = info[id(consumer)]
+        for producer in nodes:
+            if producer is consumer:
+                continue
+            theirs = info[id(producer)]
+            if mine["name"] and mine["name"] in theirs["calls"]:
+                hard[id(consumer)].setdefault(id(producer), "call")
+            elif theirs["binds"] and producer.path == consumer.path and theirs["binds"] & mine["loads"]:
+                hard[id(consumer)].setdefault(id(producer), "import")
+            if mine["annotated"] and mine["annotated"] & theirs["calls"]:
+                soft[id(consumer)].add(id(producer))
+    edges = {key: set(hard[key]) | soft[key] for key in hard}
+    group = _cycle_groups([id(site) for site in nodes], edges)
+    rank = {id(site): index for index, site in enumerate(sites)}
+    members: dict[int, list[int]] = {}
+    for key in sorted(group, key=lambda item: rank[item]):
+        members.setdefault(group[key], []).append(key)
+    waiting = {
+        number: {group[p] for key in keys for p in edges[key] if group[p] != number}
+        for number, keys in members.items()
+    }
+    order: list[int] = []
+    placed: set[int] = set()
+    while len(placed) < len(members):
+        ready = [number for number in members if number not in placed and waiting[number] <= placed]
+        if not ready:  # cannot happen once cycles are grouped; keep the given order
+            ready = [number for number in members if number not in placed]
+        best = min(ready, key=lambda number: rank[members[number][0]])
+        placed.add(best)
+        order.extend(members[best])
+    if routes is not None:
+        for key in hard:
+            outside = [p for p in hard[key] if group[p] != group[key]]
+            if outside:
+                routes.feeders[key] = sorted(outside, key=lambda item: order.index(item))
+            for p, kind in hard[key].items():
+                routes.edge_kind[(key, p)] = kind
+            routes.producers[key] = sorted(edges[key], key=lambda item: order.index(item))
+    by_key = {id(site): site for site in nodes}
+    out = [by_key[key] for key in order]
+    # Sites outside the graph (covered lines, wrappers, unparsable) keep their place after.
+    out += [site for site in sites if id(site) not in by_key]
+    return out
+
+
+def _cycle_groups(keys: list[int], edges: dict[int, set[int]]) -> dict[int, int]:
+    """Strongly connected components (Tarjan): key -> group number."""
+    index: dict[int, int] = {}
+    low: dict[int, int] = {}
+    stack: list[int] = []
+    on: set[int] = set()
+    group: dict[int, int] = {}
+    counter = [0, 0]
+
+    def visit(key: int) -> None:
+        index[key] = low[key] = counter[0]
+        counter[0] += 1
+        stack.append(key)
+        on.add(key)
+        for other in edges.get(key, ()):
+            if other not in index:
+                visit(other)
+                low[key] = min(low[key], low[other])
+            elif other in on:
+                low[key] = min(low[key], index[other])
+        if low[key] == index[key]:
+            while True:
+                item = stack.pop()
+                on.discard(item)
+                group[item] = counter[1]
+                if item == key:
+                    break
+            counter[1] += 1
+
+    for key in keys:
+        if key not in index:
+            visit(key)
+    return group
+
+
+def _used_in_span(tree: ast.Module, span: tuple[int, int]) -> set[tuple[str, int]]:
+    """Names loaded in ``span`` (string annotations included), with their lines."""
+    return {
+        (name, line)
+        for name, lines in _name_lines(tree).items()
+        for line in lines
+        if span[0] <= line <= span[1]
+    }
+
+
+def _name_lines(tree: ast.Module) -> dict[str, set[int]]:
+    out: dict[str, set[int]] = {}
+
+    def add(node: ast.AST, line: int) -> None:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                out.setdefault(sub.id, set()).add(line or sub.lineno)
+            elif isinstance(sub, ast.Constant) and isinstance(sub.value, str) and line:
+                try:
+                    add(ast.parse(sub.value.strip(), mode="eval"), line)
+                except SyntaxError:
+                    pass
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            out.setdefault(node.id, set()).add(node.lineno)
+        for annotation in _annotations_of(node):
+            add(annotation, annotation.lineno)
+    return out
+
+
+def _annotations_of(node: ast.AST) -> list[ast.AST]:
+    if isinstance(node, ast.arg) and node.annotation is not None:
+        return [node.annotation]
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+        return [node.returns]
+    if isinstance(node, ast.AnnAssign):
+        return [node.annotation]
+    return []
+
+
+def _with_received_types(config: ApplyConfig, site: ImpactSite, uses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add the new-release type an accepted rewrite now passes to each annotated use."""
+    routes = config.routes
+    if routes is None or not uses:
+        return uses
+    out: list[dict[str, Any]] = []
+    for use in uses:
+        item = dict(use)
+        for key, sink in routes.accepted.items():
+            if key == routes.key or "now_receives" in item:
+                continue
+            for flow in sink.get("flows") or []:
+                if (
+                    item.get("param")
+                    and flow.get("callee") == item.get("function")
+                    and flow.get("param") == item["param"]
+                    and _path_match(flow.get("callee_path", ""), site.path)
+                ):
+                    item["now_receives"] = f"{flow['types']} ({flow['release']}), passed from {flow['from']}"
+                    if flow.get("imports"):
+                        item["import_for_it"] = list(flow["imports"])
+                    break
+        out.append(item)
+    return out
+
+
+def _producer_rewrites(config: ApplyConfig, pack: ContextPack) -> list[dict[str, Any]]:
+    """Finished new code of the sites this one depends on, not already shown."""
+    routes = config.routes
+    if routes is None:
+        return []
+    shown = {item.get("rewritten_code") for item in pack.connected}
+    out: list[dict[str, Any]] = []
+    for other in routes.producers.get(routes.key, []):
+        sink = routes.accepted.get(other)
+        if sink is None or other == routes.key:
             continue
-        name = info[id(consumer)][0]
-        producers[id(consumer)] = [
-            other for other in sites
-            if other is not consumer and id(other) in info and name in info[id(other)][1]
-        ]
-    out: list[ImpactSite] = []
-    done: set[int] = set()
-
-    def visit(site: ImpactSite, stack: set[int]) -> None:
-        if id(site) in done or id(site) in stack:
-            return
-        stack.add(id(site))
-        for producer in producers.get(id(site), []):
-            visit(producer, stack)
-        stack.discard(id(site))
-        done.add(id(site))
-        out.append(site)
-
-    for site in sites:
-        visit(site, set())
+        block = sink.get("block") or ""
+        if not block or block in shown:
+            continue
+        item: dict[str, Any] = {
+            "site": f"{sink['site'].path}:{sink['site'].line}",
+            "rewritten_code": block,
+        }
+        edits = getattr(sink.get("edit"), "line_edits", ()) or ()
+        if edits:
+            item["also_changed_lines"] = [new.strip() for _line, _old, new in edits]
+        out.append(item)
     return out
 
 
@@ -1217,8 +1708,116 @@ def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -
             allow_network=config.allow_network,
         )
         return signatures_for(wheel, [symbol for symbol in symbols if symbol])
-    except Exception:  # noqa: BLE001 — prompt context only; never blocks a fix
+    except Exception:  # noqa: BLE001 — extra context only; never blocks a fix
         return {}
+
+
+_MAX_REQUIRES = 2
+# A recheck finding from ``typecheck.argument_breaks``: ``path:line expr: kw= passes ...``.
+_MISMATCH = re.compile(r"^(?P<path>\S+?):\d+ .*?: (?P<kw>\w+)= passes .*? but (?P<owner>[\w.]+) in ")
+
+
+def _type_mismatches(findings: list[str]) -> set[tuple[str, str, str]]:
+    """``(path, keyword, callable)`` of each argument-type finding (lines move between attempts)."""
+    out: set[tuple[str, str, str]] = set()
+    for text in findings:
+        match = _MISMATCH.match(text or "")
+        if match:
+            out.add((match["path"], match["kw"], match["owner"]))
+    return out
+
+
+def _required_parameters(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -> list[str]:
+    """For new-release callables: required parameters with their annotated types
+    (TypedDict structure expanded) and the other names they accept.
+
+    Distinct texts only (an async twin or re-export reads the same), at most
+    ``_MAX_REQUIRES``."""
+    symbols = [symbol for symbol in symbols if symbol]
+    if not config.recheck_impact or not symbols:
+        return []
+    try:
+        wheel = new_release_wheel(
+            site.dependency, site.to_version, fixtures=config.fixtures, allow_network=config.allow_network
+        )
+        if wheel is None:
+            return []
+        modules = _modules(str(wheel))
+        out: list[str] = []
+        seen: set[str] = set()
+        for symbol in symbols:
+            brief = parameter_brief(modules, symbol)
+            body = brief.split(" requires: ", 1)[-1]
+            if not brief or body in seen:
+                continue
+            seen.add(body)
+            out.append(brief)
+            if len(out) >= _MAX_REQUIRES:
+                break
+        return out
+    except Exception:  # noqa: BLE001 — extra context only; never blocks a fix
+        return []
+
+
+def _repo_helpers(
+    config: ApplyConfig, site: ImpactSite, span: tuple[int, int] | None, symbols: list[str]
+) -> list[dict]:
+    """Repo functions that already return a structured type the new callable requires."""
+    symbols = [symbol for symbol in symbols if symbol]
+    if not config.recheck_impact or not symbols:
+        return []
+    try:
+        wheel = new_release_wheel(
+            site.dependency, site.to_version, fixtures=config.fixtures, allow_network=config.allow_network
+        )
+        if wheel is None:
+            return []
+        modules = _modules(str(wheel))
+        requirements: list[dict] = []
+        method = ""
+        for symbol in symbols:
+            found = structured_requirements(modules, symbol)
+            if not found:
+                continue
+            method = method or symbol.rsplit(".", 1)[-1]
+            for req in found:
+                same = next((r for r in requirements if r["param"] == req["param"]), None)
+                if same is None:
+                    requirements.append(dict(req))
+                else:
+                    same["names"] = sorted(set(same["names"]) | set(req["names"]))
+        exclude = (site.path, span[0], span[1]) if span and span[0] else None
+        return repo_producers(Path(config.root), requirements, method, exclude)
+    except Exception:  # noqa: BLE001 — extra context only; never blocks a fix
+        return []
+
+
+def _constant_values(config: ApplyConfig, site: ImpactSite) -> dict[str, str]:
+    """The literal a flagged constant held in the old release, and in the new one if it changed.
+
+    A removed constant otherwise reaches the prompt as a bare name; its old
+    value is what a faithful inline replacement has to reproduce."""
+    if not config.recheck_impact or not site.symbol or not site.from_version:
+        return {}
+    try:
+        old_wheel = new_release_wheel(
+            site.dependency, site.from_version, fixtures=config.fixtures, allow_network=config.allow_network
+        )
+        old = literal_value(_modules(str(old_wheel)), site.symbol) if old_wheel is not None else ""
+        if not old:
+            return {}
+        new_wheel = new_release_wheel(
+            site.dependency, site.to_version, fixtures=config.fixtures, allow_network=config.allow_network
+        )
+        new = literal_value(_modules(str(new_wheel)), site.symbol) if new_wheel is not None else ""
+    except Exception:  # noqa: BLE001 — extra context only; never blocks a fix
+        return {}
+    if new == old:
+        return {}
+    out = {"old_value": f"{site.symbol} = {old}"}
+    if new:
+        out["new_value"] = f"{site.symbol} = {new}"
+    return out
 
 
 def _run_tests(

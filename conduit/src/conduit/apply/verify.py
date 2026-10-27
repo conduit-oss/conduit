@@ -151,21 +151,34 @@ def _type_breaks(
     import ast
 
     from conduit.apply.signatures import _modules, new_release_wheel
-    from conduit.apply.typecheck import argument_breaks, attribute_breaks, dropped_arguments, original_arguments
+    from conduit.apply.typecheck import (
+        argument_breaks,
+        attribute_breaks,
+        dropped_arguments,
+        original_arguments,
+        repo_call_breaks,
+    )
 
     try:
         source = (root / path).read_text(encoding="utf-8")
         tree = ast.parse(source)
     except (OSError, SyntaxError, UnicodeDecodeError):
         return []
+    try:
+        # Calls into this repo's own classes and functions, against their own signatures.
+        local = [(text, "") for text in repo_call_breaks(root, path, source, span)]
+    except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
+        local = []
     wheel = new_release_wheel(
         site.dependency, site.to_version, fixtures=fixtures, allow_network=allow_network
     )
+    _record_drops(site, original, tree, span, service_map, wheel, fixtures, allow_network)
+    local.extend(_declared_breaks(root, service_map, path, source, span, original, wheel))
     if wheel is None:
-        return []
+        return local
     try:
         modules = _modules(str(wheel))
-        found: list[tuple[str, str]] = []
+        found: list[tuple[str, str]] = list(local)
         old_wheel = new_release_wheel(
             site.dependency, site.from_version, fixtures=fixtures, allow_network=allow_network
         )
@@ -194,7 +207,70 @@ def _type_breaks(
             found.append((text, ""))
         return found
     except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
+        return local
+
+
+def _declared_breaks(root: Path, service_map, path: str, source: str, span, original: str, wheel) -> list[tuple[str, str]]:
+    """Values whose declared class is not the class the callee declares (see ``declared``)."""
+    import ast
+
+    from conduit.apply.declared import declared_type_breaks
+    from conduit.apply.signatures import _modules, resolve_callable
+
+    try:
+        modules = _modules(str(wheel)) if wheel is not None else {}
+        traced: dict[tuple[int, str], tuple[str, ast.AST]] = {}
+        for chain in service_map.chains:
+            if (
+                modules
+                and chain.call_rel.replace("\\", "/") == path
+                and span[0] <= chain.call_lineno <= span[1]
+                and not chain.via_wrapper
+                and chain.kind.endswith("_call")
+            ):
+                found = resolve_callable(modules, chain.sdk_method)
+                if found is not None:
+                    traced[(chain.call_lineno, chain.call_expr)] = found
+        return [(text, "") for text in declared_type_breaks(modules, root, path, source, span, original, traced)]
+    except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
         return []
+
+
+def _record_drops(site, original: str, tree, span, service_map, wheel, fixtures, allow_network) -> None:
+    """Note, for the per-site check only, the arguments the rewrite stopped passing."""
+    import ast
+
+    from conduit.apply.dropped import DROPPED, dropped_from, note_for
+    from conduit.apply.signatures import _modules, new_release_wheel, resolve_callable, unknown_keywords
+    from conduit.apply.typecheck import _call_at
+
+    sink = DROPPED.get()
+    if sink is None:
+        return
+    try:
+        old = _call_at(ast.parse(original), site.line, (site.expr or "").strip())
+        if old is None:
+            return
+        order: list[str] = []
+        old_wheel = new_release_wheel(
+            site.dependency, site.from_version, fixtures=fixtures, allow_network=allow_network
+        )
+        found = resolve_callable(_modules(str(old_wheel)), site.symbol) if old_wheel is not None and site.symbol else None
+        if found is not None:
+            order = [arg.arg for arg in (*found[1].args.posonlyargs, *found[1].args.args)]
+            order = order[1:] if order and order[0] in {"self", "cls"} else order
+        names, new = dropped_from(old, tree, span, order)
+        if not names or new is None:
+            return
+        owner, rejected = "", []
+        for chain in service_map.chains:
+            if chain.call_lineno == new.lineno and chain.call_expr == ast.unparse(new.func) and not chain.via_wrapper:
+                owner, rejected = unknown_keywords(wheel, chain.sdk_method, tuple(names))
+                break
+        sink["names"] = names
+        sink["note"] = note_for(names, rejected, owner)
+    except Exception:  # noqa: BLE001 — a note that cannot be built is left out
+        return
 
 
 def _unknown_keyword_breaks(
