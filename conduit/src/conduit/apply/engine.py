@@ -38,6 +38,7 @@ from conduit.apply.splice import (
 )
 from conduit.apply.signatures import _modules, literal_value, new_release_wheel, signatures_for
 from conduit.apply.testrun import Baseline, describe_preexisting, focus, judge, run_tests
+from conduit.apply.change_why import caught, change_why
 from conduit.apply.dropped import DROPPED, import_swap_why
 from conduit.apply.producers import repo_producers
 from conduit.apply.typecheck import FLOWS, parameter_brief, structured_requirements
@@ -108,6 +109,9 @@ class ApplyReport:
     #: also failed on the base, and those that did not.
     preexisting: list[str] | None = None
     new_failures: list[str] | None = None
+    #: Model calls this run made: endpoint (host and path), model, thinking
+    #: setting, call count and tokens, one entry per model and setting.
+    model_calls: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def preexisting_note(self) -> str:
@@ -122,6 +126,8 @@ class ApplyReport:
                 for status in SiteStatus
             },
         }
+        if self.model_calls:
+            data["model_calls"] = [dict(item) for item in self.model_calls]
         if self.preexisting is not None:
             data["preexisting_failures"] = list(self.preexisting)
             data["preexisting_note"] = self.preexisting_note
@@ -162,6 +168,9 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
             report.results.append(_apply_one(moved, config, client, report))
         _fill_why(report)
     finally:
+        summary = getattr(client, "call_summary", None)
+        if callable(summary):
+            report.model_calls = summary()
         if owns_client and client is not None and hasattr(client, "close"):
             client.close()  # type: ignore[union-attr]
     return report
@@ -429,6 +438,7 @@ def _apply_one(
     spent: int = 0,
     used: int = 0,
     sink: dict[str, Any] | None = None,
+    resolved: list[str] | None = None,
 ) -> SiteResult:
     if site.via_wrapper:
         return SiteResult(
@@ -531,7 +541,17 @@ def _apply_one(
                 site_tokens += why_tokens
                 report.tokens_used += why_tokens
             # An import line reads from the two sources, not from the model's sentence.
-            why = import_swap_why(pack.full_source, patched, site.line, site.change) or why
+            swapped = import_swap_why(pack.full_source, patched, site.line, site.change)
+            if swapped:
+                why = swapped
+            else:
+                # A fix a type check shaped, or one the model gave no sentence for,
+                # says what changed from the two sources and the findings it cleared.
+                cleared = [*(resolved or []), *earlier]
+                if caught(cleared) or not why.strip():
+                    why = change_why(
+                        pack.full_source, patched, site.line, span, site.expr, site.change, cleared
+                    ) or why
             status = (
                 SiteStatus.FIXED_VERIFIED
                 if config.test_cmd
@@ -1139,7 +1159,7 @@ def _final_recheck(
             accepted.pop(key)
             previous = report.results[slots[key]]
             message = _breaks_message(findings)
-            if _retry_final(work, client, report, originals, texts, slots, key, sink, message):
+            if _retry_final(work, client, report, originals, texts, slots, key, sink, message, findings):
                 dropped = changed = True
                 continue
             if all(_UNDEFINED in text for text in findings):
@@ -1343,6 +1363,7 @@ def _retry_final(
     key: int,
     sink: dict[str, Any],
     message: str,
+    findings: list[str] | None = None,
 ) -> bool:
     """One more attempt for a site the final recheck flagged; True when it is accepted again.
 
@@ -1365,7 +1386,7 @@ def _retry_final(
     retry_sink: dict[str, Any] = {"site": site}
     result = _apply_one(
         moved, work, client, report, feedback=feedback, spent=sink.get("tokens", 0),
-        used=max(0, work.settings.max_attempts - 1), sink=retry_sink,
+        used=max(0, work.settings.max_attempts - 1), sink=retry_sink, resolved=findings,
     )
     if result.status != SiteStatus.FIXED_UNVERIFIED:
         _rebuild(work.root, originals, accepted, texts, site.path)

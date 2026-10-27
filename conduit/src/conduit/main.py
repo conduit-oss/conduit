@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -404,6 +405,12 @@ def apply_cmd(
             soft_wrap=True,
             end="",
         )
+    # To stderr, so a CI log shows the model calls even when stdout is the JSON
+    # report. Endpoint host and path, model, thinking and tokens only: no key.
+    from conduit.apply.report import model_call_lines
+
+    for line in model_call_lines(report):
+        print(line, file=sys.stderr, flush=True)
     needs_human = any(
         item.status.value == "needs-human" for item in report.results
     )

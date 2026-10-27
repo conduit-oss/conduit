@@ -1921,7 +1921,7 @@ def test_final_recheck_drops_a_rewrite_whose_dependency_was_reverted(tmp_path: P
 
 
 def test_fixed_result_never_has_an_empty_why(tmp_path: Path):
-    """The model's one-line summary can come back empty: the impact record fills the reason."""
+    """The model's one-line summary can come back empty: the reason is read from the change."""
     root = tmp_path / "app"
     root.mkdir()
     (root / "caller.py").write_text("def post(client):\n    return client.old_call(1)\n", encoding="utf-8")
@@ -1934,7 +1934,8 @@ def test_fixed_result_never_has_an_empty_why(tmp_path: Path):
     )
     (result,) = report.results
     assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
-    assert result.why.startswith("rewrote `client.old_call`"), result.why
+    assert result.why.startswith("fixed `client.old_call` (parameter old_call renamed to new_call on Client)"), result.why
+    assert "now reads `client.new_call`" in result.why, result.why
 
 
 def test_breaks_message_lists_each_finding_and_field_list_once():
