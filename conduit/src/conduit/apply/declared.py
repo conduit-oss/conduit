@@ -363,6 +363,15 @@ def value_classes(ns: Namespace, module: str, func: ast.AST | None, owner: Klass
             return None  # a call gives a coroutine until awaited
         out = ns.annotation(fmodule, node.returns)
         return out or None
+    if isinstance(expr, ast.NamedExpr):
+        return value_classes(ns, module, func, owner, expr.value, line, depth + 1)
+    if isinstance(expr, (ast.BoolOp, ast.IfExp)):
+        # ``a or b`` / ``a and b`` / ``a if c else b`` is one of its branches: the
+        # union of their classes, known only when every branch is known.
+        out = []
+        for branch in _branches(expr):
+            out = _join(out, value_classes(ns, module, func, owner, branch, line, depth + 1))
+        return out or None
     if isinstance(expr, ast.Await) and isinstance(expr.value, ast.Call):
         target = _callee(ns, module, func, owner, expr.value.func, line, depth)
         if target is None or target[0] != "function" or not isinstance(target[2], ast.AsyncFunctionDef):
@@ -371,6 +380,40 @@ def value_classes(ns: Namespace, module: str, func: ast.AST | None, owner: Klass
             return None
         return ns.annotation(target[1], target[2].returns) or None
     return None
+
+
+def _branches(expr: ast.AST) -> list[ast.AST]:
+    """The values ``expr`` can evaluate to: each operand of ``or`` / ``and``, both
+    arms of a conditional, the value of a walrus; nested forms flattened."""
+    if isinstance(expr, ast.BoolOp):
+        parts = list(expr.values)
+    elif isinstance(expr, ast.IfExp):
+        parts = [expr.body, expr.orelse]
+    elif isinstance(expr, ast.NamedExpr):
+        parts = [expr.value]
+    else:
+        return [expr]
+    return [leaf for part in parts for leaf in _branches(part)]
+
+
+def possible_values(ns: Namespace, module: str, func, owner: Klass | None, expr: ast.AST, line: int, depth: int = 0) -> list[tuple[ast.AST, list[Klass]]]:
+    """Each branch of ``expr`` whose classes are known, with those classes,
+    following a name to its single plain assignment. A branch that cannot be read
+    (a literal default, an unknown call) is left out rather than making the
+    others unknown: any one known branch can still be passed."""
+    if depth > _MAX_DEPTH:
+        return []
+    out: list[tuple[ast.AST, list[Klass]]] = []
+    for branch in _branches(expr):
+        if isinstance(branch, ast.Name) and func is not None and _rebound(func, branch.id):
+            binding = _single_binding(func, branch.id, line)
+            if isinstance(binding, ast.Assign) and isinstance(binding.value, (ast.BoolOp, ast.IfExp, ast.NamedExpr)):
+                out += possible_values(ns, module, func, owner, binding.value, binding.lineno, depth + 1)
+                continue
+        classes = value_classes(ns, module, func, owner, branch, line, depth + 1)
+        if classes:
+            out.append((branch, classes))
+    return out
 
 
 def _name_classes(ns, module, func, owner, name: str, line: int, depth: int) -> list[Klass] | None:
@@ -522,27 +565,29 @@ def _call_mismatches(ns, path, module, func, owner, call: ast.Call, where: str, 
         expected = ns.annotation(fmodule, by_name.get(name))
         if not expected or any(ns.open_ended(klass) for klass in expected):
             continue
-        actual = value_classes(ns, module, func, owner, value, call.lineno)
-        if not actual:
-            continue
-        verdicts = [ns.is_subclass(have, want) for have in actual for want in expected]
-        if any(verdict is not False for verdict in verdicts):
-            continue  # fits, or cannot be told
-        callee_name = target[1][1] if target[0] == "class" else target[2].name
-        source = where if ns.is_local(fmodule) else where_release(fmodule)
-        out.append(
-            {
-                "path": path,
-                "line": call.lineno,
-                "call": ast.unparse(call.func),
-                "owner": callee_name.split(".")[-1],
-                "where": source,
-                "param": name,
-                "value": ast.unparse(value),
-                "actual": actual,
-                "expected": expected,
-            }
-        )
+        # Each branch of ``a or b`` / ``a if c else b`` is checked on its own, the
+        # way a plain value is: one branch of another class is a mismatch even
+        # when the other branch fits. (Whether a branch can be None is the None
+        # check's business, not this one's.)
+        for branch, actual in possible_values(ns, module, func, owner, value, call.lineno):
+            verdicts = [ns.is_subclass(have, want) for have in actual for want in expected]
+            if any(verdict is not False for verdict in verdicts):
+                continue  # fits, or cannot be told
+            callee_name = target[1][1] if target[0] == "class" else target[2].name
+            source = where if ns.is_local(fmodule) else where_release(fmodule)
+            out.append(
+                {
+                    "path": path,
+                    "line": call.lineno,
+                    "call": ast.unparse(call.func),
+                    "owner": callee_name.split(".")[-1],
+                    "where": source,
+                    "param": name,
+                    "value": ast.unparse(branch),
+                    "actual": actual,
+                    "expected": expected,
+                }
+            )
     return out
 
 
