@@ -20,6 +20,7 @@ from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.prompts import propose_messages, summarize_messages
 from conduit.apply.splice import PatchError, parse_model_edit, splice_edit_with_span, unified_diff_for
 from conduit.apply.signatures import new_release_wheel, signatures_for
+from conduit.apply.typecheck import FLOWS
 from conduit.apply.verify import remaining_breaks
 
 # Optional hook: given root + site + patched file text, return True if the site
@@ -41,6 +42,13 @@ class _RouteState:
     key: int = 0
     pending: dict[int, list[str]] = field(default_factory=dict)
     traced: dict[int, list[str]] = field(default_factory=dict)
+    #: Sites not rewritten yet (key -> site, its original line text). A finding in
+    #: one of their functions is that site's to fix, not the producer's.
+    upcoming: dict[int, tuple[ImpactSite, str]] = field(default_factory=dict)
+    #: Findings handed to an upcoming site; they go into its prompt.
+    deferred: dict[int, list[str]] = field(default_factory=dict)
+    #: Sites already given their one final-recheck retry.
+    retried: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -133,7 +141,16 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         slots: dict[int, int] = {}
         texts_of: dict[int, str] = {}
         covered, texts = _one_per_function(config.root, selected)
-        for site in sorted(selected, key=lambda item: not _names_removed_class(item)):
+        base = sorted(selected, key=lambda item: not _names_removed_class(item))
+        ordered = _producer_first(config.root, base, covered)
+        rank = {id(site): index for index, site in enumerate(base)}
+        ranks: list[int] = []  # report order stays the usual one
+        for site in ordered:
+            if id(site) not in covered and not site.via_wrapper:
+                routes.upcoming[id(site)] = (site, texts.get(id(site), ""))
+        for site in ordered:
+            routes.upcoming.pop(id(site), None)
+            ranks.append(rank[id(site)])
             if id(site) in covered:
                 report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
                 continue
@@ -152,7 +169,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 accepted[id(site)] = sink
         _retry_routed(work, client, report, originals, texts_of, slots)
         _drop_traced_reads(work, report, originals, texts_of, slots)
-        _final_recheck(config, scratch, report, originals, texts_of, slots, accepted)
+        _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
         failure = ""
         for _round in range(config.settings.max_attempts + 1):
             ok, output = _run_cmd(config.test_cmd or "", scratch)
@@ -188,7 +205,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             _retry_routed(work, client, report, originals, texts_of, slots)
         _retry_routed(work, client, report, originals, texts_of, slots)
         _drop_traced_reads(work, report, originals, texts_of, slots)
-        if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted) and accepted and not failure:
+        if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted and not failure:
             ok, output = _run_cmd(config.test_cmd or "", scratch)
             failure = "" if ok else output
         if failure and accepted:
@@ -198,7 +215,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 _rebuild(scratch, originals, accepted, texts_of, sink["site"].path)
                 report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], trim_test_feedback(failure))
             ok, output = _run_cmd(config.test_cmd or "", scratch) if accepted else (True, "")
-            if ok and accepted and _final_recheck(config, scratch, report, originals, texts_of, slots, accepted) and accepted:
+            if ok and accepted and _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted:
                 # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
                 ok, output = _run_cmd(config.test_cmd or "", scratch)
             if not ok:
@@ -217,6 +234,8 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                     report.results[slots[key]].diff = unified_diff_for(path, before, after)
             if config.write and after != before:
                 _write_file(config.root, path, after)
+        if len(ranks) == len(report.results):
+            report.results[:] = [item for _rank, item in sorted(zip(ranks, report.results), key=lambda pair: pair[0])]
 
 
 _SCRATCH_IGNORE = (".git", ".venv", "venv", "__pycache__", ".pytest_cache", "node_modules")
@@ -374,6 +393,7 @@ def _apply_one(
     target = _new_signatures(config, site, [site.symbol])
     if target:
         pack.release_diff["new_release_signatures"] = target
+    pack.connected = _connected(config, site, pack)
 
     last_error = ""
     last_diff = ""
@@ -400,7 +420,7 @@ def _apply_one(
             edit = parse_model_edit(edit_text)
             patched, diff, span = splice_edit_with_span(pack, edit)
             last_diff = diff
-            _verify_site_cleared(config, site, patched, span)
+            flows = _verify_site_cleared(config, site, patched, span)
             tests_ok, test_err = _run_tests(config, site, patched)
             if not tests_ok:
                 feedback = trim_test_feedback(test_err or "tests failed")
@@ -423,6 +443,7 @@ def _apply_one(
                 _write_file(config.root, site.path, patched)
             sink.update(edit=edit, block="".join(patched.splitlines(keepends=True)[span[0] - 1 : span[1]]))
             sink["tokens"] = site_tokens
+            sink["flows"] = flows
             return SiteResult(
                 site=site,
                 status=status,
@@ -500,7 +521,21 @@ def _summarize(
 
 def _verify_site_cleared(
     config: ApplyConfig, site: ImpactSite, patched: str, span: tuple[int, int]
-) -> None:
+) -> list[dict[str, Any]]:
+    """Raise when the rewrite still breaks; return the release values it passes on."""
+    flows: list[dict[str, Any]] = []
+    if config.site_cleared is None and config.recheck_impact and config.routes is not None:
+        token = FLOWS.set(flows)
+        try:
+            _verify_against_release(config, site, patched, span)
+        finally:
+            FLOWS.reset(token)
+        return flows
+    _verify_against_release(config, site, patched, span)
+    return flows
+
+
+def _verify_against_release(config: ApplyConfig, site: ImpactSite, patched: str, span: tuple[int, int]) -> None:
     if config.site_cleared is not None:
         if not config.site_cleared(config.root, site, patched):
             raise PatchError("impact site still flagged after patch")
@@ -539,41 +574,71 @@ def _breaks_message(texts: list[str]) -> str:
     return _fields_once("rewrite still breaks against the new release: " + "; ".join(shown))
 
 
-def _fields_once(text: str) -> str:
-    """Keep each ``(fields: ...)`` list the first time it appears; later copies say so."""
-    seen: set[str] = set()
-    out: list[str] = []
+_FIELDS_AT = re.compile(r"\((?:([\w, ]+) )?fields: ")
+
+
+def _field_groups(text: str) -> list[tuple[int, int, str]]:
+    """``(start, end, type names)`` of each ``(Name fields: ...)`` list in ``text``."""
+    out: list[tuple[int, int, str]] = []
     at = 0
     while True:
-        start = text.find("(fields: ", at)
-        if start < 0:
-            out.append(text[at:])
-            return "".join(out)
-        depth, end = 0, start
+        match = _FIELDS_AT.search(text, at)
+        if match is None:
+            return out
+        depth, end = 0, match.start()
         while end < len(text):
             depth += {"(": 1, ")": -1}.get(text[end], 0)
             end += 1
             if depth == 0:
                 break
-        group = text[start:end]
-        out.append(text[at:start])
-        out.append("(fields as above)" if group in seen else group)
-        seen.add(group)
+        out.append((match.start(), end, match.group(1) or ""))
         at = end
 
 
+def _fields_once(text: str, earlier: dict[str, str] | None = None) -> str:
+    """Keep each field list the first time it appears.
+
+    A copy later in the same text says ``(Name fields as above)``; one listed in
+    an earlier result (``earlier`` maps the list to that site) says where."""
+    seen: set[str] = set()
+    out: list[str] = []
+    at = 0
+    for start, end, names in _field_groups(text):
+        group = text[start:end]
+        out.append(text[at:start])
+        who = f"{names} fields" if names else "fields"
+        if earlier and group in earlier:
+            out.append(f"({who} listed at {earlier[group]})")
+        elif group in seen:
+            out.append(f"({who} as above)")
+        else:
+            out.append(group)
+        seen.add(group)
+        at = end
+    out.append(text[at:])
+    return "".join(out)
+
+
 def _fill_why(report: ApplyReport) -> None:
-    """No fixed or needs-human result goes out without a reason."""
+    """No fixed or needs-human result goes out without a reason, and a type's
+    field list is printed once across the whole report."""
+    listed: dict[str, str] = {}
     for index, result in enumerate(report.results):
-        if result.why.strip() or result.status not in {
+        why = result.why
+        if not why.strip() and result.status in {
             SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED, SiteStatus.NEEDS_HUMAN
         }:
-            continue
-        if result.status == SiteStatus.NEEDS_HUMAN and result.error.strip():
-            why = result.error.strip()
-        else:
-            why = _change_summary(result)
-        report.results[index] = replace(result, why=why)
+            if result.status == SiteStatus.NEEDS_HUMAN and result.error.strip():
+                why = result.error.strip()
+            else:
+                why = _change_summary(result)
+        shown_why, shown_error = _fields_once(why, listed), _fields_once(result.error, listed)
+        label = f"{Path(result.site.path).name}:{result.site.line}"
+        for text in (why, result.error):
+            for start, end, _names in _field_groups(text):
+                listed.setdefault(text[start:end], label)
+        if (shown_why, shown_error) != (result.why, result.error):
+            report.results[index] = replace(result, why=shown_why, error=shown_error)
 
 
 def _change_summary(result: SiteResult) -> str:
@@ -606,6 +671,15 @@ def _route_breaks(
     for text, symbol in breaks:
         owner = _finding_owner(config.root, routes, site, patched, span, text)
         if owner is None:
+            later = _upcoming_owner(config.root, routes, site, span, text)
+            if later is not None:
+                # That site's rewrite gets it in its prompt, and is not verified
+                # while the read is still in it.
+                for bucket in (routes.deferred, routes.traced):
+                    found = bucket.setdefault(later, [])
+                    if text not in found:
+                        found.append(text)
+                continue
             kept.append((text, symbol))
             continue
         for bucket in (routes.pending, routes.traced):
@@ -853,22 +927,30 @@ def _final_recheck(
     texts: dict[int, str],
     slots: dict[int, int],
     accepted: dict[int, dict[str, Any]],
+    work: ApplyConfig | None = None,
+    client: ModelClient | None = None,
 ) -> bool:
     """Recheck every accepted rewrite against the finished migration.
 
     Each site was checked when it was written, before later sites changed what
     flows into it (a caller's new return type reaching an ``Any`` parameter).
-    Passing tests do not clear a finding: the site needs a human, with the
-    finding as its reason. True when a site was dropped."""
+    A flagged site gets the finding back once (with ``work`` and ``client``),
+    within its token budget. If that does not clear it, the site needs a human,
+    with the finding as its reason; passing tests do not clear a finding.
+    True when the tree changed (a site was retried or dropped)."""
     dropped = False
     if config.site_cleared is not None or not config.recheck_impact:
         return dropped
     # Dropping one rewrite restores its original code, which can break a rewrite
     # that calls it and was already rechecked: repeat until nothing more drops.
+    # A finding inside another accepted rewrite is that rewrite's to answer.
+    handed: dict[int, list[str]] = {}
     changed = True
     while changed and accepted:
         changed = False
         for key in list(accepted):
+            if key not in accepted:
+                continue
             sink = accepted[key]
             site = sink["site"]
             body = _read(scratch / site.path)
@@ -881,13 +963,24 @@ def _final_recheck(
                     allow_network=config.allow_network, original=originals.get(site.path, ""),
                 )
             except Exception:  # noqa: BLE001 — a recheck that cannot run keeps the earlier verdict
-                continue
-            if not breaks:
+                breaks = []
+            findings: list[str] = []
+            for text, _symbol in breaks:
+                owner = _accepted_owner(scratch, accepted, key, span, site.path, text)
+                if owner is None:
+                    findings.append(text)
+                elif text not in handed.setdefault(owner, []):
+                    handed[owner].append(text)
+                    changed = True
+            findings += [text for text in handed.pop(key, []) if text not in findings]
+            if not findings:
                 continue
             accepted.pop(key)
             previous = report.results[slots[key]]
-            findings = [text for text, _symbol in breaks]
             message = _breaks_message(findings)
+            if _retry_final(work, client, report, originals, texts, slots, key, sink, message):
+                dropped = changed = True
+                continue
             depends = _unresolved_dependencies(scratch, report, texts, slots, accepted, findings)
             if depends:
                 message += "; depends on " + ", ".join(depends) + ", whose fix was not applied (needs a human)"
@@ -903,6 +996,164 @@ def _final_recheck(
             _rebuild(scratch, originals, accepted, texts, site.path)
             dropped = changed = True
     return dropped
+
+
+def _accepted_owner(
+    scratch: Path, accepted: dict[int, dict[str, Any]], key: int, span: tuple[int, int], path: str, text: str
+) -> int | None:
+    """The other accepted rewrite whose block holds this finding, if any."""
+    located = _finding_at(text)
+    if located is None or (_path_match(located[0], path) and span[0] <= located[1] <= span[1]):
+        return None
+    for other, sink in accepted.items():
+        if other == key or not _path_match(located[0], sink["site"].path):
+            continue
+        bounds = _span_in(_read(scratch / sink["site"].path), sink.get("block") or "")
+        if bounds is not None and bounds[0] <= located[1] <= bounds[1]:
+            return other
+    return None
+
+
+def _retry_final(
+    work: ApplyConfig | None,
+    client: ModelClient | None,
+    report: ApplyReport,
+    originals: dict[str, str],
+    texts: dict[int, str],
+    slots: dict[int, int],
+    key: int,
+    sink: dict[str, Any],
+    message: str,
+) -> bool:
+    """One more attempt for a site the final recheck flagged; True when it is accepted again.
+
+    The site is already out of ``accepted``. On failure its file is rebuilt
+    without it, as a plain drop would leave it."""
+    routes = work.routes if work is not None else None
+    site = sink["site"]
+    if routes is None or client is None or key in routes.retried:
+        return False
+    routes.retried.add(key)
+    accepted = routes.accepted
+    _rebuild(work.root, originals, accepted, texts, site.path)
+    moved = _relocate(work.root, site, texts.get(key, ""))
+    if moved is None or sink.get("tokens", 0) >= work.settings.max_tokens_per_site:
+        return False
+    feedback = message
+    if sink.get("block"):
+        feedback += "\nThe rewrite this refers to:\n" + sink["block"]
+    routes.key = key
+    retry_sink: dict[str, Any] = {"site": site}
+    result = _apply_one(
+        moved, work, client, report, feedback=feedback, spent=sink.get("tokens", 0),
+        used=max(0, work.settings.max_attempts - 1), sink=retry_sink,
+    )
+    if result.status != SiteStatus.FIXED_UNVERIFIED:
+        _rebuild(work.root, originals, accepted, texts, site.path)
+        return False
+    accepted[key] = retry_sink
+    report.results[slots[key]] = result
+    return True
+
+
+def _producer_first(root: Path, sites: list[ImpactSite], covered: dict[int, str]) -> list[ImpactSite]:
+    """Order so a site whose function calls another site's function is rewritten first.
+
+    The producer's rewrite decides what value the consumer receives; the
+    consumer is then rewritten with that value's new-release type in view.
+    Otherwise the given order stands."""
+    info: dict[int, tuple[str, set[str]]] = {}
+    for site in sites:
+        if id(site) in covered or site.via_wrapper:
+            continue
+        source = _read(root / site.path)
+        try:
+            found = enclosing_function(source, site.line)
+            tree = ast.parse(source)
+        except (ContextError, SyntaxError):
+            continue
+        if not found:
+            continue
+        name, _text, start, end = found
+        calls = {
+            node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and start <= node.lineno <= end
+        }
+        info[id(site)] = (name, calls - {name, ""})
+    producers: dict[int, list[ImpactSite]] = {}
+    for consumer in sites:
+        if id(consumer) not in info:
+            continue
+        name = info[id(consumer)][0]
+        producers[id(consumer)] = [
+            other for other in sites
+            if other is not consumer and id(other) in info and name in info[id(other)][1]
+        ]
+    out: list[ImpactSite] = []
+    done: set[int] = set()
+
+    def visit(site: ImpactSite, stack: set[int]) -> None:
+        if id(site) in done or id(site) in stack:
+            return
+        stack.add(id(site))
+        for producer in producers.get(id(site), []):
+            visit(producer, stack)
+        stack.discard(id(site))
+        done.add(id(site))
+        out.append(site)
+
+    for site in sites:
+        visit(site, set())
+    return out
+
+
+def _upcoming_owner(root: Path, routes: _RouteState, site: ImpactSite, span: tuple[int, int], text: str) -> int | None:
+    """The not-yet-rewritten site whose function holds this finding, if any."""
+    located = _finding_at(text)
+    if located is None:
+        return None
+    path, line = located
+    if _path_match(path, site.path) and span[0] <= line <= span[1]:
+        return None
+    for key, (other, line_text) in routes.upcoming.items():
+        if not _path_match(path, other.path):
+            continue
+        moved = _relocate(root, other, line_text) or other
+        try:
+            found = enclosing_function(_read(root / moved.path), moved.line)
+        except ContextError:
+            found = None
+        first, last = (found[2], found[3]) if found else (moved.line, moved.line)
+        if first <= line <= last:
+            return key
+    return None
+
+
+def _connected(config: ApplyConfig, site: ImpactSite, pack: ContextPack) -> list[dict[str, Any]]:
+    """What already rewritten sites now pass into this function, typed by the new release."""
+    routes = config.routes
+    if routes is None or not pack.function_name:
+        return []
+    out: list[dict[str, Any]] = []
+    for key, sink in routes.accepted.items():
+        if key == routes.key:
+            continue
+        for flow in sink.get("flows") or []:
+            if flow.get("callee") != pack.function_name or not _path_match(flow.get("callee_path", ""), site.path):
+                continue
+            item = {
+                "from": flow["from"],
+                "passes": f"{flow['param']} = {flow['types']} ({flow['release']})",
+                "fields": flow.get("fields") or [],
+                "rewritten_code": sink.get("block") or "",
+            }
+            if item not in out:
+                out.append(item)
+    findings = routes.deferred.get(routes.key) or []
+    if findings:
+        out.append({"findings_in_this_function": list(findings)})
+    return out
 
 
 def _unresolved_dependencies(

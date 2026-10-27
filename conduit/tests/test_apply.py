@@ -1315,12 +1315,14 @@ def _masked_breaks(scratch: Path, site, *, span, fixtures, allow_network, origin
 
 
 def test_batch_routes_masked_read_back_to_the_feeding_rewrite(tmp_path: Path, monkeypatch):
+    """The caller feeds the helper, so it is rewritten first; the masked read its recheck
+    finds in the helper goes into the helper's prompt instead of failing the caller."""
     from conduit.apply import verify as verify_mod
 
     root, sites = _masked_read_repo(tmp_path)
     monkeypatch.setattr(verify_mod, "_breaks_listed", _masked_breaks)
     client = FakeModelClient(
-        responses=[_fn(_MASKED), "why", _fn(_CALLER_EDIT), "why", _fn(_READ_TEXT), "why"]
+        responses=[_fn(_CALLER_EDIT), "why", _fn(_MASKED), "why", _fn(_READ_TEXT), "why"]
     )
     report = apply_sites(
         sites,
@@ -1339,6 +1341,8 @@ def test_batch_routes_masked_read_back_to_the_feeding_rewrite(tmp_path: Path, mo
     assert caller.status == SiteStatus.FIXED_VERIFIED, caller.error
     assert "result.content[0].text" in (root / "helper.py").read_text(encoding="utf-8")
     assert _MASKED_EXPR not in (root / "helper.py").read_text(encoding="utf-8")
+    # The helper's first prompt already carries nothing about the masked read
+    # (it was not written yet); its retry carries the routed finding.
     retry = client.calls[4]["messages"][-1].content
     assert "no attribute completion" in retry
     assert "BetaMessage" in retry
@@ -1350,9 +1354,9 @@ def test_routed_masked_read_is_not_verified_and_names_the_finding(tmp_path: Path
 
     root, sites = _masked_read_repo(tmp_path)
     monkeypatch.setattr(verify_mod, "_breaks_listed", _masked_breaks)
-    # The retry keeps the masked read, and the helper's own recheck does not repeat it.
+    # The helper keeps the masked read, and the helper's own recheck does not repeat it.
     client = FakeModelClient(
-        responses=[_fn(_MASKED), "why", _fn(_CALLER_EDIT), "why", _fn(_MASKED), "why"]
+        responses=[_fn(_CALLER_EDIT), "why", _fn(_MASKED), "why", _fn(_MASKED), "why"]
     )
     report = apply_sites(
         sites,
@@ -1533,7 +1537,7 @@ def test_loosened_any_hint_uses_the_callers_type(tmp_path: Path):
     helper_edit = _fn("def from_completion(result: Any):\n    return result.completion\n")
     caller_edit = _fn("def post(client):\n    result = client.new_call(1)\n    return result.content\n")
     client = FakeModelClient(
-        responses=[helper_edit, "Widened the hint, which fixes the attribute.", caller_edit, "switched the call"]
+        responses=[caller_edit, "switched the call", helper_edit, "Widened the hint, which fixes the attribute."]
     )
     report = apply_sites(
         sites,
@@ -1656,8 +1660,10 @@ def test_final_recheck_blocks_verified_after_tests_pass(tmp_path: Path, monkeypa
     )
     client = FakeModelClient(
         responses=[
-            _fn("def from_completion(result: Any):\n    return result.completion\n"), "widened",
             _fn("def post(client):\n    result = client.new_call(1)\n    return from_completion(result)\n"), "switched",
+            _fn("def from_completion(result: Any):\n    return result.completion\n"), "widened",
+            # the one retry on the final-recheck finding, still reading the old attribute
+            _fn("def from_completion(result: Any):\n    return result.completion\n"), "widened again",
         ]
     )
     report = apply_sites(
@@ -1799,3 +1805,117 @@ def test_breaks_message_lists_each_finding_and_field_list_once():
     message = _breaks_message([first, second, first])
     assert message.count("f.py:3") == 1 and message.count("f.py:4") == 1, message
     assert message.count("(fields: ") == 1 and "(fields as above)" in message, message
+
+
+def test_callee_reads_record_the_value_flow_for_the_consumer(tmp_path: Path):
+    """The tracing that flags a read in a helper also records what the helper now receives."""
+    from conduit.apply.typecheck import attribute_breaks
+
+    modules = _typed_release(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    caller = "def call(client):\n    reply = client.send(items=[])\n    return from_old(reply)\n"
+    (root / "caller.py").write_text(caller, encoding="utf-8")
+    (root / "helper.py").write_text("def from_old(reply):\n    return reply.text\n", encoding="utf-8")
+    chains = [_chain("caller.py", 2, "client.send", "example_sdk.Client.send")]
+    flows: list[dict] = []
+    found = attribute_breaks(modules, root, "caller.py", caller, (1, 3), chains, "example-sdk", "2.0", flows)
+    assert found == [], found
+    assert len(flows) == 1, flows
+    flow = flows[0]
+    assert (flow["callee_path"], flow["callee"], flow["param"], flow["types"]) == ("helper.py", "from_old", "reply", "Reply")
+    assert flow["from"] == "caller.py:3" and flow["release"] == "example-sdk 2.0"
+    assert any(field.startswith("text: ") for field in flow["fields"]), flow
+
+
+def test_batch_rewrites_the_producer_first_and_tells_the_consumer_what_it_gets(tmp_path: Path, monkeypatch):
+    """The helper site is listed first, but the caller feeds it: the caller is rewritten first,
+    and the helper's prompt carries the caller's rewrite and the traced new-release type."""
+    import conduit.apply.engine as engine
+    from conduit.apply.typecheck import FLOWS
+
+    def fake(root, site, patched, *, span=None, fixtures=None, allow_network=False, original=None):
+        sink = FLOWS.get()
+        if sink is not None and site.path == "caller.py" and "new_call" in patched:
+            sink.append({
+                "callee_path": "helper.py", "callee": "from_completion", "start": 1, "end": 2,
+                "param": "result", "types": "Reply", "fields": ["content: List[Block]"],
+                "from": "caller.py:3", "release": "example-sdk 2.0",
+            })
+        return []
+
+    monkeypatch.setattr(engine, "remaining_breaks", fake)
+    root, sites = _masked_read_repo(tmp_path)
+    assert sites[0].path == "helper.py"
+    client = FakeModelClient(responses=[_fn(_CALLER_EDIT), "switched", _fn(_READ_TEXT), "reads content"])
+    report = apply_sites(
+        sites,
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    first, second = (call["messages"][-1].content for call in client.calls[0:3:2])
+    assert '"file": "caller.py"' in first and "connected_rewrites" not in first
+    assert '"file": "helper.py"' in second and "connected_rewrites" in second
+    assert "result = Reply (example-sdk 2.0)" in second and "content: List[Block]" in second
+    assert "client.new_call(1)" in second  # the producer's rewritten code
+    assert "connected_rewrites" in client.calls[2]["messages"][0].content
+    helper, caller = report.results  # report keeps the usual order
+    assert helper.site.path == "helper.py" and helper.status == SiteStatus.FIXED_VERIFIED
+    assert caller.status == SiteStatus.FIXED_VERIFIED
+
+
+def test_final_recheck_finding_gets_one_retry_before_needs_human(tmp_path: Path, monkeypatch):
+    """A site the final recheck flags is sent the finding once; a clean retry is verified."""
+    import conduit.apply.engine as engine
+
+    def fake(root, site, patched, *, span=None, fixtures=None, allow_network=False, original=None):
+        if original is not None and "result.completion" in patched:
+            return [("helper.py:2 result.completion: result is Reply in example-sdk 2.0, which has no attribute completion", "")]
+        return []
+
+    monkeypatch.setattr(engine, "remaining_breaks", fake)
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "helper.py").write_text("def from_completion(result):\n    return result.completion\n", encoding="utf-8")
+    payload = _impact_payload(path="helper.py", line=2)
+    payload["impacts"][0]["sites"][0]["expr"] = "result.completion"
+    client = FakeModelClient(
+        responses=[
+            _fn("def from_completion(result: Any):\n    return result.completion\n"), "widened",
+            _fn("def from_completion(result):\n    return result.content\n"), "reads content",
+        ]
+    )
+    report = apply_sites(
+        sites_from_payload(payload),
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+                    client=client, recheck_impact=True),
+    )
+    (helper,) = report.results
+    assert helper.status == SiteStatus.FIXED_VERIFIED, (helper.status, helper.error)
+    assert "result.content" in (root / "helper.py").read_text(encoding="utf-8")
+    retry = client.calls[2]["messages"][-1].content
+    assert "no attribute completion" in retry and "return result.completion" in retry
+    assert len(client.calls) == 4 and report.tokens_used > 0
+    assert all(call["enable_thinking"] is False for call in client.calls)
+
+
+def test_a_type_field_list_is_printed_once_across_the_report():
+    from conduit.apply.engine import ApplyReport, _fill_why
+    from conduit.apply.models import ImpactSite, SiteResult
+
+    def site(path: str, line: int) -> ImpactSite:
+        return ImpactSite(path=path, line=line, expr="x", dependency="sdk", from_version="1", to_version="2",
+                          change="gone", confidence="high", source="wheel")
+
+    fields = "(BetaMessage fields: id: str, content: List[Block])"
+    first = f"rewrite still breaks: pkg/anthropic.py:61 result.completion: no attribute completion {fields}"
+    second = f"rewrite still breaks: pkg/anthropic.py:61 from_completion() gets result, no attribute completion {fields}; read it here"
+    report = ApplyReport(results=[
+        SiteResult(site=site("pkg/anthropic.py", 60), status=SiteStatus.NEEDS_HUMAN, error=first),
+        SiteResult(site=site("pkg/caller.py", 30), status=SiteStatus.NEEDS_HUMAN, why=second, error=second),
+    ])
+    _fill_why(report)
+    one, two = report.results
+    assert one.why.count("(BetaMessage fields: ") == 1, one.why
+    assert "(BetaMessage fields: " not in two.why and "(BetaMessage fields: " not in two.error
+    assert "(BetaMessage fields listed at anthropic.py:60); read it here" in two.why, two.why
