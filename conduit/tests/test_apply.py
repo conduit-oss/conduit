@@ -493,7 +493,7 @@ def test_candidates_flow_into_context_pack_and_prompt(tmp_path: Path):
     payload["impacts"][0]["candidates"] = [
         {
             "symbol": "pkg.chat.completions.create",
-            "signature": "pkg.chat.completions.create(self, *, messages)",
+            "signature": "pkg.chat.completions.create(self, *, notes)",
         }
     ]
     site = sites_from_payload(payload)[0]
@@ -1415,7 +1415,7 @@ def test_dropped_argument_on_a_nested_overload_is_still_flagged(tmp_path: Path):
             class Reply:
                 content: str
 
-            class Messages:
+            class Notes:
                 @overload
                 def create(
                     self, *, model: str, max_tokens: int, temperature: float = 1,
@@ -1431,8 +1431,8 @@ def test_dropped_argument_on_a_nested_overload_is_still_flagged(tmp_path: Path):
 
             class Beta:
                 @property
-                def messages(self):
-                    return Messages(self)
+                def notes(self):
+                    return Notes(self)
 
             class Client:
                 @property
@@ -1443,20 +1443,20 @@ def test_dropped_argument_on_a_nested_overload_is_still_flagged(tmp_path: Path):
         encoding="utf-8",
     )
     modules = _modules(str(tmp_path / "wheel"))
-    method = "example_sdk.client.Client.beta.messages.create"
-    chain = _chain("w.py", 2, "client.beta.messages.create", method)
+    method = "example_sdk.client.Client.beta.notes.create"
+    chain = _chain("w.py", 2, "client.beta.notes.create", method)
     passed = {"model", "max_tokens", "temperature", "top_k", "top_p"}
     dropped = ast.parse(
-        "def run(client):\n    return client.beta.messages.create(model='m', max_tokens=1)\n"
+        "def run(client):\n    return client.beta.notes.create(model='m', max_tokens=1)\n"
     )
     found = dropped_arguments(modules, dropped, "w.py", chain, passed, "example-sdk", "2.0")
     assert found == [
-        "w.py:2 client.beta.messages.create: rewrite drops temperature which messages.create in example-sdk 2.0 still accepts; keep passing it",
-        "w.py:2 client.beta.messages.create: rewrite drops top_k which messages.create in example-sdk 2.0 still accepts; keep passing it",
-        "w.py:2 client.beta.messages.create: rewrite drops top_p which messages.create in example-sdk 2.0 still accepts; keep passing it",
+        "w.py:2 client.beta.notes.create: rewrite drops temperature which notes.create in example-sdk 2.0 still accepts; keep passing it",
+        "w.py:2 client.beta.notes.create: rewrite drops top_k which notes.create in example-sdk 2.0 still accepts; keep passing it",
+        "w.py:2 client.beta.notes.create: rewrite drops top_p which notes.create in example-sdk 2.0 still accepts; keep passing it",
     ], found
     kept = ast.parse(
-        "def run(client):\n    return client.beta.messages.create(model='m', max_tokens=1, temperature=0, top_k=1, top_p=1)\n"
+        "def run(client):\n    return client.beta.notes.create(model='m', max_tokens=1, temperature=0, top_k=1, top_p=1)\n"
     )
     assert dropped_arguments(modules, kept, "w.py", chain, passed, "example-sdk", "2.0") == []
 
@@ -1484,14 +1484,14 @@ def test_loosened_any_hint_uses_the_callers_type(tmp_path: Path):
             class Reply(Model):
                 content: str
 
-            class Messages:
+            class Notes:
                 def create(self, *, model: str) -> Reply:
                     return Reply()
 
             class Beta:
                 @property
-                def messages(self):
-                    return Messages(self)
+                def notes(self):
+                    return Notes(self)
 
             class Client:
                 @property
@@ -1510,11 +1510,11 @@ def test_loosened_any_hint_uses_the_callers_type(tmp_path: Path):
         root = tmp_path / "repo"
         root.mkdir()
         helper = "from typing import Any\n\ndef from_completion(result: Any):\n    return result.completion\n"
-        caller = "def post(client):\n    result = client.beta.messages.create(model='m')\n    return from_completion(result)\n"
+        caller = "def post(client):\n    result = client.beta.notes.create(model='m')\n    return from_completion(result)\n"
         (root / "helper.py").write_text(helper, encoding="utf-8")
         (root / "caller.py").write_text(caller, encoding="utf-8")
         chains = [
-            _chain("caller.py", 2, "client.beta.messages.create", "example_sdk.client.Client.beta.messages.create")
+            _chain("caller.py", 2, "client.beta.notes.create", "example_sdk.client.Client.beta.notes.create")
         ]
         found = attribute_breaks(modules, root, "helper.py", helper, (1, 4), chains, "example-sdk", "2.0")
         assert len(found) == 1 and "result.completion" in found[0] and "no attribute completion" in found[0], found
@@ -1580,14 +1580,14 @@ Block = Annotated[Union[TextBlock, ToolBlock], Meta()]
 class Reply:
     content: List[Block]
 
-class Messages:
+class Notes:
     def create(self, *, model: str) -> Reply:
         return Reply()
 
 class Client:
     @property
-    def messages(self):
-        return Messages(self)
+    def notes(self):
+        return Notes(self)
 """
 
 
@@ -1607,14 +1607,14 @@ def test_masked_defaults_on_declared_types(tmp_path: Path):
     source = textwrap.dedent(
         """\
         def post(client):
-            result = client.messages.create(model='m')
+            result = client.notes.create(model='m')
             if hasattr(result, 'content') and result.content:
                 return "".join(getattr(block, 'text', str(block)) for block in result.content)
             return str(result)
         """
     )
     (root / "f.py").write_text(source, encoding="utf-8")
-    chains = [_chain("f.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")]
+    chains = [_chain("f.py", 2, "client.notes.create", "example_sdk.client.Client.notes.create")]
     found = attribute_breaks(modules, root, "f.py", source, (1, 5), chains, "example-sdk", "2.0")
     assert any("hasattr(result, 'content')" in text and "always has content" in text for text in found), found
     assert any("getattr(block, 'text'" in text and "ToolBlock" in text and "TextBlock" not in text.split(" may be ")[1] for text in found), found
@@ -1634,10 +1634,10 @@ def test_dropped_argument_silent_when_release_removed_it(tmp_path: Path):
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "client.py").write_text(_UNION_WHEEL, encoding="utf-8")
     modules = _modules(str(tmp_path / "wheel"))
-    tree = ast.parse("def post(client):\n    return client.messages.create(model='m')\n")
-    chain = _chain("f.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")
+    tree = ast.parse("def post(client):\n    return client.notes.create(model='m')\n")
+    chain = _chain("f.py", 2, "client.notes.create", "example_sdk.client.Client.notes.create")
     assert dropped_arguments(modules, tree, "f.py", chain, {"model", "temperature"}, "example-sdk", "2.0") == []
-    tree = ast.parse("def post(client):\n    return client.messages.create()\n")
+    tree = ast.parse("def post(client):\n    return client.notes.create()\n")
     assert dropped_arguments(modules, tree, "f.py", chain, {"model"}, "example-sdk", "2.0") == []  # nothing kept: unrelated call
 
 
@@ -2082,9 +2082,9 @@ def _guard_findings(tmp_path: Path, body: str) -> list[str]:
     modules = _union_modules(tmp_path)
     root = tmp_path / "repo"
     root.mkdir(exist_ok=True)
-    source = "def post(client):\n    result = client.messages.create(model='m')\n" + textwrap.indent(textwrap.dedent(body), "    ")
+    source = "def post(client):\n    result = client.notes.create(model='m')\n" + textwrap.indent(textwrap.dedent(body), "    ")
     (root / "f.py").write_text(source, encoding="utf-8")
-    chains = [_chain("f.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")]
+    chains = [_chain("f.py", 2, "client.notes.create", "example_sdk.client.Client.notes.create")]
     return attribute_breaks(modules, root, "f.py", source, (1, len(source.splitlines())), chains, "example-sdk", "2.0")
 
 
@@ -2154,14 +2154,14 @@ class Usage:
 class Reply:
     usage: Optional[Usage]
 
-class Messages:
+class Notes:
     def create(self, *, model: str) -> Reply:
         return Reply()
 
 class Client:
     @property
-    def messages(self):
-        return Messages(self)
+    def notes(self):
+        return Notes(self)
 """
 
 
@@ -2180,14 +2180,14 @@ def test_getattr_default_on_an_attribute_chain_is_checked(tmp_path: Path):
     source = textwrap.dedent(
         """\
         def post(client):
-            result = client.messages.create(model='m')
+            result = client.notes.create(model='m')
             made_up = getattr(result.usage, 'cache_tokens', 0)
             dead = getattr(result.usage, 'input_tokens', 0)
             return made_up, dead, result.usage.input_tokens
         """
     )
     (root / "f.py").write_text(source, encoding="utf-8")
-    chains = [_chain("f.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")]
+    chains = [_chain("f.py", 2, "client.notes.create", "example_sdk.client.Client.notes.create")]
     found = attribute_breaks(modules, root, "f.py", source, (1, 5), chains, "example-sdk", "2.0")
     assert any("getattr(result.usage, 'cache_tokens', 0)" in t and "result.usage is Usage" in t and "no attribute cache_tokens" in t for t in found), found
     assert any("getattr(result.usage, 'input_tokens', 0)" in t and "always has input_tokens" in t for t in found), found
@@ -2662,12 +2662,12 @@ def test_plain_why_for_a_wrong_argument_kind():
     from conduit.apply.plain import plain_why
 
     raw = (
-        "rewrite still breaks against the new release: pkg/llm.py:30 self._client.beta.messages.create: messages= "
-        "passes a str but messages.create in anthropic 1.0.0 expects Iterable[BetaMessageParam], i.e. a list like "
-        "[{\"content\": <Union[str, Iterable[BetaContentBlockParam]]>}] (prompt = self.f(messages))"
+        "rewrite still breaks against the new release: pkg/llm.py:30 self._client.beta.notes.create: notes= "
+        "passes a str but notes.create in example-sdk 1.0.0 expects Iterable[BetaNoteParam], i.e. a list like "
+        "[{\"content\": <Union[str, Iterable[BetaContentBlockParam]]>}] (prompt = self.f(notes))"
     )
     assert plain_why(raw, "pkg/llm.py") == (
-        "Line 30 passes a `str` as `messages=`, but `messages.create` expects `Iterable[BetaMessageParam]` in 1.0.0."
+        "Line 30 passes a `str` as `notes=`, but `notes.create` expects `Iterable[BetaNoteParam]` in 1.0.0."
     )
 
 
@@ -2693,7 +2693,7 @@ def test_dropped_keywords_are_found_and_moved_values_are_not():
     after = (
         "def f(client, cfg, p):\n"
         "    msgs = [p]\n"
-        "    return client.post(messages=msgs, model=cfg.model, max=cfg.limit)\n"
+        "    return client.post(notes=msgs, model=cfg.model, max=cfg.limit)\n"
     )
     names, call = _drops(before, after)
     # limit moved to ``max=``; prompt went into ``msgs`` but ``p`` is still read; temp and top are gone.
@@ -2728,8 +2728,8 @@ def test_call_with_nothing_in_common_is_not_compared():
 def test_dropped_note_says_what_the_new_release_shows():
     from conduit.apply.dropped import note_for
 
-    assert note_for(["temperature", "top_k"], ["temperature", "top_k"], "messages.create") == (
-        "Dropped `temperature`, `top_k`: the new release's `messages.create` doesn't accept them, "
+    assert note_for(["temperature", "top_k"], ["temperature", "top_k"], "notes.create") == (
+        "Dropped `temperature`, `top_k`: the new release's `notes.create` doesn't accept them, "
         "so these settings are now ignored."
     )
     assert note_for(["x"], [], "") == "Dropped `x`: removed without a matching parameter in the new call."
@@ -2750,8 +2750,8 @@ def test_record_drops_reads_the_new_callees_parameters(tmp_path: Path, monkeypat
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("from .client import Client\n", encoding="utf-8")
     (pkg / "client.py").write_text(
-        "class Messages:\n    def create(self, *, model: str, max_tokens: int, timeout: float = 1.0):\n        return 1\n\n"
-        "class Client:\n    messages: Messages\n",
+        "class Notes:\n    def create(self, *, model: str, max_tokens: int, timeout: float = 1.0):\n        return 1\n\n"
+        "class Client:\n    notes: Notes\n",
         encoding="utf-8",
     )
     wheel = tmp_path / "wheel"
@@ -2763,13 +2763,13 @@ def test_record_drops_reads_the_new_callees_parameters(tmp_path: Path, monkeypat
     )
     after = (
         "def f(client, cfg):\n"
-        "    return client.messages.create(model=cfg.model, max_tokens=cfg.n)\n"
+        "    return client.notes.create(model=cfg.model, max_tokens=cfg.n)\n"
     )
     site = sites_from_payload(_impact_payload(path="mod.py", line=2))[0]
     from dataclasses import replace
 
     site = replace(site, expr="client.completions.create", symbol="")
-    chain = _chain("mod.py", 2, "client.messages.create", "example_sdk.client.Client.messages.create")
+    chain = _chain("mod.py", 2, "client.notes.create", "example_sdk.client.Client.notes.create")
     sink: dict = {}
     token = DROPPED.set(sink)
     try:
@@ -2778,7 +2778,7 @@ def test_record_drops_reads_the_new_callees_parameters(tmp_path: Path, monkeypat
         DROPPED.reset(token)
     assert sink["names"] == ["prompt", "temperature", "top_k"], sink
     assert sink["note"] == (
-        "Dropped `prompt`, `temperature`, `top_k`: the new release's `messages.create` doesn't accept them, "
+        "Dropped `prompt`, `temperature`, `top_k`: the new release's `notes.create` doesn't accept them, "
         "so these settings are now ignored."
     ), sink["note"]
 
