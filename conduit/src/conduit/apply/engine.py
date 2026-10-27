@@ -611,13 +611,13 @@ def _propose(
     feedback: str,
     max_tokens: int,
 ) -> tuple[str, int]:
-    messages = [
+    turns = [
         ChatMessage(role=role, content=content)
         for role, content in propose_messages(pack, feedback=feedback)
     ]
     result = client.chat(
         model=settings.model,
-        messages=messages,
+        turns=turns,
         max_tokens=max_tokens,
         enable_thinking=settings.enable_thinking,
     )
@@ -632,13 +632,13 @@ def _summarize(
     *,
     max_tokens: int,
 ) -> tuple[str, int]:
-    messages = [
+    turns = [
         ChatMessage(role=role, content=content)
         for role, content in summarize_messages(pack, diff)
     ]
     result = client.chat(
         model=settings.model_small,
-        messages=messages,
+        turns=turns,
         max_tokens=max_tokens,
         enable_thinking=settings.enable_thinking_small,
     )

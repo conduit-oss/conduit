@@ -128,9 +128,9 @@ def test_model_calls_are_summarized_for_the_log_without_the_key():
     client = TokenFactoryClient(base_url="https://user:pw@models.example.test/v1/", api_key=secret)
     client._http = httpx.Client(transport=httpx.MockTransport(handler))
     hello = [ChatMessage(role="user", content="hi")]
-    client.chat(model="big/model", messages=hello)
-    client.chat(model="big/model", messages=hello)
-    client.chat(model="small/model", messages=hello, enable_thinking=True)
+    client.chat(model="big/model", turns=hello)
+    client.chat(model="big/model", turns=hello)
+    client.chat(model="small/model", turns=hello, enable_thinking=True)
     report = ApplyReport(tokens_used=45, model_calls=client.call_summary())
     lines = model_call_lines(report)
     assert lines == [

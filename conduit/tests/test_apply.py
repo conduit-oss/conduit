@@ -332,7 +332,7 @@ def test_token_factory_client_sends_thinking_kwarg_and_ignores_reasoning():
     client._http = _Http()  # type: ignore[assignment]
     result = client.chat(
         model="m",
-        messages=[ChatMessage(role="user", content="hi")],
+        turns=[ChatMessage(role="user", content="hi")],
         max_tokens=20,
         enable_thinking=False,
     )
@@ -378,7 +378,7 @@ def test_test_failure_feedback_fed_to_model_is_trimmed(tmp_path: Path):
         ),
     )
     assert report.results[0].status == SiteStatus.FIXED_VERIFIED, report.results[0].error
-    second_user = client.calls[2]["messages"][1].content
+    second_user = client.calls[2]["turns"][1].content
     assert "noise-0" not in second_user
     assert "earlier lines omitted" in second_user
     assert "noise-199" in second_user
@@ -537,7 +537,7 @@ def test_live_token_factory_smoke():
     try:
         result = client.chat(
             model=settings.model_small,
-            messages=[ChatMessage(role="user", content="Reply with exactly: ok")],
+            turns=[ChatMessage(role="user", content="Reply with exactly: ok")],
             max_tokens=16,
             enable_thinking=False,
         )
@@ -618,7 +618,7 @@ def test_empty_module_statement_rewrite_deletes_it(tmp_path: Path):
 
 def _sent(client: FakeModelClient, call: int) -> str:
     """Text of the last turn the fake client received on the given call."""
-    return client.calls[call]["messages"][-1].content
+    return client.calls[call]["turns"][-1].content
 
 
 def _hits_in_span(scratch: Path, site, *, span, fixtures, allow_network, original="") -> list[tuple[str, str]]:
@@ -667,7 +667,7 @@ def test_recheck_rejects_rewrite_that_uses_a_removed_param(tmp_path: Path, monke
     assert first.startswith("rewrite still breaks against the new release: ")
     assert "parameter timeout removed" in first
     # The finding went back to the model as the retry reason.
-    retry_prompt = client.calls[1]["messages"][-1].content
+    retry_prompt = client.calls[1]["turns"][-1].content
     assert "parameter timeout removed" in retry_prompt
     assert "old_call" in (root / "mod.py").read_text(encoding="utf-8")
 
@@ -776,8 +776,8 @@ def test_recheck_retry_prompt_carries_new_signature(tmp_path: Path, monkeypatch)
         ),
     )
     assert report.results[0].status == SiteStatus.FIXED_UNVERIFIED, report.results[0].error
-    first = client.calls[0]["messages"][-1].content
-    retry = client.calls[1]["messages"][-1].content
+    first = client.calls[0]["turns"][-1].content
+    retry = client.calls[1]["turns"][-1].content
     assert "new_release_signatures" in first
     assert "parameter timeout removed" in retry
     assert "items: Iterable[ItemParam]" in retry
@@ -1222,7 +1222,7 @@ def test_batch_retries_the_blamed_site_then_reverts_it(tmp_path: Path):
     first, second = report.results
     assert first.status == SiteStatus.FIXED_VERIFIED
     assert second.status == SiteStatus.NEEDS_HUMAN and second.attempts == 3 and "reverted" in second.error
-    assert "bad_call" in client.calls[4]["messages"][1].content  # the retry saw its rewrite and the failure
+    assert "bad_call" in client.calls[4]["turns"][1].content  # the retry saw its rewrite and the failure
     assert "new_call(1)" in (root / "mod.py").read_text() and "old_call(2)" in (root / "two.py").read_text()
 
 
@@ -1348,7 +1348,7 @@ def test_batch_routes_masked_read_back_to_the_feeding_rewrite(tmp_path: Path, mo
     assert _MASKED_EXPR not in (root / "helper.py").read_text(encoding="utf-8")
     # The helper's first prompt already carries nothing about the masked read
     # (it was not written yet); its retry carries the routed finding.
-    retry = client.calls[4]["messages"][-1].content
+    retry = client.calls[4]["turns"][-1].content
     assert "no attribute completion" in retry
     assert "BetaMessage" in retry
     assert _MASKED_EXPR in retry
@@ -1995,12 +1995,12 @@ def test_batch_rewrites_the_producer_first_and_tells_the_consumer_what_it_gets(t
         ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
                     client=client, recheck_impact=True),
     )
-    first, second = (call["messages"][-1].content for call in client.calls[0:3:2])
+    first, second = (call["turns"][-1].content for call in client.calls[0:3:2])
     assert '"file": "caller.py"' in first and "connected_rewrites" not in first
     assert '"file": "helper.py"' in second and "connected_rewrites" in second
     assert "result = Reply (example-sdk 2.0)" in second and "content: List[Block]" in second
     assert "client.new_call(1)" in second  # the producer's rewritten code
-    assert "connected_rewrites" in client.calls[2]["messages"][0].content
+    assert "connected_rewrites" in client.calls[2]["turns"][0].content
     helper, caller = report.results  # report keeps the usual order
     assert helper.site.path == "helper.py" and helper.status == SiteStatus.FIXED_VERIFIED
     assert caller.status == SiteStatus.FIXED_VERIFIED
@@ -2035,7 +2035,7 @@ def test_final_recheck_finding_gets_one_retry_before_needs_human(tmp_path: Path,
     (helper,) = report.results
     assert helper.status == SiteStatus.FIXED_VERIFIED, (helper.status, helper.error)
     assert "result.content" in (root / "helper.py").read_text(encoding="utf-8")
-    retry = client.calls[2]["messages"][-1].content
+    retry = client.calls[2]["turns"][-1].content
     assert "no attribute completion" in retry and "return result.completion" in retry
     assert len(client.calls) == 4 and report.tokens_used > 0
     assert all(call["enable_thinking"] is False for call in client.calls)
@@ -2294,7 +2294,7 @@ def test_a_removed_import_still_used_gets_one_retry_then_needs_a_human(tmp_path:
                     client=client, recheck_impact=True),
     )
     (result,) = report.results
-    hint = client.calls[2]["messages"][-1].content
+    hint = client.calls[2]["turns"][-1].content
     assert "name Old is no longer imported or defined" in hint and "new release" in hint, hint
     text = (root / "mod.py").read_text(encoding="utf-8")
     assert "from sdk import Old" not in text  # the removal stays in the diff either way
@@ -2422,7 +2422,7 @@ def test_import_site_rewritten_with_its_use_is_verified(tmp_path: Path, monkeypa
     assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
     text = (root / "mod.py").read_text(encoding="utf-8")
     assert "from sdk.types import New" in text and "def use(x: New):" in text and "Old" not in text
-    assert "removed_name_uses" in client.calls[0]["messages"][-1].content
+    assert "removed_name_uses" in client.calls[0]["turns"][-1].content
 
 
 def _graph_repo(tmp_path: Path):
@@ -2649,7 +2649,7 @@ def test_optional_finding_in_final_recheck_gets_one_retry(tmp_path: Path, monkey
     )
     (result,) = report.results
     assert False in seen and True in seen  # per-site check without it, final recheck with it
-    assert "cache may be None" in client.calls[2]["messages"][-1].content
+    assert "cache may be None" in client.calls[2]["turns"][-1].content
     if verified:
         assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
     else:

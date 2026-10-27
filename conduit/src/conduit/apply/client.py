@@ -31,7 +31,7 @@ class ModelClient(Protocol):
         self,
         *,
         model: str,
-        messages: list[ChatMessage],
+        turns: list[ChatMessage],
         max_tokens: int = 2048,
         temperature: float = 0.2,
         enable_thinking: bool = False,
@@ -84,7 +84,7 @@ class TokenFactoryClient:
         self,
         *,
         model: str,
-        messages: list[ChatMessage],
+        turns: list[ChatMessage],
         max_tokens: int = 2048,
         temperature: float = 0.2,
         enable_thinking: bool = False,
@@ -97,7 +97,7 @@ class TokenFactoryClient:
         url = self.base_url.rstrip("/") + "/chat/completions"
         payload: dict[str, Any] = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [{"role": m.role, "content": m.content} for m in turns],
             "max_tokens": max_tokens,
             "temperature": temperature,
             # Required for Nemotron: reasoning otherwise fills the token budget.
@@ -132,7 +132,7 @@ class TokenFactoryClient:
 class FakeModelClient:
     """Deterministic client for offline unit tests.
 
-    ``responses`` is a queue of strings (or callables taking messages).
+    ``responses`` is a queue of strings (or callables taking turns).
     """
 
     responses: list[Any] = field(default_factory=list)
@@ -142,7 +142,7 @@ class FakeModelClient:
         self,
         *,
         model: str,
-        messages: list[ChatMessage],
+        turns: list[ChatMessage],
         max_tokens: int = 2048,
         temperature: float = 0.2,
         enable_thinking: bool = False,
@@ -150,7 +150,7 @@ class FakeModelClient:
         self.calls.append(
             {
                 "model": model,
-                "messages": messages,
+                "turns": turns,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "enable_thinking": enable_thinking,
@@ -160,11 +160,11 @@ class FakeModelClient:
             raise RuntimeError("FakeModelClient has no more recorded responses")
         item = self.responses.pop(0)
         if callable(item):
-            content = item(messages, model=model)
+            content = item(turns, model=model)
         else:
             content = str(item)
         # Approximate token use for cost-guard tests.
-        prompt_chars = sum(len(m.content) for m in messages)
+        prompt_chars = sum(len(m.content) for m in turns)
         return ChatResult(
             content=content,
             prompt_tokens=max(1, prompt_chars // 4),
