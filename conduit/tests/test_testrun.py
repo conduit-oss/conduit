@@ -242,7 +242,7 @@ def test_new_failure_is_blamed_retried_and_reverted_with_only_its_own_trace(tmp_
     first, second = report.results
     assert first.status == SiteStatus.FIXED_VERIFIED, (first.error, first.why, len(client.calls))
     assert second.status == SiteStatus.NEEDS_HUMAN and "reverted" in second.error
-    retry = client.calls[4]["messages"][1].content
+    retry = client.calls[4]["turns"][1].content
     assert "bad_call" in retry and "checks/test_it.py::test_two" in retry and "PRE-EXISTING TRACE" not in retry
     assert report.preexisting == ["checks/test_it.py::test_already_broken"]
     assert "new_call(1)" in (root / "mod.py").read_text() and "old_call(2)" in (root / "two.py").read_text()

@@ -121,7 +121,7 @@ def _first_prompt(tmp_path: Path, fixtures: Path, *, recheck: bool = True) -> st
             root=root, settings=_settings(max_attempts=1), client=client, recheck_impact=recheck, fixtures=fixtures
         ),
     )
-    return client.calls[0]["messages"][-1].content
+    return client.calls[0]["turns"][-1].content
 
 
 def test_removed_constant_prompt_carries_its_old_literal(tmp_path: Path):
