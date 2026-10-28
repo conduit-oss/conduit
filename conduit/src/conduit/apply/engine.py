@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -114,6 +115,10 @@ class ApplyReport:
     #: Model calls this run made: endpoint (host and path), model, thinking
     #: setting, call count and tokens, one entry per model and setting.
     model_calls: list[dict[str, Any]] = field(default_factory=list)
+    #: Extra test runs used to separate a failing rewrite from the ones that pass,
+    #: and how long those runs took. The first run of the whole batch is not counted.
+    retest_runs: int = 0
+    retest_seconds: float = 0.0
 
     @property
     def preexisting_note(self) -> str:
@@ -134,6 +139,9 @@ class ApplyReport:
             data["preexisting_failures"] = list(self.preexisting)
             data["preexisting_note"] = self.preexisting_note
             data["new_failures"] = list(self.new_failures or [])
+        if self.retest_runs:
+            data["retest_runs"] = self.retest_runs
+            data["retest_seconds"] = round(self.retest_seconds, 3)
         return data
 
 
@@ -239,8 +247,11 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 failure = "" if ok else output
                 break
             failure = output
-            blamed = _blame(output, scratch, accepted) or list(accepted)
-            if _round == config.settings.max_attempts:
+            # An empty blame used to stand for every accepted rewrite, so one
+            # unlocated failure reverted the batch. Leave them in place and
+            # separate the cause after the retries.
+            blamed = _blame(output, scratch, accepted)
+            if not blamed or _round == config.settings.max_attempts:
                 break
             for key in blamed:
                 sink = accepted.pop(key)
@@ -271,20 +282,21 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             ok, output = _check(config, scratch, report, lines)
             failure = "" if ok else output
         if failure and accepted:
-            # Revert what the last failure points at, then confirm the rest pass.
-            for key in _blame(failure, scratch, accepted) or list(accepted):
-                sink = accepted.pop(key)
-                _rebuild(scratch, originals, accepted, texts_of, sink["site"].path)
-                report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], trim_test_feedback(failure))
-            ok, output = _check(config, scratch, report, lines) if accepted else (True, "")
-            if ok and accepted and _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted:
-                # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
-                ok, output = _check(config, scratch, report, lines)
-            if not ok:
-                for key in list(accepted):
-                    sink = accepted.pop(key)
-                    _rebuild(scratch, originals, accepted, texts_of, sink["site"].path)
-                    report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], trim_test_feedback(output))
+            blamed = _blame(failure, scratch, accepted)
+            if blamed:
+                # These were retried above and the failure still names them.
+                _drop_sites(scratch, originals, accepted, texts_of, slots, report, blamed, failure)
+                ok, output = _check(config, scratch, report, lines) if accepted else (True, "")
+                if ok and accepted and _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted:
+                    # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
+                    ok, output = _check(config, scratch, report, lines)
+                failure = "" if ok else output
+            if failure and accepted:
+                # A held-back site, or a failure the traceback does not locate,
+                # must not take the other rewrites with it.
+                failure = _separate_failures(
+                    config, scratch, report, lines, originals, texts_of, slots, accepted, failure
+                )
         for key in accepted:
             done = report.results[slots[key]]
             hold = accepted[key].get("hold")
@@ -331,6 +343,9 @@ class _Lines:
 
     paths: list[str]
     last: LineRecord | None = None
+    #: The most recent run, passing or not, so a failure that is not caused by
+    #: any rewrite can still count lines that actually ran.
+    latest: LineRecord | None = None
 
 
 def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Lines | None = None) -> tuple[bool, str]:
@@ -350,9 +365,177 @@ def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Line
             report.new_failures = verdict.new + verdict.missing
             record.tests_ran = tests_ran(run.outcomes, run.output)
             ok, output = verdict.passed, ("" if verdict.passed else focus(run, verdict))
+    if not ok and not output:
+        # A failing command that prints nothing is still a failure. An empty
+        # string would skip the separation step and keep every rewrite.
+        output = "tests failed"
     if lines is not None:
+        lines.latest = record
         lines.last = record if ok else None
     return ok, output
+
+
+#: Extra runs spent separating one failing rewrite from the rest. The batch's
+#: own retries are not counted. Past this, what is left is reverted together.
+_RETEST_BUDGET = 8
+
+
+def _drop_sites(
+    scratch: Path,
+    originals: dict[str, str],
+    accepted: dict[int, dict[str, Any]],
+    texts: dict[int, str],
+    slots: dict[int, int],
+    report: ApplyReport,
+    keys: list[int],
+    failure: str,
+) -> None:
+    """Take these rewrites back out. A site already held back keeps that reason."""
+    note = trim_test_feedback(failure)
+    for key in keys:
+        sink = accepted.pop(key, None)
+        if sink is None:
+            continue
+        _rebuild(scratch, originals, accepted, texts, sink["site"].path)
+        if sink.get("hold"):
+            message = sink["hold"]
+            previous = report.results[slots[key]]
+            report.results[slots[key]] = replace(
+                previous, status=SiteStatus.NEEDS_HUMAN, error=message, why=message
+            )
+            continue
+        report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], note)
+
+
+def _separate_failures(
+    config: ApplyConfig,
+    scratch: Path,
+    report: ApplyReport,
+    lines: _Lines,
+    originals: dict[str, str],
+    texts: dict[int, str],
+    slots: dict[int, int],
+    accepted: dict[int, dict[str, Any]],
+    failure: str,
+) -> str:
+    """Keep every accepted rewrite that is not the cause of ``failure``.
+
+    A failure that also happens with no rewrites on the bumped tree is not
+    caused by any site: the rewrites stay, verified only when their lines ran.
+    Otherwise the held-back site's file is tried without its rewrites, then the
+    accepted set is bisected, so one site's failure does not revert the others.
+    Returns the failure still outstanding (``""`` when the kept set can stand).
+    """
+    proved = lines.latest
+
+    def budget() -> bool:
+        return report.retest_runs < _RETEST_BUDGET
+
+    def timed() -> tuple[bool, str] | None:
+        if not budget():
+            return None
+        started = time.perf_counter()
+        try:
+            return _check(config, scratch, report, lines)
+        finally:
+            report.retest_runs += 1
+            report.retest_seconds += time.perf_counter() - started
+
+    def rebuild_all() -> None:
+        for path in {sink["site"].path for sink in accepted.values()} | set(originals):
+            if path in originals:
+                _rebuild(scratch, originals, accepted, texts, path)
+
+    def with_keys(keep: list[int]) -> tuple[bool, str] | None:
+        """Tests with only ``keep`` applied. The accepted set is restored after."""
+        saved = list(accepted.items())
+        wanted = set(keep)
+        accepted.clear()
+        for key, sink in saved:
+            if key in wanted:
+                accepted[key] = sink
+        paths = {sink["site"].path for _key, sink in saved}
+        for path in paths:
+            _rebuild(scratch, originals, accepted, texts, path)
+        try:
+            return timed()
+        finally:
+            accepted.clear()
+            accepted.update(saved)
+            for path in paths:
+                _rebuild(scratch, originals, accepted, texts, path)
+
+    if config.baseline is not None and config.baseline.usable and budget():
+        current = tuple(report.new_failures or [])
+        saved_pre, saved_new = report.preexisting, report.new_failures
+        for path, before in originals.items():
+            _write_file(scratch, path, before)
+        bare = timed()
+        bare_new = tuple(report.new_failures or [])
+        report.preexisting, report.new_failures = saved_pre, saved_new
+        rebuild_all()
+        if bare is not None and not bare[0] and bare_new == current and current:
+            # The bumped tree fails the same way with nothing rewritten.
+            lines.last = proved
+            return ""
+
+    def culprits(keys: list[int]) -> list[int] | None:
+        if len(keys) <= 1:
+            return keys
+        if not budget():
+            return None
+        mid = len(keys) // 2
+        left, right = keys[:mid], keys[mid:]
+        left_failed = with_keys(left)
+        if left_failed is None:
+            return None
+        if not left_failed[0]:
+            found = culprits(left)
+            return keys if found is None else found
+        right_failed = with_keys(right)
+        if right_failed is None:
+            return None
+        if not right_failed[0]:
+            found = culprits(right)
+            return keys if found is None else found
+        # Neither half fails alone: the two sides only fail together.
+        return keys
+
+    suspect = {sink["site"].path for sink in accepted.values() if sink.get("hold")}
+    suspect.update(
+        result.site.path for result in report.results if result.status == SiteStatus.NEEDS_HUMAN
+    )
+    inside = [key for key, sink in accepted.items() if sink["site"].path in suspect]
+    outside = [key for key, sink in accepted.items() if sink["site"].path not in suspect]
+    if inside and outside and budget():
+        tried = with_keys(outside)
+        if tried is not None and tried[0]:
+            # The other files pass. Separate the sites in the file that was
+            # held back or whose rewrite already failed, instead of dropping
+            # every rewrite that shares the file.
+            found = culprits(inside)
+            _drop_sites(
+                scratch, originals, accepted, texts, slots, report, found if found is not None else inside, failure
+            )
+            return ""
+
+    found = culprits(list(accepted))
+    if found:
+        _drop_sites(scratch, originals, accepted, texts, slots, report, found, failure)
+        if not accepted:
+            return ""
+        confirmed = timed()
+        if confirmed is not None and confirmed[0]:
+            return ""
+        if confirmed is None:
+            # No run left to tell the rest apart: they go back with the failure.
+            _drop_sites(scratch, originals, accepted, texts, slots, report, list(accepted), failure)
+            return ""
+        failure = confirmed[1]
+        _drop_sites(scratch, originals, accepted, texts, slots, report, list(accepted), failure)
+        return ""
+    _drop_sites(scratch, originals, accepted, texts, slots, report, list(accepted), failure)
+    return ""
 
 
 def _uncovered_why(record: LineRecord | None, path: str, original: str, block: str, why: str) -> str:

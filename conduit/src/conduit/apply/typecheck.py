@@ -1128,14 +1128,15 @@ def _call_classes(modules, chains, path: str, expr: ast.AST) -> list[tuple[str, 
 
 
 def _matching_overload_returns(modules, module_name: str, node: ast.AST, call: ast.Call) -> list[ast.AST]:
-    """Return annotations of the ``@overload`` variants this call's keywords can select.
+    """Return annotations of the ``@overload`` variants this call can select.
 
-    A variant fits when every keyword the call passes is one of its parameters and
-    every parameter it requires (no default) is passed. Empty when none narrow it.
+    A variant fits when every keyword is one of its parameters, every parameter
+    it requires is passed, and each literal argument (or an omitted parameter's
+    literal default) is one of that variant's ``Literal`` values. Empty when
+    none of this narrows the set: the implementation's return union stands.
     """
     if any(isinstance(arg, ast.Starred) for arg in call.args) or any(kw.arg is None for kw in call.keywords):
         return []
-    passed = {kw.arg for kw in call.keywords}
     owner = next(
         (
             klass
@@ -1155,20 +1156,77 @@ def _matching_overload_returns(modules, module_name: str, node: ast.AST, call: a
     ]
     fits: list[ast.AST] = []
     for variant in variants:
-        args = variant.args
-        positional = [arg.arg for arg in (*args.posonlyargs, *args.args)][1:]  # drop self
-        names = set(positional) | {arg.arg for arg in args.kwonlyargs}
-        if args.kwarg is None and not passed <= names:
-            continue
-        required_kwonly = {
-            arg.arg for arg, default in zip(args.kwonlyargs, args.kw_defaults) if default is None
-        }
-        required_pos = positional[len(call.args) : len(positional) - len(args.defaults)]
-        if not (required_kwonly | set(required_pos)) <= passed:
+        if not _overload_accepts_call(modules, module_name, variant, call):
             continue
         if variant.returns is not None:
             fits.append(variant.returns)
     return fits if 0 < len(fits) < len(variants) else []
+
+
+def _overload_accepts_call(modules, module_name: str, variant: ast.AST, call: ast.Call) -> bool:
+    """True when ``call`` can select this overload.
+
+    Keyword presence, a literal value, and an omitted parameter's literal
+    default all count. A non-literal argument does not rule a variant out.
+    """
+    args = variant.args
+    positional = [arg for arg in (*args.posonlyargs, *args.args)]
+    if positional and positional[0].arg in {"self", "cls"}:
+        positional = positional[1:]
+    passed = {kw.arg: kw.value for kw in call.keywords if kw.arg}
+    names = {arg.arg for arg in positional} | {arg.arg for arg in args.kwonlyargs}
+    if args.kwarg is None and not set(passed) <= names:
+        return False
+    if args.vararg is None and len(call.args) > len(positional):
+        return False
+    n_def = len(args.defaults)
+    required = [arg.arg for arg in positional[: len(positional) - n_def]]
+    required = required[len(call.args) :]
+    required += [arg.arg for arg, default in zip(args.kwonlyargs, args.kw_defaults) if default is None]
+    if not set(required) <= set(passed):
+        return False
+    for index, arg in enumerate(positional):
+        if index < len(call.args):
+            value: ast.AST | None = call.args[index]
+        elif arg.arg in passed:
+            value = passed[arg.arg]
+        else:
+            value = args.defaults[index - (len(positional) - n_def)]
+        if _literal_rejects(modules, module_name, arg.annotation, value):
+            return False
+    for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+        value = passed.get(arg.arg, default)
+        if _literal_rejects(modules, module_name, arg.annotation, value):
+            return False
+    return True
+
+
+def _literal_rejects(modules, module_name: str, annotation: ast.AST | None, value: ast.AST | None) -> bool:
+    """True when ``value`` is a literal ``annotation``'s ``Literal`` does not allow.
+
+    Anything that is not a literal value, or an annotation that is not a
+    ``Literal``, does not decide the overload.
+    """
+    if annotation is None or not isinstance(value, ast.Constant) or not _mentions_literal(annotation):
+        return False
+    decision = _value_accepted(
+        modules, module_name, annotation, value.value, type(value.value).__name__
+    )
+    return decision is False
+
+
+def _mentions_literal(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        try:
+            return _mentions_literal(ast.parse(node.value.strip(), mode="eval").body)
+        except SyntaxError:
+            return "Literal" in node.value
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and sub.id == "Literal":
+            return True
+        if isinstance(sub, ast.Attribute) and sub.attr == "Literal":
+            return True
+    return False
 
 
 def _return_classes(

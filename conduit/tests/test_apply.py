@@ -1109,6 +1109,80 @@ def test_attribute_check_narrows_overloads_by_the_call_keywords(tmp_path: Path):
     assert len(found) == 1 and "out is Reply in" in found[0] and "no attribute gone" in found[0], found
 
 
+def test_overload_return_follows_the_literal_and_its_default(tmp_path: Path):
+    """``make()`` and ``make(live=False)`` are an Item. ``make(live=True)`` is a Feed.
+
+    A non-literal ``live`` does not decide, so the return stays the union.
+    """
+    from conduit.apply.signatures import _modules
+    from conduit.apply.typecheck import attribute_breaks
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Literal, overload
+
+            class Item:
+                def dump(self) -> dict:
+                    return {}
+
+            class Feed:
+                def rows(self) -> list:
+                    return []
+
+            class Client:
+                @overload
+                def make(self, *, live: Literal[False] = False) -> Item: ...
+                @overload
+                def make(self, *, live: Literal[True]) -> Feed: ...
+                def make(self, *, live: bool = False) -> Item | Feed:
+                    return Item()
+            """
+        ),
+        encoding="utf-8",
+    )
+    modules = _modules(str(tmp_path / "wheel"))
+    source = textwrap.dedent(
+        """\
+        def run(client, flag):
+            plain = client.make()
+            plain.dump()
+            plain.rows()
+            off = client.make(live=False)
+            off.dump()
+            off.rows()
+            on = client.make(live=True)
+            on.dump()
+            on.rows()
+            other = client.make(live=flag)
+            other.gone()
+        """
+    )
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "f.py").write_text(source, encoding="utf-8")
+    lines = {
+        index: line
+        for index, line in enumerate(source.splitlines(), start=1)
+        if "client.make" in line
+    }
+    chains = [
+        _chain("f.py", index, "client.make", "example_sdk.client.Client.make") for index in lines
+    ]
+    found = attribute_breaks(modules, root, "f.py", source, (1, 20), chains, "example-sdk", "2.0")
+    text = "\n".join(found)
+    assert "plain.rows" in text and "plain is Item" in text, text
+    assert "plain.dump" not in text
+    assert "off.rows" in text and "off is Item" in text, text
+    assert "off.dump" not in text
+    assert "on.dump" in text and "on is Feed" in text, text
+    assert "on.rows" not in text
+    assert "other.gone" in text and "Feed" in text and "Item" in text, text
+
+
 def test_prompt_shows_same_file_helpers_read_only():
     from conduit.apply.models import ContextPack, ImpactSite
     from conduit.apply.prompts import same_file_helpers
