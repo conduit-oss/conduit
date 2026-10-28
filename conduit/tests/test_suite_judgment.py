@@ -14,7 +14,8 @@ from pathlib import Path
 
 from conduit.apply.client import FakeModelClient
 from conduit.apply.dropped import content_dropped
-from conduit.apply.engine import ApplyConfig, apply_sites
+from conduit.apply.covered import LineRecord
+from conduit.apply.engine import ApplyConfig, _trace_gaps, apply_sites
 from conduit.apply.report import format_report
 from conduit.apply.impact_input import sites_from_payload
 from conduit.apply.models import SiteStatus
@@ -96,7 +97,10 @@ def test_a_timing_check_that_fails_only_under_a_tracer_is_not_blamed(tmp_path: P
     assert "reverted" not in (result.error or "")
     assert "new_call(1)" in (root / "work.py").read_text(encoding="utf-8")
     assert report.new_failures == []
-    assert "line recorder" in (result.why or "") or "line recorder" in report.trace_note
+    assert report.trace_note == ""
+    assert "line recorder" not in (result.why or "")
+    assert "wrote no record" not in (result.why or "")
+    assert "failed to load" not in (result.why or "")
 
 
 def test_codependent_module_rewrites_stay_one_group(tmp_path: Path):
@@ -257,6 +261,134 @@ def test_a_filtered_value_is_not_verified(tmp_path: Path):
     assert result.why.startswith("drops ")
 
 
+def test_a_helper_built_string_is_dropped_when_a_converter_skips_items():
+    original = "\n".join(
+        [
+            "def render(items):",
+            "    parts = []",
+            "    for item in items:",
+            "        parts.append(f\"{item['kind']}: {item['note']}\")",
+            "    return \"\\n\".join(parts)",
+            "",
+            "def send(client):",
+            "    rows = [",
+            "        {\"kind\": \"quiet\", \"note\": \"preface\"},",
+            "        {\"kind\": \"loud\", \"note\": \"hello\"},",
+            "    ]",
+            "    return client.old_call(render(rows))",
+            "",
+        ]
+    )
+    patched = "\n".join(
+        [
+            "def to_blocks(items):",
+            "    kept = []",
+            "    for item in items:",
+            "        if item[\"kind\"] == \"quiet\":",
+            "            continue",
+            "        kept.append(item)",
+            "    return kept",
+            "",
+            "def only_quiet(items):",
+            "    kept = []",
+            "    for item in items:",
+            "        if item[\"kind\"] != \"quiet\":",
+            "            continue",
+            "        kept.append(item)",
+            "    return kept",
+            "",
+            "def send(client):",
+            "    rows = [",
+            "        {\"kind\": \"quiet\", \"note\": \"preface\"},",
+            "        {\"kind\": \"loud\", \"note\": \"hello\"},",
+            "    ]",
+            "    return client.new_call(to_blocks(rows))",
+            "",
+        ]
+    )
+    carried = content_dropped(original, patched, original.splitlines().index("    return client.old_call(render(rows))") + 1)
+    assert "preface" in carried
+    assert "hello" not in carried
+    kept = patched.replace(
+        "return client.new_call(to_blocks(rows))",
+        "return client.new_call(to_blocks(rows), aside=only_quiet(rows))",
+    )
+    assert content_dropped(original, kept, original.splitlines().index("    return client.old_call(render(rows))") + 1) == []
+
+
+def test_a_filtered_helper_string_needs_review(tmp_path: Path):
+    root = tmp_path / "app"
+    _write(
+        root / "work.py",
+        """\
+        def render(items):
+            parts = []
+            for item in items:
+                parts.append(f"{item['kind']}: {item['note']}")
+            return "\\n".join(parts)
+
+        def to_blocks(items):
+            kept = []
+            for item in items:
+                if item["kind"] == "quiet":
+                    continue
+                kept.append(item)
+            return kept
+
+        def send(client):
+            rows = [
+                {"kind": "quiet", "note": "preface"},
+                {"kind": "loud", "note": "hello"},
+            ]
+            return client.old_call(render(rows))
+        """,
+    )
+    _client(root)
+    _write(
+        root / "checks" / "test_send.py",
+        """\
+        import work
+        from support import Client
+
+        def test_send():
+            assert "hello" in str(work.send(Client()))
+        """,
+    )
+    baseline = record_baseline(PYTEST, root)
+    assert baseline.usable and not baseline.failing
+    edited = "\n".join(
+        [
+            "def send(client):",
+            "    rows = [",
+            '        {"kind": "quiet", "note": "preface"},',
+            '        {"kind": "loud", "note": "hello"},',
+            "    ]",
+            "    return client.new_call(to_blocks(rows))",
+            "",
+        ]
+    )
+    line = next(i for i, text in enumerate((root / "work.py").read_text().splitlines(), 1) if "old_call" in text)
+    client = FakeModelClient(responses=[json.dumps({"function_source": edited, "new_imports": []}), "why"])
+    report = apply_sites(
+        _sites(("work.py", line, "client.old_call")),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            test_cmd=PYTEST,
+            client=client,
+            site_cleared=lambda *_args: True,
+            baseline=baseline,
+        ),
+    )
+    (result,) = report.results
+    assert result.status == SiteStatus.FIXED_NEEDS_REVIEW, (result.status, result.error, result.why)
+    assert result.status != SiteStatus.FIXED_VERIFIED
+    assert result.status != SiteStatus.FIXED_NOT_COVERED
+    assert "preface" in (result.why or "")
+    assert (result.why or "").startswith("drops ")
+
+
 def test_content_dropped_follows_a_helper_and_ignores_an_unchanged_call():
     original = "\n".join(
         [
@@ -284,6 +416,16 @@ def test_content_dropped_follows_a_helper_and_ignores_an_unchanged_call():
     assert "preface" in content_dropped(original, patched, 2)
     assert "hello" not in content_dropped(original, patched, 2)
     assert content_dropped(original, original, 2) == []
+
+
+def test_a_traced_failure_does_not_mark_line_data_missing():
+    record = LineRecord(hits={"work.py": {2}}, wrote=True, tests_ran=True)
+    assert _trace_gaps(record, "FAILED checks/test_budget.py::test_budget", ["work.py"]) == {}
+    missing = LineRecord(wrote=False)
+    assert "wrote no record" in _trace_gaps(missing, "FAILED checks/test_budget.py::test_budget", ["work.py"])["work.py"]
+    unloaded = LineRecord(hits={}, wrote=True, tests_ran=True)
+    note = _trace_gaps(unloaded, "ERROR collecting work.py\nImportError: cannot import name 'PIECE'", ["work.py"])["work.py"]
+    assert "failed to load" in note
 
 
 def test_isolate_pytest_keeps_flags_and_rejects_other_runners():

@@ -2990,9 +2990,11 @@ def test_dropped_note_is_in_the_why_and_the_json_and_status_stays_verified(tmp_p
                          client=client, recheck_impact=True)
     report = apply_sites(sites, config)
     (result,) = report.results
-    assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    assert result.status == SiteStatus.FIXED_NEEDS_REVIEW, (result.status, result.error, result.why)
+    assert result.status != SiteStatus.FIXED_VERIFIED
     assert result.dropped == ["old_extra"]
-    assert result.why == "Switched to new_call. Dropped `old_extra`: removed without a matching parameter in the new call."
+    assert "drops 'old_extra'" in result.why
+    assert result.why.endswith("Dropped `old_extra`: removed without a matching parameter in the new call.")
     assert "\n" not in result.why
     data = result.to_dict()
     assert data["dropped"] == ["old_extra"] and data["dropped_note"].startswith("Dropped `old_extra`")

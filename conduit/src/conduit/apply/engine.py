@@ -341,8 +341,14 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 continue
             why = _why_when_uncalled(accepted, key) or done.why
             site = accepted[key]["site"]
-            note = report.trace_note
+            note = lines.gaps.get(site.path, "")
             review = _review_drops(originals.get(site.path, ""), _read(scratch / site.path), site.line)
+            kw = [name for name in (done.dropped or []) if repr(name) not in (review or "")]
+            if kw:
+                shown = ", ".join(repr(name) for name in kw)
+                review = f"{review}, {shown}" if review else f"drops {shown}"
+            if review and why and why not in review:
+                review = f"{review} {why}"
             if review:
                 # Data the original call passed does not reach the new call.
                 # Tests can still pass. Never call that verified.
@@ -395,6 +401,9 @@ class _Lines:
     #: The most recent run, passing or not, so a failure that is not caused by
     #: any rewrite can still count lines that actually ran.
     latest: LineRecord | None = None
+    #: Per rewritten file, a note that its line data is missing. Empty when the
+    #: traced run merely failed a test: that does not touch the line record.
+    gaps: dict[str, str] = field(default_factory=dict)
 
 
 def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Lines | None = None) -> tuple[bool, str]:
@@ -425,30 +434,59 @@ def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Line
 
 
 def _cover(config: ApplyConfig, scratch: Path, lines: _Lines) -> str:
-    """Record executed lines. A failure here does not change pass/fail.
+    """Record executed lines. Whether tests passed here does not matter.
 
-    The record is kept either way. The returned note is set when this run
-    fails and the plain run had passed, so a reader can see why the traced run
-    and the suite result disagree."""
+    The record is what decides verified or not covered. A note is returned only
+    when that record is missing or a rewritten module failed to load, so its
+    lines were never written. A test that fails only because the tracer slowed
+    it does not produce a note."""
     if not config.test_cmd or not lines.paths:
         return ""
     env = dict(os.environ)
+    output = ""
+    outcomes: dict[str, str] = {}
     with recording(scratch, lines.paths, env) as record:
         if config.baseline is None:
             _ok, output = _run_cmd(config.test_cmd, scratch, env)
-            record.tests_ran = tests_ran({}, output)
-            passed = _ok
         else:
             run = run_tests(config.test_cmd, scratch, env)
-            record.tests_ran = tests_ran(run.outcomes, run.output)
-            passed = judge(run, config.baseline).passed
-    if not passed and record.hits and not record.tests_ran:
-        # The plain run passed and this one did not, but lines were still executed.
-        record.tests_ran = True
+            output = run.output
+            outcomes = run.outcomes
+    record.tests_ran = _lines_usable(outcomes, output)
     lines.last = record
-    if passed:
-        return ""
-    return "Lines were recorded on a run that failed; pass/fail used a run without the line recorder."
+    lines.gaps = _trace_gaps(record, output, lines.paths)
+    return " ".join(dict.fromkeys(lines.gaps.values()))
+
+
+def _lines_usable(outcomes: dict[str, str], output: str) -> bool:
+    """True when tests actually ran, so recorded lines can prove a rewrite.
+
+    A failure still counts: the lines that ran before the failure are real.
+    A command that is not a test run does not, even if it executed the file."""
+    if tests_ran(outcomes, output):
+        return True
+    return any(item in {"failed", "error"} for item in outcomes.values())
+
+
+def _trace_gaps(record: LineRecord, output: str, paths: list[str]) -> dict[str, str]:
+    """Notes for files whose line data is missing. A failed test is not one."""
+    if not record.wrote:
+        note = "Line data is missing: the traced run wrote no record."
+        return {path: note for path in paths}
+    gaps: dict[str, str] = {}
+    for path in paths:
+        if record.hits.get(path):
+            continue
+        if _failed_to_load(output, path):
+            gaps[path] = f"Line data is incomplete: {path} failed to load, so its executed lines were not recorded."
+    return gaps
+
+
+def _failed_to_load(output: str, path: str) -> bool:
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    if name not in (output or "") and path not in (output or ""):
+        return False
+    return any(token in output for token in ("ERROR collecting", "ImportError", "ModuleNotFoundError"))
 
 
 def _clear_flakes(config: ApplyConfig, scratch: Path, report: ApplyReport) -> bool:
