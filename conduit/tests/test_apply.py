@@ -1109,6 +1109,147 @@ def test_attribute_check_narrows_overloads_by_the_call_keywords(tmp_path: Path):
     assert len(found) == 1 and "out is Reply in" in found[0] and "no attribute gone" in found[0], found
 
 
+def test_overload_return_follows_the_literal_and_its_default(tmp_path: Path):
+    """``make()`` and ``make(live=False)`` are an Item. ``make(live=True)`` is a Feed.
+
+    A non-literal ``live`` does not decide, so the return stays the union.
+    """
+    from conduit.apply.signatures import _modules
+    from conduit.apply.typecheck import attribute_breaks
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Literal, overload
+
+            class Item:
+                def dump(self) -> dict:
+                    return {}
+
+            class Feed:
+                def rows(self) -> list:
+                    return []
+
+            class Client:
+                @overload
+                def make(self, *, live: Literal[False] = False) -> Item: ...
+                @overload
+                def make(self, *, live: Literal[True]) -> Feed: ...
+                def make(self, *, live: bool = False) -> Item | Feed:
+                    return Item()
+            """
+        ),
+        encoding="utf-8",
+    )
+    modules = _modules(str(tmp_path / "wheel"))
+    source = textwrap.dedent(
+        """\
+        def run(client, flag):
+            plain = client.make()
+            plain.dump()
+            plain.rows()
+            off = client.make(live=False)
+            off.dump()
+            off.rows()
+            on = client.make(live=True)
+            on.dump()
+            on.rows()
+            other = client.make(live=flag)
+            other.gone()
+        """
+    )
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "f.py").write_text(source, encoding="utf-8")
+    lines = {
+        index: line
+        for index, line in enumerate(source.splitlines(), start=1)
+        if "client.make" in line
+    }
+    chains = [
+        _chain("f.py", index, "client.make", "example_sdk.client.Client.make") for index in lines
+    ]
+    found = attribute_breaks(modules, root, "f.py", source, (1, 20), chains, "example-sdk", "2.0")
+    text = "\n".join(found)
+    assert "plain.rows" in text and "plain is Item" in text, text
+    assert "plain.dump" not in text
+    assert "off.rows" in text and "off is Item" in text, text
+    assert "off.dump" not in text
+    assert "on.dump" in text and "on is Feed" in text, text
+    assert "on.rows" not in text
+    assert "other.gone" in text and "Feed" in text and "Item" in text, text
+
+
+def test_overload_narrows_a_splat_whose_keys_are_built(tmp_path: Path):
+    """``**bundle()`` passes ``live`` when every return path builds that key.
+
+    A splat whose dict cannot be read stays the union, the same as before.
+    """
+    from conduit.apply.signatures import _modules
+    from conduit.apply.typecheck import attribute_breaks
+
+    pkg = tmp_path / "wheel" / "example_sdk"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "client.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Literal, overload
+
+            class Item:
+                def dump(self) -> dict:
+                    return {}
+
+            class Feed:
+                def rows(self) -> list:
+                    return []
+
+            class Client:
+                @overload
+                def make(self, *, live: Literal[False] = False) -> Item: ...
+                @overload
+                def make(self, *, live: Literal[True]) -> Feed: ...
+                def make(self, *, live: bool = False) -> Item | Feed:
+                    return Item()
+            """
+        ),
+        encoding="utf-8",
+    )
+    modules = _modules(str(tmp_path / "wheel"))
+    source = textwrap.dedent(
+        """\
+        def bundle():
+            built = {}
+            built["live"] = False
+            return built
+
+        def run(client, unknown):
+            item = client.make(**bundle())
+            item.dump()
+            item.rows()
+            other = client.make(**unknown)
+            other.gone()
+        """
+    )
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "f.py").write_text(source, encoding="utf-8")
+    lines = {
+        index: line
+        for index, line in enumerate(source.splitlines(), start=1)
+        if "client.make" in line
+    }
+    chains = [_chain("f.py", index, "client.make", "example_sdk.client.Client.make") for index in lines]
+    found = attribute_breaks(modules, root, "f.py", source, (1, 30), chains, "example-sdk", "2.0")
+    text = "\n".join(found)
+    assert "item.rows" in text and "item is Item" in text, text
+    assert "item.dump" not in text
+    assert "other.gone" in text and "Feed" in text and "Item" in text, text
+
+
 def test_prompt_shows_same_file_helpers_read_only():
     from conduit.apply.models import ContextPack, ImpactSite
     from conduit.apply.prompts import same_file_helpers
@@ -2849,9 +2990,11 @@ def test_dropped_note_is_in_the_why_and_the_json_and_status_stays_verified(tmp_p
                          client=client, recheck_impact=True)
     report = apply_sites(sites, config)
     (result,) = report.results
-    assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
+    assert result.status == SiteStatus.FIXED_NEEDS_REVIEW, (result.status, result.error, result.why)
+    assert result.status != SiteStatus.FIXED_VERIFIED
     assert result.dropped == ["old_extra"]
-    assert result.why == "Switched to new_call. Dropped `old_extra`: removed without a matching parameter in the new call."
+    assert "drops 'old_extra'" in result.why
+    assert result.why.endswith("Dropped `old_extra`: removed without a matching parameter in the new call.")
     assert "\n" not in result.why
     data = result.to_dict()
     assert data["dropped"] == ["old_extra"] and data["dropped_note"].startswith("Dropped `old_extra`")

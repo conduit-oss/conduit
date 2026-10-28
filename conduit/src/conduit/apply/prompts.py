@@ -72,6 +72,13 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
             "  (callers, or imports it uses): build on that code as it now is.\n"
         )
         user["producer_rewrites"] = pack.producer_rewrites
+    if pack.dict_key_hints:
+        system += (
+            "- repo_dict_keys names the keys a function in this repo reads from a dict\n"
+            "  this rewrite passes it (required and optional), and calls that already\n"
+            "  pass a valid argument. Pass those keys.\n"
+        )
+        user["repo_dict_keys"] = pack.dict_key_hints
     helpers = same_file_helpers(pack)
     if helpers:
         # Read-only: shows how this function's inputs are shaped.

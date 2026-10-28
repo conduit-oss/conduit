@@ -112,6 +112,8 @@ class LineRecord:
     replaced: bool = False
     #: The run reported at least one test that ran.
     tests_ran: bool = False
+    #: A process wrote its line record. False when the run stopped before that.
+    wrote: bool = False
 
 
 @contextmanager
@@ -131,7 +133,9 @@ def recording(cwd: Path, rels: list[str], env: dict[str, str]) -> Iterator[LineR
         try:
             yield record
         finally:
+            found = False
             for item in out.glob("*.json"):
+                found = True
                 try:
                     data = json.loads(item.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
@@ -139,6 +143,7 @@ def recording(cwd: Path, rels: list[str], env: dict[str, str]) -> Iterator[LineR
                 record.replaced = record.replaced or bool(data.get("replaced"))
                 for rel, lines in (data.get("hits") or {}).items():
                     record.hits.setdefault(rel, set()).update(int(n) for n in lines)
+            record.wrote = found
 
 
 _RAN = re.compile(r"\b([1-9]\d*) passed\b|\bRan ([1-9]\d*) tests?\b")

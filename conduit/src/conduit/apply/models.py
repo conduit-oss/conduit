@@ -12,6 +12,9 @@ class SiteStatus(str, Enum):
     FIXED_UNVERIFIED = "fixed (unverified: no tests)"
     #: The tests pass, but none of them runs the changed lines: the fix is unproven.
     FIXED_NOT_COVERED = "fixed, not covered by tests"
+    #: The rewrite is in place and the tests pass, but it drops data the original
+    #: call passed. A person should look. Never "verified".
+    FIXED_NEEDS_REVIEW = "fixed, needs review"
     NEEDS_HUMAN = "needs-human"
     DRY_RUN = "dry-run"
     SKIPPED = "skipped"
@@ -69,6 +72,9 @@ class ContextPack:
     removed_name_uses: list[dict[str, Any]] = field(default_factory=list)
     #: Batch only: finished new code of the sites this one depends on.
     producer_rewrites: list[dict[str, Any]] = field(default_factory=list)
+    #: Keys a repo function in the rewrite reads from a dict, when any call there
+    #: does. Empty for every other site, and omitted from the prompt then.
+    dict_key_hints: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {

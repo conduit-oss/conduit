@@ -12,17 +12,22 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from conduit.apply.declared import (
     Namespace,
+    _SKIP_DIRS,
     _callee,
     _functions,
     _has_decorator,
     _innermost,
+    _names_for,
     _own_nodes,
     _rebound,
     _single_binding,
+    module_name,
     parameters,
+    repo_modules,
 )
 
 _CATCHES = {"KeyError", "LookupError", "Exception", "BaseException"}
@@ -99,9 +104,90 @@ def _call_breaks(ns, path, module, func, owner, call: ast.Call, where: str) -> l
                 "required": sorted(reads.required),
                 "optional": sorted(reads.optional - reads.required),
                 "missing": missing,
+                "opaque": reads.opaque,
+                "node": node,
             }
         )
     return out
+
+
+def example_calls(ns: Namespace, root: Path, item: dict, *, limit: int = 2) -> list[str]:
+    """Up to ``limit`` other calls that already pass a valid argument to this callee.
+
+    The callee is the function object the failing call resolved to, not its name:
+    another function that happens to share the name does not count. A call counts
+    when that same object is what it invokes and the argument is a dict carrying
+    the keys it reads, or any call (a value the repo already passes, such as
+    ``row.to_dict()``)."""
+    node = item.get("node")
+    param = item.get("param") or ""
+    if node is None or not param or limit <= 0:
+        return []
+    reads = Reads(
+        required=set(item.get("required") or []),
+        optional=set(item.get("optional") or []),
+        opaque=bool(item.get("opaque")),
+    )
+    skip = (item.get("path") or "", int(item.get("line") or 0))
+    hits: list[tuple[str, int, str]] = []
+    seen: set[int] = set()
+    for file in sorted(root.rglob("*.py")):
+        rel = file.relative_to(root).as_posix()
+        if any(part in _SKIP_DIRS or part.startswith(".") for part in rel.split("/")[:-1]):
+            continue
+        module = module_name(rel)
+        tree = ns.modules.get(module)
+        if tree is None or id(tree) in seen or not ns.is_local(module):
+            continue
+        seen.add(id(tree))
+        for func, owner in _functions(module, tree):
+            for call in ast.walk(func):
+                if not isinstance(call, ast.Call) or _innermost(func, call) is not func:
+                    continue
+                if (rel, call.lineno) == skip:
+                    continue
+                value = _argument_for(ns, module, func, owner, call, node, param)
+                if value is None or not _passes_valid(func, value, call, reads):
+                    continue
+                hits.append((rel, call.lineno, ast.unparse(call)))
+    hits.sort()
+    shown: list[str] = []
+    for rel, line, expr in hits:
+        text = f"{rel}:{line} {expr}"
+        if text not in shown:
+            shown.append(text)
+        if len(shown) == limit:
+            break
+    return shown
+
+
+def _argument_for(ns, module, func, owner, call: ast.Call, node: ast.AST, param: str) -> ast.AST | None:
+    """The argument ``call`` passes as ``param`` when ``call`` invokes ``node``."""
+    if any(isinstance(arg, ast.Starred) for arg in call.args) or any(kw.arg is None for kw in call.keywords):
+        return None
+    target = _callee(ns, module, func, owner, call.func, call.lineno, 0)
+    found = _body(ns, target)
+    if found is None or found[1] is not node:
+        return None
+    pairs = _pairs(ns, target, call)
+    if pairs is None:
+        return None
+    for name, value in pairs:
+        if name == param:
+            return value
+    return None
+
+
+def _passes_valid(func: ast.AST, value: ast.AST, call: ast.Call, reads: Reads) -> bool:
+    """A dict whose keys fit ``reads``, or a call the repo already passes through."""
+    if isinstance(value, ast.Call):
+        return True
+    supplied = _supplied(func, value, call)
+    if supplied is None or reads.required - supplied:
+        return False
+    if supplied and not reads.opaque and not (supplied & reads.keys):
+        return False
+    return True
 
 
 def _body(ns: Namespace, target):
@@ -290,8 +376,120 @@ def _constant(expr: ast.AST) -> str | None:
     return expr.value if isinstance(expr, ast.Constant) and isinstance(expr.value, str) else None
 
 
-def render(item: dict) -> str:
-    """One finding, in the argument-finding shape the retry loop and reasons read."""
+def key_hints(root: Path, path: str, source: str, span: tuple[int, int]) -> list[str]:
+    """Keys a repo callable in ``span`` reads, for the first rewrite prompt.
+
+    ``span`` is the enclosing statement or the function the model is asked to
+    rewrite. A line is included when a call there resolves to a function or
+    classmethod in this repo and ``param_reads`` sees that parameter read with
+    ``p['k']``, ``.get`` or ``.pop`` (a helper one level down counts). Nothing
+    is returned when no call qualifies, so a prompt for any other site stays
+    as it was."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    module = module_name(path)
+    ns = Namespace(repo_modules(root, path, tree), {})
+    module = next((name for name in _names_for(path) if ns.modules.get(name) is tree), module)
+    hints: list[str] = []
+    seen: set[tuple[int, str]] = set()
+
+    def consider(func, owner, call: ast.Call) -> None:
+        if any(isinstance(arg, ast.Starred) for arg in call.args) or any(kw.arg is None for kw in call.keywords):
+            return
+        target = _callee(ns, module, func, owner, call.func, call.lineno, 0)
+        found = _body(ns, target)
+        if found is None:
+            return
+        fmodule, node, klass, name = found
+        spec = parameters(ns, target)
+        if spec is None:
+            return
+        for param, _annotation in spec[1]:
+            if (id(node), param) in seen:
+                continue
+            reads = param_reads(ns, fmodule, node, klass, param, 0)
+            if reads is None or not reads.keys or not _lookup_reads(ns, fmodule, node, klass, param, 0):
+                continue
+            seen.add((id(node), param))
+            required = sorted(reads.required)
+            optional = sorted(reads.optional - reads.required)
+            item = {
+                "path": path,
+                "line": call.lineno,
+                "param": param,
+                "required": required,
+                "optional": optional,
+                "opaque": reads.opaque,
+                "node": node,
+            }
+            shown = ", ".join(repr(key) for key in required) or "none"
+            text = f"{name} parameter {param} reads keys: required {shown}"
+            if optional:
+                text += "; optional " + ", ".join(repr(key) for key in optional)
+            examples = example_calls(ns, root, item)
+            if examples:
+                text += "\nExisting calls that pass a valid argument: " + "; ".join(examples)
+            hints.append(text)
+
+    for func, owner in _functions(module, tree):
+        for call in ast.walk(func):
+            if not isinstance(call, ast.Call) or not (span[0] <= call.lineno <= span[1]):
+                continue
+            if _innermost(func, call) is not func:
+                continue
+            consider(func, owner, call)
+    for stmt in tree.body:
+        end = stmt.end_lineno or stmt.lineno
+        if end < span[0] or stmt.lineno > span[1]:
+            continue
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for call in ast.walk(stmt):
+            if isinstance(call, ast.Call) and span[0] <= call.lineno <= span[1]:
+                consider(None, None, call)
+    return hints
+
+
+def _lookup_reads(ns, module: str, node: ast.AST, klass, param: str, depth: int) -> bool:
+    """Whether ``param`` is read with a subscript, ``.get`` or ``.pop``.
+
+    A repo helper the parameter is handed to counts, one level down, the same
+    way ``param_reads`` does. A membership test alone does not."""
+    for item in _own_nodes(node):
+        if isinstance(item, ast.Subscript) and _is(item.value, param) and isinstance(item.ctx, ast.Load):
+            if _constant(item.slice) is not None:
+                return True
+        elif (
+            isinstance(item, ast.Call)
+            and isinstance(item.func, ast.Attribute)
+            and _is(item.func.value, param)
+            and item.func.attr in (*_OPTIONAL_CALLS, "pop")
+            and item.args
+            and _constant(item.args[0]) is not None
+        ):
+            return True
+        elif isinstance(item, ast.Call) and depth < _HELPER_DEPTH:
+            helper = _callee(ns, module, node, klass, item.func, item.lineno, 0)
+            if helper is None and klass is not None:
+                helper = _own_method(ns, node, klass, item.func)
+            found = _body(ns, helper)
+            pairs = _pairs(ns, helper, item) if found is not None else None
+            if found is None or pairs is None:
+                continue
+            for _target_param, arg in _helper_args(ns, item, param):
+                name = next((pname for pname, value in pairs if value is arg), None)
+                if name and _lookup_reads(ns, found[0], found[1], found[2], name, depth + 1):
+                    return True
+    return False
+
+
+def render(item: dict, examples: list[str] | None = None) -> str:
+    """One finding, in the argument-finding shape the retry loop and reasons read.
+
+    ``examples`` are other calls that already pass a valid argument, so a retry
+    sees the keys this callee reads and calls that fit them."""
     supplied = ", ".join(repr(key) for key in item["supplied"]) or "none"
     reads = ", ".join(repr(key) for key in item["required"]) or "none"
     optional = ", ".join(repr(key) for key in item["optional"])
@@ -305,7 +503,10 @@ def render(item: dict) -> str:
         text += f"; missing required {', '.join(repr(key) for key in item['missing'])}"
     else:
         text += "; none of the passed keys is read"
-    return text + f"; pass a dict with the keys {item['owner']} reads"
+    text += f"; pass a dict with the keys {item['owner']} reads"
+    if examples:
+        text += "\nExisting calls that pass a valid argument: " + "; ".join(examples)
+    return text
 
 
 def key(item: dict) -> tuple:
