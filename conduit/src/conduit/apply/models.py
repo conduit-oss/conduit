@@ -10,6 +10,8 @@ from typing import Any
 class SiteStatus(str, Enum):
     FIXED_VERIFIED = "fixed (verified)"
     FIXED_UNVERIFIED = "fixed (unverified: no tests)"
+    #: The tests pass, but none of them runs the changed lines: the fix is unproven.
+    FIXED_NOT_COVERED = "fixed, not covered by tests"
     NEEDS_HUMAN = "needs-human"
     DRY_RUN = "dry-run"
     SKIPPED = "skipped"

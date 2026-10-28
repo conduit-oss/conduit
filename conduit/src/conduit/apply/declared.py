@@ -677,10 +677,14 @@ def declared_type_breaks(
     module = module_name(path)
     ns = Namespace(repo_modules(root, path, tree), release)
     module = next((name for name in _names_for(path) if ns.modules.get(name) is tree), module)
+    from conduit.apply import dictkeys
+
     found = type_mismatches(ns, path, module, tree, span, release_calls)
-    if not found:
+    keyed = dictkeys.key_breaks(ns, path, module, tree, span)
+    if not found and not keyed:
         return []
     before: set[tuple] = set()
+    keyed_before: set[tuple] = set()
     if original:
         try:
             old_tree = ast.parse(original)
@@ -688,9 +692,14 @@ def declared_type_breaks(
             old_tree = None
         if old_tree is not None:
             old_ns = Namespace(repo_modules(root, path, old_tree), release)
-            for item in type_mismatches(old_ns, path, module, old_tree, (1, len(original.splitlines()) + 1)):
+            whole = (1, len(original.splitlines()) + 1)
+            for item in type_mismatches(old_ns, path, module, old_tree, whole):
                 before.add(_key(item))
-    return [render(ns, item) for item in found if _key(item) not in before]
+            for item in dictkeys.key_breaks(old_ns, path, module, old_tree, whole):
+                keyed_before.add(dictkeys.key(item))
+    return [render(ns, item) for item in found if _key(item) not in before] + [
+        dictkeys.render(item) for item in keyed if dictkeys.key(item) not in keyed_before
+    ]
 
 
 def _key(item: dict) -> tuple:

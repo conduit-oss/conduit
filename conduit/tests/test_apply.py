@@ -99,6 +99,47 @@ def _bad_edit_wrong_name() -> str:
     )
 
 
+# A stand-in test suite for the tiny repos below: it imports each top-level
+# module (stubbing modules the repo leaves out) and calls each of its functions
+# with a permissive stub, so a rewrite
+# is executed (and counts as covered); failures inside a call are ignored.
+_EXERCISE_SCRIPT = """\
+import importlib, inspect, pathlib, sys
+sys.path.insert(0, ".")
+class Stub:
+    def __getattr__(self, name):
+        return Stub()
+    def __call__(self, *args, **kwargs):
+        return Stub()
+    def __getitem__(self, key):
+        return Stub()
+    def __iter__(self):
+        return iter([Stub()])
+ran = 0
+for file in sorted(pathlib.Path(".").glob("*.py")):
+    module = None
+    for _ in range(5):
+        try:
+            module = importlib.import_module(file.stem)
+            break
+        except ModuleNotFoundError as exc:  # a module the tiny repo leaves out
+            sys.modules[exc.name] = Stub()
+        except Exception:
+            break
+    if module is None:
+        continue
+    for name, func in vars(module).items():
+        if inspect.isfunction(func) and func.__module__ == module.__name__:
+            try:
+                func(*[Stub() for _ in inspect.signature(func).parameters])
+            except Exception:
+                pass
+            ran += 1
+print(f"{ran} passed")
+"""
+_EXERCISE = "python3 -c " + __import__("shlex").quote(_EXERCISE_SCRIPT)
+
+
 def _settings(**kwargs) -> TokenFactorySettings:
     return TokenFactorySettings.from_env(api_key="test-key-not-for-logging", **kwargs)
 
@@ -148,7 +189,7 @@ def test_happy_path_write_verified(tmp_path: Path):
             root=root,
             settings=_settings(),
             write=True,
-            test_cmd="python3 -c \"print('ok')\"",
+            test_cmd=_EXERCISE,
             client=client,
             site_cleared=cleared,
         ),
@@ -363,7 +404,7 @@ def test_test_failure_feedback_fed_to_model_is_trimmed(tmp_path: Path):
     fail_once.write_text(
         "#!/bin/sh\n"
         f"if [ ! -f '{marker}' ]; then touch '{marker}'; cat '{log_file}'; exit 1; fi\n"
-        "exit 0\n",
+        f"exec {_EXERCISE}\n",
         encoding="utf-8",
     )
     fail_once.chmod(0o755)
@@ -653,7 +694,7 @@ def test_recheck_rejects_rewrite_that_uses_a_removed_param(tmp_path: Path, monke
             root=root,
             settings=_settings(max_attempts=2),
             write=True,
-            test_cmd="python3 -c \"print('ok')\"",
+            test_cmd=_EXERCISE,
             client=client,
             recheck_impact=True,
         ),
@@ -691,7 +732,7 @@ def test_recheck_accepts_clean_rewrite_after_feedback(tmp_path: Path, monkeypatc
             root=root,
             settings=_settings(max_attempts=3),
             write=True,
-            test_cmd="python3 -c \"print('ok')\"",
+            test_cmd=_EXERCISE,
             client=client,
             recheck_impact=True,
         ),
@@ -1190,7 +1231,8 @@ def test_batch_runs_tests_once_after_every_site_is_rewritten(tmp_path: Path):
     client = FakeModelClient(responses=[_edit("broken", "client.new_call(1)"), "why", _edit("second", "client.new_call(2)"), "why"])
     report = apply_sites(
         sites,
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=check, client=client, site_cleared=lambda *_a: True),
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=f"{check} && {_EXERCISE}", client=client,
+                    site_cleared=lambda *_a: True),
     )
     assert [r.status for r in report.results] == [SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_VERIFIED]
     assert "old_call" not in (root / "mod.py").read_text() + (root / "two.py").read_text()
@@ -1216,7 +1258,7 @@ def test_batch_retries_the_blamed_site_then_reverts_it(tmp_path: Path):
     )
     report = apply_sites(
         sites,
-        ApplyConfig(root=root, settings=_settings(max_attempts=3), write=True, test_cmd=f"python3 {script}", client=client,
+        ApplyConfig(root=root, settings=_settings(max_attempts=3), write=True, test_cmd=f"python3 {script} && {_EXERCISE}", client=client,
                     site_cleared=lambda *_a: True),
     )
     first, second = report.results
@@ -1335,7 +1377,7 @@ def test_batch_routes_masked_read_back_to_the_feeding_rewrite(tmp_path: Path, mo
             root=root,
             settings=_settings(),
             write=True,
-            test_cmd="python3 -c \"print('ok')\"",
+            test_cmd=_EXERCISE,
             client=client,
             recheck_impact=True,
         ),
@@ -1369,7 +1411,7 @@ def test_routed_masked_read_is_not_verified_and_names_the_finding(tmp_path: Path
             root=root,
             settings=_settings(),
             write=True,
-            test_cmd="python3 -c \"print('ok')\"",
+            test_cmd=_EXERCISE,
             client=client,
             recheck_impact=True,
         ),
@@ -1550,7 +1592,7 @@ def test_loosened_any_hint_uses_the_callers_type(tmp_path: Path):
             root=root,
             settings=_settings(),
             write=True,
-            test_cmd="python3 -c \"print('ok')\"",
+            test_cmd=_EXERCISE,
             client=client,
             site_cleared=lambda *_a: True,
         ),
@@ -1673,7 +1715,7 @@ def test_final_recheck_blocks_verified_after_tests_pass(tmp_path: Path, monkeypa
     )
     report = apply_sites(
         sites_from_payload(payload),
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE,
                     client=client, recheck_impact=True),
     )
     helper, caller = report.results
@@ -1811,7 +1853,9 @@ def test_council_anthropic_1_0_bump_is_fixed_or_honestly_flagged(tmp_path: Path)
 
     for result in report.results:
         site, label = result.site, f"{result.site.path}:{result.site.line} {result.status.value}"
-        assert result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.NEEDS_HUMAN, SiteStatus.SKIPPED}, label
+        assert result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_NOT_COVERED, SiteStatus.NEEDS_HUMAN, SiteStatus.SKIPPED}, label
+        if result.status == SiteStatus.FIXED_NOT_COVERED:
+            assert "so this fix is unproven" in result.why, label
         assert result.why.strip(), label
         if site.via_wrapper:
             # The wrapper caller (anthropic_llm.py:34) is fixed at the SDK line, never rewritten.
@@ -1910,7 +1954,7 @@ def test_final_recheck_drops_a_rewrite_whose_dependency_was_reverted(tmp_path: P
     )
     report = apply_sites(
         sites_from_payload(payload),
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE,
                     client=client, recheck_impact=True),
     )
     caller, helper = report.results
@@ -1930,7 +1974,7 @@ def test_fixed_result_never_has_an_empty_why(tmp_path: Path):
     client = FakeModelClient(responses=[_fn("def post(client):\n    return client.new_call(1)\n"), ""])
     report = apply_sites(
         sites_from_payload(payload),
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"", client=client),
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE, client=client),
     )
     (result,) = report.results
     assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
@@ -1992,7 +2036,7 @@ def test_batch_rewrites_the_producer_first_and_tells_the_consumer_what_it_gets(t
     client = FakeModelClient(responses=[_fn(_CALLER_EDIT), "switched", _fn(_READ_TEXT), "reads content"])
     report = apply_sites(
         sites,
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE,
                     client=client, recheck_impact=True),
     )
     first, second = (call["turns"][-1].content for call in client.calls[0:3:2])
@@ -2029,7 +2073,7 @@ def test_final_recheck_finding_gets_one_retry_before_needs_human(tmp_path: Path,
     )
     report = apply_sites(
         sites_from_payload(payload),
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE,
                     client=client, recheck_impact=True),
     )
     (helper,) = report.results
@@ -2232,7 +2276,7 @@ def test_site_fed_by_a_caller_that_needs_a_human_is_not_verified(tmp_path: Path,
     client = FakeModelClient(responses=[_fn(_CALLER_EDIT)] * 3 + [_fn(_READ_TEXT), "reads content"])
     report = apply_sites(
         sites,
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE,
                     client=client, recheck_impact=True),
     )
     helper, caller = report.results
@@ -2290,7 +2334,7 @@ def test_a_removed_import_still_used_gets_one_retry_then_needs_a_human(tmp_path:
     client = FakeModelClient(responses=[_fn(""), "removed the import", _fn(retry), "retried"])
     report = apply_sites(
         sites,
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE,
                     client=client, recheck_impact=True),
     )
     (result,) = report.results
@@ -2415,7 +2459,7 @@ def test_import_site_rewritten_with_its_use_is_verified(tmp_path: Path, monkeypa
     client = FakeModelClient(responses=[reply, "imports the new type"])
     report = apply_sites(
         sites,
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE,
                     client=client, recheck_impact=True),
     )
     (result,) = report.results
@@ -2471,7 +2515,7 @@ def test_a_site_whose_import_needs_a_human_is_not_rewritten(tmp_path: Path, monk
     client = FakeModelClient(responses=["not json"] * 3)
     report = apply_sites(
         [import_site, use_site],
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE,
                     client=client, recheck_impact=True),
     )
     first, second = report.results
@@ -2644,7 +2688,7 @@ def test_optional_finding_in_final_recheck_gets_one_retry(tmp_path: Path, monkey
     client = FakeModelClient(responses=[_fn(first), "uses new_call", _fn(second), "guards None"])
     report = apply_sites(
         sites,
-        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+        ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE,
                     client=client, recheck_impact=True),
     )
     (result,) = report.results
@@ -2801,7 +2845,7 @@ def test_dropped_note_is_in_the_why_and_the_json_and_status_stays_verified(tmp_p
     (root / "mod.py").write_text("def f(x):\n    return x.old_call(1, old_extra=2)\n", encoding="utf-8")
     sites = sites_from_payload(_impact_payload(path="mod.py", line=2))
     client = FakeModelClient(responses=[_fn("def f(x):\n    return x.new_call(1)\n"), "Switched to new_call.\nSecond line."])
-    config = ApplyConfig(root=root, settings=_settings(), write=True, test_cmd="python3 -c \"print('ok')\"",
+    config = ApplyConfig(root=root, settings=_settings(), write=True, test_cmd=_EXERCISE,
                          client=client, recheck_impact=True)
     report = apply_sites(sites, config)
     (result,) = report.results
@@ -2828,7 +2872,7 @@ def test_a_result_with_no_dropped_arguments_has_an_empty_note(tmp_path: Path, mo
     sites = sites_from_payload(_impact_payload(path="mod.py", line=2))
     client = FakeModelClient(responses=[_fn("def f(x):\n    return x.new_call(1)\n"), "Uses new_call."])
     report = apply_sites(sites, ApplyConfig(root=root, settings=_settings(), write=True,
-                                            test_cmd="python3 -c \"print('ok')\"", client=client, recheck_impact=True))
+                                            test_cmd=_EXERCISE, client=client, recheck_impact=True))
     (result,) = report.results
     assert (result.dropped, result.dropped_note, result.why) == ([], "", "Uses new_call.")
 

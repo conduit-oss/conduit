@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ from typing import Any
 
 from conduit.apply.client import ChatMessage, ModelClient
 from conduit.apply.config import TokenFactorySettings
+from conduit.apply.covered import LineRecord, block_reach, describe, recording, tests_ran
 from conduit.apply.context import (
     ContextError,
     build_context_pack,
@@ -38,7 +40,7 @@ from conduit.apply.splice import (
 )
 from conduit.apply.signatures import _modules, literal_value, new_release_wheel, signatures_for
 from conduit.apply.testrun import Baseline, describe_preexisting, focus, judge, run_tests
-from conduit.apply.change_why import caught, change_why
+from conduit.apply.change_why import caught, caught_keys, change_why
 from conduit.apply.dropped import DROPPED, import_swap_why
 from conduit.apply.producers import repo_producers
 from conduit.apply.typecheck import FLOWS, parameter_brief, structured_requirements
@@ -187,6 +189,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         scratch = Path(tmp) / "tree"
         shutil.copytree(config.root, scratch, ignore=shutil.ignore_patterns(*_SCRATCH_IGNORE))
         originals: dict[str, str] = {}
+        lines = _Lines(paths=[])
         accepted: dict[int, dict[str, Any]] = {}  # id(site) -> sink, in application order
         routes = _RouteState(accepted=accepted)
         work = replace(config, root=scratch, write=True, test_cmd=None, routes=routes)
@@ -210,6 +213,8 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 report.results.append(_apply_one(site, work, client, report))
                 continue
             originals.setdefault(site.path, _read(config.root / site.path))
+            if site.path not in lines.paths:
+                lines.paths.append(site.path)
             texts_of[id(site)] = texts.get(id(site), "")
             moved = _relocate(scratch, site, texts_of[id(site)])
             sink: dict[str, Any] = {"site": site}
@@ -229,7 +234,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
         failure = ""
         for _round in range(config.settings.max_attempts + 1):
-            ok, output = _check(config, scratch, report)
+            ok, output = _check(config, scratch, report, lines)
             if ok or not accepted:
                 failure = "" if ok else output
                 break
@@ -263,7 +268,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _retry_routed(work, client, report, originals, texts_of, slots)
         _drop_traced_reads(work, report, originals, texts_of, slots)
         if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted and not failure:
-            ok, output = _check(config, scratch, report)
+            ok, output = _check(config, scratch, report, lines)
             failure = "" if ok else output
         if failure and accepted:
             # Revert what the last failure points at, then confirm the rest pass.
@@ -271,10 +276,10 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 sink = accepted.pop(key)
                 _rebuild(scratch, originals, accepted, texts_of, sink["site"].path)
                 report.results[slots[key]] = _reverted(report.results[slots[key]], sink["site"], trim_test_feedback(failure))
-            ok, output = _check(config, scratch, report) if accepted else (True, "")
+            ok, output = _check(config, scratch, report, lines) if accepted else (True, "")
             if ok and accepted and _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted:
                 # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
-                ok, output = _check(config, scratch, report)
+                ok, output = _check(config, scratch, report, lines)
             if not ok:
                 for key in list(accepted):
                     sink = accepted.pop(key)
@@ -287,6 +292,12 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 report.results[slots[key]] = replace(done, status=SiteStatus.NEEDS_HUMAN, error=hold, why=hold)
                 continue
             why = _why_when_uncalled(accepted, key) or done.why
+            site = accepted[key]["site"]
+            unproven = _uncovered_why(lines.last, site.path, originals[site.path], accepted[key].get("block", ""), why)
+            if unproven:
+                # The tests pass, but none of them runs this rewrite: never "verified".
+                report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_NOT_COVERED, why=unproven)
+                continue
             report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_VERIFIED, why=why)
         for path, before in originals.items():
             after = _read(scratch / path)
@@ -309,22 +320,57 @@ def _read(path: Path) -> str:
         return ""
 
 
-def _run_cmd(command: str, cwd: Path) -> tuple[bool, str]:
-    proc = subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, check=False)
+def _run_cmd(command: str, cwd: Path, env: dict[str, str] | None = None) -> tuple[bool, str]:
+    proc = subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, check=False, env=env)
     return proc.returncode == 0, ((proc.stdout or "") + (proc.stderr or "")).strip()
 
 
-def _check(config: ApplyConfig, scratch: Path, report: ApplyReport) -> tuple[bool, str]:
+@dataclass
+class _Lines:
+    """The rewritten files to record executed lines in, and the last passing run's record."""
+
+    paths: list[str]
+    last: LineRecord | None = None
+
+
+def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Lines | None = None) -> tuple[bool, str]:
     """Run the tests. Without a baseline, the exit code decides. With one, only
     failures that did not already happen on the base count; the text returned
-    for blame and feedback then holds just those."""
-    if config.baseline is None:
-        return _run_cmd(config.test_cmd or "", scratch)
-    run = run_tests(config.test_cmd or "", scratch)
-    verdict = judge(run, config.baseline)
-    report.preexisting = verdict.preexisting
-    report.new_failures = verdict.new + verdict.missing
-    return verdict.passed, ("" if verdict.passed else focus(run, verdict))
+    for blame and feedback then holds just those. With ``lines``, the lines the
+    run executed in those files are recorded; a passing run's record is kept."""
+    env = dict(os.environ)
+    with recording(scratch, lines.paths if lines is not None else [], env) as record:
+        if config.baseline is None:
+            ok, output = _run_cmd(config.test_cmd or "", scratch, env)
+            record.tests_ran = tests_ran({}, output)
+        else:
+            run = run_tests(config.test_cmd or "", scratch, env)
+            verdict = judge(run, config.baseline)
+            report.preexisting = verdict.preexisting
+            report.new_failures = verdict.new + verdict.missing
+            record.tests_ran = tests_ran(run.outcomes, run.output)
+            ok, output = verdict.passed, ("" if verdict.passed else focus(run, verdict))
+    if lines is not None:
+        lines.last = record if ok else None
+    return ok, output
+
+
+def _uncovered_why(record: LineRecord | None, path: str, original: str, block: str, why: str) -> str:
+    """The reason a fix whose tests pass is still unproven; ``""`` when a test ran
+    every statement it changed."""
+    found = block_reach(record, path, original, block)
+    if found.covered:
+        return ""
+    if record is None or not record.tests_ran:
+        reason = "No test ran: the test command reported no passing test, so this fix is unproven."
+    elif not found.missed:
+        reason = "The tests ran before this rewrite took its final form, so no test runs the changed lines and the fix is unproven."
+    else:
+        reason = f"No test runs the changed lines ({describe(path, found.missed)}), so this fix is unproven."
+    if record is not None and record.replaced:
+        reason += " (Another tracer replaced Conduit's line recorder during the run, so some lines that ran may be missing.)"
+    why = " ".join((why or "").split())
+    return f"{reason} The change: {why}" if why else reason
 
 
 def _rebuild(scratch: Path, originals: dict[str, str], accepted: dict[int, dict[str, Any]], texts: dict[int, str], path: str) -> None:
@@ -527,7 +573,7 @@ def _apply_one(
                 )
             drops: dict[str, Any] = {}
             flows = _verify_site_cleared(config, site, patched, span, drops)
-            tests_ok, test_err = _run_tests(config, site, patched)
+            tests_ok, test_err, record = _run_tests(config, site, patched)
             if not tests_ok:
                 feedback = trim_test_feedback(test_err or "tests failed")
                 last_error = feedback
@@ -548,7 +594,7 @@ def _apply_one(
                 # A fix a type check shaped, or one the model gave no sentence for,
                 # says what changed from the two sources and the findings it cleared.
                 cleared = [*(resolved or []), *earlier]
-                if caught(cleared) or not why.strip():
+                if caught(cleared) or caught_keys(cleared) or not why.strip():
                     why = change_why(
                         pack.full_source, patched, site.line, span, site.expr, site.change, cleared
                     ) or why
@@ -557,9 +603,14 @@ def _apply_one(
                 if config.test_cmd
                 else SiteStatus.FIXED_UNVERIFIED
             )
+            block = "".join(patched.splitlines(keepends=True)[span[0] - 1 : span[1]])
+            if config.test_cmd:
+                unproven = _uncovered_why(record, site.path, pack.full_source, block, why)
+                if unproven:
+                    status, why = SiteStatus.FIXED_NOT_COVERED, unproven
             if config.write:
                 _write_file(config.root, site.path, patched)
-            sink.update(edit=edit, block="".join(patched.splitlines(keepends=True)[span[0] - 1 : span[1]]))
+            sink.update(edit=edit, block=block)
             sink["tokens"] = site_tokens
             sink["flows"] = flows
             return SiteResult(
@@ -578,7 +629,8 @@ def _apply_one(
             if repeated:
                 # A plain type mismatch was already explained once: a further
                 # attempt rarely does better, so it is handed off for review.
-                last_error = "argument type still incompatible after one retry: " + last_error
+                kind = "dict keys still do not match" if _KEYED.search(last_error) else "argument type still incompatible"
+                last_error = f"{kind} after one retry: " + last_error
                 break
             mismatched |= _type_mismatches(exc.findings)
             feedback = _with_earlier(last_error, exc.findings, earlier)
@@ -770,6 +822,9 @@ def _fields_once(text: str, earlier: dict[str, str] | None = None) -> str:
     return "".join(out)
 
 
+_FIXED = {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED, SiteStatus.FIXED_NOT_COVERED}
+
+
 def _fill_why(report: ApplyReport) -> None:
     """No fixed or needs-human result goes out without a reason, and a type's
     field list is printed once across the whole report.
@@ -781,9 +836,9 @@ def _fill_why(report: ApplyReport) -> None:
         why = result.why
         if result.status == SiteStatus.NEEDS_HUMAN:
             why = plain_why(result.error or result.why, result.site.path) or _change_summary(result)
-        elif not why.strip() and result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED}:
+        elif not why.strip() and result.status in _FIXED:
             why = _change_summary(result)
-        if result.dropped_note and result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED}:
+        if result.dropped_note and result.status in _FIXED:
             # One line: a report cell keeps only the first line of ``why``.
             if result.dropped_note not in why:
                 why = " ".join(why.split()) + " " + result.dropped_note
@@ -1736,6 +1791,8 @@ def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -
 _MAX_REQUIRES = 2
 # A recheck finding from ``typecheck.argument_breaks``: ``path:line expr: kw= passes ...``.
 _MISMATCH = re.compile(r"^(?P<path>\S+?):\d+ .*?: (?P<kw>\w+)= passes .*? but (?P<owner>[\w.]+) in ")
+#: A dict-key finding (see ``dictkeys.render``); it shares the shape above.
+_KEYED = re.compile(r"= passes a dict with keys .*? reads keys: required ")
 
 
 def _type_mismatches(findings: list[str]) -> set[tuple[str, str, str]]:
@@ -1843,9 +1900,9 @@ def _constant_values(config: ApplyConfig, site: ImpactSite) -> dict[str, str]:
 
 def _run_tests(
     config: ApplyConfig, site: ImpactSite, patched: str
-) -> tuple[bool, str]:
+) -> tuple[bool, str, LineRecord | None]:
     if not config.test_cmd:
-        return True, ""
+        return True, "", None
     with tempfile.TemporaryDirectory(prefix="conduit-apply-") as tmp:
         scratch = Path(tmp) / "tree"
         shutil.copytree(
@@ -1863,18 +1920,22 @@ def _run_tests(
         target = scratch / site.path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(patched, encoding="utf-8")
-        proc = subprocess.run(
-            config.test_cmd,
-            shell=True,
-            cwd=scratch,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        env = dict(os.environ)
+        with recording(scratch, [site.path], env) as record:
+            proc = subprocess.run(
+                config.test_cmd,
+                shell=True,
+                cwd=scratch,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+        output = (proc.stdout or "") + (proc.stderr or "")
+        record.tests_ran = tests_ran({}, output)
         if proc.returncode == 0:
-            return True, ""
-        err = (proc.stdout or "") + (proc.stderr or "")
-        return False, err.strip() or f"test command exited {proc.returncode}"
+            return True, "", record
+        return False, output.strip() or f"test command exited {proc.returncode}", None
 
 
 def _write_file(root: Path, rel: str, content: str) -> None:

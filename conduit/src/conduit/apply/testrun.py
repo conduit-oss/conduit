@@ -158,10 +158,11 @@ def parse_summary(output: str) -> dict[str, str]:
     return found
 
 
-def run_tests(command: str, cwd: Path) -> TestRun:
+def run_tests(command: str, cwd: Path, env: dict[str, str] | None = None) -> TestRun:
+    """``env`` (default: this process's) is the environment the command runs in."""
     with tempfile.TemporaryDirectory(prefix="conduit-junit-") as tmp:
         report = Path(tmp) / "junit.xml"
-        env = dict(os.environ)
+        env = dict(os.environ if env is None else env)
         extra = f"--junitxml={report} -o junit_family=xunit1 --continue-on-collection-errors"
         env["PYTEST_ADDOPTS"] = (env.get("PYTEST_ADDOPTS", "") + " " + extra).strip()
         # A file put back within the same second at the same size would load a

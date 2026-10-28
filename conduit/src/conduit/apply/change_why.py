@@ -2,7 +2,8 @@
 
 When the model gives no sentence (or a type check shaped the fix), the reason is
 built from what Conduit already has: the original and rewritten function, the
-impact record's change, and any declared-type finding an earlier attempt hit.
+impact record's change, and any declared-type or dict-key finding an earlier
+attempt hit.
 It says what changed (annotations, attributes read), what the type check caught
 (the release's class against the repo's class, both by module) and which fields
 the fix mapped into the expected class. Nothing here knows any library.
@@ -17,6 +18,12 @@ import re
 _FINDING = re.compile(
     r"^\S+?:\d+ .*?\(\.\.\.\): (?P<kw>\w+)= passes (?P<have>.+?) \(from (?P<value>.+?)\) "
     r"but (?P<owner>[\w.]+) in (?P<where>.+?) expects (?P<want>.+?), a different class"
+)
+#: A rendered dict-key finding (see ``dictkeys.render``).
+_KEY_FINDING = re.compile(
+    r"^\S+?:\d+ .*?\(\.\.\.\): (?P<kw>\w+)= passes a dict with keys (?P<have>.+?) \(from (?P<value>.+?)\) "
+    r"but (?P<owner>[\w.]+) in (?P<where>.+?) reads keys: required (?P<required>.+?)(?:; optional (?P<optional>.+?))?"
+    r"; (?:missing required (?P<missing>.+?)|none of the passed keys is read); pass a dict"
 )
 _MAX_FIELDS = 4
 _MAX_EXPR = 48
@@ -131,6 +138,16 @@ def caught(findings: list[str]) -> list[dict[str, str]]:
     return out
 
 
+def caught_keys(findings: list[str]) -> list[dict[str, str]]:
+    """Dict-key findings, parsed, in order, without repeats."""
+    out: list[dict[str, str]] = []
+    for text in findings:
+        match = _KEY_FINDING.match((text or "").strip())
+        if match and match.groupdict() not in out:
+            out.append(match.groupdict())
+    return out
+
+
 def change_why(
     original: str,
     patched: str,
@@ -154,6 +171,14 @@ def change_why(
         parts.append(
             f"the type check caught `{hit['value']}` (`{hit['have']}`) passed as `{hit['kw']}=` "
             f"where `{hit['owner']}` in {hit['where']} expects `{hit['want']}`"
+        )
+    for hit in caught_keys(findings or []):
+        lacks = f"lacked required {hit['missing']}" if hit["missing"] else "had none of the keys it reads"
+        parts.append(
+            f"the key check caught `{hit['value']}` passed as `{hit['kw']}=` to `{hit['owner']}`, "
+            f"which reads {hit['required']}"
+            + (f" (optional {hit['optional']})" if hit["optional"] else "")
+            + f": the dict {lacks}"
         )
     wanted = {hit["want"].split(" or ")[0].rsplit(".", 1)[-1] for hit in hits}
     mapped = _mappings(old, new, roots, wanted) or (_mappings(old, new, roots, set()) if not hits else [])
