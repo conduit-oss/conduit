@@ -40,6 +40,8 @@ def build_context_pack(root: Path, site: ImpactSite) -> ContextPack:
     candidates = [dict(item) for item in site.candidates]
     if candidates:
         release_diff["candidates"] = candidates
+    names = removed_names(source, site)
+    uses = name_uses(source, names, (span[2], span[3])) if names else []
     return ContextPack(
         site=site,
         file_path=site.path,
@@ -53,6 +55,8 @@ def build_context_pack(root: Path, site: ImpactSite) -> ContextPack:
         new_signature=site.new_signature,
         new_docstring=site.new_docstring,
         candidates=candidates,
+        decorators=function_decorators(source, span[2]) if span[0] else [],
+        removed_name_uses=uses,
     )
 
 
@@ -149,3 +153,96 @@ def call_kwargs_at_line(source: str, line: int) -> tuple[str, ...]:
         if isinstance(keyword.arg, str) and keyword.arg
     )
     return names
+
+
+def function_decorators(source: str, def_line: int) -> list[str]:
+    """Decorators of the def that starts at ``def_line``, as ``ast.unparse`` text."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno == def_line:
+            return [ast.unparse(deco) for deco in node.decorator_list]
+    return []
+
+
+def removed_names(source: str, site: ImpactSite) -> set[str]:
+    """Names this file imports from the dependency that the site's change removes.
+
+    The removed symbol's last part (``pkg.types.mod.Thing`` -> ``Thing``) when
+    the file imports exactly that name from the dependency's package."""
+    if site.kind not in {"removed", "renamed"} or not site.symbol:
+        return set()
+    tail = site.symbol.rsplit(".", 1)[-1]
+    top = site.dependency.lower().replace("-", "_")
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    out: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and not node.level and (node.module or "").split(".")[0] == top:
+            for alias in node.names:
+                if alias.name == tail:
+                    out.add(alias.asname or alias.name)
+    return out
+
+
+def name_uses(source: str, names: set[str], span: tuple[int, int]) -> list[dict]:
+    """Every line that still uses one of ``names`` (string annotations included),
+    other than the import that binds it. A use as a parameter or return
+    annotation names that function, so the type that now reaches it can be found."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    lines = source.splitlines()
+    imports = {
+        number
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for number in range(node.lineno, (node.end_lineno or node.lineno) + 1)
+    }
+    found: dict[tuple[str, int], dict] = {}
+
+    def mentions(node: ast.AST) -> set[str]:
+        hit: set[str] = set()
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and sub.id in names:
+                hit.add(sub.id)
+            elif isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                try:
+                    hit |= mentions(ast.parse(sub.value.strip(), mode="eval"))
+                except SyntaxError:
+                    pass
+        return hit
+
+    def add(name: str, line: int, **where: str) -> None:
+        if line in imports or not 0 < line <= len(lines):
+            return
+        item = found.setdefault((name, line), {
+            "name": name,
+            "line": line,
+            "code": lines[line - 1].strip(),
+            "in_this_function": span[0] <= line <= span[1],
+        })
+        for key, value in where.items():
+            item.setdefault(key, value)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            params = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+            for arg in params:
+                if arg.annotation is not None:
+                    for name in mentions(arg.annotation):
+                        add(name, arg.annotation.lineno, function=node.name, param=arg.arg)
+            if node.returns is not None:
+                for name in mentions(node.returns):
+                    add(name, node.returns.lineno, function=node.name, returns="yes")
+        elif isinstance(node, ast.AnnAssign):
+            for name in mentions(node.annotation):
+                add(name, node.annotation.lineno)
+        elif isinstance(node, ast.Name) and node.id in names:
+            add(node.id, node.lineno)
+    return sorted(found.values(), key=lambda item: (item["line"], item["name"]))

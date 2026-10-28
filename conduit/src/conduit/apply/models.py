@@ -10,6 +10,8 @@ from typing import Any
 class SiteStatus(str, Enum):
     FIXED_VERIFIED = "fixed (verified)"
     FIXED_UNVERIFIED = "fixed (unverified: no tests)"
+    #: The tests pass, but none of them runs the changed lines: the fix is unproven.
+    FIXED_NOT_COVERED = "fixed, not covered by tests"
     NEEDS_HUMAN = "needs-human"
     DRY_RUN = "dry-run"
     SKIPPED = "skipped"
@@ -57,6 +59,16 @@ class ContextPack:
     new_signature: str
     new_docstring: str
     candidates: list[dict[str, Any]] = field(default_factory=list)
+    #: Batch only: values other rewritten sites now pass into this function.
+    connected: list[dict[str, Any]] = field(default_factory=list)
+    #: The def's own decorators. They stay in the file as they are; the model
+    #: sees the def without them, and copies it returns are dropped.
+    decorators: list[str] = field(default_factory=list)
+    #: Other uses in this file of a name this site's change removes (see
+    #: ``context.name_uses``), with the type that now reaches them when known.
+    removed_name_uses: list[dict[str, Any]] = field(default_factory=list)
+    #: Batch only: finished new code of the sites this one depends on.
+    producer_rewrites: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +108,10 @@ class SiteResult:
     attempts: int = 0
     error: str = ""
     context: ContextPack | None = None
+    #: Arguments the original call passed that the rewrite no longer does, and
+    #: the one-sentence note about them (also appended to ``why``).
+    dropped: list[str] = field(default_factory=list)
+    dropped_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,4 +125,6 @@ class SiteResult:
             "attempts": self.attempts,
             "error": self.error,
             "via_wrapper": self.site.via_wrapper,
+            "dropped": list(self.dropped),
+            "dropped_note": self.dropped_note,
         }

@@ -31,7 +31,7 @@ class ModelClient(Protocol):
         self,
         *,
         model: str,
-        messages: list[ChatMessage],
+        turns: list[ChatMessage],
         max_tokens: int = 2048,
         temperature: float = 0.2,
         enable_thinking: bool = False,
@@ -54,6 +54,20 @@ class TokenFactoryClient:
     api_key: str = field(repr=False)
     timeout: float = 120.0
     _http: httpx.Client | None = field(default=None, repr=False, compare=False)
+    #: ``(model, enable_thinking) -> [calls, tokens]`` for answered calls, in call order.
+    ledger: dict[tuple[str, bool], list[int]] = field(default_factory=dict, repr=False, compare=False)
+
+    def endpoint(self) -> str:
+        """The chat-completions URL as host and path only (no credentials or query)."""
+        url = httpx.URL(self.base_url.rstrip("/") + "/chat/completions")
+        return f"{url.scheme}://{url.host}{url.path}"
+
+    def call_summary(self) -> list[dict[str, Any]]:
+        """One entry per model and thinking setting: the endpoint, call count and tokens."""
+        return [
+            {"endpoint": self.endpoint(), "model": model, "enable_thinking": thinking, "calls": calls, "tokens": tokens}
+            for (model, thinking), (calls, tokens) in self.ledger.items()
+        ]
 
     def _client(self) -> httpx.Client:
         if self._http is None:
@@ -70,7 +84,7 @@ class TokenFactoryClient:
         self,
         *,
         model: str,
-        messages: list[ChatMessage],
+        turns: list[ChatMessage],
         max_tokens: int = 2048,
         temperature: float = 0.2,
         enable_thinking: bool = False,
@@ -83,7 +97,7 @@ class TokenFactoryClient:
         url = self.base_url.rstrip("/") + "/chat/completions"
         payload: dict[str, Any] = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [{"role": m.role, "content": m.content} for m in turns],
             "max_tokens": max_tokens,
             "temperature": temperature,
             # Required for Nemotron: reasoning otherwise fills the token budget.
@@ -102,19 +116,23 @@ class TokenFactoryClient:
         # Intentionally ignore message.reasoning_content — it is not the fix.
         content = message.get("content") or ""
         usage = data.get("usage") or {}
-        return ChatResult(
+        result = ChatResult(
             content=str(content),
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
             completion_tokens=int(usage.get("completion_tokens") or 0),
             model=str(data.get("model") or model),
         )
+        entry = self.ledger.setdefault((model, bool(enable_thinking)), [0, 0])
+        entry[0] += 1
+        entry[1] += result.total_tokens
+        return result
 
 
 @dataclass
 class FakeModelClient:
     """Deterministic client for offline unit tests.
 
-    ``responses`` is a queue of strings (or callables taking messages).
+    ``responses`` is a queue of strings (or callables taking turns).
     """
 
     responses: list[Any] = field(default_factory=list)
@@ -124,7 +142,7 @@ class FakeModelClient:
         self,
         *,
         model: str,
-        messages: list[ChatMessage],
+        turns: list[ChatMessage],
         max_tokens: int = 2048,
         temperature: float = 0.2,
         enable_thinking: bool = False,
@@ -132,7 +150,7 @@ class FakeModelClient:
         self.calls.append(
             {
                 "model": model,
-                "messages": messages,
+                "turns": turns,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "enable_thinking": enable_thinking,
@@ -142,11 +160,11 @@ class FakeModelClient:
             raise RuntimeError("FakeModelClient has no more recorded responses")
         item = self.responses.pop(0)
         if callable(item):
-            content = item(messages, model=model)
+            content = item(turns, model=model)
         else:
             content = str(item)
         # Approximate token use for cost-guard tests.
-        prompt_chars = sum(len(m.content) for m in messages)
+        prompt_chars = sum(len(m.content) for m in turns)
         return ChatResult(
             content=content,
             prompt_tokens=max(1, prompt_chars // 4),

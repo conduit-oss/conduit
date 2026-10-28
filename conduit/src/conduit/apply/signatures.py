@@ -178,12 +178,19 @@ def _typed_dicts(modules: dict[str, ast.Module], node: ast.AST) -> list[str]:
     return out
 
 
-def _typed_dict_class(modules: dict[str, ast.Module], name: str) -> ast.ClassDef | None:
+def _typed_dict_class(modules: dict[str, ast.Module], name: str, depth: int = 0) -> ast.ClassDef | None:
+    """The class ``name`` when it is a TypedDict (directly, or through TypedDict bases)."""
+    if depth > 6:
+        return None
     for tree in modules.values():
         for node in tree.body:
             if isinstance(node, ast.ClassDef) and node.name == name:
-                bases = [ast.unparse(base) for base in node.bases]
-                if any(base.split(".")[-1] == "TypedDict" for base in bases):
+                bases = [ast.unparse(base).split(".")[-1] for base in node.bases]
+                if "TypedDict" in bases:
+                    return node
+                if bases and any(
+                    base != name and _typed_dict_class(modules, base, depth + 1) is not None for base in bases
+                ):
                     return node
     return None
 
@@ -292,7 +299,11 @@ def _walk_members(
 
 
 def _constructed_return(node: ast.AST) -> str:
-    """Class an unannotated property returns: ``self.x = Cls(...)`` ... ``return self.x``."""
+    """Class an unannotated property returns.
+
+    Either ``self.x = Cls(...)`` followed by ``return self.x``, or a direct
+    ``return Cls(...)`` (a nested resource such as ``return Beta(self)``).
+    """
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return ""
     returned = {ast.unparse(item.value) for item in ast.walk(node) if isinstance(item, ast.Return) and item.value is not None}
@@ -300,6 +311,12 @@ def _constructed_return(node: ast.AST) -> str:
         if isinstance(item, ast.Assign) and isinstance(item.value, ast.Call) and len(item.targets) == 1:
             if ast.unparse(item.targets[0]) in returned:
                 return _type_name(item.value.func)
+    for stmt in node.body:
+        value = stmt.value if isinstance(stmt, ast.Return) else None
+        if isinstance(value, ast.Call):
+            name = _type_name(value.func)
+            if name[:1].isupper():
+                return name
     return ""
 
 
@@ -407,3 +424,102 @@ def _absolute(module: str, node: ast.ImportFrom, *, is_package: bool) -> str:
     if node.level > 1:
         base = base[: len(base) - (node.level - 1)]
     return ".".join([*base, node.module] if node.module else base)
+
+
+_MAX_LITERAL = 200
+
+
+def literal_value(modules: dict[str, ast.Module], dotted: str) -> str:
+    """``repr`` of the literal a module or class constant holds in the wheel, or ``""``.
+
+    Follows plain name and ``module.NAME`` references (``X = _constants.X``) a
+    few hops; anything that is not a short literal yields ``""``."""
+    parts = [part for part in dotted.split(".") if part]
+    if len(parts) < 2:
+        return ""
+    found = _module_assignment(modules, ".".join(parts[:-1]), parts[-1])
+    if found is None and len(parts) >= 3 and parts[-2][:1].isupper():
+        klass = _find_class(modules, parts[-2], ".".join(parts[:-2]), strict=True)
+        if klass is not None:
+            value = _class_assignment(klass[1], parts[-1])
+            found = (klass[0], value) if value is not None else None
+    for _hop in range(4):
+        if found is None:
+            return ""
+        module_name, value = found
+        try:
+            literal = ast.literal_eval(value)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            literal = _MISSING
+        if literal is not _MISSING:
+            text = repr(literal)
+            return text if len(text) <= _MAX_LITERAL else ""
+        if isinstance(value, ast.Name):
+            found = _module_assignment(modules, module_name, value.id)
+        elif isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+            target = _imported_module(modules, module_name, value.value.id)
+            found = _module_assignment(modules, target, value.attr) if target else None
+        else:
+            return ""
+    return ""
+
+
+_MISSING = object()
+
+
+def _assigned(body: list[ast.stmt], name: str) -> ast.expr | None:
+    value = None
+    for node in body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+            value = node.value if node.value is not None else value
+    return value
+
+
+def _class_assignment(node: ast.ClassDef, name: str) -> ast.expr | None:
+    return _assigned(node.body, name)
+
+
+def _module_assignment(
+    modules: dict[str, ast.Module], module_name: str, name: str, depth: int = 0
+) -> tuple[str, ast.expr] | None:
+    """``(module, value)`` for ``name = value`` in the module, following ``from x import name``."""
+    tree = modules.get(module_name)
+    if tree is None or depth > 3:
+        return None
+    value = _assigned(tree.body, name)
+    if value is not None:
+        return module_name, value
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if (alias.asname or alias.name) == name:
+                    source = _absolute(module_name, node, is_package=_is_package(modules, module_name))
+                    if source != module_name:
+                        hit = _module_assignment(modules, source, alias.name, depth + 1)
+                        if hit is not None:
+                            return hit
+    return None
+
+
+def _imported_module(modules: dict[str, ast.Module], module_name: str, alias_name: str) -> str:
+    """The module a bare name refers to in ``module_name`` (``from . import _constants``)."""
+    tree = modules.get(module_name)
+    if tree is None:
+        return ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if (alias.asname or alias.name) == alias_name:
+                    base = _absolute(module_name, node, is_package=_is_package(modules, module_name))
+                    candidate = f"{base}.{alias.name}" if base else alias.name
+                    if candidate in modules:
+                        return candidate
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if (alias.asname or alias.name.split(".")[0]) == alias_name:
+                    target = alias.name if alias.asname else alias.name.split(".")[0]
+                    if target in modules:
+                        return target
+    return ""

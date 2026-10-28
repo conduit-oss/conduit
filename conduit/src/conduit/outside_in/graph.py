@@ -54,6 +54,10 @@ class Binding:
 
 UNKNOWN = Binding("unknown")
 
+#: Bindings that name an outside SDK object. A conditional keeps these and
+#: leaves a branch that resolved to something else out of the union.
+_SDK_KINDS = frozenset({"external_attr", "external_module", "instance_external"})
+
 
 @dataclass
 class Def:
@@ -605,6 +609,12 @@ class _Scanner(ast.NodeVisitor):
             self._record_dict_key(node.target, lineno)
         self.generic_visit(node)
 
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        """``(name := value)`` binds ``name`` to ``value`` for later reads."""
+        if isinstance(node.target, ast.Name):
+            self._note_assign(node.target.id, node.value, node)
+        self.generic_visit(node)
+
     def visit_Yield(self, node: ast.Yield) -> None:
         if node.value is not None and self.enclosing != "<module>":
             self.unit.yields.setdefault(self.enclosing, []).append(node.value)
@@ -1078,7 +1088,34 @@ class _Resolver:
             if left.kind != "unknown":
                 return left
             return self._resolve_expr(node.right, unit, enclosing, stack, nxt)
+        if isinstance(node, (ast.BoolOp, ast.IfExp, ast.NamedExpr)):
+            return self._resolve_value_branches(node, unit, enclosing, stack, nxt)
         return UNKNOWN
+
+    def _resolve_value_branches(
+        self,
+        node: ast.AST,
+        unit: ModUnit,
+        enclosing: str,
+        stack: set[tuple[str, str, str]],
+        depth: int,
+    ) -> Binding:
+        """``a or b`` / ``a and b`` / ``a if c else b`` / ``(w := a)`` is one of its values.
+
+        A name bound to that expression resolves to every branch that is an SDK
+        receiver, and the call is matched against each of them. A branch that
+        does not resolve is left out. When no branch is an SDK receiver the
+        value stays unknown, which is what a plain local choice already was.
+        """
+        found: list[Binding] = []
+        for branch in _value_branches(node):
+            resolved = self._resolve_expr(branch, unit, enclosing, stack, depth)
+            if resolved.kind in _SDK_KINDS and resolved.target:
+                found.append(resolved)
+        merged = _merge_bindings(found)
+        if merged is None:
+            return UNKNOWN
+        return merged
 
     def _resolve_annotation(
         self,
@@ -1566,7 +1603,9 @@ class _Resolver:
 
         With one type this is that type and an empty rest, which is what a
         call resolved to before alternatives existed. A later type is used
-        only when the preferred one does not define the attribute.
+        only when the preferred one does not define the attribute. When none
+        of them define it, every type stays, so an untyped chain is matched
+        against each receiver.
         """
         if not base.alternatives:
             return base.target, []
@@ -1574,7 +1613,7 @@ class _Resolver:
         library = self._library()
         defined = [target for target in targets if library.has_member(target, attr)]
         if not defined:
-            return base.target, []
+            return base.target, [target for target in targets if target != base.target]
         chosen = base.target if base.target in defined else defined[0]
         return chosen, [target for target in defined if target != chosen]
 
@@ -1971,6 +2010,24 @@ def _visible_assign(
             return None
         return visible[-1][2]
     return unit.assigns.get((enclosing, name))
+
+
+def _value_branches(expr: ast.AST) -> list[ast.AST]:
+    """Values ``expr`` can evaluate to.
+
+    Same split as the declared-type check: each operand of ``or`` / ``and``,
+    both arms of a conditional, the value of a walrus, nested forms flattened.
+    The test of a conditional is not a value.
+    """
+    if isinstance(expr, ast.BoolOp):
+        parts = list(expr.values)
+    elif isinstance(expr, ast.IfExp):
+        parts = [expr.body, expr.orelse]
+    elif isinstance(expr, ast.NamedExpr):
+        parts = [expr.value]
+    else:
+        return [expr]
+    return [leaf for part in parts for leaf in _value_branches(part)]
 
 
 def _fluent_call_steps(
