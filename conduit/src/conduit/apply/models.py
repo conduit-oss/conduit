@@ -12,6 +12,9 @@ class SiteStatus(str, Enum):
     FIXED_UNVERIFIED = "fixed (unverified: no tests)"
     #: The tests pass, but none of them runs the changed lines: the fix is unproven.
     FIXED_NOT_COVERED = "fixed, not covered by tests"
+    #: The rewrite is in place and the tests pass, but it drops data the original
+    #: call passed. A person should look. Never "verified".
+    FIXED_NEEDS_REVIEW = "fixed, needs review"
     NEEDS_HUMAN = "needs-human"
     DRY_RUN = "dry-run"
     SKIPPED = "skipped"

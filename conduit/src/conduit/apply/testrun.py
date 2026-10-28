@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -190,6 +191,39 @@ def run_tests(command: str, cwd: Path, env: dict[str, str] | None = None) -> Tes
         # The command failed without naming a test: nothing per test can be trusted.
         source = "exit-code"
     return TestRun(exit_code=proc.returncode, output=output, outcomes=outcomes, details=details, source=source)
+
+
+_OPTION_TAKES_VALUE = {"-p", "-o", "-k", "-m", "-c", "-W", "--override-ini", "-n"}
+
+
+def isolate_pytest(command: str, node: str) -> str | None:
+    """The same pytest command, running only ``node``.
+
+    ``None`` when ``command`` is not pytest or ``node`` is not a test id, so a
+    runner this cannot split is left to the whole-suite comparison."""
+    if "pytest" not in command or ("::" not in node and not node.endswith(".py")):
+        return None
+    parts = shlex.split(command)
+    prefix: list[str] = []
+    index = 0
+    while index < len(parts):
+        part = parts[index]
+        if part.startswith("-"):
+            prefix.append(part)
+            if part in _OPTION_TAKES_VALUE and index + 1 < len(parts) and not parts[index + 1].startswith("-"):
+                index += 1
+                prefix.append(parts[index])
+            index += 1
+            continue
+        base = part.rsplit("/", 1)[-1]
+        if base.startswith("python") or part == "-m" or base == "pytest" or part.endswith("pytest"):
+            prefix.append(part)
+            index += 1
+            continue
+        break
+    if not any("pytest" in part for part in prefix):
+        return None
+    return shlex.join([*prefix, node])
 
 
 def judge(run: TestRun, baseline: Baseline | None) -> Verdict:
