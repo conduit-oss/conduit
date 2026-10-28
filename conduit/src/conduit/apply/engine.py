@@ -251,6 +251,10 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             # unlocated failure reverted the batch. Leave them in place and
             # separate the cause after the retries.
             blamed = _blame(output, scratch, accepted)
+            others_failed = any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
+            if not blamed and len(accepted) == 1 and not others_failed:
+                # The only rewrite is the only place the failure can sit.
+                blamed = list(accepted)
             if not blamed or _round == config.settings.max_attempts:
                 break
             for key in blamed:
