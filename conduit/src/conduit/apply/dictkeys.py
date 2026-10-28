@@ -21,11 +21,13 @@ from conduit.apply.declared import (
     _functions,
     _has_decorator,
     _innermost,
+    _names_for,
     _own_nodes,
     _rebound,
     _single_binding,
     module_name,
     parameters,
+    repo_modules,
 )
 
 _CATCHES = {"KeyError", "LookupError", "Exception", "BaseException"}
@@ -372,6 +374,115 @@ def _is(expr: ast.AST, name: str) -> bool:
 
 def _constant(expr: ast.AST) -> str | None:
     return expr.value if isinstance(expr, ast.Constant) and isinstance(expr.value, str) else None
+
+
+def key_hints(root: Path, path: str, source: str, span: tuple[int, int]) -> list[str]:
+    """Keys a repo callable in ``span`` reads, for the first rewrite prompt.
+
+    ``span`` is the enclosing statement or the function the model is asked to
+    rewrite. A line is included when a call there resolves to a function or
+    classmethod in this repo and ``param_reads`` sees that parameter read with
+    ``p['k']``, ``.get`` or ``.pop`` (a helper one level down counts). Nothing
+    is returned when no call qualifies, so a prompt for any other site stays
+    as it was."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    module = module_name(path)
+    ns = Namespace(repo_modules(root, path, tree), {})
+    module = next((name for name in _names_for(path) if ns.modules.get(name) is tree), module)
+    hints: list[str] = []
+    seen: set[tuple[int, str]] = set()
+
+    def consider(func, owner, call: ast.Call) -> None:
+        if any(isinstance(arg, ast.Starred) for arg in call.args) or any(kw.arg is None for kw in call.keywords):
+            return
+        target = _callee(ns, module, func, owner, call.func, call.lineno, 0)
+        found = _body(ns, target)
+        if found is None:
+            return
+        fmodule, node, klass, name = found
+        spec = parameters(ns, target)
+        if spec is None:
+            return
+        for param, _annotation in spec[1]:
+            if (id(node), param) in seen:
+                continue
+            reads = param_reads(ns, fmodule, node, klass, param, 0)
+            if reads is None or not reads.keys or not _lookup_reads(ns, fmodule, node, klass, param, 0):
+                continue
+            seen.add((id(node), param))
+            required = sorted(reads.required)
+            optional = sorted(reads.optional - reads.required)
+            item = {
+                "path": path,
+                "line": call.lineno,
+                "param": param,
+                "required": required,
+                "optional": optional,
+                "opaque": reads.opaque,
+                "node": node,
+            }
+            shown = ", ".join(repr(key) for key in required) or "none"
+            text = f"{name} parameter {param} reads keys: required {shown}"
+            if optional:
+                text += "; optional " + ", ".join(repr(key) for key in optional)
+            examples = example_calls(ns, root, item)
+            if examples:
+                text += "\nExisting calls that pass a valid argument: " + "; ".join(examples)
+            hints.append(text)
+
+    for func, owner in _functions(module, tree):
+        for call in ast.walk(func):
+            if not isinstance(call, ast.Call) or not (span[0] <= call.lineno <= span[1]):
+                continue
+            if _innermost(func, call) is not func:
+                continue
+            consider(func, owner, call)
+    for stmt in tree.body:
+        end = stmt.end_lineno or stmt.lineno
+        if end < span[0] or stmt.lineno > span[1]:
+            continue
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for call in ast.walk(stmt):
+            if isinstance(call, ast.Call) and span[0] <= call.lineno <= span[1]:
+                consider(None, None, call)
+    return hints
+
+
+def _lookup_reads(ns, module: str, node: ast.AST, klass, param: str, depth: int) -> bool:
+    """Whether ``param`` is read with a subscript, ``.get`` or ``.pop``.
+
+    A repo helper the parameter is handed to counts, one level down, the same
+    way ``param_reads`` does. A membership test alone does not."""
+    for item in _own_nodes(node):
+        if isinstance(item, ast.Subscript) and _is(item.value, param) and isinstance(item.ctx, ast.Load):
+            if _constant(item.slice) is not None:
+                return True
+        elif (
+            isinstance(item, ast.Call)
+            and isinstance(item.func, ast.Attribute)
+            and _is(item.func.value, param)
+            and item.func.attr in (*_OPTIONAL_CALLS, "pop")
+            and item.args
+            and _constant(item.args[0]) is not None
+        ):
+            return True
+        elif isinstance(item, ast.Call) and depth < _HELPER_DEPTH:
+            helper = _callee(ns, module, node, klass, item.func, item.lineno, 0)
+            if helper is None and klass is not None:
+                helper = _own_method(ns, node, klass, item.func)
+            found = _body(ns, helper)
+            pairs = _pairs(ns, helper, item) if found is not None else None
+            if found is None or pairs is None:
+                continue
+            for _target_param, arg in _helper_args(ns, item, param):
+                name = next((pname for pname, value in pairs if value is arg), None)
+                if name and _lookup_reads(ns, found[0], found[1], found[2], name, depth + 1):
+                    return True
+    return False
 
 
 def render(item: dict, examples: list[str] | None = None) -> str:

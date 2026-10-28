@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from conduit.apply.dictkeys import key_hints
 from conduit.apply.models import ContextPack, ImpactSite
 
 
@@ -57,6 +58,7 @@ def build_context_pack(root: Path, site: ImpactSite) -> ContextPack:
         candidates=candidates,
         decorators=function_decorators(source, span[2]) if span[0] else [],
         removed_name_uses=uses,
+        dict_key_hints=key_hints(root, site.path, source, (span[2], span[3])),
     )
 
 

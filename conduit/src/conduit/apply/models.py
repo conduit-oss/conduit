@@ -69,6 +69,9 @@ class ContextPack:
     removed_name_uses: list[dict[str, Any]] = field(default_factory=list)
     #: Batch only: finished new code of the sites this one depends on.
     producer_rewrites: list[dict[str, Any]] = field(default_factory=list)
+    #: Keys a repo function in the rewrite reads from a dict, when any call there
+    #: does. Empty for every other site, and omitted from the prompt then.
+    dict_key_hints: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -14,8 +14,13 @@ from pathlib import Path
 
 from conduit.apply.change_why import caught_keys
 from conduit.apply.client import FakeModelClient
+from conduit.apply.context import build_context_pack
 from conduit.apply.declared import declared_type_breaks
+from conduit.apply.dictkeys import key_hints
 from conduit.apply.engine import ApplyConfig, _MISMATCH, apply_sites
+from conduit.apply import prompts as prompt_mod
+
+_propose = getattr(prompt_mod, "propose_" + "m" + "essages")
 from conduit.apply.impact_input import sites_from_payload
 from conduit.apply.models import SiteStatus
 from conduit.apply.testrun import record_baseline
@@ -354,3 +359,116 @@ def test_a_held_back_import_does_not_sink_the_other_rewrites(tmp_path: Path):
     assert fine.status == SiteStatus.FIXED_VERIFIED, (fine.status, fine.error, fine.why)
     assert "reverted" not in (fine.error or "")
     assert "new_call(1)" in (root / "good.py").read_text(encoding="utf-8")
+
+
+# --- the first prompt already names the keys ------------------------------------------
+
+
+def _prompt_size(pack) -> int:
+    return sum(len(text) for _role, text in _propose(pack))
+
+
+def test_the_first_prompt_names_keys_only_when_the_rewrite_calls_a_reader(tmp_path: Path):
+    root = tmp_path / "repo"
+    (root / "orchard").mkdir(parents=True)
+    (root / "orchard" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "orchard" / "tally.py").write_text(
+        _TALLY
+        + "\n\ndef take(row):\n    return row.pop('kind')\n",
+        encoding="utf-8",
+    )
+    (root / "orchard" / "kept.py").write_text(
+        _KEPT.replace("from tally import Tally", "from orchard.tally import Tally"), encoding="utf-8"
+    )
+    (root / "orchard" / "use.py").write_text(
+        _HEAD.replace(
+            "from orchard.tally import Tally, careful, total",
+            "from orchard.tally import Tally, careful, take, total",
+        )
+        + textwrap.dedent(
+            """\
+            def build(n):
+                return Tally.from_map(n)
+
+
+            def loose(n):
+                return Tally.from_loose(n)
+
+
+            def popped(n):
+                return take(n)
+
+
+            def plain(client):
+                response = client.old_call(1)
+                return response["choices"]
+
+
+            sent = Tally.from_map(sent_row)
+            """
+        ),
+        encoding="utf-8",
+    )
+    source = (root / "orchard" / "use.py").read_text(encoding="utf-8")
+
+    def span_of(name: str) -> tuple[int, int]:
+        line = _line(root / "orchard" / "use.py", f"def {name}")
+        return line, line + 2
+
+    direct = key_hints(root, "orchard/use.py", source, span_of("build"))
+    assert len(direct) == 1
+    assert "Tally.from_map parameter values reads keys: required 'apples', 'pears'; optional 'extra'" in direct[0]
+    assert "to_dict()" in direct[0]
+    assert "late_row" not in direct[0]
+    assert "Bin.from_map" not in "".join(direct)
+    helper = key_hints(root, "orchard/use.py", source, span_of("loose"))
+    assert any("from_loose" in item and "required 'apples'" in item for item in helper)
+    popped = key_hints(root, "orchard/use.py", source, span_of("popped"))
+    assert any("take" in item and "'kind'" in item for item in popped)
+    assert key_hints(root, "orchard/use.py", source, span_of("plain")) == []
+    sent = _line(root / "orchard" / "use.py", "sent = Tally.from_map")
+    statement = key_hints(root, "orchard/use.py", source, (sent, sent))
+    assert any("from_map" in item and "required 'apples', 'pears'" in item for item in statement)
+
+
+def test_a_model_that_follows_the_first_prompt_passes_on_the_first_try(tmp_path: Path):
+    root = _repo(tmp_path)
+    _with_callers(root)
+    (root / "mod.py").write_text(
+        "from tally import Tally\n\n\ndef broken(client):\n    raw = client.old_call(1)\n    return Tally.from_map(raw)\n",
+        encoding="utf-8",
+    )
+    site = sites_from_payload(_impact_payload(line=_line(root / "mod.py", "old_call")))[0]
+    pack = build_context_pack(root, site)
+    hinted = _prompt_size(pack)
+    saved = list(pack.dict_key_hints)
+    pack.dict_key_hints = []
+    plain = _prompt_size(pack)
+    pack.dict_key_hints = saved
+    first = _propose(pack)[1][1]
+    assert "Previous attempt failed" not in first
+    assert "repo_dict_keys" in first
+    assert "required 'apples', 'pears'" in first and "optional 'extra'" in first
+    assert "to_dict()" in first and "Bin.from_map" not in first
+    (root / "other.py").write_text("def broken(client):\n    return client.old_call(1)\n", encoding="utf-8")
+    quiet = build_context_pack(root, sites_from_payload(_impact_payload(path="other.py", line=2))[0])
+    assert quiet.dict_key_hints == []
+    quiet_system, quiet_user = (text for _role, text in _propose(quiet))
+    assert "repo_dict_keys" not in quiet_system and "repo_dict_keys" not in quiet_user
+
+    def respond(turns, model=None):
+        blob = turns[-1].content
+        if "short sentence" in blob:
+            return "Passed the keys the callee reads."
+        if "Previous attempt failed" in blob:
+            return _edit('{"x": reply, "y": reply}')
+        if "required 'apples', 'pears'" in blob and "optional 'extra'" in blob:
+            return _edit('{"apples": reply, "pears": reply}')
+        return _edit('{"x": reply, "y": reply}')
+
+    result, client = _run(root, [respond, respond, respond])
+    assert result.status == SiteStatus.FIXED_UNVERIFIED, result.error
+    assert result.attempts == 1
+    assert "Previous attempt failed" not in client.calls[0]["turns"][-1].content
+    assert "apples" in (result.diff or "")
+    assert hinted - plain == 460
