@@ -241,12 +241,20 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _drop_traced_reads(work, report, originals, texts_of, slots)
         _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
         failure = ""
+        stashed: dict[str, str] = {}
         for _round in range(config.settings.max_attempts + 1):
             ok, output = _check(config, scratch, report, lines)
             if ok or not accepted:
                 failure = "" if ok else output
                 break
             failure = output
+            # A site the recheck held back still has its old code, so a removed
+            # name stays imported and the module cannot load. That is not a
+            # failure of the other rewrites: keep them, and do not call the ones
+            # in that module verified.
+            if _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
+                failure = ""
+                break
             # An empty blame used to stand for every accepted rewrite, so one
             # unlocated failure reverted the batch. Leave them in place and
             # separate the cause after the retries.
@@ -285,6 +293,8 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted and not failure:
             ok, output = _check(config, scratch, report, lines)
             failure = "" if ok else output
+            if failure and _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
+                failure = ""
         if failure and accepted:
             blamed = _blame(failure, scratch, accepted)
             if blamed:
@@ -301,6 +311,8 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 failure = _separate_failures(
                     config, scratch, report, lines, originals, texts_of, slots, accepted, failure
                 )
+        for path, text in stashed.items():
+            _write_file(scratch, path, text)
         for key in accepted:
             done = report.results[slots[key]]
             hold = accepted[key].get("hold")
@@ -603,6 +615,96 @@ def _blame(output: str, scratch: Path, accepted: dict[int, dict[str, Any]]) -> l
         elif lines or path in output:
             by_file.append(key)
     return by_line or by_file
+
+
+def _absorb_blocked_import(
+    output: str,
+    report: ApplyReport,
+    scratch: Path,
+    originals: dict[str, str],
+    accepted: dict[int, dict[str, Any]],
+    slots: dict[int, int],
+    lines: _Lines,
+    stashed: dict[str, str],
+) -> bool:
+    """Keep rewrites when ``output`` is a load failure from a held-back import.
+
+    Same-module rewrites are marked not covered. Returns True when that load
+    failure should not revert anyone else either."""
+    blocked = _held_back_imports(output, report, scratch, originals)
+    if not blocked:
+        return False
+    _park_unloaded(blocked, scratch, originals, accepted, slots, report, stashed)
+    if accepted and not _import_failure_only(output):
+        return False
+    lines.last = lines.latest
+    return True
+
+
+def _held_back_imports(
+    output: str, report: ApplyReport, scratch: Path, originals: dict[str, str]
+) -> list[tuple[str, int, str]]:
+    """Needs-human sites whose file still imports a name the change removes, when
+    ``output`` is that import failing to load. Each item is ``(path, line, name)``."""
+    load_failure = any(
+        token in output for token in ("ImportError", "ModuleNotFoundError", "cannot import", "ERROR collecting")
+    )
+    if not output or not load_failure:
+        return []
+    found: list[tuple[str, int, str]] = []
+    for result in report.results:
+        if result.status != SiteStatus.NEEDS_HUMAN:
+            continue
+        site = result.site
+        source = _read(scratch / site.path) or originals.get(site.path, "")
+        for name in sorted(removed_names(source, site)):
+            if re.search(rf"cannot import name ['\"]{re.escape(name)}['\"]", output) or (
+                f"'{name}'" in output and "ImportError" in output
+            ):
+                found.append((site.path, site.line, name))
+    return found
+
+
+def _import_failure_only(output: str) -> bool:
+    """The suite failed while loading, with no assertion failure beside it."""
+    if "AssertionError" in output or re.search(r"^FAILED\s+", output, re.M):
+        return False
+    return True
+
+
+def _park_unloaded(
+    blocked: list[tuple[str, int, str]],
+    scratch: Path,
+    originals: dict[str, str],
+    accepted: dict[int, dict[str, Any]],
+    slots: dict[int, int],
+    report: ApplyReport,
+    stashed: dict[str, str],
+) -> None:
+    """Keep rewrites in a module that cannot load, and record why tests never ran them.
+
+    The text is stashed so a later rebuild of the file (which only splices sites
+    still in ``accepted``) cannot drop the rewrite."""
+    by_path: dict[str, tuple[int, str]] = {}
+    for path, line, symbol in blocked:
+        by_path.setdefault(path, (line, symbol))
+    for key in list(accepted):
+        site = accepted[key]["site"]
+        hit = by_path.get(site.path)
+        if hit is None:
+            continue
+        line, symbol = hit
+        why = f"tests could not load: {site.path}:{line} still imports {symbol}"
+        text = stashed.setdefault(site.path, _read(scratch / site.path))
+        done = report.results[slots[key]]
+        report.results[slots[key]] = replace(
+            done,
+            status=SiteStatus.FIXED_NOT_COVERED,
+            why=why,
+            error="",
+            diff=unified_diff_for(site.path, originals.get(site.path, ""), text),
+        )
+        accepted.pop(key)
 
 
 def _reverted(result: SiteResult, site: ImpactSite, note: str) -> SiteResult:
