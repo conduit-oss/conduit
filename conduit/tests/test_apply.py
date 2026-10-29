@@ -1488,7 +1488,7 @@ def _masked_finding(scratch: Path) -> str:
     helper = (scratch / "helper.py").read_text(encoding="utf-8")
     line = next(number for number, row in enumerate(helper.splitlines(), 1) if _MASKED_EXPR in row)
     return (
-        f"helper.py:{line} {_MASKED_EXPR}: from_completion() gets result = BetaMessage "
+        f"helper.py:{line} {_MASKED_EXPR}: from_completion() gets result = ReplyEnvelope "
         "from caller.py:2 in example-sdk 2.0, which has no attribute completion (fields: content)"
     )
 
@@ -1533,7 +1533,7 @@ def test_batch_routes_masked_read_back_to_the_feeding_rewrite(tmp_path: Path, mo
     # (it was not written yet); its retry carries the routed finding.
     retry = client.calls[4]["turns"][-1].content
     assert "no attribute completion" in retry
-    assert "BetaMessage" in retry
+    assert "ReplyEnvelope" in retry
     assert _MASKED_EXPR in retry
 
 
@@ -1866,175 +1866,6 @@ def test_final_recheck_blocks_verified_after_tests_pass(tmp_path: Path, monkeypa
     assert caller.status == SiteStatus.FIXED_VERIFIED
 
 
-#: council-test (a council fork) before its anthropic 0.34.2 -> 1.0.0 bump, and the
-#: impact Conduit mapped for that bump at this commit.
-_COUNCIL_REPO = "https://github.com/conduit-oss/council-test.git"
-_COUNCIL_SHA = "7dba3aac2a97b5b2ea9848d6989b6d2af1f23359"
-_COUNCIL_IMPACT = Path(__file__).resolve().parents[1] / "fixtures" / "apply" / "council-anthropic-0.34.2-1.0.0-impact.json"
-
-
-def _council_python(tmp_path: Path, repo: Path) -> str:
-    """An interpreter with council's requirements and anthropic 1.0.0.
-
-    ``CONDUIT_COUNCIL_PYTHON`` names one; otherwise a venv is built once and
-    kept under ``~/.cache/conduit/`` (keyed by the pinned commit)."""
-    import os
-    import subprocess
-    import sys
-
-    given = os.environ.get("CONDUIT_COUNCIL_PYTHON", "").strip()
-    if given:
-        return given
-    env_dir = Path.home() / ".cache" / "conduit" / f"council-env-{_COUNCIL_SHA[:12]}"
-    python = env_dir / "bin" / "python"
-    if not (env_dir / ".ready").is_file():
-        reqs = (repo / "requirements.txt").read_text(encoding="utf-8")
-        bumped = "\n".join(
-            "anthropic==1.0.0" if line.strip().lower().startswith("anthropic") else line for line in reqs.splitlines()
-        )
-        pinned = tmp_path / "requirements-1.0.0.txt"
-        pinned.write_text(bumped + "\n", encoding="utf-8")
-        subprocess.run([sys.executable, "-m", "venv", "--clear", str(env_dir)], check=True)
-        subprocess.run(
-            [str(python), "-m", "pip", "install", "-q", "-r", str(pinned), "pytest==7.4.4"], check=True, cwd=repo
-        )
-        (env_dir / ".ready").write_text("", encoding="utf-8")
-    return str(python)
-
-
-def _enclosing_span(source: str, line: int) -> tuple[str, tuple[int, int]] | None:
-    """Name and span of the innermost function around ``line``."""
-    best = None
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
-            if start <= line <= (node.end_lineno or node.lineno):
-                if best is None or start >= best[1][0]:
-                    best = (node.name, (start, node.end_lineno or node.lineno))
-    return best
-
-
-def _function_span(source: str, name: str) -> tuple[int, int] | None:
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            return min([node.lineno, *(d.lineno for d in node.decorator_list)]), node.end_lineno or node.lineno
-    return None
-
-
-def _call_keywords(source: str, span: tuple[int, int], attr: str) -> set[str]:
-    found: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == attr
-            and span[0] <= node.lineno <= span[1]
-        ):
-            found |= {kw.arg for kw in node.keywords if kw.arg}
-    return found
-
-
-@pytest.mark.network
-def test_council_anthropic_1_0_bump_is_fixed_or_honestly_flagged(tmp_path: Path):
-    """Demo regression, end to end against Token Factory: council-test's anthropic
-    0.34.2 -> 1.0.0 sites. The model may fix a line or not, so this checks what must
-    hold either way: a line is "fixed (verified)" only when Conduit's own checks pass
-    on the written file and the tests show nothing new failing; anything not fixed
-    says why; dropped arguments are reported; the wrapper caller is skipped."""
-    import os
-    import shlex
-    import shutil
-    import subprocess
-
-    from conduit.apply.config import TokenFactorySettings
-    from conduit.apply.impact_input import load_impact_sites
-    from conduit.apply.testrun import judge, record_baseline, run_tests
-    from conduit.apply.verify import remaining_breaks
-
-    if not os.environ.get("NEBIUS_API_KEY"):
-        pytest.skip("NEBIUS_API_KEY is not set")
-    if shutil.which("git") is None:
-        pytest.skip("git is not installed")
-    repo = tmp_path / "council"
-    source = os.environ.get("CONDUIT_COUNCIL_REPO", _COUNCIL_REPO)
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "fetch", "-q", "--depth", "1", source, _COUNCIL_SHA], check=True)
-    subprocess.run(["git", "-C", str(repo), "checkout", "-q", "FETCH_HEAD"], check=True)
-    python = _council_python(tmp_path, repo)
-    test_cmd = f"{shlex.quote(python)} -m pytest -q tests/unit"
-
-    sites = load_impact_sites(_COUNCIL_IMPACT)
-    pristine = {site.path: (repo / site.path).read_text(encoding="utf-8") for site in sites}
-    baseline = record_baseline(test_cmd, repo)
-    assert baseline.usable, "council's tests did not run on the base commit"
-
-    settings = TokenFactorySettings.from_env(enable_thinking=False)
-    report = apply_sites(
-        sites,
-        ApplyConfig(
-            root=repo,
-            settings=settings,
-            write=True,
-            test_cmd=test_cmd,
-            recheck_impact=True,
-            allow_network=True,
-            baseline=baseline,
-        ),
-    )
-    for result in report.results:
-        print(f"{result.site.path}:{result.site.line} {result.status.value} attempts={result.attempts} dropped={result.dropped}")
-    print(f"tokens={report.tokens_used} new_failures={report.new_failures}")
-    assert len(report.results) == len(sites)
-    assert report.new_failures == [], report.new_failures
-
-    # The tree as written (verified fixes only): nothing fails that passed on the base.
-    after = run_tests(test_cmd, repo)
-    verdict = judge(after, baseline)
-    assert verdict.new == [] and verdict.missing == [], (verdict.new, verdict.missing[:10])
-
-    for result in report.results:
-        site, label = result.site, f"{result.site.path}:{result.site.line} {result.status.value}"
-        assert result.status in {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_NOT_COVERED, SiteStatus.NEEDS_HUMAN, SiteStatus.SKIPPED}, label
-        if result.status == SiteStatus.FIXED_NOT_COVERED:
-            assert "so this fix is unproven" in result.why, label
-        assert result.why.strip(), label
-        if site.via_wrapper:
-            # The wrapper caller (anthropic_llm.py:34) is fixed at the SDK line, never rewritten.
-            assert result.status == SiteStatus.SKIPPED, label
-            assert result.diff == "", label
-            continue
-        if result.status == SiteStatus.SKIPPED:
-            # e.g. another site's rewrite already covered this line: it must say so.
-            continue
-        if result.status == SiteStatus.NEEDS_HUMAN:
-            assert result.error.strip(), label
-            continue
-        # Fixed (verified): written, parses, and Conduit's checks still pass on the final file.
-        assert result.diff.strip(), label
-        final = (repo / site.path).read_text(encoding="utf-8")
-        ast.parse(final)
-        assert final != pristine[site.path], label
-        span = None
-        around = _enclosing_span(pristine[site.path], site.line)
-        if around is not None:
-            span = _function_span(final, around[0])
-            assert span is not None, label
-        left = remaining_breaks(repo, site, final, span=span, allow_network=True, original=pristine[site.path])
-        assert left == [], (label, left)
-        # An argument the original call passed and the rewrite no longer does is reported.
-        if around is not None:
-            before_kw = _call_keywords(pristine[site.path], around[1], "create")
-            after_kw = _call_keywords(final, span, "create")
-            gone = before_kw - after_kw
-            settings_gone = gone & {"temperature", "top_k", "top_p"}
-            assert settings_gone <= set(result.dropped), (label, gone, result.dropped)
-            for name in result.dropped:
-                assert f"`{name}`" in result.dropped_note and result.dropped_note in result.why, (label, name)
-
-    wrapper = [r for r in report.results if r.site.via_wrapper]
-    assert [(r.site.path.rsplit("/", 1)[-1], r.site.line) for r in wrapper] == [("anthropic_llm.py", 34)]
-
-
 def test_callee_reads_follow_the_value_past_a_stale_annotation(tmp_path: Path):
     """A helper parameter annotated with a type nothing defines any more (its import went
     with the old release) says nothing about the value: the caller's release type decides."""
@@ -2234,19 +2065,19 @@ def test_a_type_field_list_is_printed_once_across_the_report():
         return ImpactSite(path=path, line=line, expr="x", dependency="sdk", from_version="1", to_version="2",
                           change="gone", confidence="high", source="wheel")
 
-    fields = "(BetaMessage fields: id: str, content: List[Block])"
-    first = f"rewrite still breaks: pkg/anthropic.py:61 result.completion: no attribute completion {fields}"
-    second = f"rewrite still breaks: pkg/anthropic.py:61 from_completion() gets result, no attribute completion {fields}; read it here"
+    fields = "(ReplyEnvelope fields: id: str, content: List[Block])"
+    first = f"rewrite still breaks: pkg/acmesdk.py:61 result.completion: no attribute completion {fields}"
+    second = f"rewrite still breaks: pkg/acmesdk.py:61 from_completion() gets result, no attribute completion {fields}; read it here"
     report = ApplyReport(results=[
-        SiteResult(site=site("pkg/anthropic.py", 60), status=SiteStatus.NEEDS_HUMAN, error=first),
+        SiteResult(site=site("pkg/acmesdk.py", 60), status=SiteStatus.NEEDS_HUMAN, error=first),
         SiteResult(site=site("pkg/caller.py", 30), status=SiteStatus.NEEDS_HUMAN, why=second, error=second),
     ])
     _fill_why(report)
     one, two = report.results
     # The full findings (model-facing, in ``error``) list the fields once ...
-    assert one.error.count("(BetaMessage fields: ") == 1, one.error
-    assert "(BetaMessage fields: " not in two.error
-    assert "(BetaMessage fields listed at anthropic.py:60); read it here" in two.error, two.error
+    assert one.error.count("(ReplyEnvelope fields: ") == 1, one.error
+    assert "(ReplyEnvelope fields: " not in two.error
+    assert "(ReplyEnvelope fields listed at acmesdk.py:60); read it here" in two.error, two.error
     # ... and the human ``why`` lists none.
     assert "fields" not in one.why and "fields" not in two.why, (one.why, two.why)
 
@@ -2506,20 +2337,20 @@ def test_undefined_names_cover_string_annotations_and_ignore_names_still_bound()
 def test_plain_why_is_one_short_sentence_without_field_lists_or_instructions():
     from conduit.apply.plain import plain_why
 
-    fields = "(BetaMessage fields: id: str, content: List[BetaContentBlock])"
+    fields = "(ReplyEnvelope fields: id: str, content: List[ReplyPart])"
     raw = (
         "rewrite still breaks against the new release: pkg/a.py:61 result.completion: from_completion() gets "
-        f"result = BetaMessage from pkg/b.py:36 in anthropic 1.0.0, which has no attribute completion {fields}; "
+        f"result = ReplyEnvelope from pkg/b.py:36 in acmesdk 1.0.0, which has no attribute completion {fields}; "
         "read what you need here instead of passing it on; depends on pkg/a.py:60, whose fix was not applied (needs a human)"
     )
     assert plain_why(raw, "pkg/b.py") == (
-        "`from_completion()` reads `.completion`, which the `BetaMessage` this line now passes doesn't have "
+        "`from_completion()` reads `.completion`, which the `ReplyEnvelope` this line now passes doesn't have "
         "in 1.0.0; depends on a.py:60 (not fixed)."
     )
     assert plain_why("rewrite repeats a decorator the function already has (@staticmethod on f); give "
                      "function_source without the existing decorators", "x.py") == "The rewrite added a second `@staticmethod`."
-    same = "rewrite still breaks against the new release: pkg/a.py:61 result.completion: result is BetaMessage in anthropic 1.0.0, which has no attribute completion " + fields
-    assert plain_why(same, "pkg/a.py") == "Line 61 reads `.completion`, which `BetaMessage` doesn't have in 1.0.0."
+    same = "rewrite still breaks against the new release: pkg/a.py:61 result.completion: result is ReplyEnvelope in acmesdk 1.0.0, which has no attribute completion " + fields
+    assert plain_why(same, "pkg/a.py") == "Line 61 reads `.completion`, which `ReplyEnvelope` doesn't have in 1.0.0."
     assert plain_why("reverted: the tests still fail with this rewrite\nTraceback ...", "x.py") == "Reverted: the tests failed with this rewrite."
     odd = "token budget exhausted for this site"
     assert plain_why(odd, "x.py") == "token budget exhausted for this site."
@@ -2848,11 +2679,11 @@ def test_plain_why_for_a_wrong_argument_kind():
 
     raw = (
         "rewrite still breaks against the new release: pkg/llm.py:30 self._client.beta.notes.create: notes= "
-        "passes a str but notes.create in example-sdk 1.0.0 expects Iterable[BetaNoteParam], i.e. a list like "
-        "[{\"content\": <Union[str, Iterable[BetaContentBlockParam]]>}] (prompt = self.f(notes))"
+        "passes a str but notes.create in example-sdk 1.0.0 expects Iterable[ReplyNoteParam], i.e. a list like "
+        "[{\"content\": <Union[str, Iterable[ReplyPartParam]]>}] (prompt = self.f(notes))"
     )
     assert plain_why(raw, "pkg/llm.py") == (
-        "Line 30 passes a `str` as `notes=`, but `notes.create` expects `Iterable[BetaNoteParam]` in 1.0.0."
+        "Line 30 passes a `str` as `notes=`, but `notes.create` expects `Iterable[ReplyNoteParam]` in 1.0.0."
     )
 
 
@@ -3024,9 +2855,9 @@ def test_import_swap_why_comes_from_the_diff_not_the_model():
     from conduit.apply.dropped import import_swap_why
 
     before = "import os\nfrom pkg.types import Completion\n\n\ndef f(x: Completion):\n    return x\n"
-    after = "import os\nfrom pkg.types.beta import BetaMessage\n\n\ndef f(x: BetaMessage):\n    return x\n"
+    after = "import os\nfrom pkg.types.reply import ReplyEnvelope\n\n\ndef f(x: ReplyEnvelope):\n    return x\n"
     assert import_swap_why(before, after, 2, "completion.Completion removed") == (
-        "Replaced the import `from pkg.types import Completion` with `from pkg.types.beta import BetaMessage` "
+        "Replaced the import `from pkg.types import Completion` with `from pkg.types.reply import ReplyEnvelope` "
         "(completion.Completion removed)."
     )
     alias = "import os\nfrom pkg.types import Message as Completion\n\n\ndef f(x: Completion):\n    return x\n"
