@@ -571,7 +571,7 @@ def attribute_breaks(
                 typed[arg.arg] = classes
         for node in ast.walk(func):
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-                classes = _call_classes(modules, chains, path, node.value)
+                classes = _call_classes(modules, chains, path, node.value, tree)
                 if classes:
                     typed[node.targets[0].id] = classes
         for node in ast.walk(func):
@@ -1107,10 +1107,11 @@ def _imported_from(tree: ast.Module, name: str) -> str:
     return ""
 
 
-def _call_classes(modules, chains, path: str, expr: ast.AST) -> list[tuple[str, ast.ClassDef]]:
+def _call_classes(modules, chains, path: str, expr: ast.AST, tree: ast.AST | None = None) -> list[tuple[str, ast.ClassDef]]:
     """Return classes of a call into the release at ``expr`` (resolved by the service map)."""
     if not isinstance(expr, ast.Call):
         return []
+    expr = _expand_known_splats(tree, expr)
     for chain in chains:
         if (
             chain.call_rel.replace("\\", "/") == path
@@ -1125,6 +1126,141 @@ def _call_classes(modules, chains, path: str, expr: ast.AST) -> list[tuple[str, 
             returns = _matching_overload_returns(modules, module_name, node, expr)
             return _return_classes(modules, module_name, node, returns)
     return []
+
+
+def _expand_known_splats(tree: ast.AST | None, call: ast.Call) -> ast.Call:
+    """Replace ``**name`` with keywords when the dict's keys are known.
+
+    The call is returned unchanged when a splat cannot be resolved, and overload
+    narrowing then keeps the implementation's return union."""
+    if tree is None or any(isinstance(arg, ast.Starred) for arg in call.args):
+        return call
+    splats = [kw for kw in call.keywords if kw.arg is None]
+    if not splats:
+        return call
+    if len(splats) != 1:
+        return call
+    mapping = _known_mapping(tree, call, splats[0].value)
+    if mapping is None:
+        return call
+    explicit = {kw.arg for kw in call.keywords if kw.arg}
+    keywords = [kw for kw in call.keywords if kw.arg is not None]
+    keywords += [ast.keyword(arg=key, value=value) for key, value in sorted(mapping.items()) if key not in explicit]
+    expanded = ast.Call(func=call.func, args=list(call.args), keywords=keywords)
+    expanded.lineno = call.lineno
+    expanded.end_lineno = getattr(call, "end_lineno", call.lineno)
+    return expanded
+
+
+def _known_mapping(tree: ast.AST, call: ast.Call, expr: ast.AST) -> dict[str, ast.expr] | None:
+    """Keys of the dict ``expr`` builds, when every path is a literal or a known build."""
+    seen: set[int] = set()
+    while isinstance(expr, ast.Name) and id(expr) not in seen:
+        seen.add(id(expr))
+        owner = _enclosing_function(tree, call.lineno) if isinstance(tree, ast.Module) else None
+        bound = _last_assignment(owner, expr.id, getattr(expr, "lineno", call.lineno)) if owner is not None else None
+        if bound is None:
+            return None
+        expr = bound
+    if isinstance(expr, ast.Dict):
+        return _constant_mapping(expr)
+    if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and isinstance(tree, ast.Module):
+        builder = _module_function(tree, expr.func.id)
+        if builder is None:
+            return None
+        return _returned_mapping(builder)
+    return None
+
+
+def _constant_mapping(expr: ast.Dict) -> dict[str, ast.expr] | None:
+    out: dict[str, ast.expr] = {}
+    for key, value in zip(expr.keys, expr.values):
+        if value is None or not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+            return None
+        out[key.value] = value
+    return out
+
+
+def _returned_mapping(func: ast.AST) -> dict[str, ast.expr] | None:
+    """The dict every return path builds. ``None`` when any path is unknown.
+
+    A key whose value is the same constant on every path keeps that constant.
+    A key that is present everywhere but with different values is passed as an
+    unknown value, so it counts as provided without narrowing a literal."""
+    returns = [node.value for node in ast.walk(func) if isinstance(node, ast.Return)]
+    if not returns or any(value is None for value in returns):
+        return None
+    built: list[dict[str, ast.expr]] = []
+    for value in returns:
+        mapping = _mapping_expr(func, value)
+        if mapping is None:
+            return None
+        built.append(mapping)
+    keys = set(built[0])
+    if any(set(item) != keys for item in built):
+        return None
+    out: dict[str, ast.expr] = {}
+    for key in keys:
+        values = [item[key] for item in built]
+        if all(isinstance(item, ast.Constant) and item.value == values[0].value for item in values):
+            out[key] = values[0]
+        else:
+            out[key] = ast.Name(id="_", ctx=ast.Load())
+    return out
+
+
+def _mapping_expr(func: ast.AST, expr: ast.AST) -> dict[str, ast.expr] | None:
+    if isinstance(expr, ast.Dict):
+        return _constant_mapping(expr)
+    if isinstance(expr, ast.Name):
+        assigned = _assigned_mapping(func, expr.id)
+        if assigned is not None:
+            return assigned
+        bound = _last_assignment(func, expr.id, getattr(expr, "end_lineno", expr.lineno) or expr.lineno)
+        if isinstance(bound, ast.Dict):
+            return _constant_mapping(bound)
+    return None
+
+
+def _assigned_mapping(func: ast.AST, name: str) -> dict[str, ast.expr] | None:
+    """``name = {}`` then ``name[key] = value`` for constant keys, and nothing else."""
+    empty: ast.Assign | None = None
+    for node in ast.walk(func):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == name
+            and isinstance(node.value, ast.Dict)
+            and not node.value.keys
+        ):
+            empty = node
+    if empty is None:
+        return None
+    out: dict[str, ast.expr] = {}
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if (
+            isinstance(target, ast.Subscript)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == name
+            and isinstance(target.slice, ast.Constant)
+            and isinstance(target.slice.value, str)
+        ):
+            out[target.slice.value] = node.value
+            continue
+        if isinstance(target, ast.Name) and target.id == name and node is not empty:
+            return None
+    return out or None
+
+
+def _module_function(tree: ast.Module, name: str) -> ast.AST | None:
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    return None
 
 
 def _matching_overload_returns(modules, module_name: str, node: ast.AST, call: ast.Call) -> list[ast.AST]:

@@ -697,9 +697,12 @@ def declared_type_breaks(
                 before.add(_key(item))
             for item in dictkeys.key_breaks(old_ns, path, module, old_tree, whole):
                 keyed_before.add(dictkeys.key(item))
-    return [render(ns, item) for item in found if _key(item) not in before] + [
-        dictkeys.render(item) for item in keyed if dictkeys.key(item) not in keyed_before
-    ]
+    rendered = [render(ns, item) for item in found if _key(item) not in before]
+    for item in keyed:
+        if dictkeys.key(item) in keyed_before:
+            continue
+        rendered.append(dictkeys.render(item, dictkeys.example_calls(ns, root, item)))
+    return rendered
 
 
 def _key(item: dict) -> tuple:

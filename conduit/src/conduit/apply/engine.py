@@ -40,9 +40,9 @@ from conduit.apply.splice import (
     unified_diff_for,
 )
 from conduit.apply.signatures import _modules, literal_value, new_release_wheel, signatures_for
-from conduit.apply.testrun import Baseline, describe_preexisting, focus, judge, run_tests
+from conduit.apply.testrun import Baseline, describe_preexisting, focus, isolate_pytest, judge, run_tests
 from conduit.apply.change_why import caught, caught_keys, change_why
-from conduit.apply.dropped import DROPPED, import_swap_why
+from conduit.apply.dropped import DROPPED, content_dropped, import_swap_why
 from conduit.apply.producers import repo_producers
 from conduit.apply.typecheck import FLOWS, parameter_brief, structured_requirements
 from conduit.apply.verify import remaining_breaks
@@ -112,6 +112,10 @@ class ApplyReport:
     #: also failed on the base, and those that did not.
     preexisting: list[str] | None = None
     new_failures: list[str] | None = None
+    #: Tests that passed on the base and did not run. Not serialized; bisection
+    #: uses it so a collection error is not the same failure as a missing test
+    #: that actually failed.
+    missing: list[str] = field(default_factory=list)
     #: Model calls this run made: endpoint (host and path), model, thinking
     #: setting, call count and tokens, one entry per model and setting.
     model_calls: list[dict[str, Any]] = field(default_factory=list)
@@ -119,6 +123,10 @@ class ApplyReport:
     #: and how long those runs took. The first run of the whole batch is not counted.
     retest_runs: int = 0
     retest_seconds: float = 0.0
+    #: New failures that passed when run once on their own, without the line recorder.
+    flaky: list[str] = field(default_factory=list)
+    #: Set when the traced run failed and the pass/fail run did not.
+    trace_note: str = ""
 
     @property
     def preexisting_note(self) -> str:
@@ -142,6 +150,10 @@ class ApplyReport:
         if self.retest_runs:
             data["retest_runs"] = self.retest_runs
             data["retest_seconds"] = round(self.retest_seconds, 3)
+        if self.flaky:
+            data["flaky"] = list(self.flaky)
+        if self.trace_note:
+            data["trace_note"] = self.trace_note
         return data
 
 
@@ -241,12 +253,26 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _drop_traced_reads(work, report, originals, texts_of, slots)
         _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
         failure = ""
+        stashed: dict[str, str] = {}
+        checked_flakes = False
         for _round in range(config.settings.max_attempts + 1):
             ok, output = _check(config, scratch, report, lines)
             if ok or not accepted:
                 failure = "" if ok else output
                 break
             failure = output
+            if not checked_flakes:
+                checked_flakes = True
+                if _clear_flakes(config, scratch, report):
+                    failure = ""
+                    break
+            # A site the recheck held back still has its old code, so a removed
+            # name stays imported and the module cannot load. That is not a
+            # failure of the other rewrites: keep them, and do not call the ones
+            # in that module verified.
+            if _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
+                failure = ""
+                break
             # An empty blame used to stand for every accepted rewrite, so one
             # unlocated failure reverted the batch. Leave them in place and
             # separate the cause after the retries.
@@ -285,6 +311,8 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted and not failure:
             ok, output = _check(config, scratch, report, lines)
             failure = "" if ok else output
+            if failure and _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
+                failure = ""
         if failure and accepted:
             blamed = _blame(failure, scratch, accepted)
             if blamed:
@@ -301,6 +329,10 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 failure = _separate_failures(
                     config, scratch, report, lines, originals, texts_of, slots, accepted, failure
                 )
+        for path, text in stashed.items():
+            _write_file(scratch, path, text)
+        if accepted and not failure:
+            report.trace_note = _cover(config, scratch, lines)
         for key in accepted:
             done = report.results[slots[key]]
             hold = accepted[key].get("hold")
@@ -309,11 +341,30 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 continue
             why = _why_when_uncalled(accepted, key) or done.why
             site = accepted[key]["site"]
+            note = lines.gaps.get(site.path, "")
+            review = _review_drops(originals.get(site.path, ""), _read(scratch / site.path), site.line)
+            kw = [name for name in (done.dropped or []) if repr(name) not in (review or "")]
+            if kw:
+                shown = ", ".join(repr(name) for name in kw)
+                review = f"{review}, {shown}" if review else f"drops {shown}"
+            if review and why and why not in review:
+                review = f"{review} {why}"
+            if review:
+                # Data the original call passed does not reach the new call.
+                # Tests can still pass. Never call that verified.
+                if note and note not in review:
+                    review = f"{review} {note}"
+                report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_NEEDS_REVIEW, why=review, error="")
+                continue
             unproven = _uncovered_why(lines.last, site.path, originals[site.path], accepted[key].get("block", ""), why)
             if unproven:
                 # The tests pass, but none of them runs this rewrite: never "verified".
+                if note and note not in unproven:
+                    unproven = f"{unproven} {note}"
                 report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_NOT_COVERED, why=unproven)
                 continue
+            if note and note not in why:
+                why = f"{why} {note}".strip()
             report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_VERIFIED, why=why)
         for path, before in originals.items():
             after = _read(scratch / path)
@@ -350,33 +401,124 @@ class _Lines:
     #: The most recent run, passing or not, so a failure that is not caused by
     #: any rewrite can still count lines that actually ran.
     latest: LineRecord | None = None
+    #: Per rewritten file, a note that its line data is missing. Empty when the
+    #: traced run merely failed a test: that does not touch the line record.
+    gaps: dict[str, str] = field(default_factory=dict)
 
 
 def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Lines | None = None) -> tuple[bool, str]:
-    """Run the tests. Without a baseline, the exit code decides. With one, only
-    failures that did not already happen on the base count; the text returned
-    for blame and feedback then holds just those. With ``lines``, the lines the
-    run executed in those files are recorded; a passing run's record is kept."""
+    """Run the tests without the line recorder.
+
+    Pass/fail matches the baseline, which is also recorded without it. A tracer
+    on only one of the two runs makes a tight timing test fail after the fix
+    and pass on the base. Executed lines are a separate run (see ``_cover``) and
+    do not decide this result. Without a baseline, the exit code decides. With
+    one, only failures that did not already happen on the base count."""
+    del lines  # executed lines are recorded later, on their own run
     env = dict(os.environ)
-    with recording(scratch, lines.paths if lines is not None else [], env) as record:
-        if config.baseline is None:
-            ok, output = _run_cmd(config.test_cmd or "", scratch, env)
-            record.tests_ran = tests_ran({}, output)
-        else:
-            run = run_tests(config.test_cmd or "", scratch, env)
-            verdict = judge(run, config.baseline)
-            report.preexisting = verdict.preexisting
-            report.new_failures = verdict.new + verdict.missing
-            record.tests_ran = tests_ran(run.outcomes, run.output)
-            ok, output = verdict.passed, ("" if verdict.passed else focus(run, verdict))
+    if config.baseline is None:
+        ok, output = _run_cmd(config.test_cmd or "", scratch, env)
+        report.missing = []
+    else:
+        run = run_tests(config.test_cmd or "", scratch, env)
+        verdict = judge(run, config.baseline)
+        report.preexisting = verdict.preexisting
+        report.missing = list(verdict.missing)
+        report.new_failures = verdict.new + verdict.missing
+        ok, output = verdict.passed, ("" if verdict.passed else focus(run, verdict))
     if not ok and not output:
         # A failing command that prints nothing is still a failure. An empty
         # string would skip the separation step and keep every rewrite.
         output = "tests failed"
-    if lines is not None:
-        lines.latest = record
-        lines.last = record if ok else None
     return ok, output
+
+
+def _cover(config: ApplyConfig, scratch: Path, lines: _Lines) -> str:
+    """Record executed lines. Whether tests passed here does not matter.
+
+    The record is what decides verified or not covered. A note is returned only
+    when that record is missing or a rewritten module failed to load, so its
+    lines were never written. A test that fails only because the tracer slowed
+    it does not produce a note."""
+    if not config.test_cmd or not lines.paths:
+        return ""
+    env = dict(os.environ)
+    output = ""
+    outcomes: dict[str, str] = {}
+    with recording(scratch, lines.paths, env) as record:
+        if config.baseline is None:
+            _ok, output = _run_cmd(config.test_cmd, scratch, env)
+        else:
+            run = run_tests(config.test_cmd, scratch, env)
+            output = run.output
+            outcomes = run.outcomes
+    record.tests_ran = _lines_usable(outcomes, output)
+    lines.last = record
+    lines.gaps = _trace_gaps(record, output, lines.paths)
+    return " ".join(dict.fromkeys(lines.gaps.values()))
+
+
+def _lines_usable(outcomes: dict[str, str], output: str) -> bool:
+    """True when tests actually ran, so recorded lines can prove a rewrite.
+
+    A failure still counts: the lines that ran before the failure are real.
+    A command that is not a test run does not, even if it executed the file."""
+    if tests_ran(outcomes, output):
+        return True
+    return any(item in {"failed", "error"} for item in outcomes.values())
+
+
+def _trace_gaps(record: LineRecord, output: str, paths: list[str]) -> dict[str, str]:
+    """Notes for files whose line data is missing. A failed test is not one."""
+    if not record.wrote:
+        note = "Line data is missing: the traced run wrote no record."
+        return {path: note for path in paths}
+    gaps: dict[str, str] = {}
+    for path in paths:
+        if record.hits.get(path):
+            continue
+        if _failed_to_load(output, path):
+            gaps[path] = f"Line data is incomplete: {path} failed to load, so its executed lines were not recorded."
+    return gaps
+
+
+def _failed_to_load(output: str, path: str) -> bool:
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    if name not in (output or "") and path not in (output or ""):
+        return False
+    return any(token in output for token in ("ERROR collecting", "ImportError", "ModuleNotFoundError"))
+
+
+def _clear_flakes(config: ApplyConfig, scratch: Path, report: ApplyReport) -> bool:
+    """Rerun each new failure once, alone, without the line recorder.
+
+    True when every one of them passes, so no rewrite is to blame. Those ids
+    are recorded as flaky. A failure that cannot be run on its own is left
+    in place."""
+    ids = [item for item in (report.new_failures or []) if item and item != "(test command)"]
+    if not ids or not config.test_cmd:
+        return False
+    still: list[str] = []
+    for node in ids:
+        if report.retest_runs >= _RETEST_BUDGET:
+            return False
+        command = isolate_pytest(config.test_cmd, node)
+        if command is None:
+            return False
+        started = time.perf_counter()
+        try:
+            run = run_tests(command, scratch, dict(os.environ))
+        finally:
+            report.retest_runs += 1
+            report.retest_seconds += time.perf_counter() - started
+        failed = run.outcomes.get(node) in {"failed", "error"} or (not run.outcomes and run.exit_code != 0)
+        if failed:
+            still.append(node)
+    if still:
+        return False
+    report.flaky = list(ids)
+    report.new_failures = []
+    return True
 
 
 #: Extra runs spent separating one failing rewrite from the rest. The batch's
@@ -450,9 +592,14 @@ def _separate_failures(
             if path in originals:
                 _rebuild(scratch, originals, accepted, texts, path)
 
-    def with_keys(keep: list[int]) -> tuple[bool, str] | None:
-        """Tests with only ``keep`` applied. The accepted set is restored after."""
+    def with_keys(keep: list[int]) -> tuple[bool, str, list[str]] | None:
+        """Tests with only ``keep`` applied. The accepted set is restored after.
+
+        The third item is the new failure ids of that run. Restoring the files
+        also restores the report's failure lists, so a subset cannot overwrite
+        the failure being separated."""
         saved = list(accepted.items())
+        saved_pre, saved_new, saved_missing = report.preexisting, report.new_failures, list(report.missing)
         wanted = set(keep)
         accepted.clear()
         for key, sink in saved:
@@ -462,8 +609,13 @@ def _separate_failures(
         for path in paths:
             _rebuild(scratch, originals, accepted, texts, path)
         try:
-            return timed()
+            result = timed()
+            ids = list(report.new_failures or [])
+            missing = list(report.missing)
+            return None if result is None else (result[0], result[1], ids, missing)
         finally:
+            report.preexisting, report.new_failures = saved_pre, saved_new
+            report.missing = saved_missing
             accepted.clear()
             accepted.update(saved)
             for path in paths:
@@ -483,6 +635,17 @@ def _separate_failures(
             lines.last = proved
             return ""
 
+    original_ids = list(report.new_failures or [])
+
+    def reproduces(ok: bool, ids: list[str], missing: list[str]) -> bool:
+        """True only when this subset still fails the original tests.
+
+        A test that merely did not run (an import or collection error from
+        leaving out a rewrite the others need) is not that failure."""
+        if not original_ids or original_ids == ["(test command)"]:
+            return not ok
+        return set(original_ids) <= set(ids) - set(missing)
+
     def culprits(keys: list[int]) -> list[int] | None:
         if len(keys) <= 1:
             return keys
@@ -490,19 +653,21 @@ def _separate_failures(
             return None
         mid = len(keys) // 2
         left, right = keys[:mid], keys[mid:]
-        left_failed = with_keys(left)
-        if left_failed is None:
+        left_run = with_keys(left)
+        if left_run is None:
             return None
-        if not left_failed[0]:
+        if reproduces(left_run[0], left_run[2], left_run[3]):
             found = culprits(left)
             return keys if found is None else found
-        right_failed = with_keys(right)
-        if right_failed is None:
+        right_run = with_keys(right)
+        if right_run is None:
             return None
-        if not right_failed[0]:
+        if reproduces(right_run[0], right_run[2], right_run[3]):
             found = culprits(right)
             return keys if found is None else found
-        # Neither half fails alone: the two sides only fail together.
+        # Neither half reproduces the original tests. They need each other:
+        # keep them as one group and judge that group, instead of blaming
+        # every site whose subset failed in some other way.
         return keys
 
     suspect = {sink["site"].path for sink in accepted.values() if sink.get("hold")}
@@ -540,6 +705,20 @@ def _separate_failures(
         return ""
     _drop_sites(scratch, originals, accepted, texts, slots, report, list(accepted), failure)
     return ""
+
+
+def _review_drops(original: str, patched: str, line: int) -> str:
+    """``drops ...`` when the rewrite leaves out values the original call passed."""
+    try:
+        values = content_dropped(original, patched, line)
+    except (SyntaxError, ValueError, RecursionError):
+        return ""
+    if not values:
+        return ""
+    shown = ", ".join(repr(value) for value in values[:6])
+    if len(values) > 6:
+        shown += ", ..."
+    return f"drops {shown}"
 
 
 def _uncovered_why(record: LineRecord | None, path: str, original: str, block: str, why: str) -> str:
@@ -603,6 +782,95 @@ def _blame(output: str, scratch: Path, accepted: dict[int, dict[str, Any]]) -> l
         elif lines or path in output:
             by_file.append(key)
     return by_line or by_file
+
+
+def _absorb_blocked_import(
+    output: str,
+    report: ApplyReport,
+    scratch: Path,
+    originals: dict[str, str],
+    accepted: dict[int, dict[str, Any]],
+    slots: dict[int, int],
+    lines: _Lines,
+    stashed: dict[str, str],
+) -> bool:
+    """Keep rewrites when ``output`` is a load failure from a held-back import.
+
+    Same-module rewrites are marked not covered. Returns True when that load
+    failure should not revert anyone else either."""
+    blocked = _held_back_imports(output, report, scratch, originals)
+    if not blocked:
+        return False
+    _park_unloaded(blocked, scratch, originals, accepted, slots, report, stashed)
+    if accepted and not _import_failure_only(output):
+        return False
+    return True
+
+
+def _held_back_imports(
+    output: str, report: ApplyReport, scratch: Path, originals: dict[str, str]
+) -> list[tuple[str, int, str]]:
+    """Needs-human sites whose file still imports a name the change removes, when
+    ``output`` is that import failing to load. Each item is ``(path, line, name)``."""
+    load_failure = any(
+        token in output for token in ("ImportError", "ModuleNotFoundError", "cannot import", "ERROR collecting")
+    )
+    if not output or not load_failure:
+        return []
+    found: list[tuple[str, int, str]] = []
+    for result in report.results:
+        if result.status != SiteStatus.NEEDS_HUMAN:
+            continue
+        site = result.site
+        source = _read(scratch / site.path) or originals.get(site.path, "")
+        for name in sorted(removed_names(source, site)):
+            if re.search(rf"cannot import name ['\"]{re.escape(name)}['\"]", output) or (
+                f"'{name}'" in output and "ImportError" in output
+            ):
+                found.append((site.path, site.line, name))
+    return found
+
+
+def _import_failure_only(output: str) -> bool:
+    """The suite failed while loading, with no assertion failure beside it."""
+    if "AssertionError" in output or re.search(r"^FAILED\s+", output, re.M):
+        return False
+    return True
+
+
+def _park_unloaded(
+    blocked: list[tuple[str, int, str]],
+    scratch: Path,
+    originals: dict[str, str],
+    accepted: dict[int, dict[str, Any]],
+    slots: dict[int, int],
+    report: ApplyReport,
+    stashed: dict[str, str],
+) -> None:
+    """Keep rewrites in a module that cannot load, and record why tests never ran them.
+
+    The text is stashed so a later rebuild of the file (which only splices sites
+    still in ``accepted``) cannot drop the rewrite."""
+    by_path: dict[str, tuple[int, str]] = {}
+    for path, line, symbol in blocked:
+        by_path.setdefault(path, (line, symbol))
+    for key in list(accepted):
+        site = accepted[key]["site"]
+        hit = by_path.get(site.path)
+        if hit is None:
+            continue
+        line, symbol = hit
+        why = f"tests could not load: {site.path}:{line} still imports {symbol}"
+        text = stashed.setdefault(site.path, _read(scratch / site.path))
+        done = report.results[slots[key]]
+        report.results[slots[key]] = replace(
+            done,
+            status=SiteStatus.FIXED_NOT_COVERED,
+            why=why,
+            error="",
+            diff=unified_diff_for(site.path, originals.get(site.path, ""), text),
+        )
+        accepted.pop(key)
 
 
 def _reverted(result: SiteResult, site: ImpactSite, note: str) -> SiteResult:
@@ -1009,7 +1277,12 @@ def _fields_once(text: str, earlier: dict[str, str] | None = None) -> str:
     return "".join(out)
 
 
-_FIXED = {SiteStatus.FIXED_VERIFIED, SiteStatus.FIXED_UNVERIFIED, SiteStatus.FIXED_NOT_COVERED}
+_FIXED = {
+    SiteStatus.FIXED_VERIFIED,
+    SiteStatus.FIXED_UNVERIFIED,
+    SiteStatus.FIXED_NOT_COVERED,
+    SiteStatus.FIXED_NEEDS_REVIEW,
+}
 
 
 def _fill_why(report: ApplyReport) -> None:
