@@ -9,7 +9,31 @@
 
 Conduit flags the lines in your code when an outside service or SDK you depend on changes.
 
-## Install
+## What it does
+
+On a dependency-bump pull request, Conduit finds the call sites the new SDK release breaks. It rewrites the safe ones with NVIDIA Nemotron on Nebius Token Factory, then checks them with the repo's own tests: a baseline run versus the run after the rewrite, a coverage gate, a dict-key check, and a dropped-argument check. The rest are marked needs-human with a reason, or skipped when another rewrite already covers the line. On GitHub it posts one comment on the pull request, and it never pushes or merges.
+
+## Built with NVIDIA Nemotron on Nebius Token Factory
+
+Conduit calls two models through [Nebius Token Factory](https://docs.tokenfactory.nebius.com/api-reference/introduction). Token Factory is the Nebius product this repository uses.
+
+`nvidia/Nemotron-3-Ultra-550b-a55b` writes the rewrites. `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` writes the one-line why.
+
+Both go to Token Factory's OpenAI-compatible chat-completions API at `https://api.tokenfactory.nebius.com/v1/`. Thinking is off (`enable_thinking=false`, sent as `chat_template_kwargs.enable_thinking`). The key is the `NEBIUS_API_KEY` environment variable. Conduit does not log the key.
+
+Token Factory serves open models behind that one endpoint, so Conduit does not run its own GPUs. The large model writes the rewrites. The small model writes the summaries and costs less. Each run logs the Token Factory calls and tokens.
+
+Live demo: [run 40790485322](https://github.com/conduit-oss/council-test/actions/runs/40790485322) on [council-test pull 2](https://github.com/conduit-oss/council-test/pull/2) (anthropic 0.34.2 -> 1.0.0 on a fork of council). 9 affected sites: 3 fixed and verified by the repo's tests, 1 fixed but not covered by tests, 1 fixed but needs review (drops settings), 1 needs-human with a reason, 3 skipped. 320-test suite, 0 new failures (same 4 already failing). About 11 minutes. Log lines:
+
+```text
+Token Factory call: POST https://api.tokenfactory.nebius.com/v1/chat/completions model=nvidia/Nemotron-3-Ultra-550b-a55b thinking=off calls=10 tokens=24782
+Token Factory call: POST https://api.tokenfactory.nebius.com/v1/chat/completions model=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B thinking=off calls=5 tokens=1468
+Token Factory total: calls=15 tokens=26250
+```
+
+Model ids are in the [Token Factory catalog](https://tokenfactory.nebius.com/model-catalog.md).
+
+## Quick start
 
 ```bash
 git clone https://github.com/conduit-oss/conduit.git
@@ -27,9 +51,7 @@ Check that the commands are there:
 conduit --help
 ```
 
-You should see `map`, `watch`, `impact`, `apply`, and `service`.
-
-## Quickstart
+You should see `map`, `watch`, `impact`, `baseline`, `apply`, and `service`.
 
 Map a small app that talks to a database, cloud storage, a webhook, and one API client. From the repo root:
 
@@ -60,7 +82,32 @@ Reachability
 
 `services` are the outside services this repo actually talks to. Each bullet is a file, a line, and how that line uses the service. Reachability is your call, and the path back to the service. `[high]` on a direct call means Conduit could see the call itself.
 
-## map
+### Run apply locally
+
+`conduit apply` needs `NEBIUS_API_KEY` when it calls the model. `--dry-run` only prints the context packs and does not call Token Factory.
+
+```bash
+export NEBIUS_API_KEY=...   # never commit or log this
+conduit apply --path conduit/tests/fixtures/apply-break \
+  --impact conduit/tests/fixtures/apply-break/impact.json --dry-run
+```
+
+The write command, the test command, and every flag are in [Apply](#apply).
+
+## Use it as a GitHub Action
+
+On a pull request that bumps a pinned dependency, a workflow can run Conduit and post one comment. It does not push and it does not merge.
+
+1. Add a repository secret named `NEBIUS_API_KEY`. Open the repo, then **Settings → Secrets and variables → Actions → New repository secret**. If Dependabot opens the pull requests, add the same name under **Settings → Secrets and variables → Dependabot**. Dependabot runs cannot read Actions secrets.
+2. Add `.github/workflows/conduit.yml`. Pin the Conduit install to a full commit. The workflow passes the secret only as `NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}`.
+
+The composite action in `conduit/action.yml` only runs `map` or `watch`. It does not call Token Factory and it does not comment. The bump workflow calls the `conduit` CLI.
+
+The step-by-step, the full workflow, permissions, comment statuses, log lines, and troubleshooting are in [docs/github-actions.md](docs/github-actions.md).
+
+## Commands
+
+### map
 
 `conduit map` lists those services and the lines that reach them, including through a wrapper or an alias. It does not edit anything.
 
@@ -75,7 +122,7 @@ conduit map --path examples/service-clients --service sqlalchemy
 | `--markdown` | Same report, with the evidence path (`sqlalchemy -> db-api`). |
 | `--json` | The same facts as JSON. |
 
-## watch
+### watch
 
 `conduit watch` looks at a newer release of each service on the map and prints the lines that release breaks. A version number by itself is not a result.
 
@@ -105,7 +152,7 @@ The first line is the package and the two versions. Under it, each change, then 
 | `--json` | Machine-readable report. |
 | `--out` | Also write the report files into this directory. |
 
-## impact
+### impact
 
 `conduit impact` is the same line check for one service.
 
@@ -128,7 +175,24 @@ That prints the SQLAlchemy block from the watch example: `Query.from_self` remov
 
 If Conduit cannot tell which versions to compare, or cannot find two API specs, it says `not compared` and why. That is not an all-clear.
 
-## apply
+### baseline
+
+`conduit baseline` records which tests already fail, before `apply` blames a rewrite. Run it with the old dependency versions installed. The tests run in a scratch copy (or the files at `--ref`), so the tree is not touched. The command always exits 0. Failing tests are what it records.
+
+```bash
+conduit baseline --test-cmd "python3 -m pytest -q" --ref origin/main --out /tmp/baseline.json
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--test-cmd` | Required. The same test command `apply` will run. |
+| `--out` | Required. Where to write the baseline JSON. |
+| `--path` | Repo root. Default is the current directory. |
+| `--ref` | Git ref of the base code. Default is the working tree as it is. |
+
+Pass that file to `conduit apply --baseline`. Tests that already failed are reported, not blamed on a fix.
+
+### apply
 
 `conduit apply` takes JSON from `conduit impact --json` and proposes function-scoped fixes with NVIDIA Nemotron through Nebius Token Factory (chat-completions API). The model returns rewritten function source (plus optional imports); Conduit splices by AST span and builds the diff itself. Fixes come from the impact evidence and the model — not from hard-coded recipes.
 
@@ -148,18 +212,24 @@ conduit apply --path conduit/tests/fixtures/apply-break \
 | `--write` | Write verified fixes into the working tree. |
 | `--test-cmd` | Shell command run in a scratch copy after each patch. |
 | `--fixtures` | Offline wheels/specs for the post-patch impact re-check. |
+| `--baseline` | JSON from `conduit baseline`. Tests already failing there are not blamed on a fix. |
 | `--base-url` / `CONDUIT_APPLY_BASE_URL` | Token Factory base URL (default `https://api.tokenfactory.nebius.com/v1/`). |
 | `--model` / `CONDUIT_APPLY_MODEL` | Large model for diffs (default `nvidia/Nemotron-3-Ultra-550b-a55b`). |
 | `--model-small` / `CONDUIT_APPLY_MODEL_SMALL` | Small model for summaries (default `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`). |
 | `--enable-thinking` / `CONDUIT_APPLY_ENABLE_THINKING` | Propose: `chat_template_kwargs.enable_thinking` (default off). |
 | `--enable-thinking-small` / `CONDUIT_APPLY_ENABLE_THINKING_SMALL` | Summarize: same (default off). |
+| `--max-tokens-per-site` / `CONDUIT_APPLY_MAX_TOKENS_PER_SITE` | Stop spending tokens on one site after this many (default 8000). |
+| `--max-attempts` | Retries per site after verification failure (default 3). |
+| `--json` | Machine-readable report. |
 | `NEBIUS_API_KEY` | Token Factory API key. |
 
 Nemotron may put thinking in `reasoning_content` (counts toward `max_tokens`). Apply sends `enable_thinking: false` by default and reads only `message.content`. Test-failure feedback resent to the model is capped at `TEST_FEEDBACK_MAX_LINES` (40) trailing lines.
 
 Docs: [Token Factory intro](https://docs.tokenfactory.nebius.com/api-reference/introduction), [model catalog](https://tokenfactory.nebius.com/model-catalog.md). `--pr` is not in this release.
 
-## service
+On a bump pull request, the [GitHub Action guide](docs/github-actions.md) is what posts the comment. Status strings (`fixed (verified)`, `fixed, not covered by tests`, `fixed, needs review`, `needs-human`, `skipped`) are explained there.
+
+### service
 
 `conduit service` saves a map for one customer, then checks it later and writes a local note of lines that break.
 
@@ -187,7 +257,7 @@ To see what changed, Conduit compares the old and new published libraries. Versi
 
 ## Limits and FAQ
 
-Python only. Conduit does not bump lockfiles, open dependency-update pull requests, or scan for security advisories. It does not watch calls between your own services. `map`, `watch`, and `impact` are read-only. `apply --write` may edit flagged functions after verification; it does not auto-merge.
+Python only. Conduit does not bump lockfiles, open dependency-update pull requests, or scan for security advisories. It does not watch calls between your own services. `map`, `watch`, and `impact` are read-only. `apply --write` may edit flagged functions after verification; it does not auto-merge. The CLI does not push. `--pr` is not in this release. The [GitHub Action](docs/github-actions.md) posts one comment and does not push or merge.
 
 These calls stay invisible:
 
