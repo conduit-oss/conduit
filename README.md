@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo/conduit-wordmark-flange-teal-dark.svg">
+    <img alt="conduit" src="docs/assets/logo/conduit-wordmark-flange-teal-light.svg" width="360">
+  </picture>
+</p>
+
 # Conduit
 
 Conduit flags the lines in your code when an outside service or SDK you depend on changes.
