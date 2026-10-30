@@ -1,0 +1,2 @@
+baseline: 47 tests, 1 failing (exit 1, from junit) -> <logs>/llmflows-baseline.json
+  already failing: tests/llms/test_claude_chat.py::TestClaudeChat::test_generate

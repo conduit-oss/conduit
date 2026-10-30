@@ -1,0 +1,14 @@
+baseline: 64 tests, 13 failing (exit 1, from junit) -> <logs>/gpt-review-baseline.json
+  already failing: tests/test_git.py::test_commit
+  already failing: tests/test_git.py::test_find_git_dir
+  already failing: tests/test_gpt_cli.py::test_cli_gpt_cli[ask --fast -f src/gpt_review/__init__.py 'what programming language is this code written in?']
+  already failing: tests/test_gpt_cli.py::test_cli_gpt_cli[ask --fast how are you]
+  already failing: tests/test_gpt_cli.py::test_cli_gpt_cli[ask how are you]
+  already failing: tests/test_gpt_cli.py::test_cli_gpt_cli[command13]
+  already failing: tests/test_gpt_cli.py::test_cli_gpt_cli[command15]
+  already failing: tests/test_gpt_cli.py::test_cli_gpt_cli[command16]
+  already failing: tests/test_gpt_cli.py::test_cli_gpt_cli[command5]
+  already failing: tests/test_gpt_cli.py::test_cli_gpt_cli[github review]
+  already failing: tests/test_gpt_cli.py::test_cli_gpt_cli[review diff --diff tests/mock.diff --config tests/config.summary.extra.yml]
+  already failing: tests/test_gpt_cli.py::test_cli_gpt_cli[review diff --diff tests/mock.diff --config tests/config.summary.test.yml]
+  already failing: tests/test_openai.py::test_get_model

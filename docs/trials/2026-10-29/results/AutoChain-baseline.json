@@ -1,0 +1,29 @@
+{
+  "command": "python -m pytest -q -p no:cacheprovider tests --ignore=tests/tools/test_pinecone_tool.py --ignore=tests/tools/test_lancedb_tool.py --ignore=tests/tools/test_chromadb_tool.py --ignore=tests/memory/test_long_term_memory.py",
+  "ref": null,
+  "exit_code": 1,
+  "source": "junit",
+  "tests": 17,
+  "failing": [
+    "tests/tools/test_google_search.py::test_google_search"
+  ],
+  "outcomes": {
+    "tests/agent/test_conversational_agent.py::test_plan": "passed",
+    "tests/agent/test_conversational_agent.py::test_should_answer_prompt": "passed",
+    "tests/agent/test_openai_functions_agent.py::test_estimate_confidence": "passed",
+    "tests/agent/test_openai_functions_agent.py::test_function_calling_plan": "passed",
+    "tests/agent/test_openai_functions_agent.py::test_response_plan": "passed",
+    "tests/memory/test_buffer_memory.py::test_buffer_conversation_memory": "passed",
+    "tests/memory/test_buffer_memory.py::test_buffer_kv_memory": "passed",
+    "tests/memory/test_redis_memory.py::test_redis_conversation_memory": "passed",
+    "tests/memory/test_redis_memory.py::test_redis_kv_memory": "passed",
+    "tests/models/test_chat_openai.py::test_chat_completion": "passed",
+    "tests/models/test_chat_openai.py::test_convert_tool_to_dict": "passed",
+    "tests/models/test_openai_ada_encoder.py::test_ada_encoder": "passed",
+    "tests/tools/test_base_tool.py::test_arg_description": "passed",
+    "tests/tools/test_base_tool.py::test_run_tool": "passed",
+    "tests/tools/test_base_tool.py::test_tool_name_override": "passed",
+    "tests/tools/test_google_search.py::test_google_search": "failed",
+    "tests/tools/test_simple_handoff.py::test_simple_handoff": "passed"
+  }
+}

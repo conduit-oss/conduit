@@ -1,0 +1,9 @@
+{
+  "dependency": "twilio",
+  "impacts": [],
+  "deprecations": [],
+  "diffed": [
+    "twilio"
+  ],
+  "notes": []
+}

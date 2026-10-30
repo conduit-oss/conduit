@@ -1,0 +1,148 @@
+<trial-root>/llmflows/.venv/lib/python3.11/site-packages/pytest_asyncio/plugin.py:300: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the "fixture" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+
+==================================== ERRORS ====================================
+______________ ERROR collecting tests/flows/test_base_flowstep.py ______________
+ImportError while importing test module '<trial-root>/llmflows/tests/flows/test_base_flowstep.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+<home> in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/flows/test_base_flowstep.py:5: in <module>
+    from llmflows.flows.base_flowstep import BaseFlowStep
+llmflows/flows/__init__.py:2: in <module>
+    from .flow import Flow
+llmflows/flows/flow.py:8: in <module>
+    from llmflows.flows.flowstep import BaseFlowStep
+llmflows/flows/flowstep.py:9: in <module>
+    from llmflows.llms.llm import BaseLLM
+llmflows/llms/__init__.py:2: in <module>
+    from .openai import OpenAI
+llmflows/llms/openai.py:9: in <module>
+    from openai.error import (
+E   ModuleNotFoundError: No module named 'openai.error'
+________________ ERROR collecting tests/flows/test_flowstep.py _________________
+ImportError while importing test module '<trial-root>/llmflows/tests/flows/test_flowstep.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+<home> in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/flows/test_flowstep.py:5: in <module>
+    from llmflows.flows import FlowStep
+llmflows/flows/__init__.py:2: in <module>
+    from .flow import Flow
+llmflows/flows/flow.py:8: in <module>
+    from llmflows.flows.flowstep import BaseFlowStep
+llmflows/flows/flowstep.py:9: in <module>
+    from llmflows.llms.llm import BaseLLM
+llmflows/llms/__init__.py:2: in <module>
+    from .openai import OpenAI
+llmflows/llms/openai.py:9: in <module>
+    from openai.error import (
+E   ModuleNotFoundError: No module named 'openai.error'
+___________ ERROR collecting tests/flows/test_functional_flowstep.py ___________
+ImportError while importing test module '<trial-root>/llmflows/tests/flows/test_functional_flowstep.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+<home> in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/flows/test_functional_flowstep.py:4: in <module>
+    from llmflows.flows.functional_flowstep import FunctionalFlowStep
+llmflows/flows/__init__.py:2: in <module>
+    from .flow import Flow
+llmflows/flows/flow.py:8: in <module>
+    from llmflows.flows.flowstep import BaseFlowStep
+llmflows/flows/flowstep.py:9: in <module>
+    from llmflows.llms.llm import BaseLLM
+llmflows/llms/__init__.py:2: in <module>
+    from .openai import OpenAI
+llmflows/llms/openai.py:9: in <module>
+    from openai.error import (
+E   ModuleNotFoundError: No module named 'openai.error'
+_______________ ERROR collecting tests/llms/test_claude_chat.py ________________
+ImportError while importing test module '<trial-root>/llmflows/tests/llms/test_claude_chat.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+<home> in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/llms/test_claude_chat.py:5: in <module>
+    from llmflows.llms import ClaudeChat, MessageHistory
+llmflows/llms/__init__.py:2: in <module>
+    from .openai import OpenAI
+llmflows/llms/openai.py:9: in <module>
+    from openai.error import (
+E   ModuleNotFoundError: No module named 'openai.error'
+_____________ ERROR collecting tests/llms/test_message_history.py ______________
+ImportError while importing test module '<trial-root>/llmflows/tests/llms/test_message_history.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+<home> in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/llms/test_message_history.py:4: in <module>
+    from llmflows.llms import MessageHistory
+llmflows/llms/__init__.py:2: in <module>
+    from .openai import OpenAI
+llmflows/llms/openai.py:9: in <module>
+    from openai.error import (
+E   ModuleNotFoundError: No module named 'openai.error'
+__________________ ERROR collecting tests/llms/test_openai.py __________________
+ImportError while importing test module '<trial-root>/llmflows/tests/llms/test_openai.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+<home> in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/llms/test_openai.py:9: in <module>
+    from llmflows.llms import OpenAI
+llmflows/llms/__init__.py:2: in <module>
+    from .openai import OpenAI
+llmflows/llms/openai.py:9: in <module>
+    from openai.error import (
+E   ModuleNotFoundError: No module named 'openai.error'
+_______________ ERROR collecting tests/llms/test_openai_chat.py ________________
+ImportError while importing test module '<trial-root>/llmflows/tests/llms/test_openai_chat.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+<home> in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/llms/test_openai_chat.py:8: in <module>
+    from llmflows.llms import OpenAIChat, MessageHistory
+llmflows/llms/__init__.py:2: in <module>
+    from .openai import OpenAI
+llmflows/llms/openai.py:9: in <module>
+    from openai.error import (
+E   ModuleNotFoundError: No module named 'openai.error'
+____________ ERROR collecting tests/llms/test_openai_embeddings.py _____________
+ImportError while importing test module '<trial-root>/llmflows/tests/llms/test_openai_embeddings.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+<home> in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/llms/test_openai_embeddings.py:7: in <module>
+    from llmflows.llms import OpenAIEmbeddings
+llmflows/llms/__init__.py:2: in <module>
+    from .openai import OpenAI
+llmflows/llms/openai.py:9: in <module>
+    from openai.error import (
+E   ModuleNotFoundError: No module named 'openai.error'
+=========================== short test summary info ============================
+ERROR tests/flows/test_base_flowstep.py
+ERROR tests/flows/test_flowstep.py
+ERROR tests/flows/test_functional_flowstep.py
+ERROR tests/llms/test_claude_chat.py
+ERROR tests/llms/test_message_history.py
+ERROR tests/llms/test_openai.py
+ERROR tests/llms/test_openai_chat.py
+ERROR tests/llms/test_openai_embeddings.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 8 errors during collection !!!!!!!!!!!!!!!!!!!!
+8 errors in 0.45s
+tests_after_exit=2

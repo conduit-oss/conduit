@@ -1,0 +1,17 @@
+ImportError while loading conftest '<trial-root>/gpt-review/tests/conftest.py'.
+tests/conftest.py:5: in <module>
+    from llama_index import SimpleDirectoryReader
+.venv/lib/python3.11/site-packages/llama_index/__init__.py:17: in <module>
+    from llama_index.embeddings.langchain import LangchainEmbedding
+.venv/lib/python3.11/site-packages/llama_index/embeddings/__init__.py:18: in <module>
+    from llama_index.embeddings.huggingface import (
+.venv/lib/python3.11/site-packages/llama_index/embeddings/huggingface.py:17: in <module>
+    from llama_index.llms.huggingface import HuggingFaceInferenceAPI
+.venv/lib/python3.11/site-packages/llama_index/llms/__init__.py:25: in <module>
+    from llama_index.llms.litellm import LiteLLM
+.venv/lib/python3.11/site-packages/llama_index/llms/litellm.py:28: in <module>
+    from llama_index.llms.litellm_utils import (
+.venv/lib/python3.11/site-packages/llama_index/llms/litellm_utils.py:4: in <module>
+    from openai.openai_object import OpenAIObject
+E   ModuleNotFoundError: No module named 'openai.openai_object'
+tests_after_exit=4

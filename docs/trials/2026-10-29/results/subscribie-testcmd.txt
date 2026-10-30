@@ -1,0 +1,1 @@
+python -m pytest -q -p no:cacheprovider tests --ignore=tests/browser-automated-tests-playwright

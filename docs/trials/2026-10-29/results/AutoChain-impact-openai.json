@@ -1,0 +1,450 @@
+{
+  "dependency": "openai",
+  "impacts": [
+    {
+      "dependency": "openai",
+      "from_version": "0.27.8",
+      "to_version": "1.109.1",
+      "change": "chat_completion.ChatCompletion removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.api_resources.chat_completion.ChatCompletion",
+      "old": "openai.api_resources.chat_completion.ChatCompletion",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.resources.chat.completions.completions.ChatCompletion",
+          "signature": "openai.resources.chat.completions.completions.ChatCompletion()"
+        },
+        {
+          "symbol": "openai.types.chat.ChatCompletion",
+          "signature": "openai.types.chat.ChatCompletion()"
+        },
+        {
+          "symbol": "openai.types.chat.chat_completion.ChatCompletion",
+          "signature": "openai.types.chat.chat_completion.ChatCompletion()"
+        },
+        {
+          "symbol": "openai.types.chat.parsed_chat_completion.ChatCompletion",
+          "signature": "openai.types.chat.parsed_chat_completion.ChatCompletion()"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.messages.SyncAPIResource",
+          "signature": "openai.resources.chat.completions.messages.SyncAPIResource(client)"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.messages.AsyncAPIResource",
+          "signature": "openai.resources.chat.completions.messages.AsyncAPIResource(client)"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.completions.SyncAPIResource",
+          "signature": "openai.resources.chat.completions.completions.SyncAPIResource(client)"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.completions.AsyncAPIResource",
+          "signature": "openai.resources.chat.completions.completions.AsyncAPIResource(client)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "autochain/models/chat_openai.py",
+          "line": 189,
+          "expr": "openai.ChatCompletion",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.27.8",
+      "to_version": "1.109.1",
+      "change": "embedding.Embedding removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.api_resources.embedding.Embedding",
+      "old": "openai.api_resources.embedding.Embedding",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.resources.Embeddings",
+          "signature": "openai.resources.Embeddings()"
+        },
+        {
+          "symbol": "openai.resources.embeddings.Embeddings",
+          "signature": "openai.resources.embeddings.Embeddings()"
+        },
+        {
+          "symbol": "openai.resources.realtime.realtime.OpenAI.embeddings",
+          "signature": "openai.resources.realtime.realtime.OpenAI.embeddings()"
+        },
+        {
+          "symbol": "openai.resources.beta.realtime.realtime.OpenAI.embeddings",
+          "signature": "openai.resources.beta.realtime.realtime.OpenAI.embeddings()"
+        },
+        {
+          "symbol": "openai.resources.realtime.realtime.AsyncOpenAI.embeddings",
+          "signature": "openai.resources.realtime.realtime.AsyncOpenAI.embeddings()"
+        },
+        {
+          "symbol": "openai.resources.beta.realtime.realtime.AsyncOpenAI.embeddings",
+          "signature": "openai.resources.beta.realtime.realtime.AsyncOpenAI.embeddings()"
+        },
+        {
+          "symbol": "openai.types.Embedding",
+          "signature": "openai.types.Embedding()"
+        },
+        {
+          "symbol": "openai.OpenAI.embeddings",
+          "signature": "openai.OpenAI.embeddings()"
+        }
+      ],
+      "sites": [
+        {
+          "path": "autochain/models/ada_embedding.py",
+          "line": 35,
+          "expr": "openai.Embedding",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.27.8",
+      "to_version": "1.109.1",
+      "change": "error.APIConnectionError removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.APIConnectionError",
+      "old": "openai.error.APIConnectionError",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.APIConnectionError",
+          "signature": "openai.APIConnectionError(*, message, request)"
+        },
+        {
+          "symbol": "openai._exceptions.APIConnectionError",
+          "signature": "openai._exceptions.APIConnectionError(*, message, request)"
+        },
+        {
+          "symbol": "openai.APIStatusError",
+          "signature": "openai.APIStatusError(message, *, response, body)"
+        },
+        {
+          "symbol": "openai._exceptions.APIError",
+          "signature": "openai._exceptions.APIError(message, request, *, body)"
+        },
+        {
+          "symbol": "openai._exceptions.APIStatusError",
+          "signature": "openai._exceptions.APIStatusError(message, *, response, body)"
+        },
+        {
+          "symbol": "openai.APIResponseValidationError",
+          "signature": "openai.APIResponseValidationError(response, body, *, message)"
+        },
+        {
+          "symbol": "openai._exceptions.APIResponseValidationError",
+          "signature": "openai._exceptions.APIResponseValidationError(response, body, *, message)"
+        },
+        {
+          "symbol": "openai.resources.realtime.realtime.RealtimeConnection.close",
+          "signature": "openai.resources.realtime.realtime.RealtimeConnection.close(*, code, reason)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "autochain/models/base.py",
+          "line": 114,
+          "expr": "openai.error.APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.27.8",
+      "to_version": "1.109.1",
+      "change": "error.APIError removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.APIError",
+      "old": "openai.error.APIError",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai._exceptions.APIError",
+          "signature": "openai._exceptions.APIError(message, request, *, body)"
+        },
+        {
+          "symbol": "openai.APIStatusError",
+          "signature": "openai.APIStatusError(message, *, response, body)"
+        },
+        {
+          "symbol": "openai.APITimeoutError",
+          "signature": "openai.APITimeoutError(request)"
+        },
+        {
+          "symbol": "openai.APIConnectionError",
+          "signature": "openai.APIConnectionError(*, message, request)"
+        },
+        {
+          "symbol": "openai._exceptions.APIStatusError",
+          "signature": "openai._exceptions.APIStatusError(message, *, response, body)"
+        },
+        {
+          "symbol": "openai.APIResponseValidationError",
+          "signature": "openai.APIResponseValidationError(response, body, *, message)"
+        },
+        {
+          "symbol": "openai._exceptions.APITimeoutError",
+          "signature": "openai._exceptions.APITimeoutError(request)"
+        },
+        {
+          "symbol": "openai._exceptions.APIConnectionError",
+          "signature": "openai._exceptions.APIConnectionError(*, message, request)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "autochain/models/base.py",
+          "line": 113,
+          "expr": "openai.error.APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.27.8",
+      "to_version": "1.109.1",
+      "change": "error.RateLimitError removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.RateLimitError",
+      "old": "openai.error.RateLimitError",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.RateLimitError",
+          "signature": "openai.RateLimitError()"
+        },
+        {
+          "symbol": "openai._exceptions.RateLimitError",
+          "signature": "openai._exceptions.RateLimitError()"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.to_json",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.to_dict",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.construct",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.construct(__cls, _fields_set)"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.model_dump",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.model_dump(*, mode, include, exclude, by_alias, exclude_unset, exclude_defaults, exclude_none, round_trip, warnings"
+        },
+        {
+          "symbol": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_json",
+          "signature": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_dict",
+          "signature": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "autochain/models/base.py",
+          "line": 115,
+          "expr": "openai.error.RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.27.8",
+      "to_version": "1.109.1",
+      "change": "error.ServiceUnavailableError removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.ServiceUnavailableError",
+      "old": "openai.error.ServiceUnavailableError",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.APIStatusError",
+          "signature": "openai.APIStatusError(message, *, response, body)"
+        },
+        {
+          "symbol": "openai.APITimeoutError",
+          "signature": "openai.APITimeoutError(request)"
+        },
+        {
+          "symbol": "openai.APIConnectionError",
+          "signature": "openai.APIConnectionError(*, message, request)"
+        },
+        {
+          "symbol": "openai._exceptions.APIError",
+          "signature": "openai._exceptions.APIError(message, request, *, body)"
+        },
+        {
+          "symbol": "openai.LengthFinishReasonError",
+          "signature": "openai.LengthFinishReasonError(*, completion)"
+        },
+        {
+          "symbol": "openai.types.BatchError.to_json",
+          "signature": "openai.types.BatchError.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.BatchError.to_dict",
+          "signature": "openai.types.BatchError.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.cli._errors.display_error",
+          "signature": "openai.cli._errors.display_error(err)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "autochain/models/base.py",
+          "line": 116,
+          "expr": "openai.error.ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.27.8",
+      "to_version": "1.109.1",
+      "change": "error.Timeout removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.Timeout",
+      "old": "openai.error.Timeout",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai._models.FinalRequestOptions.timeout",
+          "signature": "openai._models.FinalRequestOptions.timeout()"
+        },
+        {
+          "symbol": "openai.lib.azure.FinalRequestOptions.timeout",
+          "signature": "openai.lib.azure.FinalRequestOptions.timeout()"
+        },
+        {
+          "symbol": "openai.APITimeoutError",
+          "signature": "openai.APITimeoutError(request)"
+        },
+        {
+          "symbol": "openai._exceptions.APITimeoutError",
+          "signature": "openai._exceptions.APITimeoutError(request)"
+        },
+        {
+          "symbol": "openai.types.realtime.InputAudioBufferTimeoutTriggered.to_json",
+          "signature": "openai.types.realtime.InputAudioBufferTimeoutTriggered.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.realtime.InputAudioBufferTimeoutTriggered.to_dict",
+          "signature": "openai.types.realtime.InputAudioBufferTimeoutTriggered.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.realtime.InputAudioBufferTimeoutTriggered.construct",
+          "signature": "openai.types.realtime.InputAudioBufferTimeoutTriggered.construct(__cls, _fields_set)"
+        },
+        {
+          "symbol": "openai.types.realtime.InputAudioBufferTimeoutTriggered.model_dump",
+          "signature": "openai.types.realtime.InputAudioBufferTimeoutTriggered.model_dump(*, mode, include, exclude, by_alias, exclude_unset, exclude_defaults, exclude_none, round_trip"
+        }
+      ],
+      "sites": [
+        {
+          "path": "autochain/models/base.py",
+          "line": 112,
+          "expr": "openai.error.Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.27.8",
+      "to_version": "1.109.1",
+      "change": "openai.api_base removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.api_base",
+      "old": "openai.api_base",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai._response.BaseAPIResponse",
+          "signature": "openai._response.BaseAPIResponse(*, raw, cast_to, client, stream, stream_cls, options, retries_taken)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient",
+          "signature": "openai._base_client.SyncAPIClient(*, version, base_url, max_retries, timeout, http_client, custom_headers, custom_query, _strict_response_validation)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient",
+          "signature": "openai._base_client.AsyncAPIClient(*, version, base_url, _strict_response_validation, max_retries, timeout, http_client, custom_headers, custom_query)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.get",
+          "signature": "openai._base_client.SyncAPIClient.get(path, *, cast_to, options, stream, stream_cls)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.put",
+          "signature": "openai._base_client.SyncAPIClient.put(path, *, cast_to, body, files, options)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.post",
+          "signature": "openai._base_client.SyncAPIClient.post(path, *, cast_to, body, options, files, stream, stream_cls)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient.get",
+          "signature": "openai._base_client.AsyncAPIClient.get(path, *, cast_to, options, stream, stream_cls)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient.put",
+          "signature": "openai._base_client.AsyncAPIClient.put(path, *, cast_to, body, files, options)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "autochain/models/chat_openai.py",
+          "line": 185,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    }
+  ],
+  "deprecations": [],
+  "diffed": [
+    "openai"
+  ],
+  "notes": []
+}

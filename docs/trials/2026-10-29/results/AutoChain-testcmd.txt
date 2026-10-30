@@ -1,0 +1,1 @@
+python -m pytest -q -p no:cacheprovider tests --ignore=tests/tools/test_pinecone_tool.py --ignore=tests/tools/test_lancedb_tool.py --ignore=tests/tools/test_chromadb_tool.py --ignore=tests/memory/test_long_term_memory.py
