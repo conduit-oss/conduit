@@ -227,7 +227,7 @@ Nemotron may put thinking in `reasoning_content` (counts toward `max_tokens`). A
 
 Docs: [Token Factory intro](https://docs.tokenfactory.nebius.com/api-reference/introduction), [model catalog](https://tokenfactory.nebius.com/model-catalog.md). `--pr` is not in this release.
 
-On a bump pull request, the [GitHub Action guide](docs/github-actions.md) is what posts the comment. Status strings (`fixed (verified)`, `fixed, not covered by tests`, `fixed, needs review`, `needs-human`, `skipped`) are explained there.
+On a bump pull request, the [GitHub Action guide](docs/github-actions.md) is what posts the comment. Status strings (`fixed (verified)`, `fixed, not covered by tests`, `fixed, tests couldn't run`, `fixed, needs review`, `needs-human`, `skipped`) are explained there.
 
 ### service
 
