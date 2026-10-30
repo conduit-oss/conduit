@@ -2,8 +2,8 @@
 
 General mechanism only: given removed/renamed symbols from impact sites and a
 repo tree, scan test files for import statements and string patch targets that
-name those symbols. Callers either rewrite those lines with the source fix or
-report each hit (file, line, removed symbol).
+name those symbols. Apply reports each hit (file, line, removed symbol); it does
+not edit test files here.
 """
 
 from __future__ import annotations
@@ -253,36 +253,51 @@ def _match_symbol(text: str, targets: list[tuple[str, str]]) -> str | None:
     """The removed symbol ``text`` names, or None.
 
     ``text`` is an import module, ``module.Name``, or a patch target string.
-    It matches the symbol itself, a path under it (``pkg.Gone.method``), the
-    symbol's module prefix (``pkg.error`` for ``pkg.error.Gone``), or a path
-    that ends at the symbol's leaf under that prefix (``Gone`` / ``pkg.Gone``).
-    A sibling name under the same class (``Widget.build`` vs removed
-    ``Widget.create``) does not match.
+
+    Matches:
+    - the full symbol, or a path under it
+    - a short public alias under the same top package whose trailing
+      class/attr segments are a suffix of the full internal path
+      (``pkg.Thing.create`` ↔ ``pkg._internal.x.Thing.create``)
+    - a real submodule or class owner of the removed symbol that is more
+      than the bare top-level package (``pkg.error`` for ``pkg.error.Gone``)
+
+    Does not match:
+    - a bare ``import pkg`` / patch of just the top package against a removed
+      attribute like ``pkg.api_base``
+    - a sibling under the same owner (``pkg.Widget.build`` vs ``pkg.Widget.create``)
     """
     if not text:
         return None
     named = text.replace("-", "_")
     parts = named.split(".")
     for top, symbol in targets:
+        sym_parts = symbol.split(".")
         if named == symbol or named.startswith(symbol + "."):
             return symbol
-        if not (named == top or named.startswith(top + ".") or parts[0] == top):
+        if parts[0] != top:
             continue
-        leaf = symbol.rsplit(".", 1)[-1]
-        # Module / owner prefix (``pkg.error`` for ``pkg.error.Gone``,
-        # ``pkg.Widget`` for ``pkg.Widget.create``).
-        prefix = symbol[: -len(leaf) - 1] if "." in symbol else top
-        if named == prefix or named == leaf:
-            return symbol
-        # ``from pkg.error import Gone`` → candidate ``pkg.error.Gone`` already
-        # handled above; ``Gone`` alone only when imported from that package
-        # is handled by the import walker. Require the leaf as a path segment
-        # that is not a replaced sibling: the named path must be the prefix,
-        # the full symbol, or prefix + leaf (+ optional suffix).
-        if named == f"{prefix}.{leaf}" or named.startswith(f"{prefix}.{leaf}."):
-            return symbol
-        if leaf in parts and parts[0] == top and named.endswith("." + leaf):
-            # ``pkg.types.Gone`` style when symbol is ``pkg.types.Gone``.
-            if named == symbol or named.endswith("." + symbol.split(".", 1)[-1]):
+        # Bare top-level package alone never matches a deeper removed symbol.
+        if named == top:
+            if symbol == top:
+                return symbol
+            continue
+        # Short public alias: same top, and the segments after the top appear
+        # contiguously in the full path (skips internal modules the public
+        # re-export hides). ``pkg.Thing.create`` and ``pkg.Thing`` both match
+        # ``pkg._internal.x.Thing.create``; ``pkg.Thing.build`` does not.
+        if len(parts) >= 2 and len(sym_parts) >= 2:
+            tail = parts[1:]
+            sym_tail = sym_parts[1:]
+            n = len(tail)
+            for start in range(len(sym_tail) - n + 1):
+                if sym_tail[start : start + n] == tail:
+                    return symbol
+        # Owner / submodule prefix longer than the top package only.
+        # ``pkg.error`` owns ``pkg.error.Gone``; ``pkg`` alone does not own
+        # ``pkg.api_base`` for this check (handled above as bare top).
+        for length in range(len(sym_parts) - 1, 1, -1):
+            owner = ".".join(sym_parts[:length])
+            if named == owner:
                 return symbol
     return None

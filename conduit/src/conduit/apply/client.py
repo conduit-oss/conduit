@@ -110,6 +110,10 @@ class TokenFactoryClient:
         }
         response = self._client().post(url, headers=headers, json=payload)
         response.raise_for_status()
+        # Count as soon as the HTTP call succeeds, before parsing, so a bad
+        # payload cannot leave a answered request out of the ledger.
+        entry = self.ledger.setdefault((model, bool(enable_thinking)), [0, 0])
+        entry[0] += 1
         data = response.json()
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
@@ -122,8 +126,6 @@ class TokenFactoryClient:
             completion_tokens=int(usage.get("completion_tokens") or 0),
             model=str(data.get("model") or model),
         )
-        entry = self.ledger.setdefault((model, bool(enable_thinking)), [0, 0])
-        entry[0] += 1
         entry[1] += result.total_tokens
         return result
 
@@ -137,6 +139,18 @@ class FakeModelClient:
 
     responses: list[Any] = field(default_factory=list)
     calls: list[dict[str, Any]] = field(default_factory=list)
+    #: Same shape as ``TokenFactoryClient.ledger`` so apply can sync tokens_used.
+    ledger: dict[tuple[str, bool], list[int]] = field(default_factory=dict, repr=False, compare=False)
+
+    def endpoint(self) -> str:
+        return "fake://model/chat/completions"
+
+    def call_summary(self) -> list[dict[str, Any]]:
+        """One entry per model and thinking setting: call count and tokens."""
+        return [
+            {"endpoint": self.endpoint(), "model": model, "enable_thinking": thinking, "calls": calls, "tokens": tokens}
+            for (model, thinking), (calls, tokens) in self.ledger.items()
+        ]
 
     def chat(
         self,
@@ -165,9 +179,13 @@ class FakeModelClient:
             content = str(item)
         # Approximate token use for cost-guard tests.
         prompt_chars = sum(len(m.content) for m in turns)
-        return ChatResult(
+        result = ChatResult(
             content=content,
             prompt_tokens=max(1, prompt_chars // 4),
             completion_tokens=max(1, len(content) // 4),
             model=model,
         )
+        entry = self.ledger.setdefault((model, bool(enable_thinking)), [0, 0])
+        entry[0] += 1
+        entry[1] += result.total_tokens
+        return result
