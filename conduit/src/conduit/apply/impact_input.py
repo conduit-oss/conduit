@@ -7,28 +7,43 @@ from pathlib import Path
 from typing import Any
 
 from conduit.apply.models import ImpactSite
+from conduit.apply.testrefs import symbols_from_impacts
 
 
 def load_impact_sites(path: Path) -> list[ImpactSite]:
     """Parse ``conduit impact --json`` output (or a list of impact dicts)."""
+    return load_impact(path)[0]
+
+
+def load_impact(path: Path) -> tuple[list[ImpactSite], tuple[tuple[str, str], ...]]:
+    """Sites and every removed/renamed symbol in the payload (even with no sites)."""
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return sites_from_payload(raw)
+    return sites_from_payload(raw), removed_from_payload(raw)
 
 
-def sites_from_payload(raw: Any) -> list[ImpactSite]:
+def _impact_items(raw: Any) -> list[dict[str, Any]]:
     impacts: list[dict[str, Any]] = []
     if isinstance(raw, dict):
         for key in ("impacts", "deprecations"):
             block = raw.get(key) or []
             if isinstance(block, list):
                 impacts.extend(item for item in block if isinstance(item, dict))
-        # Single impact object with sites.
         if not impacts and "sites" in raw:
             impacts = [raw]
     elif isinstance(raw, list):
         impacts = [item for item in raw if isinstance(item, dict)]
     else:
         raise ValueError("Impact JSON must be an object or a list of impacts")
+    return impacts
+
+
+def removed_from_payload(raw: Any) -> tuple[tuple[str, str], ...]:
+    """Removed/renamed symbols from the payload, including changes with no sites."""
+    return tuple(symbols_from_impacts(_impact_items(raw)))
+
+
+def sites_from_payload(raw: Any) -> list[ImpactSite]:
+    impacts = _impact_items(raw)
 
     sites: list[ImpactSite] = []
     for item in impacts:

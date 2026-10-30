@@ -339,11 +339,11 @@ def apply_cmd(
 
     from conduit.apply.config import TokenFactorySettings
     from conduit.apply.engine import ApplyConfig, apply_sites
-    from conduit.apply.impact_input import load_impact_sites
+    from conduit.apply.impact_input import load_impact
     from conduit.apply.report import format_report
 
     try:
-        sites = load_impact_sites(impact_path)
+        sites, removed_symbols = load_impact(impact_path)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         console.print(f"[red]Could not read impact JSON:[/red] {exc}")
         raise typer.Exit(2) from exc
@@ -386,6 +386,7 @@ def apply_cmd(
             fixtures=fixture_root,
             allow_network=fixture_root is None,
             baseline=base_state,
+            removed_symbols=removed_symbols,
         ),
     )
     if json_out:
