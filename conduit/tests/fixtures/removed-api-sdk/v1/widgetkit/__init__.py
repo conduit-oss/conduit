@@ -1,6 +1,6 @@
-"""Made-up SDK v1: exposes Widget.create and an error module tests import."""
+"""Made-up SDK v1: public re-exports from an internal module path."""
 
+from widgetkit._internal.widget import Widget
 from widgetkit.error import GoneError
-from widgetkit.widget import Widget
 
 __all__ = ["GoneError", "Widget"]

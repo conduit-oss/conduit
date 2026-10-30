@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import json
 import os
 import re
 import shutil
@@ -42,7 +41,7 @@ from conduit.apply.splice import (
 )
 from conduit.apply.signatures import _modules, literal_value, new_release_wheel, signatures_for
 from conduit.apply.testrun import Baseline, describe_preexisting, focus, isolate_pytest, judge, run_tests
-from conduit.apply.testrefs import TestRef, find_test_refs
+from conduit.apply.testrefs import find_test_refs
 from conduit.apply.change_why import caught, caught_keys, change_why
 from conduit.apply.dropped import DROPPED, content_dropped, import_swap_why
 from conduit.apply.producers import repo_producers
@@ -207,6 +206,11 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
         summary = getattr(client, "call_summary", None)
         if callable(summary):
             report.model_calls = summary()
+            # Ledger is the source of truth for answered calls: keep tokens_used
+            # in sync so a path that forgot to add tokens cannot under-report.
+            totaled = sum(int(item.get("tokens") or 0) for item in report.model_calls)
+            if totaled:
+                report.tokens_used = totaled
         if owns_client and client is not None and hasattr(client, "close"):
             client.close()  # type: ignore[union-attr]
     return report
@@ -266,7 +270,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _retry_routed(work, client, report, originals, texts_of, slots)
         _drop_traced_reads(work, report, originals, texts_of, slots)
         _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
-        _migrate_test_refs(selected, scratch, config, client, report, originals)
+        _record_test_refs(selected, scratch, report, config)
         failure = ""
         stashed: dict[str, str] = {}
         checked_flakes = False
@@ -1037,107 +1041,11 @@ def _tests_couldnt_run_why(
 
 
 def _record_test_refs(sites: list[ImpactSite], root: Path, report: ApplyReport, config: ApplyConfig) -> None:
-    """Scan the tree for test imports/patches of removed symbols; store on the report."""
+    """Scan the tree for test imports/patches of removed symbols; store on the report.
+
+    Reporting only: apply never edits test files here (see issue #143)."""
     refs = find_test_refs(root, sites, extras=config.removed_symbols)
     report.test_refs = [ref.to_dict() for ref in refs]
-
-
-def _migrate_test_refs(
-    sites: list[ImpactSite],
-    scratch: Path,
-    config: ApplyConfig,
-    client: ModelClient,
-    report: ApplyReport,
-    originals: dict[str, str],
-) -> None:
-    """Rewrite test files that still import or patch removed symbols, when possible.
-
-    Remaining refs are recorded on the report (file, line, removed symbol) so a
-    collection failure is never mistaken for "not covered by tests"."""
-    refs = find_test_refs(scratch, sites, extras=config.removed_symbols)
-    if not refs:
-        report.test_refs = []
-        return
-    by_path: dict[str, list[TestRef]] = {}
-    for ref in refs:
-        by_path.setdefault(ref.path, []).append(ref)
-    for path, hits in by_path.items():
-        before = _read(scratch / path)
-        if not before:
-            continue
-        originals.setdefault(path, before if (config.root / path).is_file() else before)
-        updated = _rewrite_test_file(client, config, path, before, hits, sites, report)
-        if updated is None or updated == before:
-            continue
-        try:
-            ast.parse(updated)
-        except SyntaxError:
-            continue
-        _write_file(scratch, path, updated)
-        if config.write:
-            _write_file(config.root, path, updated)
-    report.test_refs = [
-        ref.to_dict() for ref in find_test_refs(scratch, sites, extras=config.removed_symbols)
-    ]
-
-
-def _rewrite_test_file(
-    client: ModelClient,
-    config: ApplyConfig,
-    path: str,
-    source: str,
-    refs: list[TestRef],
-    sites: list[ImpactSite],
-    report: ApplyReport,
-) -> str | None:
-    """Ask the model for an updated test file that no longer names removed APIs."""
-    from conduit.apply.client import ChatMessage
-
-    sample = next((site for site in sites if site.kind in {"removed", "renamed"}), sites[0] if sites else None)
-    change = sample.change if sample else ""
-    candidates = list(sample.candidates) if sample else []
-    payload = {
-        "file": path,
-        "change": change,
-        "removed_refs": [ref.to_dict() for ref in refs],
-        "candidates": candidates,
-        "source": source,
-    }
-    system = (
-        "You update one Python test file after an outside SDK bump.\n"
-        "The listed lines still import, patch, or mock a symbol the new release removed.\n"
-        "Rewrite the file so those lines use the new API (or drop the obsolete mock).\n"
-        "Keep every test's intent. Respond with JSON only:\n"
-        '  {"file_source": "<full updated file>"}\n'
-    )
-    user = (
-        "Test file and removed references (JSON):\n"
-        f"{json.dumps(payload, indent=2)}\n\n"
-        "Return JSON with file_source that no longer references the removed symbols."
-    )
-    try:
-        result = client.chat(
-            model=config.settings.model,
-            turns=[ChatMessage("system", system), ChatMessage("user", user)],
-            max_tokens=min(4096, config.settings.max_tokens_per_site),
-            temperature=0.1,
-            enable_thinking=config.settings.enable_thinking,
-        )
-    except Exception:  # noqa: BLE001 — leave the file; refs stay reported
-        return None
-    report.tokens_used += int(result.prompt_tokens or 0) + int(result.completion_tokens or 0)
-    text = (result.content or "").strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        data = json.loads(text)
-    except Exception:  # noqa: BLE001
-        return None
-    if not isinstance(data, dict):
-        return None
-    body = data.get("file_source")
-    return body if isinstance(body, str) and body.strip() else None
 
 
 def _park_unloaded(

@@ -1,7 +1,5 @@
-class Widget:
-    @classmethod
-    def create(cls, name: str) -> "Widget":
-        return cls(name)
+"""Compatibility shim: public import path still works in v1."""
 
-    def __init__(self, name: str) -> None:
-        self.name = name
+from widgetkit._internal.widget import Widget
+
+__all__ = ["Widget"]
