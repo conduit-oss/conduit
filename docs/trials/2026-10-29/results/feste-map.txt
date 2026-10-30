@@ -1,0 +1,14 @@
+Outside-in service map
+root: <trial-root>/feste
+services: openai
+
+openai
+- feste/backend/openai.py:3  sdk_import  openai  [high]
+- feste/backend/openai.py:84  sdk_call  openai.Completion.create  [high]
+- feste/backend/openai.py:85  sdk_response  openai.Completion.create  [high]
+- feste/backend/openai.py:100  sdk_call  openai.Completion.create  [high]
+- feste/backend/openai.py:101  sdk_response  openai.Completion.create  [high]
+- feste/backend/openai.py:46  sdk_ref  openai.api_key  [high]
+- feste/backend/openai.py:56  sdk_ref  openai.organization  [high]
+- feste/backend/openai.py:57  sdk_ref  openai.api_key  [high]
+

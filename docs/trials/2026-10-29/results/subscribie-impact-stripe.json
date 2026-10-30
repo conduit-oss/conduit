@@ -1,0 +1,151 @@
+{
+  "dependency": "stripe",
+  "impacts": [
+    {
+      "dependency": "stripe",
+      "from_version": "9.8.0",
+      "to_version": "16.1.0",
+      "change": "Invoice.upcoming removed",
+      "confidence": "medium",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "stripe.Invoice.upcoming",
+      "old": "stripe.Invoice.upcoming",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "stripe.events.V1InvoiceUpcomingEvent.update",
+          "signature": "stripe.events.V1InvoiceUpcomingEvent.update(update_dict)"
+        },
+        {
+          "symbol": "stripe.events.V1InvoiceUpcomingEvent.to_dict",
+          "signature": "stripe.events.V1InvoiceUpcomingEvent.to_dict(recursive, for_json)"
+        },
+        {
+          "symbol": "stripe.events.V1InvoiceUpcomingEvent.serialize",
+          "signature": "stripe.events.V1InvoiceUpcomingEvent.serialize(previous)"
+        },
+        {
+          "symbol": "stripe.events.V1InvoiceUpcomingEvent.refresh_from",
+          "signature": "stripe.events.V1InvoiceUpcomingEvent.refresh_from(values, api_key, partial, stripe_version, stripe_account, last_response, *, api_mode)"
+        },
+        {
+          "symbol": "stripe.events.V1InvoiceUpcomingEvent.construct_from",
+          "signature": "stripe.events.V1InvoiceUpcomingEvent.construct_from(values, key, stripe_version, stripe_account, last_response, *, api_mode)"
+        },
+        {
+          "symbol": "stripe.events.V1InvoiceUpcomingEventNotification.from_json",
+          "signature": "stripe.events.V1InvoiceUpcomingEventNotification.from_json(payload, client)"
+        },
+        {
+          "symbol": "stripe.StripeEventNotificationHandler.on_v1_invoice_upcoming",
+          "signature": "stripe.StripeEventNotificationHandler.on_v1_invoice_upcoming(func)"
+        },
+        {
+          "symbol": "stripe.AsyncStripeEventNotificationHandler.on_v1_invoice_upcoming",
+          "signature": "stripe.AsyncStripeEventNotificationHandler.on_v1_invoice_upcoming(func)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "subscribie/blueprints/admin/__init__.py",
+          "line": 230,
+          "expr": "stripe.Invoice.upcoming",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "subscribie/blueprints/admin/__init__.py",
+          "line": 283,
+          "expr": "store_stripe_transaction",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "subscribie/blueprints/admin/__init__.py",
+          "line": 252,
+          "expr": "invoice.amount_due",
+          "confidence": "medium",
+          "via_wrapper": false
+        },
+        {
+          "path": "subscribie/blueprints/admin/__init__.py",
+          "line": 253,
+          "expr": "invoice.status",
+          "confidence": "medium",
+          "via_wrapper": false
+        },
+        {
+          "path": "subscribie/blueprints/admin/__init__.py",
+          "line": 254,
+          "expr": "invoice.lines.data[0].metadata",
+          "confidence": "medium",
+          "via_wrapper": false
+        },
+        {
+          "path": "subscribie/blueprints/admin/__init__.py",
+          "line": 269,
+          "expr": "invoice.status",
+          "confidence": "medium",
+          "via_wrapper": false
+        },
+        {
+          "path": "subscribie/blueprints/admin/invoice.py",
+          "line": 81,
+          "expr": "stripe.Invoice.upcoming",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "subscribie/blueprints/admin/invoice.py",
+          "line": 58,
+          "expr": "fetch_stripe_upcoming_invoices",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "subscribie/blueprints/admin/invoice.py",
+          "line": 93,
+          "expr": "upcoming_invoice.status",
+          "confidence": "medium",
+          "via_wrapper": false
+        },
+        {
+          "path": "subscribie/blueprints/admin/invoice.py",
+          "line": 94,
+          "expr": "upcoming_invoice.amount_due",
+          "confidence": "medium",
+          "via_wrapper": false
+        },
+        {
+          "path": "subscribie/blueprints/admin/invoice.py",
+          "line": 95,
+          "expr": "upcoming_invoice.amount_paid",
+          "confidence": "medium",
+          "via_wrapper": false
+        },
+        {
+          "path": "subscribie/blueprints/admin/invoice.py",
+          "line": 97,
+          "expr": "upcoming_invoice.next_payment_attempt",
+          "confidence": "medium",
+          "via_wrapper": false
+        },
+        {
+          "path": "subscribie/blueprints/admin/invoice.py",
+          "line": 99,
+          "expr": "upcoming_invoice.currency",
+          "confidence": "medium",
+          "via_wrapper": false
+        }
+      ]
+    }
+  ],
+  "deprecations": [],
+  "diffed": [
+    "stripe"
+  ],
+  "notes": [
+    "not compared: no versioned webhook schema for stripe could be fetched"
+  ]
+}

@@ -1,0 +1,19 @@
+diff --git a/subscriptions/views.py b/subscriptions/views.py
+index f2fd1a3..86af952 100644
+--- a/subscriptions/views.py
++++ b/subscriptions/views.py
+@@ -124,8 +124,12 @@ class SubscriptionView(StripeObjectMixin, NeverCacheMixin, DetailView):
+     def get_context_data_detail(self, **context):
+         customer = self.object.customer
+         try:
+-            upcoming = stripe.Invoice.upcoming(customer=customer.id)
+-            upcoming['amount_due'] = upcoming['amount_due'] / 100
++            upcoming_invoices = stripe.Invoice.list(customer=customer.id, status='draft', limit=1)
++            if upcoming_invoices.data:
++                upcoming = upcoming_invoices.data[0]
++                upcoming['amount_due'] = upcoming['amount_due'] / 100
++            else:
++                upcoming = None
+         except stripe.error.InvalidRequestError:
+             upcoming = None
+ 

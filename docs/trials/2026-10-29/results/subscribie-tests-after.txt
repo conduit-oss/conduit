@@ -1,0 +1,13 @@
+.........s.................                                              [100%]
+=============================== warnings summary ===============================
+tests/test_admin_backfill.py::TestAdminBackfillInterface::test_backfill_form_renders_successfully
+  <trial-root>/subscribie/.venv/lib/python3.12/site-packages/flask_sqlalchemy/model.py:22: SAWarning: relationship 'PlanQuestionAssociation.plans' will copy column plan.id to column plan_question_associations.plan_id, which conflicts with relationship(s): 'PlanQuestionAssociation.plan' (copies plan.id to plan_question_associations.plan_id). If this is not the intention, consider if these relationships should be linked with back_populates, or if viewonly=True should be applied to one or more if they are read-only. For the less common case that foreign key constraints are partially overlapping, the orm.foreign() annotation can be used to isolate the columns that should be written towards.   To silence this warning, add the parameter 'overlaps="plan"' to the 'PlanQuestionAssociation.plans' relationship. (Background on this warning at: https://sqlalche.me/e/20/qzyx) (This warning originated from the `configure_mappers()` process, which was invoked automatically in response to a user-initiated operation.)
+    return cls.query_class(
+
+tests/test_admin_backfill.py::TestAdminBackfillInterface::test_backfill_form_renders_successfully
+  <trial-root>/subscribie/.venv/lib/python3.12/site-packages/flask_sqlalchemy/model.py:22: SAWarning: relationship 'Plan.questions' will copy column plan.id to column plan_question_associations.plan_id, which conflicts with relationship(s): 'PlanQuestionAssociation.plan' (copies plan.id to plan_question_associations.plan_id). If this is not the intention, consider if these relationships should be linked with back_populates, or if viewonly=True should be applied to one or more if they are read-only. For the less common case that foreign key constraints are partially overlapping, the orm.foreign() annotation can be used to isolate the columns that should be written towards.   To silence this warning, add the parameter 'overlaps="plan"' to the 'Plan.questions' relationship. (Background on this warning at: https://sqlalche.me/e/20/qzyx) (This warning originated from the `configure_mappers()` process, which was invoked automatically in response to a user-initiated operation.)
+    return cls.query_class(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+26 passed, 1 skipped, 2 warnings in 2.58s
+tests_after_exit=0

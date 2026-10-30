@@ -1,0 +1,17 @@
+2026-10-29 22:02:34,247 httpx HTTP Request: GET https://pypi.org/pypi/stripe/16.1.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:02:36,382 httpx HTTP Request: GET https://pypi.org/pypi/stripe/16.1.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:02:36,488 httpx HTTP Request: GET https://pypi.org/pypi/stripe/16.1.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:02:36,594 httpx HTTP Request: GET https://pypi.org/pypi/stripe/16.1.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:02:36,805 httpx HTTP Request: GET https://pypi.org/pypi/stripe/9.9.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:02:39,810 httpx HTTP Request: POST https://api.tokenfactory.nebius.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-10-29 22:02:56,245 httpx HTTP Request: GET https://pypi.org/pypi/stripe/9.9.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:02:56,423 httpx HTTP Request: GET https://pypi.org/pypi/stripe/16.1.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:03:00,394 httpx HTTP Request: GET https://pypi.org/pypi/stripe/16.1.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:03:00,515 httpx HTTP Request: GET https://pypi.org/pypi/stripe/16.1.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:03:00,609 httpx HTTP Request: GET https://pypi.org/pypi/stripe/9.9.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:03:00,739 httpx HTTP Request: GET https://pypi.org/pypi/stripe/9.9.0/json "HTTP/1.1 200 OK"
+2026-10-29 22:03:02,159 httpx HTTP Request: POST https://api.tokenfactory.nebius.com/v1/chat/completions "HTTP/1.1 200 OK"
+Token Factory call: POST https://api.tokenfactory.nebius.com/v1/chat/completions model=nvidia/Nemotron-3-Ultra-550b-a55b thinking=off calls=1 tokens=1797
+Token Factory call: POST https://api.tokenfactory.nebius.com/v1/chat/completions model=nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B thinking=off calls=1 tokens=276
+Token Factory total: calls=2 tokens=2073
+exit=0

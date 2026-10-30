@@ -1,0 +1,159 @@
+.........F.F...F.                                                        [100%]
+=================================== FAILURES ===================================
+_____________________________ test_chat_completion _____________________________
+
+openai_completion_fixture = None
+
+    def test_chat_completion(openai_completion_fixture):
+        os.environ["OPENAI_API_KEY"] = "mock_api_key"
+        model = ChatOpenAI(temperature=0)
+>       response = model.generate([UserMessage(content="test message")])
+
+tests/models/test_chat_openai.py:41: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+autochain/models/chat_openai.py:219: in generate
+    response = self.generate_with_retry(**generation_param)
+autochain/models/base.py:123: in generate_with_retry
+    retry_decorator = self._create_retry_decorator()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = ChatOpenAI(client=APIRemovedInV1Proxy, model_name='gpt-3.5-turbo', temperature=0.0, model_kwargs={}, openai_api_key=No...ns=None, api_type='open_ai', api_base=None, azure_api_version=None, azure_deployment_name=None, api_key='mock_api_key')
+
+    def _create_retry_decorator(self) -> Callable[[Any], Any]:
+        import openai
+    
+        min_seconds = 1
+        max_seconds = 60
+        # Wait 2^x * 1 second between each retry starting with
+        # 4 seconds, then up to 10 seconds, then 10 seconds afterwards
+        return retry(
+            reraise=True,
+            stop=stop_after_attempt(self.max_retries),
+            wait=wait_exponential(multiplier=1, min=min_seconds, max=max_seconds),
+            retry=(
+>               retry_if_exception_type(openai.error.Timeout)
+                | retry_if_exception_type(openai.error.APIError)
+                | retry_if_exception_type(openai.error.APIConnectionError)
+                | retry_if_exception_type(openai.error.RateLimitError)
+                | retry_if_exception_type(openai.error.ServiceUnavailableError)
+            ),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+        )
+E       AttributeError: module 'openai' has no attribute 'error'
+
+autochain/models/base.py:112: AttributeError
+_______________________________ test_ada_encoder _______________________________
+
+ada_encoding_fixture = None
+
+    def test_ada_encoder(ada_encoding_fixture):
+        text = "example text"
+        os.environ["OPENAI_API_KEY"] = "mock_api_key"
+    
+        encoder = OpenAIAdaEncoder(temperature=0)
+>       response = encoder.encode([text])
+
+tests/models/test_openai_ada_encoder.py:39: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+autochain/models/ada_embedding.py:63: in encode
+    response = self.generate_with_retry(**params)
+autochain/models/base.py:123: in generate_with_retry
+    retry_decorator = self._create_retry_decorator()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = OpenAIAdaEncoder(client=APIRemovedInV1Proxy, model_name='text-embedding-ada-002', temperature=0.0, model_kwargs={}, openai_api_key=None, openai_organization=None, request_timeout=None, max_retries=6, n=1, max_tokens=None)
+
+    def _create_retry_decorator(self) -> Callable[[Any], Any]:
+        import openai
+    
+        min_seconds = 1
+        max_seconds = 60
+        # Wait 2^x * 1 second between each retry starting with
+        # 4 seconds, then up to 10 seconds, then 10 seconds afterwards
+        return retry(
+            reraise=True,
+            stop=stop_after_attempt(self.max_retries),
+            wait=wait_exponential(multiplier=1, min=min_seconds, max=max_seconds),
+            retry=(
+>               retry_if_exception_type(openai.error.Timeout)
+                | retry_if_exception_type(openai.error.APIError)
+                | retry_if_exception_type(openai.error.APIConnectionError)
+                | retry_if_exception_type(openai.error.RateLimitError)
+                | retry_if_exception_type(openai.error.ServiceUnavailableError)
+            ),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+        )
+E       AttributeError: module 'openai' has no attribute 'error'
+
+autochain/models/base.py:112: AttributeError
+______________________________ test_google_search ______________________________
+
+cls = <class 'autochain.tools.google_search.util.GoogleSearchAPIWrapper'>
+values = {'google_api_key': 'mock_api_key', 'google_cse_id': 'mock_cse_id', 'k': 10, 'search_engine': None, ...}
+
+    @root_validator()
+    def validate_environment(cls, values: Dict) -> Dict:
+        """Validate that api key and python package exists in environment."""
+        google_api_key = get_from_dict_or_env(
+            values, "google_api_key", "GOOGLE_API_KEY"
+        )
+        values["google_api_key"] = google_api_key
+    
+        google_cse_id = get_from_dict_or_env(values, "google_cse_id", "GOOGLE_CSE_ID")
+        values["google_cse_id"] = google_cse_id
+    
+        try:
+>           from googleapiclient.discovery import build
+E           ModuleNotFoundError: No module named 'googleapiclient'
+
+autochain/tools/google_search/util.py:78: ModuleNotFoundError
+
+During handling of the above exception, another exception occurred:
+
+google_search_fixture = None
+
+    def test_google_search(google_search_fixture) -> None:
+        """Test that call gives the correct answer."""
+        os.environ["GOOGLE_API_KEY"] = "mock_api_key"
+        os.environ["GOOGLE_CSE_ID"] = "mock_cse_id"
+>       search = GoogleSearchAPIWrapper()
+
+tests/tools/test_google_search.py:22: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+pydantic/main.py:362: in pydantic.main.BaseModel.__init__
+    ???
+pydantic/main.py:1123: in pydantic.main.validate_model
+    ???
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+cls = <class 'autochain.tools.google_search.util.GoogleSearchAPIWrapper'>
+values = {'google_api_key': 'mock_api_key', 'google_cse_id': 'mock_cse_id', 'k': 10, 'search_engine': None, ...}
+
+    @root_validator()
+    def validate_environment(cls, values: Dict) -> Dict:
+        """Validate that api key and python package exists in environment."""
+        google_api_key = get_from_dict_or_env(
+            values, "google_api_key", "GOOGLE_API_KEY"
+        )
+        values["google_api_key"] = google_api_key
+    
+        google_cse_id = get_from_dict_or_env(values, "google_cse_id", "GOOGLE_CSE_ID")
+        values["google_cse_id"] = google_cse_id
+    
+        try:
+            from googleapiclient.discovery import build
+    
+        except ImportError:
+>           raise ImportError(
+                "google-api-python-client is not installed. "
+                "Please install it with `pip install google-api-python-client`"
+            )
+E           ImportError: google-api-python-client is not installed. Please install it with `pip install google-api-python-client`
+
+autochain/tools/google_search/util.py:81: ImportError
+=========================== short test summary info ============================
+FAILED tests/models/test_chat_openai.py::test_chat_completion - AttributeErro...
+FAILED tests/models/test_openai_ada_encoder.py::test_ada_encoder - AttributeE...
+FAILED tests/tools/test_google_search.py::test_google_search - ImportError: g...
+3 failed, 14 passed in 0.60s
+tests_after_exit=1

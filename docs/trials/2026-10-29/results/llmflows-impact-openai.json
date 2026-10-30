@@ -1,0 +1,1412 @@
+{
+  "dependency": "openai",
+  "impacts": [
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "ChatCompletion.acreate removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.ChatCompletion.acreate",
+      "old": "openai.ChatCompletion.acreate",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.resources.chat.Completions.list",
+          "signature": "openai.resources.chat.Completions.list(*, after, limit, metadata, model, order, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.chat.Completions.parse",
+          "signature": "openai.resources.chat.Completions.parse(*, messages, model, audio, response_format, frequency_penalty, function_call, functions, logit_bias, logprobs, max_compl"
+        },
+        {
+          "symbol": "openai.types.chat.ChatCompletion.to_json",
+          "signature": "openai.types.chat.ChatCompletion.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.chat.ChatCompletion.to_dict",
+          "signature": "openai.types.chat.ChatCompletion.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.resources.chat.Completions.create",
+          "signature": "openai.resources.chat.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_tokens, ma"
+        },
+        {
+          "symbol": "openai.resources.chat.Completions.update",
+          "signature": "openai.resources.chat.Completions.update(completion_id, *, metadata, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.chat.Completions.delete",
+          "signature": "openai.resources.chat.Completions.delete(completion_id, *, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.chat.Completions.stream",
+          "signature": "openai.resources.chat.Completions.stream(*, messages, model, audio, response_format, frequency_penalty, function_call, functions, logit_bias, logprobs, max_comp"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 155,
+          "expr": "openai.ChatCompletion.acreate",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 140,
+          "expr": "openai.ChatCompletion.acreate",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "ChatCompletion.create removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.ChatCompletion.create",
+      "old": "openai.ChatCompletion.create",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.resources.chat.Completions.create",
+          "signature": "openai.resources.chat.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_tokens, ma"
+        },
+        {
+          "symbol": "openai.resources.chat.chat.Completions.create",
+          "signature": "openai.resources.chat.chat.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_token"
+        },
+        {
+          "symbol": "openai.resources.chat.AsyncCompletions.create",
+          "signature": "openai.resources.chat.AsyncCompletions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_token"
+        },
+        {
+          "symbol": "openai.resources.chat.chat.AsyncCompletions.create",
+          "signature": "openai.resources.chat.chat.AsyncCompletions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.Completions.create",
+          "signature": "openai.resources.chat.completions.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completio"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.AsyncCompletions.create",
+          "signature": "openai.resources.chat.completions.AsyncCompletions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_comp"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.completions.Completions.create",
+          "signature": "openai.resources.chat.completions.completions.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, m"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.completions.AsyncCompletions.create",
+          "signature": "openai.resources.chat.completions.completions.AsyncCompletions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logpro"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 120,
+          "expr": "openai.ChatCompletion.create",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 106,
+          "expr": "openai.ChatCompletion.create",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "Completion.acreate removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.Completion.acreate",
+      "old": "openai.Completion.acreate",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.types.Completion.to_json",
+          "signature": "openai.types.Completion.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.Completion.to_dict",
+          "signature": "openai.types.Completion.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.Completion.construct",
+          "signature": "openai.types.Completion.construct(__cls, _fields_set)"
+        },
+        {
+          "symbol": "openai.types.Completion.model_dump",
+          "signature": "openai.types.Completion.model_dump(*, mode, include, exclude, by_alias, exclude_unset, exclude_defaults, exclude_none, round_trip, warnings, context, serialize_"
+        },
+        {
+          "symbol": "openai.resources.Completions.create",
+          "signature": "openai.resources.Completions.create(*, model, prompt, best_of, echo, frequency_penalty, logit_bias, logprobs, max_tokens, n, presence_penalty, seed, stop, strea"
+        },
+        {
+          "symbol": "openai.resources.completions.Stream",
+          "signature": "openai.resources.completions.Stream(*, cast_to, response, client)"
+        },
+        {
+          "symbol": "openai.types.CompletionUsage.to_json",
+          "signature": "openai.types.CompletionUsage.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.CompletionUsage.to_dict",
+          "signature": "openai.types.CompletionUsage.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/llm_utils.py",
+          "line": 92,
+          "expr": "async_func",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 152,
+          "expr": "async_call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 154,
+          "expr": "async_call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/claude_chat.py",
+          "line": 187,
+          "expr": "async_call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 133,
+          "expr": "async_call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 139,
+          "expr": "async_call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 117,
+          "expr": "async_call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/palm_chat.py",
+          "line": 159,
+          "expr": "async_call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 153,
+          "expr": "openai.Completion.acreate",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 134,
+          "expr": "openai.Completion.acreate",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "Completion.create removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.Completion.create",
+      "old": "openai.Completion.create",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.resources.Completions.create",
+          "signature": "openai.resources.Completions.create(*, model, prompt, best_of, echo, frequency_penalty, logit_bias, logprobs, max_tokens, n, presence_penalty, seed, stop, strea"
+        },
+        {
+          "symbol": "openai.resources.AsyncCompletions.create",
+          "signature": "openai.resources.AsyncCompletions.create(*, model, prompt, best_of, echo, frequency_penalty, logit_bias, logprobs, max_tokens, n, presence_penalty, seed, stop, "
+        },
+        {
+          "symbol": "openai.resources.chat.Completions.create",
+          "signature": "openai.resources.chat.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_tokens, ma"
+        },
+        {
+          "symbol": "openai.resources.chat.chat.Completions.create",
+          "signature": "openai.resources.chat.chat.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_token"
+        },
+        {
+          "symbol": "openai.resources.chat.AsyncCompletions.create",
+          "signature": "openai.resources.chat.AsyncCompletions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_token"
+        },
+        {
+          "symbol": "openai.resources.completions.Completions.create",
+          "signature": "openai.resources.completions.Completions.create(*, model, prompt, best_of, echo, frequency_penalty, logit_bias, logprobs, max_tokens, n, presence_penalty, seed,"
+        },
+        {
+          "symbol": "openai.resources.chat.chat.AsyncCompletions.create",
+          "signature": "openai.resources.chat.chat.AsyncCompletions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_"
+        },
+        {
+          "symbol": "openai.resources.completions.AsyncCompletions.create",
+          "signature": "openai.resources.completions.AsyncCompletions.create(*, model, prompt, best_of, echo, frequency_penalty, logit_bias, logprobs, max_tokens, n, presence_penalty, "
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/llm_utils.py",
+          "line": 38,
+          "expr": "func",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 118,
+          "expr": "call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 119,
+          "expr": "call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/claude_chat.py",
+          "line": 151,
+          "expr": "call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 100,
+          "expr": "call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 105,
+          "expr": "call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 76,
+          "expr": "call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/palm.py",
+          "line": 91,
+          "expr": "call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/palm.py",
+          "line": 118,
+          "expr": "call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/palm_chat.py",
+          "line": 129,
+          "expr": "call_with_retry",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/12_question_answering.py",
+          "line": 99,
+          "expr": "embeddings_llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/12_question_answering.py",
+          "line": 113,
+          "expr": "embeddings_llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/2_chat_llm.py",
+          "line": 28,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/4_chat_prompt_templates.py",
+          "line": 37,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/6_chaining_chat_llms.py",
+          "line": 46,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/6_chaining_chat_llms.py",
+          "line": 52,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/6_chaining_chat_llms.py",
+          "line": 58,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/12_question_answering.py",
+          "line": 133,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/1_llm.py",
+          "line": 22,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/3_prompt_templates.py",
+          "line": 30,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/5_chaining_llm_calls.py",
+          "line": 33,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/5_chaining_llm_calls.py",
+          "line": 37,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "examples/5_chaining_llm_calls.py",
+          "line": 41,
+          "expr": "llm.generate",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 119,
+          "expr": "openai.Completion.create",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 101,
+          "expr": "openai.Completion.create",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "Embedding.acreate removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.Embedding.acreate",
+      "old": "openai.Embedding.acreate",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.types.Embedding.to_json",
+          "signature": "openai.types.Embedding.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.Embedding.to_dict",
+          "signature": "openai.types.Embedding.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.Embedding.construct",
+          "signature": "openai.types.Embedding.construct(__cls, _fields_set)"
+        },
+        {
+          "symbol": "openai.types.Embedding.model_dump",
+          "signature": "openai.types.Embedding.model_dump(*, mode, include, exclude, by_alias, exclude_unset, exclude_defaults, exclude_none, round_trip, warnings, context, serialize_a"
+        },
+        {
+          "symbol": "openai.resources.Embeddings.create",
+          "signature": "openai.resources.Embeddings.create(*, input, model, dimensions, encoding_format, user, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.types.Embedding.model_dump_json",
+          "signature": "openai.types.Embedding.model_dump_json(*, indent, include, exclude, by_alias, exclude_unset, exclude_defaults, exclude_none, round_trip, warnings, context, fall"
+        },
+        {
+          "symbol": "openai.resources.AsyncEmbeddings.create",
+          "signature": "openai.resources.AsyncEmbeddings.create(*, input, model, dimensions, encoding_format, user, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.types.embedding.Embedding.to_dict",
+          "signature": "openai.types.embedding.Embedding.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 118,
+          "expr": "openai.Embedding.acreate",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "Embedding.create removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.Embedding.create",
+      "old": "openai.Embedding.create",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.resources.Embeddings.create",
+          "signature": "openai.resources.Embeddings.create(*, input, model, dimensions, encoding_format, user, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.AsyncEmbeddings.create",
+          "signature": "openai.resources.AsyncEmbeddings.create(*, input, model, dimensions, encoding_format, user, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.embeddings.Embeddings.create",
+          "signature": "openai.resources.embeddings.Embeddings.create(*, input, model, dimensions, encoding_format, user, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.embeddings.AsyncEmbeddings.create",
+          "signature": "openai.resources.embeddings.AsyncEmbeddings.create(*, input, model, dimensions, encoding_format, user, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.Files.create",
+          "signature": "openai.resources.Files.create(*, file, purpose, expires_after, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.Evals.create",
+          "signature": "openai.resources.Evals.create(*, data_source_config, testing_criteria, metadata, name, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.Batches.create",
+          "signature": "openai.resources.Batches.create(*, completion_window, endpoint, input_file_id, metadata, output_expires_after, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.Uploads.create",
+          "signature": "openai.resources.Uploads.create(*, bytes, filename, mime_type, purpose, expires_after, extra_headers, extra_query, extra_body, timeout)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 77,
+          "expr": "openai.Embedding.create",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "error.APIConnectionError removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.APIConnectionError",
+      "old": "openai.error.APIConnectionError",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.APIConnectionError",
+          "signature": "openai.APIConnectionError(*, message, request)"
+        },
+        {
+          "symbol": "openai._exceptions.APIConnectionError",
+          "signature": "openai._exceptions.APIConnectionError(*, message, request)"
+        },
+        {
+          "symbol": "openai.APIStatusError",
+          "signature": "openai.APIStatusError(message, *, response, body)"
+        },
+        {
+          "symbol": "openai._exceptions.APIError",
+          "signature": "openai._exceptions.APIError(message, request, *, body)"
+        },
+        {
+          "symbol": "openai._exceptions.APIStatusError",
+          "signature": "openai._exceptions.APIStatusError(message, *, response, body)"
+        },
+        {
+          "symbol": "openai.APIResponseValidationError",
+          "signature": "openai.APIResponseValidationError(response, body, *, message)"
+        },
+        {
+          "symbol": "openai._exceptions.APIResponseValidationError",
+          "signature": "openai._exceptions.APIResponseValidationError(response, body, *, message)"
+        },
+        {
+          "symbol": "openai.resources.realtime.realtime.RealtimeConnection.close",
+          "signature": "openai.resources.realtime.realtime.RealtimeConnection.close(*, code, reason)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 124,
+          "expr": "APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 158,
+          "expr": "APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 125,
+          "expr": "APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 160,
+          "expr": "APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 106,
+          "expr": "APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 139,
+          "expr": "APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 111,
+          "expr": "APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 145,
+          "expr": "APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 82,
+          "expr": "APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 123,
+          "expr": "APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 9,
+          "expr": "import APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 8,
+          "expr": "import APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 9,
+          "expr": "import APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 8,
+          "expr": "import APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 9,
+          "expr": "import APIConnectionError",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "error.APIError removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.APIError",
+      "old": "openai.error.APIError",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai._exceptions.APIError",
+          "signature": "openai._exceptions.APIError(message, request, *, body)"
+        },
+        {
+          "symbol": "openai.APIStatusError",
+          "signature": "openai.APIStatusError(message, *, response, body)"
+        },
+        {
+          "symbol": "openai.APITimeoutError",
+          "signature": "openai.APITimeoutError(request)"
+        },
+        {
+          "symbol": "openai.APIConnectionError",
+          "signature": "openai.APIConnectionError(*, message, request)"
+        },
+        {
+          "symbol": "openai._exceptions.APIStatusError",
+          "signature": "openai._exceptions.APIStatusError(message, *, response, body)"
+        },
+        {
+          "symbol": "openai.APIResponseValidationError",
+          "signature": "openai.APIResponseValidationError(response, body, *, message)"
+        },
+        {
+          "symbol": "openai._exceptions.APITimeoutError",
+          "signature": "openai._exceptions.APITimeoutError(request)"
+        },
+        {
+          "symbol": "openai._exceptions.APIConnectionError",
+          "signature": "openai._exceptions.APIConnectionError(*, message, request)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 121,
+          "expr": "APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 155,
+          "expr": "APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 122,
+          "expr": "APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 157,
+          "expr": "APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 103,
+          "expr": "APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 136,
+          "expr": "APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 108,
+          "expr": "APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 142,
+          "expr": "APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 79,
+          "expr": "APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 120,
+          "expr": "APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 9,
+          "expr": "import APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 8,
+          "expr": "import APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 9,
+          "expr": "import APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 8,
+          "expr": "import APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 9,
+          "expr": "import APIError",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "error.RateLimitError removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.RateLimitError",
+      "old": "openai.error.RateLimitError",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.RateLimitError",
+          "signature": "openai.RateLimitError()"
+        },
+        {
+          "symbol": "openai._exceptions.RateLimitError",
+          "signature": "openai._exceptions.RateLimitError()"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.to_json",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.to_dict",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.construct",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.construct(__cls, _fields_set)"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.model_dump",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.model_dump(*, mode, include, exclude, by_alias, exclude_unset, exclude_defaults, exclude_none, round_trip, warnings"
+        },
+        {
+          "symbol": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_json",
+          "signature": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_dict",
+          "signature": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 123,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 157,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 124,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 159,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 105,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 138,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 110,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 144,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 81,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 122,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 9,
+          "expr": "import RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 8,
+          "expr": "import RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 9,
+          "expr": "import RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 8,
+          "expr": "import RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 9,
+          "expr": "import RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "error.ServiceUnavailableError removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.ServiceUnavailableError",
+      "old": "openai.error.ServiceUnavailableError",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.APIStatusError",
+          "signature": "openai.APIStatusError(message, *, response, body)"
+        },
+        {
+          "symbol": "openai.APITimeoutError",
+          "signature": "openai.APITimeoutError(request)"
+        },
+        {
+          "symbol": "openai.APIConnectionError",
+          "signature": "openai.APIConnectionError(*, message, request)"
+        },
+        {
+          "symbol": "openai._exceptions.APIError",
+          "signature": "openai._exceptions.APIError(message, request, *, body)"
+        },
+        {
+          "symbol": "openai.LengthFinishReasonError",
+          "signature": "openai.LengthFinishReasonError(*, completion)"
+        },
+        {
+          "symbol": "openai.types.BatchError.to_json",
+          "signature": "openai.types.BatchError.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.BatchError.to_dict",
+          "signature": "openai.types.BatchError.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.cli._errors.display_error",
+          "signature": "openai.cli._errors.display_error(err)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 125,
+          "expr": "ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 159,
+          "expr": "ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 126,
+          "expr": "ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 161,
+          "expr": "ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 107,
+          "expr": "ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 140,
+          "expr": "ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 112,
+          "expr": "ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 146,
+          "expr": "ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 83,
+          "expr": "ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 124,
+          "expr": "ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 9,
+          "expr": "import ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 8,
+          "expr": "import ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 9,
+          "expr": "import ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 8,
+          "expr": "import ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 9,
+          "expr": "import ServiceUnavailableError",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "error.Timeout removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.Timeout",
+      "old": "openai.error.Timeout",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai._models.FinalRequestOptions.timeout",
+          "signature": "openai._models.FinalRequestOptions.timeout()"
+        },
+        {
+          "symbol": "openai.lib.azure.FinalRequestOptions.timeout",
+          "signature": "openai.lib.azure.FinalRequestOptions.timeout()"
+        },
+        {
+          "symbol": "openai.APITimeoutError",
+          "signature": "openai.APITimeoutError(request)"
+        },
+        {
+          "symbol": "openai._exceptions.APITimeoutError",
+          "signature": "openai._exceptions.APITimeoutError(request)"
+        },
+        {
+          "symbol": "openai.types.realtime.InputAudioBufferTimeoutTriggered.to_json",
+          "signature": "openai.types.realtime.InputAudioBufferTimeoutTriggered.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.realtime.InputAudioBufferTimeoutTriggered.to_dict",
+          "signature": "openai.types.realtime.InputAudioBufferTimeoutTriggered.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.realtime.InputAudioBufferTimeoutTriggered.construct",
+          "signature": "openai.types.realtime.InputAudioBufferTimeoutTriggered.construct(__cls, _fields_set)"
+        },
+        {
+          "symbol": "openai.types.realtime.InputAudioBufferTimeoutTriggered.model_dump",
+          "signature": "openai.types.realtime.InputAudioBufferTimeoutTriggered.model_dump(*, mode, include, exclude, by_alias, exclude_unset, exclude_defaults, exclude_none, round_trip"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 122,
+          "expr": "Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 156,
+          "expr": "Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 123,
+          "expr": "Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 158,
+          "expr": "Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 104,
+          "expr": "Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 137,
+          "expr": "Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 109,
+          "expr": "Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 143,
+          "expr": "Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 80,
+          "expr": "Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 121,
+          "expr": "Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 9,
+          "expr": "import Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 8,
+          "expr": "import Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai.py",
+          "line": 9,
+          "expr": "import Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_chat.py",
+          "line": 8,
+          "expr": "import Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/openai_embeddings.py",
+          "line": 9,
+          "expr": "import Timeout",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "openai.api_base removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.api_base",
+      "old": "openai.api_base",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai._response.BaseAPIResponse",
+          "signature": "openai._response.BaseAPIResponse(*, raw, cast_to, client, stream, stream_cls, options, retries_taken)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient",
+          "signature": "openai._base_client.SyncAPIClient(*, version, base_url, max_retries, timeout, http_client, custom_headers, custom_query, _strict_response_validation)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient",
+          "signature": "openai._base_client.AsyncAPIClient(*, version, base_url, _strict_response_validation, max_retries, timeout, http_client, custom_headers, custom_query)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.get",
+          "signature": "openai._base_client.SyncAPIClient.get(path, *, cast_to, options, stream, stream_cls)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.put",
+          "signature": "openai._base_client.SyncAPIClient.put(path, *, cast_to, body, files, options)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.post",
+          "signature": "openai._base_client.SyncAPIClient.post(path, *, cast_to, body, options, files, stream, stream_cls)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient.get",
+          "signature": "openai._base_client.AsyncAPIClient.get(path, *, cast_to, options, stream, stream_cls)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient.put",
+          "signature": "openai._base_client.AsyncAPIClient.put(path, *, cast_to, body, files, options)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "llmflows/llms/azure_openai.py",
+          "line": 72,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "llmflows/llms/azure_openai_chat.py",
+          "line": 75,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    }
+  ],
+  "deprecations": [],
+  "diffed": [
+    "openai"
+  ],
+  "notes": []
+}

@@ -1,0 +1,152 @@
+{
+  "results": [
+    {
+      "path": "autochain/models/chat_openai.py",
+      "line": 189,
+      "expr": "openai.ChatCompletion",
+      "change": "chat_completion.ChatCompletion removed",
+      "status": "needs-human",
+      "why": "Reverted: the tests failed with this rewrite.",
+      "diff": "--- a/autochain/models/chat_openai.py\n+++ b/autochain/models/chat_openai.py\n@@ -173,7 +173,6 @@\n         openai_api_base = os.environ.get(\"OPENAI_API_BASE\", None)\n         try:\n             import openai\n-\n         except ImportError:\n             raise ValueError(\n                 \"Could not import openai python package. \"\n@@ -186,10 +185,11 @@\n         if openai_api_type == \"azure\":\n             values[\"azure_api_version\"] = openai.api_version = os.environ.get(\"OPENAI_API_VERSION\", \"2023-05-15\")\n         try:\n-            values[\"client\"] = openai.ChatCompletion\n-        except AttributeError:\n+            from openai import OpenAI\n+            values[\"client\"] = OpenAI\n+        except ImportError:\n             raise ValueError(\n-                \"`openai` has no `ChatCompletion` attribute, this is likely \"\n+                \"`openai` has no `OpenAI` client, this is likely \"\n                 \"due to an old version of the openai package. Try upgrading it \"\n                 \"with `pip install --upgrade openai`.\"\n             )\n",
+      "attempts": 3,
+      "error": "reverted: the tests still fail with this rewrite\n… (41 earlier lines omitted)\nTypeError: Embeddings.create() got an unexpected keyword argument 'request_timeout'\nada_encoding_fixture = None\n\n    def test_ada_encoder(ada_encoding_fixture):\n        text = \"example text\"\n        os.environ[\"OPENAI_API_KEY\"] = \"mock_api_key\"\n    \n        encoder = OpenAIAdaEncoder(temperature=0)\n>       response = encoder.encode([text])\n\ntests/models/test_openai_ada_encoder.py:39: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nautochain/models/ada_embedding.py:63: in encode\n    response = self.generate_with_retry(**params)\nautochain/models/base.py:129: in generate_with_retry\n    return _generate_with_retry(**kwargs)\n<trial-root>/AutoChain/.venv/lib/python3.11/site-packages/tenacity/__init__.py:336: in wrapped_f\n    return copy(f, *args, **kw)\n<trial-root>/AutoChain/.venv/lib/python3.11/site-packages/tenacity/__init__.py:475: in __call__\n    do = self.iter(retry_state=retry_state)\n<trial-root>/AutoChain/.venv/lib/python3.11/site-packages/tenacity/__init__.py:376: in iter\n    result = action(retry_state)\n<trial-root>/AutoChain/.venv/lib/python3.11/site-packages/tenacity/__init__.py:398: in <lambda>\n    self._add_action_func(lambda rs: rs.outcome.result())\n<home> in result\n    return self.__get_result()\n<home> in __get_result\n    raise self._exception\n<trial-root>/AutoChain/.venv/lib/python3.11/site-packages/tenacity/__init__.py:478: in __call__\n    result = fn(*args, **kwargs)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nkwargs = {'input': ['example text'], 'max_tokens': None, 'model': 'text-embedding-ada-002', 'n': 1, ...}\n\n    @retry_decorator\n    def _generate_with_retry(**kwargs: Any) -> Any:\n>       return self.client.create(**kwargs)\nE       TypeError: Embeddings.create() got an unexpected keyword argument 'request_timeout'\n\nautochain/models/base.py:127: TypeError",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "autochain/models/ada_embedding.py",
+      "line": 35,
+      "expr": "openai.Embedding",
+      "change": "embedding.Embedding removed",
+      "status": "needs-human",
+      "why": "Reverted: the tests failed with this rewrite.",
+      "diff": "--- a/autochain/models/ada_embedding.py\n+++ b/autochain/models/ada_embedding.py\n@@ -30,12 +30,12 @@\n                 \"Could not import openai python package. \"\n                 \"Please install it with `pip install openai`.\"\n             )\n-        openai.api_key = openai_api_key\n+        client = openai.OpenAI(api_key=openai_api_key)\n         try:\n-            values[\"client\"] = openai.Embedding\n+            values[\"client\"] = client.embeddings\n         except AttributeError:\n             raise ValueError(\n-                \"`openai` has no `ChatCompletion` attribute, this is likely \"\n+                \"`openai.OpenAI` has no `embeddings` attribute, this is likely \"\n                 \"due to an old version of the openai package. Try upgrading it \"\n                 \"with `pip install --upgrade openai`.\"\n             )\n",
+      "attempts": 3,
+      "error": "reverted: the tests still fail with this rewrite\n… (47 earlier lines omitted)\n    def test_ada_encoder(ada_encoding_fixture):\n        text = \"example text\"\n        os.environ[\"OPENAI_API_KEY\"] = \"mock_api_key\"\n    \n        encoder = OpenAIAdaEncoder(temperature=0)\n>       response = encoder.encode([text])\n\ntests/models/test_openai_ada_encoder.py:39: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nautochain/models/ada_embedding.py:63: in encode\n    response = self.generate_with_retry(**params)\nautochain/models/base.py:123: in generate_with_retry\n    retry_decorator = self._create_retry_decorator()\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = OpenAIAdaEncoder(client=<openai.resources.embeddings.Embeddings object at 0x7fd3db883950>, model_name='text-embedding-...el_kwargs={}, openai_api_key=None, openai_organization=None, request_timeout=None, max_retries=6, n=1, max_tokens=None)\n\n    def _create_retry_decorator(self) -> Callable[[Any], Any]:\n        import openai\n    \n        min_seconds = 1\n        max_seconds = 60\n        # Wait 2^x * 1 second between each retry starting with\n        # 4 seconds, then up to 10 seconds, then 10 seconds afterwards\n        return retry(\n            reraise=True,\n            stop=stop_after_attempt(self.max_retries),\n            wait=wait_exponential(multiplier=1, min=min_seconds, max=max_seconds),\n            retry=(\n>               retry_if_exception_type(openai.error.Timeout)\n                | retry_if_exception_type(openai.error.APIError)\n                | retry_if_exception_type(openai.error.APIConnectionError)\n                | retry_if_exception_type(openai.error.RateLimitError)\n                | retry_if_exception_type(openai.error.ServiceUnavailableError)\n            ),\n            before_sleep=before_sleep_log(logger, logging.WARNING),\n        )\nE       AttributeError: module 'openai' has no attribute 'error'\n\nautochain/models/base.py:112: AttributeError",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "autochain/models/base.py",
+      "line": 114,
+      "expr": "openai.error.APIConnectionError",
+      "change": "error.APIConnectionError removed",
+      "status": "needs-human",
+      "why": "Reverted: the tests failed with this rewrite.",
+      "diff": "--- a/autochain/models/base.py\n+++ b/autochain/models/base.py\n@@ -109,11 +109,11 @@\n             stop=stop_after_attempt(self.max_retries),\n             wait=wait_exponential(multiplier=1, min=min_seconds, max=max_seconds),\n             retry=(\n-                retry_if_exception_type(openai.error.Timeout)\n-                | retry_if_exception_type(openai.error.APIError)\n-                | retry_if_exception_type(openai.error.APIConnectionError)\n-                | retry_if_exception_type(openai.error.RateLimitError)\n-                | retry_if_exception_type(openai.error.ServiceUnavailableError)\n+                retry_if_exception_type(openai.APITimeoutError)\n+                | retry_if_exception_type(openai.APIError)\n+                | retry_if_exception_type(openai.APIConnectionError)\n+                | retry_if_exception_type(openai.RateLimitError)\n+                | retry_if_exception_type(openai.APIStatusError)\n             ),\n             before_sleep=before_sleep_log(logger, logging.WARNING),\n         )\n",
+      "attempts": 3,
+      "error": "reverted: the tests still fail with this rewrite\n… (1 earlier lines omitted)\nTypeError: Embeddings.create() got an unexpected keyword argument 'request_timeout'\nada_encoding_fixture = None\n\n    def test_ada_encoder(ada_encoding_fixture):\n        text = \"example text\"\n        os.environ[\"OPENAI_API_KEY\"] = \"mock_api_key\"\n    \n        encoder = OpenAIAdaEncoder(temperature=0)\n>       response = encoder.encode([text])\n\ntests/models/test_openai_ada_encoder.py:39: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nautochain/models/ada_embedding.py:63: in encode\n    response = self.generate_with_retry(**params)\nautochain/models/base.py:129: in generate_with_retry\n    return _generate_with_retry(**kwargs)\n<trial-root>/AutoChain/.venv/lib/python3.11/site-packages/tenacity/__init__.py:336: in wrapped_f\n    return copy(f, *args, **kw)\n<trial-root>/AutoChain/.venv/lib/python3.11/site-packages/tenacity/__init__.py:475: in __call__\n    do = self.iter(retry_state=retry_state)\n<trial-root>/AutoChain/.venv/lib/python3.11/site-packages/tenacity/__init__.py:376: in iter\n    result = action(retry_state)\n<trial-root>/AutoChain/.venv/lib/python3.11/site-packages/tenacity/__init__.py:398: in <lambda>\n    self._add_action_func(lambda rs: rs.outcome.result())\n<home> in result\n    return self.__get_result()\n<home> in __get_result\n    raise self._exception\n<trial-root>/AutoChain/.venv/lib/python3.11/site-packages/tenacity/__init__.py:478: in __call__\n    result = fn(*args, **kwargs)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nkwargs = {'input': ['example text'], 'max_tokens': None, 'model': 'text-embedding-ada-002', 'n': 1, ...}\n\n    @retry_decorator\n    def _generate_with_retry(**kwargs: Any) -> Any:\n>       return self.client.create(**kwargs)\nE       TypeError: Embeddings.create() got an unexpected keyword argument 'request_timeout'\n\nautochain/models/base.py:127: TypeError",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "autochain/models/base.py",
+      "line": 113,
+      "expr": "openai.error.APIError",
+      "change": "error.APIError removed",
+      "status": "skipped",
+      "why": "same function as autochain/models/base.py:114; covered by that rewrite and its recheck",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "autochain/models/base.py",
+      "line": 115,
+      "expr": "openai.error.RateLimitError",
+      "change": "error.RateLimitError removed",
+      "status": "skipped",
+      "why": "same function as autochain/models/base.py:114; covered by that rewrite and its recheck",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "autochain/models/base.py",
+      "line": 116,
+      "expr": "openai.error.ServiceUnavailableError",
+      "change": "error.ServiceUnavailableError removed",
+      "status": "skipped",
+      "why": "same function as autochain/models/base.py:114; covered by that rewrite and its recheck",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "autochain/models/base.py",
+      "line": 112,
+      "expr": "openai.error.Timeout",
+      "change": "error.Timeout removed",
+      "status": "skipped",
+      "why": "same function as autochain/models/base.py:114; covered by that rewrite and its recheck",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "autochain/models/chat_openai.py",
+      "line": 185,
+      "expr": "openai.api_base",
+      "change": "openai.api_base removed",
+      "status": "skipped",
+      "why": "same function as autochain/models/chat_openai.py:189; covered by that rewrite and its recheck",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    }
+  ],
+  "tokens_used": 22676,
+  "summary": {
+    "fixed (verified)": 0,
+    "fixed (unverified: no tests)": 0,
+    "fixed, not covered by tests": 0,
+    "fixed, needs review": 0,
+    "needs-human": 3,
+    "dry-run": 0,
+    "skipped": 5
+  },
+  "model_calls": [
+    {
+      "endpoint": "https://api.tokenfactory.nebius.com/v1/chat/completions",
+      "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+      "enable_thinking": false,
+      "calls": 9,
+      "tokens": 20649
+    },
+    {
+      "endpoint": "https://api.tokenfactory.nebius.com/v1/chat/completions",
+      "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+      "enable_thinking": false,
+      "calls": 6,
+      "tokens": 2027
+    }
+  ],
+  "preexisting_failures": [
+    "tests/tools/test_google_search.py::test_google_search"
+  ],
+  "preexisting_note": "1 test already failing on base, not caused by Conduit: tests/tools/test_google_search.py::test_google_search",
+  "new_failures": [
+    "tests/models/test_chat_openai.py::test_chat_completion",
+    "tests/models/test_openai_ada_encoder.py::test_ada_encoder"
+  ],
+  "retest_runs": 2,
+  "retest_seconds": 2.245
+}

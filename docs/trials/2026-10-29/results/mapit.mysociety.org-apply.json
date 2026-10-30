@@ -1,0 +1,128 @@
+{
+  "results": [
+    {
+      "path": "subscriptions/views.py",
+      "line": 127,
+      "expr": "stripe.Invoice.upcoming",
+      "change": "Invoice.upcoming removed",
+      "status": "fixed (unverified: no tests)",
+      "why": "The change replaces the deprecated `stripe.Invoice.upcoming` call with a direct `stripe.Invoice.list` request filtered by `status='draft'` and `limit=1`, which correctly retrieves the next draft invoice and avoids the removed method.",
+      "diff": "--- a/subscriptions/views.py\n+++ b/subscriptions/views.py\n@@ -124,8 +124,12 @@\n     def get_context_data_detail(self, **context):\n         customer = self.object.customer\n         try:\n-            upcoming = stripe.Invoice.upcoming(customer=customer.id)\n-            upcoming['amount_due'] = upcoming['amount_due'] / 100\n+            upcoming_invoices = stripe.Invoice.list(customer=customer.id, status='draft', limit=1)\n+            if upcoming_invoices.data:\n+                upcoming = upcoming_invoices.data[0]\n+                upcoming['amount_due'] = upcoming['amount_due'] / 100\n+            else:\n+                upcoming = None\n         except stripe.error.InvalidRequestError:\n             upcoming = None\n \n",
+      "attempts": 1,
+      "error": "",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "subscriptions/views.py",
+      "line": 122,
+      "expr": "self.get_context_data_detail",
+      "change": "Invoice.upcoming removed",
+      "status": "skipped",
+      "why": "wrapper caller; fixed at the SDK line",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": true,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "subscriptions/views.py",
+      "line": 97,
+      "expr": "self.get_context_data",
+      "change": "Invoice.upcoming removed",
+      "status": "skipped",
+      "why": "wrapper caller; fixed at the SDK line",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": true,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "subscriptions/views.py",
+      "line": 92,
+      "expr": "self.process",
+      "change": "Invoice.upcoming removed",
+      "status": "skipped",
+      "why": "wrapper caller; fixed at the SDK line",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": true,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "subscriptions/views.py",
+      "line": 112,
+      "expr": "self.process",
+      "change": "Invoice.upcoming removed",
+      "status": "skipped",
+      "why": "wrapper caller; fixed at the SDK line",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": true,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "subscriptions/views.py",
+      "line": 133,
+      "expr": "upcoming.total",
+      "change": "Invoice.upcoming removed",
+      "status": "skipped",
+      "why": "same function as subscriptions/views.py:127; covered by that rewrite and its recheck",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    },
+    {
+      "path": "subscriptions/views.py",
+      "line": 135,
+      "expr": "upcoming.total",
+      "change": "Invoice.upcoming removed",
+      "status": "skipped",
+      "why": "same function as subscriptions/views.py:127; covered by that rewrite and its recheck",
+      "diff": "",
+      "attempts": 0,
+      "error": "",
+      "via_wrapper": false,
+      "dropped": [],
+      "dropped_note": ""
+    }
+  ],
+  "tokens_used": 2073,
+  "summary": {
+    "fixed (verified)": 0,
+    "fixed (unverified: no tests)": 1,
+    "fixed, not covered by tests": 0,
+    "fixed, needs review": 0,
+    "needs-human": 0,
+    "dry-run": 0,
+    "skipped": 6
+  },
+  "model_calls": [
+    {
+      "endpoint": "https://api.tokenfactory.nebius.com/v1/chat/completions",
+      "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+      "enable_thinking": false,
+      "calls": 1,
+      "tokens": 1797
+    },
+    {
+      "endpoint": "https://api.tokenfactory.nebius.com/v1/chat/completions",
+      "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+      "enable_thinking": false,
+      "calls": 1,
+      "tokens": 276
+    }
+  ]
+}

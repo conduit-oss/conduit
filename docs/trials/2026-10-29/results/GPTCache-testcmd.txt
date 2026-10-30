@@ -1,0 +1,1 @@
+python -m pytest -q -p no:cacheprovider -o addopts= tests/unit_tests/adapter/test_openai.py tests/unit_tests/embedding/test_embedding_openai.py tests/unit_tests/embedding/test_cohere.py

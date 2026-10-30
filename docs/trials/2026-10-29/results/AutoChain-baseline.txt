@@ -1,0 +1,2 @@
+baseline: 17 tests, 1 failing (exit 1, from junit) -> <logs>/AutoChain-baseline.json
+  already failing: tests/tools/test_google_search.py::test_google_search

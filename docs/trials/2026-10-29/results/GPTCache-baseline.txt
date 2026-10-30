@@ -1,0 +1,17 @@
+baseline: 25 tests, 16 failing (exit 1, from junit) -> <logs>/GPTCache-baseline.json
+  already failing: tests/unit_tests/adapter/test_openai.py::test_base_llm_cache
+  already failing: tests/unit_tests/adapter/test_openai.py::test_base_llm_cache_async
+  already failing: tests/unit_tests/adapter/test_openai.py::test_completion_async
+  already failing: tests/unit_tests/adapter/test_openai.py::test_completion_error_wrapping
+  already failing: tests/unit_tests/adapter/test_openai.py::test_moderation
+  already failing: tests/unit_tests/adapter/test_openai.py::test_normal_openai_async[False]
+  already failing: tests/unit_tests/adapter/test_openai.py::test_normal_openai_async[True]
+  already failing: tests/unit_tests/adapter/test_openai.py::test_stream_openai_async
+  already failing: unit_tests/adapter/test_openai.py::test_base_llm_cache
+  already failing: unit_tests/adapter/test_openai.py::test_base_llm_cache_async
+  already failing: unit_tests/adapter/test_openai.py::test_completion_async
+  already failing: unit_tests/adapter/test_openai.py::test_completion_error_wrapping
+  already failing: unit_tests/adapter/test_openai.py::test_moderation
+  already failing: unit_tests/adapter/test_openai.py::test_normal_openai_async[False]
+  already failing: unit_tests/adapter/test_openai.py::test_normal_openai_async[True]
+  already failing: unit_tests/adapter/test_openai.py::test_stream_openai_async

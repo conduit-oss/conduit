@@ -1,0 +1,31 @@
+{
+  "command": "python -m pytest -q -p no:cacheprovider tests",
+  "ref": null,
+  "exit_code": 0,
+  "source": "junit",
+  "tests": 21,
+  "failing": [],
+  "outcomes": {
+    "tests/feste/backend/test_cohere.py::TestCohere::test_generate": "passed",
+    "tests/feste/backend/test_openai.py::TestOpenAI::test_complete": "passed",
+    "tests/feste/backend/test_openai.py::TestOpenAI::test_complete_batch": "passed",
+    "tests/feste/backend/test_openai.py::TestOpenAI::test_prepare_params": "passed",
+    "tests/feste/backend/test_openai.py::TestOpenAI::test_set_api_key": "passed",
+    "tests/feste/test_compute.py::TestCompute::test_compute": "passed",
+    "tests/feste/test_context.py::TestContext::test_change_context": "passed",
+    "tests/feste/test_graph.py::TestGraph::test_collect": "passed",
+    "tests/feste/test_graph.py::TestGraph::test_dagviz": "passed",
+    "tests/feste/test_graph.py::TestGraph::test_dependencies": "passed",
+    "tests/feste/test_graph.py::TestGraph::test_toposort": "passed",
+    "tests/feste/test_prompt.py::TestPrompt::test_concatenate": "passed",
+    "tests/feste/test_prompt.py::TestPrompt::test_environment": "passed",
+    "tests/feste/test_prompt.py::TestPrompt::test_length": "passed",
+    "tests/feste/test_prompt.py::TestPrompt::test_multiple_parameter": "passed",
+    "tests/feste/test_prompt.py::TestPrompt::test_single_parameter": "passed",
+    "tests/feste/test_prompt.py::TestPrompt::test_variables": "passed",
+    "tests/feste/test_tasks.py::TestTask::test_task_bin_op": "passed",
+    "tests/feste/test_tasks.py::TestTask::test_task_eager": "passed",
+    "tests/feste/test_tasks.py::TestTask::test_task_eaget_class": "passed",
+    "tests/feste/test_tasks.py::TestTask::test_task_unary_op": "passed"
+  }
+}

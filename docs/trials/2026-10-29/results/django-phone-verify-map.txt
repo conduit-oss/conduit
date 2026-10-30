@@ -1,0 +1,11 @@
+Outside-in service map
+root: <trial-root>/django-phone-verify
+services: twilio
+
+twilio
+- phone_verify/backends/twilio.py:5  sdk_alias  twilio.base.exceptions.TwilioRestException  [high]
+- phone_verify/backends/twilio.py:6  sdk_alias  twilio.rest.Client  [high]
+- phone_verify/backends/twilio.py:21  sdk_call  twilio.rest.Client  [high]
+- phone_verify/backends/twilio.py:25  sdk_call  twilio.rest.Client.messages.create  [high]
+- phone_verify/backends/twilio.py:22  sdk_ref  twilio.base.exceptions.TwilioRestException  [high]
+

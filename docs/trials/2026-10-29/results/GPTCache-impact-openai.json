@@ -1,0 +1,163 @@
+{
+  "dependency": "openai",
+  "impacts": [
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "Embedding.create removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.Embedding.create",
+      "old": "openai.Embedding.create",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.resources.Embeddings.create",
+          "signature": "openai.resources.Embeddings.create(*, input, model, dimensions, encoding_format, user, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.AsyncEmbeddings.create",
+          "signature": "openai.resources.AsyncEmbeddings.create(*, input, model, dimensions, encoding_format, user, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.embeddings.Embeddings.create",
+          "signature": "openai.resources.embeddings.Embeddings.create(*, input, model, dimensions, encoding_format, user, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.embeddings.AsyncEmbeddings.create",
+          "signature": "openai.resources.embeddings.AsyncEmbeddings.create(*, input, model, dimensions, encoding_format, user, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.Evals.create",
+          "signature": "openai.resources.Evals.create(*, data_source_config, testing_criteria, metadata, name, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.Files.create",
+          "signature": "openai.resources.Files.create(*, file, purpose, expires_after, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.Batches.create",
+          "signature": "openai.resources.Batches.create(*, completion_window, endpoint, input_file_id, metadata, output_expires_after, extra_headers, extra_query, extra_body, timeout)"
+        },
+        {
+          "symbol": "openai.resources.Uploads.create",
+          "signature": "openai.resources.Uploads.create(*, bytes, filename, mime_type, purpose, expires_after, extra_headers, extra_query, extra_body, timeout)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "gptcache/embedding/openai.py",
+          "line": 57,
+          "expr": "openai.Embedding.create",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "gptcache/embedding/openai.py",
+          "line": 67,
+          "expr": "self.to_embeddings",
+          "confidence": "high",
+          "via_wrapper": true
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "Embedding.create return changed from a dict-like object to a typed object",
+      "confidence": "medium",
+      "source": "wheel",
+      "kind": "response_shape",
+      "symbol": "openai.api_resources.embedding.Embedding.create",
+      "old": "dict",
+      "new": "model",
+      "candidates": [],
+      "sites": [
+        {
+          "path": "gptcache/embedding/openai.py",
+          "line": 58,
+          "expr": "sentence_embeddings['data'][0]['embedding']",
+          "confidence": "medium",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "openai.api_base removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.api_base",
+      "old": "openai.api_base",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai._response.BaseAPIResponse",
+          "signature": "openai._response.BaseAPIResponse(*, raw, cast_to, client, stream, stream_cls, options, retries_taken)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient",
+          "signature": "openai._base_client.SyncAPIClient(*, version, base_url, max_retries, timeout, http_client, custom_headers, custom_query, _strict_response_validation)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient",
+          "signature": "openai._base_client.AsyncAPIClient(*, version, base_url, _strict_response_validation, max_retries, timeout, http_client, custom_headers, custom_query)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.get",
+          "signature": "openai._base_client.SyncAPIClient.get(path, *, cast_to, options, stream, stream_cls)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.put",
+          "signature": "openai._base_client.SyncAPIClient.put(path, *, cast_to, body, files, options)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient.get",
+          "signature": "openai._base_client.AsyncAPIClient.get(path, *, cast_to, options, stream, stream_cls)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient.put",
+          "signature": "openai._base_client.AsyncAPIClient.put(path, *, cast_to, body, files, options)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.post",
+          "signature": "openai._base_client.SyncAPIClient.post(path, *, cast_to, body, options, files, stream, stream_cls)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "gptcache/core.py",
+          "line": 128,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "gptcache/embedding/openai.py",
+          "line": 37,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "gptcache/embedding/openai.py",
+          "line": 38,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    }
+  ],
+  "deprecations": [],
+  "diffed": [
+    "openai"
+  ],
+  "notes": []
+}

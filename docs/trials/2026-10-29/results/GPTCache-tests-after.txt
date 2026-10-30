@@ -1,0 +1,23 @@
+
+==================================== ERRORS ====================================
+______________ ERROR collecting unit_tests/adapter/test_openai.py ______________
+tests/unit_tests/adapter/test_openai.py:12: in <module>
+    from gptcache.adapter import openai
+gptcache/adapter/openai.py:31: in <module>
+    class ChatCompletion(openai.ChatCompletion, BaseCacheLLM):
+.venv/lib/python3.11/site-packages/openai/lib/_old_api.py:39: in __call__
+    raise APIRemovedInV1(symbol=self._symbol)
+E   openai.lib._old_api.APIRemovedInV1: 
+E   
+E   You tried to access openai.ChatCompletion, but this is no longer supported in openai>=1.0.0 - see the README at https://github.com/openai/openai-python for the API.
+E   
+E   You can run `openai migrate` to automatically upgrade your codebase to use the 1.0.0 interface. 
+E   
+E   Alternatively, you can pin your installation to the old version, e.g. `pip install openai==0.28`
+E   
+E   A detailed migration guide is available here: https://github.com/openai/openai-python/discussions/742
+=========================== short test summary info ============================
+ERROR tests/unit_tests/adapter/test_openai.py - openai.lib._old_api.APIRemove...
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.58s
+tests_after_exit=2

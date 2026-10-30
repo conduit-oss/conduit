@@ -1,0 +1,21 @@
+........................................................................ [ 50%]
+........................................................................ [100%]
+=============================== warnings summary ===============================
+tests/test_api.py: 8 warnings
+tests/test_backends.py: 8 warnings
+tests/test_services.py: 12 warnings
+  <trial-root>/django-phone-verify/.venv/lib/python3.11/site-packages/jwt/api_jwt.py:149: InsecureKeyLengthWarning: The HMAC key is 15 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+    return self._jws.encode(
+
+tests/test_api.py::test_check_security_code_expiry_with_deprecated_setting[nexmo.NexmoBackend]
+tests/test_api.py::test_check_security_code_expiry_with_deprecated_setting[twilio.TwilioBackend]
+tests/test_models.py::test_sms_verification_is_expired_with_deprecated_setting_name[nexmo.NexmoBackend]
+tests/test_models.py::test_sms_verification_is_expired_with_deprecated_setting_name[twilio.TwilioBackend]
+tests/test_models.py::test_sms_verification_is_expired_with_deprecated_setting_name[twilio.TwilioSandboxBackend]
+tests/test_models.py::test_sms_verification_is_expired_with_deprecated_setting_name[nexmo.NexmoSandboxBackend]
+  <trial-root>/django-phone-verify/phone_verify/models.py:67: DeprecationWarning: SECURITY_CODE_EXPIRATION_TIME is deprecated and will be removed in a future version. Please use SECURITY_CODE_EXPIRATION_SECONDS instead.
+    expiration_time = get_security_code_expiration()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+144 passed, 34 warnings in 1.27s
+tests_after_exit=0 (twilio 9.12.0)

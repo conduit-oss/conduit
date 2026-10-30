@@ -1,0 +1,561 @@
+{
+  "dependency": "openai",
+  "impacts": [
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "ChatCompletion.create removed",
+      "confidence": "medium",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.ChatCompletion.create",
+      "old": "openai.ChatCompletion.create",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.resources.chat.Completions.create",
+          "signature": "openai.resources.chat.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_tokens, ma"
+        },
+        {
+          "symbol": "openai.resources.chat.AsyncCompletions.create",
+          "signature": "openai.resources.chat.AsyncCompletions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_token"
+        },
+        {
+          "symbol": "openai.resources.chat.chat.Completions.create",
+          "signature": "openai.resources.chat.chat.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_token"
+        },
+        {
+          "symbol": "openai.resources.chat.chat.AsyncCompletions.create",
+          "signature": "openai.resources.chat.chat.AsyncCompletions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completion_"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.Completions.create",
+          "signature": "openai.resources.chat.completions.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_completio"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.AsyncCompletions.create",
+          "signature": "openai.resources.chat.completions.AsyncCompletions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, max_comp"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.completions.Completions.create",
+          "signature": "openai.resources.chat.completions.completions.Completions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logprobs, m"
+        },
+        {
+          "symbol": "openai.resources.chat.completions.completions.AsyncCompletions.create",
+          "signature": "openai.resources.chat.completions.completions.AsyncCompletions.create(*, messages, model, audio, frequency_penalty, function_call, functions, logit_bias, logpro"
+        }
+      ],
+      "sites": [
+        {
+          "path": "src/gpt_review/_openai.py",
+          "line": 91,
+          "expr": "openai.ChatCompletion.create",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "src/gpt_review/_ask.py",
+          "line": 121,
+          "expr": "_call_gpt",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 70,
+          "expr": "_ask",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 127,
+          "expr": "_ask",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 166,
+          "expr": "_ask",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 219,
+          "expr": "_ask",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 250,
+          "expr": "_summarize_files",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/repositories/github.py",
+          "line": 122,
+          "expr": "_summarize_files",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/repositories/github.py",
+          "line": 151,
+          "expr": "GitHubClient.post_pr_summary",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 214,
+          "expr": "_summarize_test_coverage",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 202,
+          "expr": "_summarize_file",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_git.py",
+          "line": 61,
+          "expr": "_request_goal",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 88,
+          "expr": "_request_goal",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 108,
+          "expr": "_request_goal",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 208,
+          "expr": "_request_goal",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 296,
+          "expr": "_request_goal",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 271,
+          "expr": "_process_report",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 248,
+          "expr": "_process_yaml",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 195,
+          "expr": "_summarize_pr",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 111,
+          "expr": "_check_goals",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 185,
+          "expr": "_check_goals",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 226,
+          "expr": "_summarize_risk",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_git.py",
+          "line": 82,
+          "expr": "_commit_message",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_openai.py",
+          "line": 111,
+          "expr": "completion.choices[0].message.content",
+          "confidence": "medium",
+          "via_wrapper": false
+        },
+        {
+          "path": "src/gpt_review/_openai.py",
+          "line": 102,
+          "expr": "openai.ChatCompletion.create",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "ChatCompletion.create return changed from a dict-like object to a typed object",
+      "confidence": "medium",
+      "source": "wheel",
+      "kind": "response_shape",
+      "symbol": "openai.api_resources.chat_completion.ChatCompletion.create",
+      "old": "dict",
+      "new": "model",
+      "candidates": [],
+      "sites": [
+        {
+          "path": "src/gpt_review/_openai.py",
+          "line": 111,
+          "expr": "completion.choices[0].message.content",
+          "confidence": "medium",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "error.RateLimitError removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.error.RateLimitError",
+      "old": "openai.error.RateLimitError",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai.RateLimitError",
+          "signature": "openai.RateLimitError()"
+        },
+        {
+          "symbol": "openai._exceptions.RateLimitError",
+          "signature": "openai._exceptions.RateLimitError()"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.to_dict",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.to_json",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.construct",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.construct(__cls, _fields_set)"
+        },
+        {
+          "symbol": "openai.types.realtime.RateLimitsUpdatedEvent.model_dump",
+          "signature": "openai.types.realtime.RateLimitsUpdatedEvent.model_dump(*, mode, include, exclude, by_alias, exclude_unset, exclude_defaults, exclude_none, round_trip, warnings"
+        },
+        {
+          "symbol": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_dict",
+          "signature": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_dict(*, mode, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        },
+        {
+          "symbol": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_json",
+          "signature": "openai.types.beta.realtime.RateLimitsUpdatedEvent.to_json(*, indent, use_api_names, exclude_unset, exclude_defaults, exclude_none, warnings)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "src/gpt_review/_openai.py",
+          "line": 118,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "src/gpt_review/_ask.py",
+          "line": 121,
+          "expr": "_call_gpt",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 70,
+          "expr": "_ask",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 127,
+          "expr": "_ask",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 166,
+          "expr": "_ask",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 219,
+          "expr": "_ask",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 250,
+          "expr": "_summarize_files",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/repositories/github.py",
+          "line": 122,
+          "expr": "_summarize_files",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/repositories/github.py",
+          "line": 151,
+          "expr": "GitHubClient.post_pr_summary",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 214,
+          "expr": "_summarize_test_coverage",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 202,
+          "expr": "_summarize_file",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_git.py",
+          "line": 61,
+          "expr": "_request_goal",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 88,
+          "expr": "_request_goal",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 108,
+          "expr": "_request_goal",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 208,
+          "expr": "_request_goal",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 296,
+          "expr": "_request_goal",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 271,
+          "expr": "_process_report",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 248,
+          "expr": "_process_yaml",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 195,
+          "expr": "_summarize_pr",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 111,
+          "expr": "_check_goals",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 185,
+          "expr": "_check_goals",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_review.py",
+          "line": 226,
+          "expr": "_summarize_risk",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_git.py",
+          "line": 82,
+          "expr": "_commit_message",
+          "confidence": "high",
+          "via_wrapper": true
+        },
+        {
+          "path": "src/gpt_review/_openai.py",
+          "line": 112,
+          "expr": "RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "src/gpt_review/_openai.py",
+          "line": 6,
+          "expr": "import RateLimitError",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    },
+    {
+      "dependency": "openai",
+      "from_version": "0.28.1",
+      "to_version": "1.109.1",
+      "change": "openai.api_base removed",
+      "confidence": "high",
+      "source": "wheel",
+      "kind": "removed",
+      "symbol": "openai.api_base",
+      "old": "openai.api_base",
+      "new": "",
+      "candidates": [
+        {
+          "symbol": "openai._response.BaseAPIResponse",
+          "signature": "openai._response.BaseAPIResponse(*, raw, cast_to, client, stream, stream_cls, options, retries_taken)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient",
+          "signature": "openai._base_client.SyncAPIClient(*, version, base_url, max_retries, timeout, http_client, custom_headers, custom_query, _strict_response_validation)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient",
+          "signature": "openai._base_client.AsyncAPIClient(*, version, base_url, _strict_response_validation, max_retries, timeout, http_client, custom_headers, custom_query)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.get",
+          "signature": "openai._base_client.SyncAPIClient.get(path, *, cast_to, options, stream, stream_cls)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.put",
+          "signature": "openai._base_client.SyncAPIClient.put(path, *, cast_to, body, files, options)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient.get",
+          "signature": "openai._base_client.AsyncAPIClient.get(path, *, cast_to, options, stream, stream_cls)"
+        },
+        {
+          "symbol": "openai._base_client.AsyncAPIClient.put",
+          "signature": "openai._base_client.AsyncAPIClient.put(path, *, cast_to, body, files, options)"
+        },
+        {
+          "symbol": "openai._base_client.SyncAPIClient.post",
+          "signature": "openai._base_client.SyncAPIClient.post(path, *, cast_to, body, options, files, stream, stream_cls)"
+        }
+      ],
+      "sites": [
+        {
+          "path": "src/gpt_review/_llama_index.py",
+          "line": 141,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "src/gpt_review/_llama_index.py",
+          "line": 152,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "src/gpt_review/context.py",
+          "line": 59,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "src/gpt_review/context.py",
+          "line": 71,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        },
+        {
+          "path": "src/gpt_review/context.py",
+          "line": 75,
+          "expr": "openai.api_base",
+          "confidence": "high",
+          "via_wrapper": false
+        }
+      ]
+    }
+  ],
+  "deprecations": [],
+  "diffed": [
+    "openai"
+  ],
+  "notes": []
+}
