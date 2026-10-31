@@ -19,7 +19,7 @@ from conduit.apply.impact_input import sites_from_payload
 from conduit.apply.models import SiteStatus
 from conduit.apply.report import model_call_lines
 
-from test_apply import _impact_payload, _settings
+from test_apply import _edit, _impact_payload, _settings
 from test_declared_types import _findings
 
 _BODY = """
@@ -141,3 +141,33 @@ def test_model_calls_are_summarized_for_the_log_without_the_key():
     assert all(secret not in line and "pw" not in line for line in lines)
     assert report.to_dict()["model_calls"][0]["model"] == "big/model"
     assert model_call_lines(ApplyReport()) == []
+
+
+def test_answered_http_calls_are_in_the_ledger_even_when_usage_is_missing():
+    """A 200 with no usage still counts as a model request (call tally cannot drop it)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "x"}}]})
+
+    client = TokenFactoryClient(base_url="https://models.example.test/v1/", api_key="k")
+    client._http = httpx.Client(transport=httpx.MockTransport(handler))
+    client.chat(model="big/model", turns=[ChatMessage(role="user", content="hi")])
+    client.chat(model="big/model", turns=[ChatMessage(role="user", content="hi")])
+    summary = client.call_summary()
+    assert sum(item["calls"] for item in summary) == 2
+
+
+def test_apply_syncs_tokens_used_to_the_client_ledger(tmp_path: Path):
+    """tokens_used must match the ledger even if a caller forgot to add tokens."""
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text("def broken(client):\n    return client.old_call(1)\n", encoding="utf-8")
+    client = FakeModelClient(responses=[_edit("broken", "client.new_call(1)"), "why"])
+    report = apply_sites(
+        sites_from_payload(_impact_payload(line=2)),
+        ApplyConfig(root=root, settings=_settings(), write=True, client=client, site_cleared=lambda *_a: True),
+    )
+    assert report.results[0].status == SiteStatus.FIXED_UNVERIFIED
+    assert len(client.calls) == sum(item["calls"] for item in report.model_calls)
+    assert report.tokens_used == sum(item["tokens"] for item in report.model_calls)
+    assert report.tokens_used > 0

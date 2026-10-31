@@ -41,6 +41,7 @@ from conduit.apply.splice import (
 )
 from conduit.apply.signatures import _modules, literal_value, new_release_wheel, signatures_for
 from conduit.apply.testrun import Baseline, describe_preexisting, focus, isolate_pytest, judge, run_tests
+from conduit.apply.testrefs import find_test_refs
 from conduit.apply.change_why import caught, caught_keys, change_why
 from conduit.apply.dropped import DROPPED, content_dropped, import_swap_why
 from conduit.apply.producers import repo_producers
@@ -102,6 +103,9 @@ class ApplyConfig:
     #: Per-test outcomes on the PR's base state; tests that failed there do not
     #: count against a rewrite (see ``conduit.apply.testrun``).
     baseline: Baseline | None = None
+    #: Removed/renamed symbols from the impact payload (including changes with
+    #: no call sites). Used to find tests that still import or patch them.
+    removed_symbols: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -127,6 +131,11 @@ class ApplyReport:
     flaky: list[str] = field(default_factory=list)
     #: Set when the traced run failed and the pass/fail run did not.
     trace_note: str = ""
+    #: Why the suite could not collect or run after the bump (empty when it could).
+    #: Distinct from "not covered": the tests were broken by the bump, not silent.
+    suite_blocked: str = ""
+    #: Test files that still import, patch, or mock a removed symbol (file, line, symbol).
+    test_refs: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def preexisting_note(self) -> str:
@@ -154,6 +163,10 @@ class ApplyReport:
             data["flaky"] = list(self.flaky)
         if self.trace_note:
             data["trace_note"] = self.trace_note
+        if self.suite_blocked:
+            data["suite_blocked"] = self.suite_blocked
+        if self.test_refs:
+            data["test_refs"] = list(self.test_refs)
         return data
 
 
@@ -193,6 +206,11 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
         summary = getattr(client, "call_summary", None)
         if callable(summary):
             report.model_calls = summary()
+            # Ledger is the source of truth for answered calls: keep tokens_used
+            # in sync so a path that forgot to add tokens cannot under-report.
+            totaled = sum(int(item.get("tokens") or 0) for item in report.model_calls)
+            if totaled:
+                report.tokens_used = totaled
         if owns_client and client is not None and hasattr(client, "close"):
             client.close()  # type: ignore[union-attr]
     return report
@@ -252,6 +270,7 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _retry_routed(work, client, report, originals, texts_of, slots)
         _drop_traced_reads(work, report, originals, texts_of, slots)
         _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
+        _record_test_refs(selected, scratch, report, config)
         failure = ""
         stashed: dict[str, str] = {}
         checked_flakes = False
@@ -273,13 +292,29 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             if _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
                 failure = ""
                 break
+            # Collection error that is not caused by any accepted rewrite (the
+            # bumped tree cannot collect, or an unfixed site elsewhere still
+            # breaks import): keep the rewrites and record that the suite
+            # could not run. Never blame the only rewrite for a collection
+            # failure the bump already causes.
+            if _collection_error(output) and _suite_blocked_by_bump(
+                config, scratch, report, originals, accepted, output
+            ):
+                failure = ""
+                break
             # An empty blame used to stand for every accepted rewrite, so one
             # unlocated failure reverted the batch. Leave them in place and
             # separate the cause after the retries.
             blamed = _blame(output, scratch, accepted)
+            # Collection errors: every call site in a named file must move
+            # together, so a file is never left half-migrated.
+            if blamed and _collection_error(output):
+                blamed = _sites_in_same_files(blamed, accepted)
             others_failed = any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
-            if not blamed and len(accepted) == 1 and not others_failed:
+            if not blamed and len(accepted) == 1 and not others_failed and not _collection_error(output):
                 # The only rewrite is the only place the failure can sit.
+                # Collection errors are handled above: do not pin them on the
+                # lone rewrite when the suite cannot load.
                 blamed = list(accepted)
             if not blamed or _round == config.settings.max_attempts:
                 break
@@ -313,9 +348,17 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             failure = "" if ok else output
             if failure and _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
                 failure = ""
+        if failure and accepted and _collection_error(failure):
+            # Collection failures are not dropped via blame: if the bumped tree
+            # (or unfixed sites elsewhere) still cannot collect, keep the
+            # rewrites and mark them "tests couldn't run".
+            if _suite_blocked_by_bump(config, scratch, report, originals, accepted, failure):
+                failure = ""
         if failure and accepted:
             blamed = _blame(failure, scratch, accepted)
-            if blamed:
+            if blamed and _collection_error(failure):
+                blamed = _sites_in_same_files(blamed, accepted)
+            if blamed and not _collection_error(failure):
                 # These were retried above and the failure still names them.
                 _drop_sites(scratch, originals, accepted, texts_of, slots, report, blamed, failure)
                 ok, output = _check(config, scratch, report, lines) if accepted else (True, "")
@@ -323,12 +366,22 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                     # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
                     ok, output = _check(config, scratch, report, lines)
                 failure = "" if ok else output
+            elif blamed and _collection_error(failure):
+                # Still a collection error after the bump check: separate without
+                # treating collection as a normal test failure to drop.
+                pass
             if failure and accepted:
                 # A held-back site, or a failure the traceback does not locate,
                 # must not take the other rewrites with it.
                 failure = _separate_failures(
                     config, scratch, report, lines, originals, texts_of, slots, accepted, failure
                 )
+        _record_test_refs(selected, scratch, report, config)
+        if failure and _collection_error(failure):
+            report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
+            # Keep remaining accepted rewrites: the suite could not run, so they
+            # are not verified and not silently reverted.
+            failure = ""
         for path, text in stashed.items():
             _write_file(scratch, path, text)
         if accepted and not failure:
@@ -355,6 +408,14 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 if note and note not in review:
                     review = f"{review} {note}"
                 report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_NEEDS_REVIEW, why=review, error="")
+                continue
+            blocked = _tests_couldnt_run_why(report, lines, site.path, why)
+            if blocked:
+                # Suite broken by the bump (collection/import): never "verified"
+                # and never the quieter "not covered by tests".
+                report.results[slots[key]] = replace(
+                    done, status=SiteStatus.FIXED_TESTS_COULDNT_RUN, why=blocked, error=""
+                )
                 continue
             unproven = _uncovered_why(lines.last, site.path, originals[site.path], accepted[key].get("block", ""), why)
             if unproven:
@@ -621,6 +682,8 @@ def _separate_failures(
             for path in paths:
                 _rebuild(scratch, originals, accepted, texts, path)
 
+    collection = _collection_error(failure)
+
     if config.baseline is not None and config.baseline.usable and budget():
         current = tuple(report.new_failures or [])
         saved_pre, saved_new = report.preexisting, report.new_failures
@@ -628,12 +691,22 @@ def _separate_failures(
             _write_file(scratch, path, before)
         bare = timed()
         bare_new = tuple(report.new_failures or [])
+        bare_out = bare[1] if bare is not None else ""
         report.preexisting, report.new_failures = saved_pre, saved_new
         rebuild_all()
-        if bare is not None and not bare[0] and bare_new == current and current:
-            # The bumped tree fails the same way with nothing rewritten.
-            lines.last = proved
-            return ""
+        if bare is not None and not bare[0] and current:
+            # The bumped tree still fails with nothing rewritten. When both
+            # runs fail collection, the accepted rewrites are not the cause —
+            # even if the exact failure ids differ (an unfixed site in another
+            # file, or tests that still import a removed API).
+            if collection or _collection_error(bare_out):
+                lines.last = proved
+                report.suite_blocked = report.suite_blocked or _suite_blocked_why(bare_out or failure, report)
+                return ""
+            if bare_new == current:
+                # Same non-collection failure with no rewrites: keep them.
+                lines.last = proved
+                return ""
 
     original_ids = list(report.new_failures or [])
 
@@ -646,8 +719,45 @@ def _separate_failures(
             return not ok
         return set(original_ids) <= set(ids) - set(missing)
 
+    def file_groups(keys: list[int]) -> list[list[int]]:
+        """Accepted keys grouped by file, preserving order. Collection failures
+        treat each file as one unit so a file is never left half-migrated."""
+        order: list[str] = []
+        by_path: dict[str, list[int]] = {}
+        for key in keys:
+            path = accepted[key]["site"].path
+            if path not in by_path:
+                order.append(path)
+                by_path[path] = []
+            by_path[path].append(key)
+        return [by_path[path] for path in order]
+
     def culprits(keys: list[int]) -> list[int] | None:
+        if collection and len(file_groups(keys)) > 1:
+            # Bisect whole files, not individual call sites inside a file.
+            groups = file_groups(keys)
+            if not budget():
+                return None
+            mid = len(groups) // 2
+            left = [key for group in groups[:mid] for key in group]
+            right = [key for group in groups[mid:] for key in group]
+            left_run = with_keys(left)
+            if left_run is None:
+                return None
+            if reproduces(left_run[0], left_run[2], left_run[3]):
+                found = culprits(left)
+                return keys if found is None else found
+            right_run = with_keys(right)
+            if right_run is None:
+                return None
+            if reproduces(right_run[0], right_run[2], right_run[3]):
+                found = culprits(right)
+                return keys if found is None else found
+            return keys
         if len(keys) <= 1:
+            return keys
+        if collection:
+            # One file's sites: keep or drop them together.
             return keys
         if not budget():
             return None
@@ -683,13 +793,16 @@ def _separate_failures(
             # held back or whose rewrite already failed, instead of dropping
             # every rewrite that shares the file.
             found = culprits(inside)
-            _drop_sites(
-                scratch, originals, accepted, texts, slots, report, found if found is not None else inside, failure
-            )
+            drop = found if found is not None else inside
+            if collection:
+                drop = _sites_in_same_files(drop, accepted)
+            _drop_sites(scratch, originals, accepted, texts, slots, report, drop, failure)
             return ""
 
     found = culprits(list(accepted))
     if found:
+        if collection:
+            found = _sites_in_same_files(found, accepted)
         _drop_sites(scratch, originals, accepted, texts, slots, report, found, failure)
         if not accepted:
             return ""
@@ -701,7 +814,11 @@ def _separate_failures(
             _drop_sites(scratch, originals, accepted, texts, slots, report, list(accepted), failure)
             return ""
         failure = confirmed[1]
-        _drop_sites(scratch, originals, accepted, texts, slots, report, list(accepted), failure)
+        drop = list(accepted)
+        if _collection_error(failure):
+            drop = _sites_in_same_files(drop, accepted)
+            report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
+        _drop_sites(scratch, originals, accepted, texts, slots, report, drop, failure)
         return ""
     _drop_sites(scratch, originals, accepted, texts, slots, report, list(accepted), failure)
     return ""
@@ -838,6 +955,121 @@ def _import_failure_only(output: str) -> bool:
     return True
 
 
+def _collection_error(output: str) -> bool:
+    """True when the failure is an import or collection error (suite can't run)."""
+    if not output:
+        return False
+    tokens = ("ERROR collecting", "ImportError", "ModuleNotFoundError", "cannot import")
+    return any(token in output for token in tokens)
+
+
+def _suite_blocked_by_bump(
+    config: ApplyConfig,
+    scratch: Path,
+    report: ApplyReport,
+    originals: dict[str, str],
+    accepted: dict[int, dict[str, Any]],
+    failure: str,
+) -> bool:
+    """True when the bumped tree still fails collection without the rewrites.
+
+    The rewrites stay with ``fixed, tests couldn't run``: the suite was broken
+    by the bump itself, by tests that still reference a removed API, or by an
+    unfixed site in another file — not by the kept fixes alone."""
+    if report.retest_runs >= _RETEST_BUDGET or not accepted:
+        return False
+    if not _collection_error(failure):
+        return False
+    paths = {sink["site"].path for sink in accepted.values()} | set(originals)
+    rewritten = {path: _read(scratch / path) for path in paths}
+    saved_pre, saved_new, saved_missing = report.preexisting, report.new_failures, list(report.missing)
+    for path, before in originals.items():
+        _write_file(scratch, path, before)
+    started = time.perf_counter()
+    try:
+        ok, output = _check(config, scratch, report, None)
+    finally:
+        report.retest_runs += 1
+        report.retest_seconds += time.perf_counter() - started
+    bare_ok = ok
+    bare_out = output
+    report.preexisting, report.new_failures = saved_pre, saved_new
+    report.missing = saved_missing
+    for path, text in rewritten.items():
+        _write_file(scratch, path, text)
+    if bare_ok:
+        # Bare bumped tree collects: the accepted rewrites caused this failure.
+        return False
+    if not _collection_error(bare_out):
+        return False
+    report.suite_blocked = report.suite_blocked or _suite_blocked_why(bare_out or failure, report)
+    return True
+
+
+def _sites_in_same_files(keys: list[int], accepted: dict[int, dict[str, Any]]) -> list[int]:
+    """Every accepted site that shares a file with any of ``keys``.
+
+    Used when a collection error names some sites: the whole file moves as one
+    unit so a rewrite is never left half-applied inside that file."""
+    paths = {accepted[key]["site"].path for key in keys if key in accepted}
+    if not paths:
+        return list(keys)
+    return [key for key, sink in accepted.items() if sink["site"].path in paths]
+
+
+def _suite_blocked_why(output: str, report: ApplyReport) -> str:
+    """One-line reason the suite could not collect or run after the bump."""
+    shown = [
+        f"{item['path']}:{item['line']} references removed {item['symbol']}"
+        for item in report.test_refs
+    ]
+    if shown:
+        return "tests couldn't run: " + "; ".join(dict.fromkeys(shown[:6]))
+    if _collection_error(output):
+        return "tests couldn't run: suite failed at collection after the bump"
+    return "tests couldn't run: the test command could not run after the bump"
+
+
+def _tests_couldnt_run_why(
+    report: ApplyReport, lines: _Lines, path: str, why: str
+) -> str:
+    """Status reason when the suite was broken by the bump; ``""`` when it ran.
+
+    Never returns a "not covered" reason: that status is for a suite that ran
+    but did not exercise this rewrite. ``suite_blocked`` wins even when the
+    cover run recorded collection errors as outcomes (those are not real test
+    runs). When some tests still ran under ``--continue-on-collection-errors``
+    and the suite was not blocked, sites in modules that loaded use the normal
+    line-reach check instead."""
+    note = lines.gaps.get(path, "")
+    load_gap = bool(note) and "failed to load" in note
+    record = lines.last
+    ran = record is not None and record.tests_ran
+    if report.suite_blocked or load_gap:
+        reason = note if load_gap else report.suite_blocked
+    elif not ran and report.test_refs:
+        reason = _suite_blocked_why("", report)
+    else:
+        return ""
+    if report.test_refs:
+        extra = "; ".join(
+            f"{item['path']}:{item['line']} references removed {item['symbol']}"
+            for item in report.test_refs[:4]
+        )
+        if extra and extra not in reason:
+            reason = f"{reason}; tests reference removed API: {extra}"
+    why = " ".join((why or "").split())
+    return f"{reason} The change: {why}" if why else reason
+
+
+def _record_test_refs(sites: list[ImpactSite], root: Path, report: ApplyReport, config: ApplyConfig) -> None:
+    """Scan the tree for test imports/patches of removed symbols; store on the report.
+
+    Reporting only: apply never edits test files here (see issue #143)."""
+    refs = find_test_refs(root, sites, extras=config.removed_symbols)
+    report.test_refs = [ref.to_dict() for ref in refs]
+
+
 def _park_unloaded(
     blocked: list[tuple[str, int, str]],
     scratch: Path,
@@ -850,22 +1082,31 @@ def _park_unloaded(
     """Keep rewrites in a module that cannot load, and record why tests never ran them.
 
     The text is stashed so a later rebuild of the file (which only splices sites
-    still in ``accepted``) cannot drop the rewrite."""
+    still in ``accepted``) cannot drop the rewrite. Status is
+    ``fixed, tests couldn't run`` — not "not covered" — because the suite was
+    broken by an import the bump left behind."""
     by_path: dict[str, tuple[int, str]] = {}
     for path, line, symbol in blocked:
         by_path.setdefault(path, (line, symbol))
+    notes = [
+        f"{path}:{line} still imports {symbol}" for path, line, symbol in blocked
+    ]
+    if notes:
+        report.suite_blocked = report.suite_blocked or (
+            "tests couldn't run: " + "; ".join(dict.fromkeys(notes))
+        )
     for key in list(accepted):
         site = accepted[key]["site"]
         hit = by_path.get(site.path)
         if hit is None:
             continue
         line, symbol = hit
-        why = f"tests could not load: {site.path}:{line} still imports {symbol}"
+        why = f"tests couldn't run: {site.path}:{line} still imports {symbol}"
         text = stashed.setdefault(site.path, _read(scratch / site.path))
         done = report.results[slots[key]]
         report.results[slots[key]] = replace(
             done,
-            status=SiteStatus.FIXED_NOT_COVERED,
+            status=SiteStatus.FIXED_TESTS_COULDNT_RUN,
             why=why,
             error="",
             diff=unified_diff_for(site.path, originals.get(site.path, ""), text),
@@ -1281,6 +1522,7 @@ _FIXED = {
     SiteStatus.FIXED_VERIFIED,
     SiteStatus.FIXED_UNVERIFIED,
     SiteStatus.FIXED_NOT_COVERED,
+    SiteStatus.FIXED_TESTS_COULDNT_RUN,
     SiteStatus.FIXED_NEEDS_REVIEW,
 }
 

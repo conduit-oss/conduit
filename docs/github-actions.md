@@ -339,7 +339,8 @@ On the demo run the bump line is `anthropic 0.34.2 -> 1.0.0`, and `Tokens` is th
 | Status | What it means |
 |--------|----------------|
 | `fixed (verified)` | The rewrite is kept. The test command passed, and a test ran the changed lines. The rewrite did not drop a value the old call passed. |
-| `fixed, not covered by tests` | The rewrite is kept and the suite did not gain a new failure, but no test ran the changed lines, or the tests could not load the module. This is not "verified". |
+| `fixed, not covered by tests` | The rewrite is kept and the suite did not gain a new failure, but no test ran the changed lines. This is not "verified". |
+| `fixed, tests couldn't run` | The rewrite is kept, but the suite could not collect or run after the bump (import/collection errors, including tests that still import or mock a removed API). Distinct from "not covered": the tests were broken, not merely silent about this line. Never "verified". |
 | `fixed, needs review` | The rewrite is kept and the tests passed, but the new call drops a value the old call passed. The why starts with `drops ...` (the demo case drops `settings`). This is never "verified". |
 | `needs-human` | No rewrite was kept. The why is one sentence: the tests still failed, a check still failed, a site this one depends on was not fixed, or the line could not be rewritten. `conduit apply` exits 1 when any site is needs-human, unless you passed `--dry-run`. The workflow still comments. |
 | `skipped` | The model was not asked. The line is the same function as another site (`same function as path:line; covered by that rewrite and its recheck`), a wrapper caller (`wrapper caller; fixed at the SDK line`), or the line was already rewritten (`line rewritten by an earlier fix in this file`). |

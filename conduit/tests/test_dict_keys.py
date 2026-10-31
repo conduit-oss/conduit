@@ -348,16 +348,21 @@ def test_a_held_back_import_does_not_sink_the_other_rewrites(tmp_path: Path):
     retry = next(call["turns"][-1].content for call in client.calls if "Previous attempt failed" in call["turns"][-1].content)
     assert "required 'apples', 'pears'" in retry and "optional 'extra'" in retry
     assert "to_dict()" in retry and "Bin.from_map" not in retry
-    assert other.status == SiteStatus.FIXED_NOT_COVERED, (other.status, other.error, other.why)
-    assert other.why == f"tests could not load: work.py:{broken_line} still imports OLD"
+    assert other.status == SiteStatus.FIXED_TESTS_COULDNT_RUN, (other.status, other.error, other.why)
+    assert f"work.py:{broken_line} still imports OLD" in (other.why or "")
     assert other.status != SiteStatus.FIXED_VERIFIED
+    assert other.status != SiteStatus.FIXED_NOT_COVERED
     assert "reverted" not in (other.error or "")
     written = (root / "work.py").read_text(encoding="utf-8")
     assert "from crate import OLD" in written
     assert "old_call(OLD)" in written
     assert "new_call(1)" in written
-    assert fine.status == SiteStatus.FIXED_VERIFIED, (fine.status, fine.error, fine.why)
+    # An unfixed import in another file blocks collection: kept rewrites are
+    # not verified even when a different test file still loads.
+    assert fine.status == SiteStatus.FIXED_TESTS_COULDNT_RUN, (fine.status, fine.error, fine.why)
+    assert fine.status != SiteStatus.FIXED_VERIFIED
     assert "reverted" not in (fine.error or "")
+    assert report.suite_blocked
     assert "new_call(1)" in (root / "good.py").read_text(encoding="utf-8")
 
 

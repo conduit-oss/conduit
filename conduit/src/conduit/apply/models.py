@@ -12,6 +12,11 @@ class SiteStatus(str, Enum):
     FIXED_UNVERIFIED = "fixed (unverified: no tests)"
     #: The tests pass, but none of them runs the changed lines: the fix is unproven.
     FIXED_NOT_COVERED = "fixed, not covered by tests"
+    #: The rewrite is in place, but the suite could not collect or run after the
+    #: bump (import/collection errors, including tests that still reference a
+    #: removed API). Distinct from "not covered": the tests were broken, not
+    #: merely silent about this line. Never "verified".
+    FIXED_TESTS_COULDNT_RUN = "fixed, tests couldn't run"
     #: The rewrite is in place and the tests pass, but it drops data the original
     #: call passed. A person should look. Never "verified".
     FIXED_NEEDS_REVIEW = "fixed, needs review"
