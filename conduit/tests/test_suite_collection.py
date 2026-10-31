@@ -169,6 +169,21 @@ def test_short_public_patch_matches_internal_full_path():
     assert _match_symbol("widgetkit", targets) is None
 
 
+def test_removed_symbol_matches_trailing_attributes_on_dot_boundary():
+    """Removed ``pkg.OldClass`` matches ``pkg.OldClass.create``; not ``pkg.OldClassX``."""
+    internal_class = "widgetkit._internal.widget.OldClass"
+    targets = [("widgetkit", internal_class)]
+    assert _match_symbol("widgetkit.OldClass", targets) == internal_class
+    assert _match_symbol("widgetkit.OldClass.create", targets) == internal_class
+    assert _match_symbol("widgetkit.OldClass.acreate", targets) == internal_class
+    assert _match_symbol("widgetkit.OldClassX", targets) is None
+    assert _match_symbol("widgetkit.OldClassX.create", targets) is None
+    # Exact public path under the symbol on a dot boundary.
+    exact = [("widgetkit", "widgetkit.OldClass")]
+    assert _match_symbol("widgetkit.OldClass.create", exact) == "widgetkit.OldClass"
+    assert _match_symbol("widgetkit.OldClassX", exact) is None
+
+
 def test_find_test_refs_reports_import_and_short_public_patch(tmp_path: Path):
     root = tmp_path / "app"
     _write(
@@ -197,6 +212,44 @@ def test_find_test_refs_reports_import_and_short_public_patch(tmp_path: Path):
         assert item.path == "checks/test_widgets.py"
         assert item.line > 0
         assert item.code
+
+
+def test_find_test_refs_trailing_attrs_in_patch_and_code(tmp_path: Path):
+    """Patch strings and attribute uses that continue past a removed class match it."""
+    root = tmp_path / "app"
+    _write(
+        root / "checks" / "test_old.py",
+        """\
+        from unittest.mock import patch
+        import widgetkit
+
+        @patch("widgetkit.OldClass.create")
+        def test_patch(mock_create):
+            mock_create.return_value = None
+
+        def test_attr_use():
+            widgetkit.OldClass.acreate("x")
+        """,
+    )
+    internal_class = "widgetkit._internal.widget.OldClass"
+    extras = (("widgetkit", internal_class),)
+    refs = find_test_refs(root, [], extras=extras)
+    by_kind = {(item.kind, item.symbol) for item in refs}
+    assert ("patch", internal_class) in by_kind
+    assert ("attr", internal_class) in by_kind
+    # Dot-boundary negative: OldClassX must not match OldClass.
+    _write(
+        root / "checks" / "test_neg.py",
+        """\
+        from unittest.mock import patch
+
+        @patch("widgetkit.OldClassX.create")
+        def test_other(mock_create):
+            mock_create.return_value = None
+        """,
+    )
+    neg = find_test_refs(root, [], extras=extras)
+    assert not any(item.path.endswith("test_neg.py") for item in neg)
 
 
 def test_collection_failure_is_not_not_covered(tmp_path: Path):
@@ -238,6 +291,7 @@ def test_collection_failure_is_not_not_covered(tmp_path: Path):
     assert result.status != SiteStatus.FIXED_VERIFIED
     assert result.status != SiteStatus.FIXED_NOT_COVERED
     assert "couldn't run" in result.status.value
+    assert report.suite_blocked
     assert report.test_refs
     assert any(item["symbol"] == "widgetkit.error.GoneError" for item in report.test_refs)
     assert "tests reference removed API" in format_report(report)
@@ -381,3 +435,93 @@ def test_apply_never_modifies_test_files_even_when_fixes_roll_back(tmp_path: Pat
     assert "import widgetkit" not in " ".join(
         item["code"] for item in report.test_refs if item["kind"] == "import"
     )
+
+
+def test_collection_failure_from_unfixed_other_file_sets_suite_blocked(tmp_path: Path):
+    """Rewrite in one file kept as couldn't-run when another file blocks collection."""
+    root = tmp_path / "app"
+    _install_sdk(root, "v1")
+    _write(
+        root / "good.py",
+        """\
+        from widgetkit import Widget
+
+        def fine(name):
+            return Widget.create(name)
+        """,
+    )
+    # Module-level import of a removed symbol: stays after a failed rewrite of
+    # the call site below, so importing this file breaks collection.
+    _write(
+        root / "leftover.py",
+        """\
+        from widgetkit.error import GoneError
+        from widgetkit import Widget
+
+        def stuck(name):
+            return Widget.create(name)
+        """,
+    )
+    test_src = textwrap.dedent(
+        """\
+        import good
+        import leftover
+
+        def test_fine():
+            assert good.fine("y").name == "y"
+
+        def test_stuck():
+            assert leftover.stuck("x").name == "x"
+        """
+    )
+    test_path = root / "checks" / "test_both.py"
+    _write(test_path, test_src)
+    before = test_path.read_bytes()
+    baseline = record_baseline(PYTEST, root)
+    assert baseline.usable and not baseline.failing
+    _install_sdk(root, "v2")
+    sites, removed = _sites(
+        ("good.py", 4, "Widget.create"),
+        ("leftover.py", 5, "Widget.create"),
+    )
+
+    def _reply(turns, model=""):
+        import re
+
+        text = turns[-1].content if turns else ""
+        found = re.search(r'"function_name":\s*"(\w+)"', text)
+        name = found.group(1) if found else ""
+        if name == "fine":
+            return _edit_fine()
+        if name == "stuck":
+            return "not a valid edit"
+        return "Updated the call."
+
+    # good.py rewrites; leftover.py never produces a valid edit (needs-human),
+    # so its GoneError import remains and the suite cannot collect.
+    client = FakeModelClient(responses=[_reply, _reply, _reply, _reply, _reply, _reply])
+    report = apply_sites(
+        sites,
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            test_cmd=PYTEST,
+            client=client,
+            site_cleared=lambda *_a: True,
+            baseline=baseline,
+            removed_symbols=removed,
+        ),
+    )
+    by_path = {item.site.path: item for item in report.results}
+    fine = by_path["good.py"]
+    stuck = by_path["leftover.py"]
+    assert stuck.status == SiteStatus.NEEDS_HUMAN
+    assert fine.status == SiteStatus.FIXED_TESTS_COULDNT_RUN, (fine.status, fine.error, fine.why)
+    assert fine.status != SiteStatus.FIXED_VERIFIED
+    assert fine.status != SiteStatus.FIXED_NOT_COVERED
+    assert report.suite_blocked
+    assert "couldn't run" in report.suite_blocked
+    assert "build(name)" in (root / "good.py").read_text(encoding="utf-8")
+    assert "from widgetkit.error import GoneError" in (root / "leftover.py").read_text(encoding="utf-8")
+    assert test_path.read_bytes() == before

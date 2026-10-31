@@ -293,9 +293,13 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                 failure = ""
                 break
             # Collection error that is not caused by any accepted rewrite (the
-            # bumped tree's tests still import or patch a removed API): keep the
-            # rewrites and record that the suite could not run.
-            if _collection_error(output) and _bump_breaks_collection(config, scratch, report, originals, accepted):
+            # bumped tree cannot collect, or an unfixed site elsewhere still
+            # breaks import): keep the rewrites and record that the suite
+            # could not run. Never blame the only rewrite for a collection
+            # failure the bump already causes.
+            if _collection_error(output) and _suite_blocked_by_bump(
+                config, scratch, report, originals, accepted, output
+            ):
                 failure = ""
                 break
             # An empty blame used to stand for every accepted rewrite, so one
@@ -307,8 +311,10 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             if blamed and _collection_error(output):
                 blamed = _sites_in_same_files(blamed, accepted)
             others_failed = any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
-            if not blamed and len(accepted) == 1 and not others_failed:
+            if not blamed and len(accepted) == 1 and not others_failed and not _collection_error(output):
                 # The only rewrite is the only place the failure can sit.
+                # Collection errors are handled above: do not pin them on the
+                # lone rewrite when the suite cannot load.
                 blamed = list(accepted)
             if not blamed or _round == config.settings.max_attempts:
                 break
@@ -342,11 +348,17 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             failure = "" if ok else output
             if failure and _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
                 failure = ""
+        if failure and accepted and _collection_error(failure):
+            # Collection failures are not dropped via blame: if the bumped tree
+            # (or unfixed sites elsewhere) still cannot collect, keep the
+            # rewrites and mark them "tests couldn't run".
+            if _suite_blocked_by_bump(config, scratch, report, originals, accepted, failure):
+                failure = ""
         if failure and accepted:
             blamed = _blame(failure, scratch, accepted)
             if blamed and _collection_error(failure):
                 blamed = _sites_in_same_files(blamed, accepted)
-            if blamed:
+            if blamed and not _collection_error(failure):
                 # These were retried above and the failure still names them.
                 _drop_sites(scratch, originals, accepted, texts_of, slots, report, blamed, failure)
                 ok, output = _check(config, scratch, report, lines) if accepted else (True, "")
@@ -354,6 +366,10 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
                     # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
                     ok, output = _check(config, scratch, report, lines)
                 failure = "" if ok else output
+            elif blamed and _collection_error(failure):
+                # Still a collection error after the bump check: separate without
+                # treating collection as a normal test failure to drop.
+                pass
             if failure and accepted:
                 # A held-back site, or a failure the traceback does not locate,
                 # must not take the other rewrites with it.
@@ -363,6 +379,9 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         _record_test_refs(selected, scratch, report, config)
         if failure and _collection_error(failure):
             report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
+            # Keep remaining accepted rewrites: the suite could not run, so they
+            # are not verified and not silently reverted.
+            failure = ""
         for path, text in stashed.items():
             _write_file(scratch, path, text)
         if accepted and not failure:
@@ -675,12 +694,19 @@ def _separate_failures(
         bare_out = bare[1] if bare is not None else ""
         report.preexisting, report.new_failures = saved_pre, saved_new
         rebuild_all()
-        if bare is not None and not bare[0] and bare_new == current and current:
-            # The bumped tree fails the same way with nothing rewritten.
-            lines.last = proved
+        if bare is not None and not bare[0] and current:
+            # The bumped tree still fails with nothing rewritten. When both
+            # runs fail collection, the accepted rewrites are not the cause —
+            # even if the exact failure ids differ (an unfixed site in another
+            # file, or tests that still import a removed API).
             if collection or _collection_error(bare_out):
+                lines.last = proved
                 report.suite_blocked = report.suite_blocked or _suite_blocked_why(bare_out or failure, report)
-            return ""
+                return ""
+            if bare_new == current:
+                # Same non-collection failure with no rewrites: keep them.
+                lines.last = proved
+                return ""
 
     original_ids = list(report.new_failures or [])
 
@@ -937,20 +963,23 @@ def _collection_error(output: str) -> bool:
     return any(token in output for token in tokens)
 
 
-def _bump_breaks_collection(
+def _suite_blocked_by_bump(
     config: ApplyConfig,
     scratch: Path,
     report: ApplyReport,
     originals: dict[str, str],
     accepted: dict[int, dict[str, Any]],
+    failure: str,
 ) -> bool:
-    """True when the bumped tree fails collection the same way with no rewrites.
+    """True when the bumped tree still fails collection without the rewrites.
 
-    The rewrites stay; the suite was broken by the bump (often tests that still
-    import or patch a removed API), not by any kept fix."""
+    The rewrites stay with ``fixed, tests couldn't run``: the suite was broken
+    by the bump itself, by tests that still reference a removed API, or by an
+    unfixed site in another file — not by the kept fixes alone."""
     if report.retest_runs >= _RETEST_BUDGET or not accepted:
         return False
-    current = tuple(report.new_failures or [])
+    if not _collection_error(failure):
+        return False
     paths = {sink["site"].path for sink in accepted.values()} | set(originals)
     rewritten = {path: _read(scratch / path) for path in paths}
     saved_pre, saved_new, saved_missing = report.preexisting, report.new_failures, list(report.missing)
@@ -962,18 +991,18 @@ def _bump_breaks_collection(
     finally:
         report.retest_runs += 1
         report.retest_seconds += time.perf_counter() - started
-    bare_new = tuple(report.new_failures or [])
     bare_ok = ok
     bare_out = output
     report.preexisting, report.new_failures = saved_pre, saved_new
     report.missing = saved_missing
     for path, text in rewritten.items():
         _write_file(scratch, path, text)
-    if bare_ok or bare_new != current or not current:
+    if bare_ok:
+        # Bare bumped tree collects: the accepted rewrites caused this failure.
         return False
     if not _collection_error(bare_out):
         return False
-    report.suite_blocked = report.suite_blocked or _suite_blocked_why(bare_out, report)
+    report.suite_blocked = report.suite_blocked or _suite_blocked_why(bare_out or failure, report)
     return True
 
 
@@ -1007,28 +1036,21 @@ def _tests_couldnt_run_why(
     """Status reason when the suite was broken by the bump; ``""`` when it ran.
 
     Never returns a "not covered" reason: that status is for a suite that ran
-    but did not exercise this rewrite. When some tests still ran (for example
-    under ``--continue-on-collection-errors``), sites in modules that loaded
-    use the normal coverage gate instead."""
+    but did not exercise this rewrite. ``suite_blocked`` wins even when the
+    cover run recorded collection errors as outcomes (those are not real test
+    runs). When some tests still ran under ``--continue-on-collection-errors``
+    and the suite was not blocked, sites in modules that loaded use the normal
+    line-reach check instead."""
     note = lines.gaps.get(path, "")
     load_gap = bool(note) and "failed to load" in note
     record = lines.last
     ran = record is not None and record.tests_ran
-    if ran and not load_gap:
+    if report.suite_blocked or load_gap:
+        reason = note if load_gap else report.suite_blocked
+    elif not ran and report.test_refs:
+        reason = _suite_blocked_why("", report)
+    else:
         return ""
-    if not load_gap and not report.suite_blocked and not (
-        not ran and report.test_refs
-    ):
-        return ""
-    reason = (
-        note
-        if load_gap
-        else (
-            report.suite_blocked
-            or _suite_blocked_why("", report)
-            or "tests couldn't run: the suite could not collect or run after the bump"
-        )
-    )
     if report.test_refs:
         extra = "; ".join(
             f"{item['path']}:{item['line']} references removed {item['symbol']}"

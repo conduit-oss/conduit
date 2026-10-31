@@ -31,7 +31,7 @@ class TestRef:
     path: str
     line: int
     symbol: str
-    kind: str  # "import" | "patch"
+    kind: str  # "import" | "patch" | "attr"
     code: str
 
     def to_dict(self) -> dict[str, str | int]:
@@ -156,6 +156,7 @@ def _refs_in_source(path: str, source: str, targets: list[tuple[str, str]]) -> l
     if tree is not None:
         out.extend(_import_refs(path, lines, tree, targets))
         out.extend(_ast_patch_refs(path, lines, tree, targets))
+        out.extend(_attr_refs(path, lines, tree, targets))
     # String patch targets that sit outside a simple Call (decorators, helpers).
     for match in _STRING_TARGET.finditer(source):
         target = match.group(1)
@@ -249,16 +250,65 @@ def _is_patch_call(func: ast.AST) -> bool:
     return False
 
 
+def _attr_refs(
+    path: str, lines: list[str], tree: ast.AST, targets: list[tuple[str, str]]
+) -> list[TestRef]:
+    """Dotted attribute uses in test code (``pkg.OldClass.acreate(...)``)."""
+    out: list[TestRef] = []
+    seen: set[tuple[int, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        dotted = _dotted_name(node)
+        if dotted is None:
+            continue
+        symbol = _match_symbol(dotted, targets)
+        if symbol is None:
+            continue
+        line = node.lineno
+        key = (line, symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            TestRef(
+                path=path,
+                line=line,
+                symbol=symbol,
+                kind="attr",
+                code=lines[line - 1].strip() if 0 < line <= len(lines) else dotted,
+            )
+        )
+    return out
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    """``a.b.c`` for an Attribute chain rooted at a Name; otherwise None."""
+    parts: list[str] = []
+    cur: ast.AST | None = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if not isinstance(cur, ast.Name):
+        return None
+    parts.append(cur.id)
+    parts.reverse()
+    return ".".join(parts)
+
+
 def _match_symbol(text: str, targets: list[tuple[str, str]]) -> str | None:
     """The removed symbol ``text`` names, or None.
 
-    ``text`` is an import module, ``module.Name``, or a patch target string.
+    ``text`` is an import module, ``module.Name``, a patch target string, or a
+    dotted attribute use in test code.
 
     Matches:
-    - the full symbol, or a path under it
-    - a short public alias under the same top package whose trailing
-      class/attr segments are a suffix of the full internal path
-      (``pkg.Thing.create`` ↔ ``pkg._internal.x.Thing.create``)
+    - the full symbol, or a path under it on a dot boundary
+      (``pkg.OldClass.create`` matches removed ``pkg.OldClass``)
+    - a short public alias under the same top package whose class/attr
+      segments appear contiguously in the full internal path, including when
+      the reference continues past the symbol with more attributes
+      (``pkg.Thing.create`` ↔ ``pkg._internal.x.Thing``)
     - a real submodule or class owner of the removed symbol that is more
       than the bare top-level package (``pkg.error`` for ``pkg.error.Gone``)
 
@@ -266,6 +316,8 @@ def _match_symbol(text: str, targets: list[tuple[str, str]]) -> str | None:
     - a bare ``import pkg`` / patch of just the top package against a removed
       attribute like ``pkg.api_base``
     - a sibling under the same owner (``pkg.Widget.build`` vs ``pkg.Widget.create``)
+    - a longer name that only shares a prefix without a dot
+      (``pkg.OldClassX`` does not match ``pkg.OldClass``)
     """
     if not text:
         return None
@@ -273,6 +325,7 @@ def _match_symbol(text: str, targets: list[tuple[str, str]]) -> str | None:
     parts = named.split(".")
     for top, symbol in targets:
         sym_parts = symbol.split(".")
+        # Exact symbol, or reference that continues past it on a dot boundary.
         if named == symbol or named.startswith(symbol + "."):
             return symbol
         if parts[0] != top:
@@ -282,20 +335,25 @@ def _match_symbol(text: str, targets: list[tuple[str, str]]) -> str | None:
             if symbol == top:
                 return symbol
             continue
-        # Short public alias: same top, and the segments after the top appear
-        # contiguously in the full path (skips internal modules the public
-        # re-export hides). ``pkg.Thing.create`` and ``pkg.Thing`` both match
-        # ``pkg._internal.x.Thing.create``; ``pkg.Thing.build`` does not.
         if len(parts) >= 2 and len(sym_parts) >= 2:
             tail = parts[1:]
             sym_tail = sym_parts[1:]
+            # Named is a short alias of (or shorter than) the full symbol.
             n = len(tail)
             for start in range(len(sym_tail) - n + 1):
                 if sym_tail[start : start + n] == tail:
                     return symbol
+            # Named continues past the symbol: a leaf path of the symbol is a
+            # prefix of named's tail (``OldClass.create`` vs removed ``OldClass``
+            # at ``pkg._internal.OldClass``). Match only whole segments.
+            for leaf_start in range(len(sym_tail)):
+                leaf = sym_tail[leaf_start:]
+                if leaf and len(leaf) <= len(tail) and tail[: len(leaf)] == leaf:
+                    return symbol
         # Owner / submodule prefix longer than the top package only.
         # ``pkg.error`` owns ``pkg.error.Gone``; ``pkg`` alone does not own
-        # ``pkg.api_base`` for this check (handled above as bare top).
+        # ``pkg.api_base``. Exact owner only: ``pkg.Widget.build`` must not
+        # match a removed ``pkg.Widget.create`` via the ``pkg.Widget`` owner.
         for length in range(len(sym_parts) - 1, 1, -1):
             owner = ".".join(sym_parts[:length])
             if named == owner:
