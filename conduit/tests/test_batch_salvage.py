@@ -105,10 +105,14 @@ def test_a_bump_that_already_fails_to_collect_does_not_revert_fixes(tmp_path: Pa
         ),
     )
     fine, stuck = report.results
-    assert fine.status == SiteStatus.FIXED_VERIFIED, (fine.status, fine.error, fine.why)
+    # The bump breaks collection in another file: the rewrite is kept, but the
+    # suite could not run, so it is not verified.
+    assert fine.status == SiteStatus.FIXED_TESTS_COULDNT_RUN, (fine.status, fine.error, fine.why)
+    assert fine.status != SiteStatus.FIXED_VERIFIED
     assert "new_call(1)" in (root / "good.py").read_text(encoding="utf-8")
     assert stuck.status == SiteStatus.NEEDS_HUMAN
     assert "reverted" not in (stuck.error or "")
+    assert report.suite_blocked
     assert report.retest_runs >= 1
     assert report.retest_seconds >= 0
 
