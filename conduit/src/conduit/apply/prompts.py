@@ -27,6 +27,8 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "- If feedback says a value has the wrong type or lacks an attribute in the new\n"
         "  release, build or read a value of the expected type inside this function from\n"
         "  its own inputs (helpers outside this function keep their current types).\n"
+        "- If feedback says a name or module does not exist in the new release, use only\n"
+        "  names listed there as existing nearby; do not invent import paths or symbols.\n"
     )
     user = {
         "file": pack.file_path,

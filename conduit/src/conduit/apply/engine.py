@@ -995,6 +995,7 @@ def _apply_one(
     last_diff = ""
     earlier: list[str] = []
     mismatched: set[tuple[str, str, str]] = set()
+    name_retried = False
     attempts = used
     site_tokens = spent
     sink = sink if sink is not None else {}
@@ -1080,6 +1081,14 @@ def _apply_one(
             )
         except RecheckError as exc:
             last_error = str(exc)
+            name_hits = _name_findings(exc.findings)
+            if name_hits and name_retried:
+                # Invented SDK names already got one corrective attempt with the
+                # concrete missing name and nearby candidates; hand off.
+                last_error = "SDK name still missing after one retry: " + last_error
+                break
+            if name_hits:
+                name_retried = True
             repeated = _type_mismatches(exc.findings) & mismatched
             if repeated:
                 # A plain type mismatch was already explained once: a further
@@ -2263,6 +2272,13 @@ def _type_mismatches(findings: list[str]) -> set[tuple[str, str, str]]:
         if match:
             out.add((match["path"], match["kw"], match["owner"]))
     return out
+
+
+def _name_findings(findings: list[str]) -> list[str]:
+    """Findings from ``names.name_breaks`` (invented imports / module paths)."""
+    from conduit.apply.names import DOES_NOT_EXIST
+
+    return [text for text in findings if text and DOES_NOT_EXIST in text]
 
 
 def _required_parameters(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -> list[str]:
