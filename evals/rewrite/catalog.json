@@ -1,0 +1,1169 @@
+{
+  "version": 1,
+  "objective": "Rewrite apply quality: proposed edits splice, clear the impact site, preserve tests, and land the expected SiteStatus.",
+  "accuracy_floor": 0.9,
+  "smoke_threshold": 0.88,
+  "max_false_keeps": 0,
+  "smoke_case_ids": [
+    "typical-rename-verified",
+    "typical-rename-unverified",
+    "dry-run-pack-only",
+    "needs-human-bad-edits",
+    "retry-then-verified",
+    "wrapper-site-skipped",
+    "same-function-second-skipped",
+    "fixed-not-covered",
+    "needs-review-dropped-value",
+    "recheck-never-clears",
+    "batch-one-clears-one-fails"
+  ],
+  "categories": [
+    "coverage",
+    "dry-run",
+    "multi-site",
+    "needs-human",
+    "needs-review",
+    "typical",
+    "wrapper"
+  ],
+  "cases": [
+    {
+      "id": "typical-rename-verified",
+      "category": "typical",
+      "smoke": true,
+      "description": "Happy-path rename clears the site and is covered by the exercise suite.",
+      "files": {
+        "mod.py": "import helper\n\ndef other():\n    return helper.keep()\n\ndef broken(client):\n    return client.old_call(1)\n\ndef also_ok():\n    return 2\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 7,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "new_without_old",
+      "test_cmd": "exercise",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed (verified)"
+        ],
+        "file_must_contain": {
+          "mod.py": [
+            "new_call"
+          ]
+        },
+        "file_must_not_contain": {
+          "mod.py": [
+            "old_call"
+          ]
+        }
+      }
+    },
+    {
+      "id": "typical-rename-unverified",
+      "category": "typical",
+      "smoke": true,
+      "description": "Without --test-cmd the rewrite is kept but unverified.",
+      "files": {
+        "mod.py": "import helper\n\ndef other():\n    return helper.keep()\n\ndef broken(client):\n    return client.old_call(1)\n\ndef also_ok():\n    return 2\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 7,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "always",
+      "test_cmd": null,
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed (unverified: no tests)"
+        ]
+      }
+    },
+    {
+      "id": "dry-run-pack-only",
+      "category": "dry-run",
+      "smoke": true,
+      "description": "Dry-run builds a context pack and never calls the model.",
+      "files": {
+        "mod.py": "import helper\n\ndef other():\n    return helper.keep()\n\ndef broken(client):\n    return client.old_call(1)\n\ndef also_ok():\n    return 2\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 7,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "should-not-be-used"
+      ],
+      "dry_run": true,
+      "write": false,
+      "expected": {
+        "statuses": [
+          "dry-run"
+        ],
+        "model_calls": 0,
+        "context_must_contain": [
+          "old_call"
+        ]
+      }
+    },
+    {
+      "id": "needs-human-bad-edits",
+      "category": "needs-human",
+      "smoke": true,
+      "description": "Repeated wrong-function edits exhaust attempts and stay needs-human.",
+      "files": {
+        "mod.py": "import helper\n\ndef other():\n    return helper.keep()\n\ndef broken(client):\n    return client.old_call(1)\n\ndef also_ok():\n    return 2\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 7,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def other():\\n    return helper.changed()\\n\", \"new_imports\": []}",
+        "{\"function_source\": \"def other():\\n    return helper.changed()\\n\", \"new_imports\": []}",
+        "{\"function_source\": \"def other():\\n    return helper.changed()\\n\", \"new_imports\": []}"
+      ],
+      "site_cleared": "always",
+      "test_cmd": null,
+      "write": true,
+      "max_attempts": 3,
+      "expected": {
+        "statuses": [
+          "needs-human"
+        ],
+        "false_keep": false
+      }
+    },
+    {
+      "id": "retry-then-verified",
+      "category": "typical",
+      "smoke": true,
+      "description": "First edit targets the wrong function; retry lands a verified fix.",
+      "files": {
+        "mod.py": "import helper\n\ndef other():\n    return helper.keep()\n\ndef broken(client):\n    return client.old_call(1)\n\ndef also_ok():\n    return 2\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 7,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def other():\\n    return helper.changed()\\n\", \"new_imports\": []}",
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "new_without_old",
+      "test_cmd": "exercise",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed (verified)"
+        ],
+        "min_attempts": 2
+      }
+    },
+    {
+      "id": "wrapper-site-skipped",
+      "category": "wrapper",
+      "smoke": true,
+      "description": "via_wrapper sites are skipped rather than rewritten.",
+      "files": {
+        "mod.py": "import helper\n\ndef other():\n    return helper.keep()\n\ndef broken(client):\n    return client.old_call(1)\n\ndef also_ok():\n    return 2\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 7,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": true
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "always",
+      "test_cmd": "exercise",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "skipped"
+        ]
+      }
+    },
+    {
+      "id": "same-function-second-skipped",
+      "category": "multi-site",
+      "smoke": true,
+      "description": "A second site in the same function is skipped after the first rewrite.",
+      "files": {
+        "mod.py": "def broken(client):\n    client.old_call(1)\n    return client.old_call(2)\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 2,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              },
+              {
+                "path": "mod.py",
+                "line": 3,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def broken(client):\\n    client.new_call(1)\\n    return client.new_call(2)\\n\", \"new_imports\": []}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "new_without_old",
+      "test_cmd": "exercise",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed (verified)",
+          "skipped"
+        ],
+        "status_by_line": {
+          "2": "fixed (verified)",
+          "3": "skipped"
+        }
+      }
+    },
+    {
+      "id": "fixed-not-covered",
+      "category": "coverage",
+      "smoke": true,
+      "description": "Suite passes but never executes the changed lines.",
+      "files": {
+        "mod.py": "def reached(client):\n    return 1\n\n\ndef broken(client):\n    return client.old_call(1)\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 6,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "always",
+      "test_cmd": "/usr/bin/python3 -c \"import mod; mod.reached(None); print('1 passed')\"",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed, not covered by tests"
+        ]
+      }
+    },
+    {
+      "id": "fixed-covered-explicit",
+      "category": "coverage",
+      "smoke": false,
+      "description": "Explicit import of the rewritten function counts as covered.",
+      "files": {
+        "mod.py": "def reached(client):\n    return 1\n\n\ndef broken(client):\n    return client.old_call(1)\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 6,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "always",
+      "test_cmd": "/usr/bin/python3 -c \"import mod, types; mod.broken(types.SimpleNamespace(new_call=abs)); print('1 passed')\"",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed (verified)"
+        ]
+      }
+    },
+    {
+      "id": "needs-review-dropped-value",
+      "category": "needs-review",
+      "smoke": true,
+      "description": "Rewrite filters away original call values; tests pass but status is needs review.",
+      "files": {
+        "send_mod.py": "def keep_loud(items):\n    return [item for item in items if item[\"tag\"] != \"quiet\"]\n\ndef send(client):\n    return client.old_call([\n        {\"tag\": \"quiet\", \"body\": \"preface\"},\n        {\"tag\": \"loud\", \"body\": \"hello\"},\n    ])\n",
+        "support.py": "class Client:\n    def new_call(self, items):\n        return items\n",
+        "checks/test_send.py": "import send_mod\nfrom support import Client\n\ndef test_send():\n    assert \"hello\" in str(send_mod.send(Client()))\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "send_mod.py",
+                "line": 5,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def send(client):\\n    return client.new_call(keep_loud([\\n        {\\\"tag\\\": \\\"quiet\\\", \\\"body\\\": \\\"preface\\\"},\\n        {\\\"tag\\\": \\\"loud\\\", \\\"body\\\": \\\"hello\\\"},\\n    ]))\\n\", \"new_imports\": []}",
+        "Filtered quiet items before new_call."
+      ],
+      "site_cleared": "always",
+      "test_cmd": "/usr/bin/python3 -m pytest -q -p no:cacheprovider checks",
+      "write": true,
+      "record_baseline": true,
+      "expected": {
+        "statuses": [
+          "fixed, needs review"
+        ],
+        "why_must_contain": [
+          "drops"
+        ]
+      }
+    },
+    {
+      "id": "multi-file-helper-caller",
+      "category": "multi-site",
+      "smoke": false,
+      "description": "Helper rewrite is verified; caller has no impact site.",
+      "files": {
+        "helper.py": "def build(client, n):\n    return client.old_call(n)\n",
+        "caller.py": "import helper\n\ndef run(client):\n    return helper.build(client, 1)\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "helper.py",
+                "line": 2,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def build(client, n):\\n    return client.new_call(n)\\n\", \"new_imports\": []}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "new_without_old",
+      "test_cmd": "exercise",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed (verified)"
+        ]
+      }
+    },
+    {
+      "id": "recheck-never-clears",
+      "category": "needs-human",
+      "smoke": true,
+      "description": "Model returns an edit that still fails the clear check after retries.",
+      "files": {
+        "mod.py": "import helper\n\ndef other():\n    return helper.keep()\n\ndef broken(client):\n    return client.old_call(1)\n\ndef also_ok():\n    return 2\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 7,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}",
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}",
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}"
+      ],
+      "site_cleared": "never",
+      "test_cmd": null,
+      "write": true,
+      "max_attempts": 3,
+      "expected": {
+        "statuses": [
+          "needs-human"
+        ],
+        "false_keep": false
+      }
+    },
+    {
+      "id": "sqlalchemy-scalar-rename",
+      "category": "typical",
+      "smoke": false,
+      "description": "SQLAlchemy-shaped object_->statement rename with a tiny pytest suite (no real sqlalchemy install).",
+      "files": {
+        "db.py": "\"\"\"One param-rename break shaped like SQLAlchemy Connection.scalar.\"\"\"\n\n\nclass Connection:\n    def scalar(self, *, statement=None, object_=None):\n        return statement if statement is not None else object_\n\n\ndef fetch_one(conn: Connection, stmt):\n    return conn.scalar(object_=stmt)\n",
+        "test_fetch.py": "from db import Connection, fetch_one\n\n\ndef test_fetch_one():\n    assert fetch_one(Connection(), \"SELECT 1\") == \"SELECT 1\"\n"
+      },
+      "impact": {
+        "dependency": "sqlalchemy",
+        "impacts": [
+          {
+            "dependency": "sqlalchemy",
+            "from_version": "1.4.52",
+            "to_version": "2.1.4",
+            "change": "parameter object_ renamed to statement on Connection.scalar",
+            "confidence": "medium",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "sqlalchemy.engine.Connection.scalar",
+            "old": "object_",
+            "new": "statement",
+            "sites": [
+              {
+                "path": "db.py",
+                "line": 10,
+                "expr": "conn.scalar",
+                "confidence": "medium",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "sqlalchemy"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def fetch_one(conn: Connection, stmt):\\n    return conn.scalar(statement=stmt)\\n\", \"new_imports\": []}",
+        "Rename object_ to statement."
+      ],
+      "site_cleared": "statement_without_object_",
+      "test_cmd": "/usr/bin/python3 -m pytest -q -p no:cacheprovider test_fetch.py",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed (verified)"
+        ],
+        "file_must_contain": {
+          "db.py": [
+            "scalar(statement="
+          ]
+        },
+        "file_must_not_contain": {
+          "db.py": [
+            "scalar(object_="
+          ]
+        }
+      }
+    },
+    {
+      "id": "unparseable-edit-needs-human",
+      "category": "needs-human",
+      "smoke": false,
+      "description": "Non-JSON model output cannot be spliced and becomes needs-human.",
+      "files": {
+        "mod.py": "import helper\n\ndef other():\n    return helper.keep()\n\ndef broken(client):\n    return client.old_call(1)\n\ndef also_ok():\n    return 2\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 7,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "not json at all",
+        "still not json",
+        "nope"
+      ],
+      "site_cleared": "always",
+      "test_cmd": null,
+      "write": true,
+      "max_attempts": 3,
+      "expected": {
+        "statuses": [
+          "needs-human"
+        ]
+      }
+    },
+    {
+      "id": "dry-run-release-evidence",
+      "category": "dry-run",
+      "smoke": false,
+      "description": "Dry-run pack carries old/new release evidence for the prompt.",
+      "files": {
+        "mod.py": "import helper\n\ndef other():\n    return helper.keep()\n\ndef broken(client):\n    return client.old_call(1)\n\ndef also_ok():\n    return 2\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 7,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "unused"
+      ],
+      "dry_run": true,
+      "expected": {
+        "statuses": [
+          "dry-run"
+        ],
+        "release_diff_old": "old_call",
+        "release_diff_new": "new_call"
+      }
+    },
+    {
+      "id": "batch-one-clears-one-fails",
+      "category": "multi-site",
+      "smoke": true,
+      "description": "Two sites: first clears, second never clears and ends needs-human.",
+      "files": {
+        "left.py": "def left(client):\n    return client.old_call(1)\n",
+        "right.py": "def right(client):\n    return client.old_call(2)\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "left.py",
+                "line": 2,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              },
+              {
+                "path": "right.py",
+                "line": 2,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def left(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}",
+        "{\"function_source\": \"def right(client):\\n    return client.new_call(2)\\n\", \"new_imports\": []}",
+        "{\"function_source\": \"def right(client):\\n    return client.new_call(2)\\n\", \"new_imports\": []}",
+        "{\"function_source\": \"def right(client):\\n    return client.new_call(2)\\n\", \"new_imports\": []}",
+        "Left renamed.",
+        "Right renamed."
+      ],
+      "site_cleared": "path_left_only",
+      "test_cmd": "exercise",
+      "write": true,
+      "max_attempts": 3,
+      "expected": {
+        "status_by_path": {
+          "left.py": "fixed (verified)",
+          "right.py": "needs-human"
+        },
+        "false_keep": false
+      }
+    },
+    {
+      "id": "preserve-extra-kwargs",
+      "category": "typical",
+      "smoke": false,
+      "description": "Rewrite renames the call and keeps unrelated kwargs.",
+      "files": {
+        "mod.py": "def broken(client):\n    return client.old_call(1, timeout=5)\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 2,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1, timeout=5)\\n\", \"new_imports\": []}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "new_without_old",
+      "test_cmd": "exercise",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed (verified)"
+        ],
+        "file_must_contain": {
+          "mod.py": [
+            "timeout=5",
+            "new_call"
+          ]
+        }
+      }
+    },
+    {
+      "id": "model-adds-import",
+      "category": "typical",
+      "smoke": false,
+      "description": "Model may add an import while rewriting the function.",
+      "files": {
+        "mod.py": "def broken(client):\n    return client.old_call(1)\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 2,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": [\"import math\"]}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "new_without_old",
+      "test_cmd": "exercise",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed (verified)"
+        ],
+        "file_must_contain": {
+          "mod.py": [
+            "import math",
+            "new_call"
+          ]
+        }
+      }
+    },
+    {
+      "id": "no-tests-printed-not-covered",
+      "category": "coverage",
+      "smoke": false,
+      "description": "A command that runs the function but prints no test summary is not covered.",
+      "files": {
+        "mod.py": "def reached(client):\n    return 1\n\n\ndef broken(client):\n    return client.old_call(1)\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 6,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def broken(client):\\n    return client.new_call(1)\\n\", \"new_imports\": []}",
+        "Rename old_call to new_call per release diff."
+      ],
+      "site_cleared": "always",
+      "test_cmd": "/usr/bin/python3 -c \"import mod, types; mod.broken(types.SimpleNamespace(new_call=abs))\"",
+      "write": true,
+      "expected": {
+        "statuses": [
+          "fixed, not covered by tests"
+        ]
+      }
+    },
+    {
+      "id": "max-attempts-one-fails-fast",
+      "category": "needs-human",
+      "smoke": false,
+      "description": "With max_attempts=1 a bad first edit fails without retry budget.",
+      "files": {
+        "mod.py": "import helper\n\ndef other():\n    return helper.keep()\n\ndef broken(client):\n    return client.old_call(1)\n\ndef also_ok():\n    return 2\n"
+      },
+      "impact": {
+        "dependency": "example-sdk",
+        "impacts": [
+          {
+            "dependency": "example-sdk",
+            "from_version": "1.0",
+            "to_version": "2.0",
+            "change": "parameter old_call renamed to new_call on Client",
+            "confidence": "high",
+            "source": "wheel",
+            "kind": "param_renamed",
+            "symbol": "Client.method",
+            "old": "old_call",
+            "new": "new_call",
+            "new_docstring": "Replacement keyword.",
+            "sites": [
+              {
+                "path": "mod.py",
+                "line": 7,
+                "expr": "client.old_call",
+                "confidence": "high",
+                "via_wrapper": false
+              }
+            ]
+          }
+        ],
+        "deprecations": [],
+        "diffed": [
+          "example-sdk"
+        ],
+        "notes": []
+      },
+      "responses": [
+        "{\"function_source\": \"def other():\\n    return helper.changed()\\n\", \"new_imports\": []}"
+      ],
+      "site_cleared": "always",
+      "test_cmd": null,
+      "write": true,
+      "max_attempts": 1,
+      "expected": {
+        "statuses": [
+          "needs-human"
+        ],
+        "max_attempts_seen": 1
+      }
+    }
+  ]
+}

@@ -28,6 +28,17 @@ jobs:
       - name: Offline map
         run: |
           python -c "from pathlib import Path; from conduit.outside_in.analyze import analyze_repo; mapped = analyze_repo(Path('examples/wrapped-openai-fixture')); assert mapped.chains, 'map produced no chains'"
+      - name: Rewrite eval smoke
+        run: |
+          python evals/rewrite/run.py --smoke --json-out /tmp/rewrite-eval-smoke.json
+          python - <<'PY'
+          import json
+          payload = json.load(open("/tmp/rewrite-eval-smoke.json"))
+          summary = payload["summary"]
+          assert summary["clears_threshold"], summary
+          assert summary["false_keeps"] <= summary["max_false_keeps"], summary
+          print("rewrite smoke ok", summary)
+          PY
 
   feed-parity:
     runs-on: ubuntu-latest

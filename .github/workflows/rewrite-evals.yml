@@ -1,0 +1,38 @@
+name: Rewrite evals
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly full suite; PR smoke lives in ci.yml.
+    - cron: "0 6 * * 1"
+
+jobs:
+  full:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          pip install -e "./conduit[dev]"
+          pip install pytest
+      - name: Full rewrite eval suite
+        run: |
+          python evals/rewrite/run.py --full --json-out /tmp/rewrite-eval-full.json
+          python - <<'PY'
+          import json
+          summary = json.load(open("/tmp/rewrite-eval-full.json"))["summary"]
+          assert summary["clears_threshold"], summary
+          assert summary["false_keeps"] <= summary["max_false_keeps"], summary
+          print("rewrite full ok", summary)
+          PY
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rewrite-eval-full
+          path: /tmp/rewrite-eval-full.json
