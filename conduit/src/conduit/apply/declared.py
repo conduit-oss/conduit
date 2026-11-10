@@ -31,11 +31,27 @@ def module_name(rel: str) -> str:
     return dotted[: -len(".__init__")] if dotted.endswith(".__init__") else dotted
 
 
-def repo_modules(root: Path, current: str, tree: ast.Module) -> dict[str, ast.Module]:
+def repo_modules(
+    root: Path,
+    current: str,
+    tree: ast.Module,
+    *,
+    only_files: list[str] | None = None,
+) -> dict[str, ast.Module]:
     """This repo's modules by dotted name, with ``current`` read from ``tree``."""
     out: dict[str, ast.Module] = {}
-    for file in sorted(root.rglob("*.py")):
-        rel = file.relative_to(root).as_posix()
+    allowed = {item.replace("\\", "/") for item in only_files} if only_files is not None else None
+    if allowed is not None:
+        paths = [root / rel for rel in sorted(allowed)]
+    else:
+        paths = sorted(root.rglob("*.py"))
+    for file in paths:
+        if not file.is_file():
+            continue
+        try:
+            rel = file.relative_to(root).as_posix()
+        except ValueError:
+            continue
         if any(part in _SKIP_DIRS or part.startswith(".") for part in rel.split("/")[:-1]):
             continue
         if rel == current:
@@ -671,11 +687,13 @@ def _makers(ns: Namespace, klass: Klass) -> list[str]:
 def declared_type_breaks(
     release: dict[str, ast.Module], root: Path, path: str, source: str, span: tuple[int, int], original: str = "",
     release_calls: dict[tuple[int, str], tuple[str, ast.AST]] | None = None,
+    *,
+    only_files: list[str] | None = None,
 ) -> list[str]:
     """Findings for the rewritten span that the original code did not already have."""
     tree = ast.parse(source)
     module = module_name(path)
-    ns = Namespace(repo_modules(root, path, tree), release)
+    ns = Namespace(repo_modules(root, path, tree, only_files=only_files), release)
     module = next((name for name in _names_for(path) if ns.modules.get(name) is tree), module)
     from conduit.apply import dictkeys
 
@@ -691,7 +709,7 @@ def declared_type_breaks(
         except SyntaxError:
             old_tree = None
         if old_tree is not None:
-            old_ns = Namespace(repo_modules(root, path, old_tree), release)
+            old_ns = Namespace(repo_modules(root, path, old_tree, only_files=only_files), release)
             whole = (1, len(original.splitlines()) + 1)
             for item in type_mismatches(old_ns, path, module, old_tree, whole):
                 before.add(_key(item))

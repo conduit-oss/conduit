@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import shutil
@@ -40,7 +41,15 @@ from conduit.apply.splice import (
     unified_diff_for,
 )
 from conduit.apply.signatures import _modules, literal_value, new_release_wheel, signatures_for
-from conduit.apply.testrun import Baseline, describe_preexisting, focus, isolate_pytest, judge, run_tests
+from conduit.apply.testrun import (
+    Baseline,
+    describe_preexisting,
+    focus,
+    isolate_pytest,
+    judge,
+    run_tests,
+    suite_couldnt_run,
+)
 from conduit.apply.testrefs import find_test_refs
 from conduit.apply.change_why import caught, caught_keys, change_why
 from conduit.apply.dropped import DROPPED, content_dropped, import_swap_why
@@ -106,6 +115,9 @@ class ApplyConfig:
     #: Removed/renamed symbols from the impact payload (including changes with
     #: no call sites). Used to find tests that still import or patch them.
     removed_symbols: tuple[tuple[str, str], ...] = ()
+    #: When set, rewrite the report JSON here after each site (and on SIGTERM)
+    #: so a wall-clock timeout still keeps partial results and token totals.
+    partial_out: Path | None = None
 
 
 @dataclass
@@ -182,16 +194,31 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
             api_key=config.settings.api_key,
         )
         owns_client = True
+    stop = _PartialStop()
+    previous = _install_partial_handlers(stop)
+
+    def _sync_ledger() -> None:
+        summary = getattr(client, "call_summary", None)
+        if callable(summary):
+            report.model_calls = summary()
+            # Ledger is the source of truth for answered calls: keep tokens_used
+            # in sync so a path that forgot to add tokens cannot under-report.
+            totaled = sum(int(item.get("tokens") or 0) for item in report.model_calls)
+            if totaled:
+                report.tokens_used = totaled
+
     try:
         selected = sites if config.max_sites is None else sites[: config.max_sites]
         if config.test_cmd and not config.dry_run and client is not None:
-            _apply_batch(selected, config, client, report)
+            _apply_batch(selected, config, client, report, stop=stop)
             _fill_why(report)
             return report
         covered, texts = _one_per_function(config.root, selected)
         # Lines that import or construct a removed class go first, so later
         # rechecks resolve calls through the new client instead of the old one.
         for site in sorted(selected, key=lambda item: not _names_removed_class(item)):
+            if stop.requested:
+                break
             if id(site) in covered:
                 report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
                 continue
@@ -201,28 +228,81 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
                 report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=why))
                 continue
             report.results.append(_apply_one(moved, config, client, report))
+            _sync_ledger()
+            _checkpoint(config, report)
         _fill_why(report)
     finally:
-        summary = getattr(client, "call_summary", None)
-        if callable(summary):
-            report.model_calls = summary()
-            # Ledger is the source of truth for answered calls: keep tokens_used
-            # in sync so a path that forgot to add tokens cannot under-report.
-            totaled = sum(int(item.get("tokens") or 0) for item in report.model_calls)
-            if totaled:
-                report.tokens_used = totaled
+        _sync_ledger()
+        _checkpoint(config, report)
+        _restore_partial_handlers(previous)
         if owns_client and client is not None and hasattr(client, "close"):
             client.close()  # type: ignore[union-attr]
     return report
 
 
-def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelClient, report: ApplyReport) -> None:
+@dataclass
+class _PartialStop:
+    """Set when SIGTERM/SIGINT asks apply to stop after the current site."""
+
+    requested: bool = False
+    signum: int = 0
+
+
+def _install_partial_handlers(stop: _PartialStop) -> dict[int, Any]:
+    """Catch wall-clock timeouts (SIGTERM from ``timeout``) and Ctrl-C."""
+    import signal
+
+    previous: dict[int, Any] = {}
+
+    def _handle(signum: int, _frame: Any) -> None:
+        stop.requested = True
+        stop.signum = signum
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous[signum] = signal.signal(signum, _handle)
+        except (ValueError, OSError):
+            pass
+    return previous
+
+
+def _restore_partial_handlers(previous: dict[int, Any]) -> None:
+    import signal
+
+    for signum, handler in previous.items():
+        try:
+            signal.signal(signum, handler)
+        except (ValueError, OSError):
+            pass
+
+
+def _checkpoint(config: ApplyConfig, report: ApplyReport) -> None:
+    """Write the current report JSON so a timeout still keeps tokens and results."""
+    path = config.partial_out
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def _apply_batch(
+    selected: list[ImpactSite],
+    config: ApplyConfig,
+    client: ModelClient,
+    report: ApplyReport,
+    *,
+    stop: _PartialStop | None = None,
+) -> None:
     """With a test command: rewrite every site (each must pass the static recheck),
     run the tests once, retry only the sites the failures point at, and revert
     the ones that cannot be cleared. A masked or missing attribute read inside
     another site's rewrite is retried on that rewrite, with the finding as
     feedback, before the tests run. Tests see the whole migration at once, so
     an import every module needs no longer fails each site on its own."""
+    stop = stop or _PartialStop()
     with tempfile.TemporaryDirectory(prefix="conduit-apply-batch-") as tmp:
         scratch = Path(tmp) / "tree"
         shutil.copytree(config.root, scratch, ignore=shutil.ignore_patterns(*_SCRATCH_IGNORE))
@@ -242,13 +322,20 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             if id(site) not in covered and not site.via_wrapper:
                 routes.upcoming[id(site)] = (site, texts.get(id(site), ""))
         for site in ordered:
+            if stop.requested:
+                report.suite_blocked = report.suite_blocked or (
+                    "tests couldn't run: apply stopped early (timeout or interrupt)"
+                )
+                break
             routes.upcoming.pop(id(site), None)
             ranks.append(rank[id(site)])
             if id(site) in covered:
                 report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
+                _checkpoint(config, report)
                 continue
             if site.via_wrapper:
                 report.results.append(_apply_one(site, work, client, report))
+                _checkpoint(config, report)
                 continue
             originals.setdefault(site.path, _read(config.root / site.path))
             if site.path not in lines.paths:
@@ -267,6 +354,38 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
             report.results.append(result or SiteResult(site=site, status=SiteStatus.SKIPPED, why="line rewritten by an earlier fix in this file"))
             if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
                 accepted[id(site)] = sink
+            _checkpoint(config, report)
+        if stop.requested:
+            # Skip the suite retest: wall clock is gone; keep what we have.
+            early = "tests couldn't run: apply stopped early (timeout or interrupt)"
+            report.suite_blocked = report.suite_blocked or early
+            for key in list(accepted):
+                done = report.results[slots[key]]
+                if done.status in {
+                    SiteStatus.FIXED_UNVERIFIED,
+                    SiteStatus.FIXED_VERIFIED,
+                    SiteStatus.FIXED_NOT_COVERED,
+                }:
+                    why = done.why.strip() if done.why else ""
+                    report.results[slots[key]] = replace(
+                        done,
+                        status=SiteStatus.FIXED_TESTS_COULDNT_RUN,
+                        why=f"{early} The change: {why}" if why else early,
+                        error="",
+                    )
+            seen = {id(item.site) for item in report.results}
+            for site in ordered:
+                if id(site) in seen:
+                    continue
+                ranks.append(rank[id(site)])
+                report.results.append(
+                    SiteResult(site=site, status=SiteStatus.SKIPPED, why=early)
+                )
+            if len(ranks) == len(report.results):
+                report.results[:] = [
+                    item for _rank, item in sorted(zip(ranks, report.results), key=lambda pair: pair[0])
+                ]
+            return
         _retry_routed(work, client, report, originals, texts_of, slots)
         _drop_traced_reads(work, report, originals, texts_of, slots)
         _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
@@ -474,12 +593,20 @@ def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Line
     on only one of the two runs makes a tight timing test fail after the fix
     and pass on the base. Executed lines are a separate run (see ``_cover``) and
     do not decide this result. Without a baseline, the exit code decides. With
-    one, only failures that did not already happen on the base count."""
+    one, only failures that did not already happen on the base count. Collection
+    errors, crashes, timeouts, and "no tests collected" never count as a pass
+    for the final status (see ``suite_blocked`` / ``FIXED_TESTS_COULDNT_RUN``).
+    """
     del lines  # executed lines are recorded later, on their own run
     env = dict(os.environ)
     if config.baseline is None:
-        ok, output = _run_cmd(config.test_cmd or "", scratch, env)
+        run = run_tests(config.test_cmd or "", scratch, env)
+        ok, output = run.ok and not suite_couldnt_run(run), (
+            "" if run.ok and not suite_couldnt_run(run) else (run.output or "tests failed")
+        )
         report.missing = []
+        if not ok:
+            report.new_failures = run.failing or ["(test command)"]
     else:
         run = run_tests(config.test_cmd or "", scratch, env)
         verdict = judge(run, config.baseline)
@@ -955,12 +1082,13 @@ def _import_failure_only(output: str) -> bool:
     return True
 
 
-def _collection_error(output: str) -> bool:
-    """True when the failure is an import or collection error (suite can't run)."""
-    if not output:
-        return False
-    tokens = ("ERROR collecting", "ImportError", "ModuleNotFoundError", "cannot import")
-    return any(token in output for token in tokens)
+def _collection_error(output: str, *, exit_code: int | None = None) -> bool:
+    """True when the suite could not collect or run (never a verified pass).
+
+    Includes import/collection failures, interpreter crashes, timeouts, and
+    pytest "no tests collected" / usage exits — see ``suite_couldnt_run``.
+    """
+    return suite_couldnt_run(output=output or "", exit_code=exit_code)
 
 
 def _suite_blocked_by_bump(

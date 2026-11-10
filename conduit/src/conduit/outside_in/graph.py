@@ -182,9 +182,17 @@ class _ModuleIndex:
         return self._exact.get(dotted)
 
 
-def analyze_python(root: Path, specs: tuple[ServiceSpec, ...]) -> ServiceMap:
+def analyze_python(
+    root: Path,
+    specs: tuple[ServiceSpec, ...],
+    *,
+    only_files: list[str] | None = None,
+) -> ServiceMap:
     root = root.resolve()
-    rels = _python_files(root)
+    if only_files is not None:
+        rels = sorted({rel.replace("\\", "/") for rel in only_files if rel.endswith(".py") or not Path(rel).suffix})
+    else:
+        rels = _python_files(root)
     units: dict[str, ModUnit] = {}
     for rel in rels:
         path = root / rel

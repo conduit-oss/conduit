@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import subprocess
 from pathlib import Path
@@ -317,6 +318,13 @@ def apply_cmd(
         help="JSON from `conduit baseline`: tests already failing on the base "
         "state are reported, not blamed on a fix",
     ),
+    partial_out: Optional[Path] = typer.Option(
+        None,
+        "--partial-out",
+        help="Rewrite this JSON after each site (and on SIGTERM) so a wall-clock "
+        "timeout still keeps partial results and token totals. "
+        "Also honored via CONDUIT_APPLY_PARTIAL.",
+    ),
     json_out: bool = typer.Option(False, "--json", help="Machine-readable report"),
 ) -> None:
     """Fix impact call sites with a Token Factory chat-completions model.
@@ -374,6 +382,13 @@ def apply_cmd(
         enable_thinking=enable_thinking,
         enable_thinking_small=enable_thinking_small,
     )
+    checkpoint = partial_out
+    if checkpoint is None:
+        env_partial = os.environ.get("CONDUIT_APPLY_PARTIAL", "").strip()
+        if env_partial:
+            checkpoint = Path(env_partial)
+    if checkpoint is not None:
+        checkpoint = checkpoint.expanduser().resolve()
     report = apply_sites(
         sites,
         ApplyConfig(
@@ -387,6 +402,7 @@ def apply_cmd(
             allow_network=fixture_root is None,
             baseline=base_state,
             removed_symbols=removed_symbols,
+            partial_out=checkpoint,
         ),
     )
     if json_out:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
-import tempfile
 from pathlib import Path
 
 from conduit.apply.models import ImpactSite
@@ -35,43 +33,44 @@ def remaining_breaks(
 ) -> list[tuple[str, str]]:
     """``(finding, symbol)`` pairs impact still reports for the original site or the rewritten span.
 
-    Copies ``root`` to a scratch tree, writes ``patched`` over ``site.path``,
-    then calls ``collect_impacts`` for ``site.dependency`` with the same
+    Writes ``patched`` over ``site.path`` in place, then restores the previous
+    text. Avoids copying the whole tree (large repos spent minutes per site on
+    that alone). Calls ``collect_impacts`` for ``site.dependency`` with the same
     from/to versions. A hit counts when it shares the original path and
     expression (line may shift after the edit), or when it falls inside
     ``span`` (1-based, inclusive): a break the rewrite itself introduced,
     such as a parameter the new release removed.
     """
-    with tempfile.TemporaryDirectory(prefix="conduit-apply-recheck-") as tmp:
-        scratch = Path(tmp) / "tree"
-        shutil.copytree(
-            root,
-            scratch,
-            ignore=shutil.ignore_patterns(
-                ".git",
-                ".venv",
-                "venv",
-                "__pycache__",
-                ".pytest_cache",
-                "node_modules",
-            ),
-        )
-        target = scratch / site.path
-        if original is None:
-            try:
-                original = target.read_text(encoding="utf-8")
-            except OSError:
-                original = ""
-        target.parent.mkdir(parents=True, exist_ok=True)
+    target = root / site.path
+    if original is None:
+        try:
+            original = target.read_text(encoding="utf-8")
+        except OSError:
+            original = ""
+    previous: str | None
+    try:
+        previous = target.read_text(encoding="utf-8")
+    except OSError:
+        previous = None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
         target.write_text(patched, encoding="utf-8")
         return _breaks_listed(
-            scratch,
+            root,
             site,
             span=span,
             fixtures=fixtures,
             allow_network=allow_network,
-            original=original,
+            original=original or "",
         )
+    finally:
+        if previous is None:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+        else:
+            target.write_text(previous, encoding="utf-8")
 
 
 def _breaks_listed(
@@ -90,8 +89,13 @@ def _breaks_listed(
 
     dep, pinned = site.dependency or "", site.from_version or ""
     typed = {dep: pinned} if dep and pinned and installed_version(dep) not in {"", pinned} else {}
+    # Recheck only needs files that import this dependency (plus the patched
+    # file). Whole-repo maps dominate apply time on mid/large trees.
+    only = _recheck_files(root, dep, site.path)
     with types_from(typed):
-        service_map, _blast = build_service_map(root)
+        service_map, _blast = build_service_map(
+            root, service=dep or None, only_files=only
+        )
     impacts, _diffed, _notes = collect_impacts(
         root,
         service_map,
@@ -117,16 +121,47 @@ def _breaks_listed(
             inside = span is not None and span[0] <= hit.line <= span[1]
             if same or inside:
                 text = (f"{hit_path}:{hit.line} {hit.expr}: {item.change}", item.symbol)
-                if text not in found:
-                    found.append(text)
+            if text not in found:
+                found.append(text)
     if span is not None:
         _merge_keyword_findings(
             found, _unknown_keyword_breaks(service_map, site, want_path, span, fixtures, allow_network)
         )
-        for item in _type_breaks(root, service_map, site, want_path, span, fixtures, allow_network, original):
+        for item in _type_breaks(
+            root, service_map, site, want_path, span, fixtures, allow_network, original, only_files=only
+        ):
             if item not in found:
                 found.append(item)
     return found
+
+
+def _recheck_files(root: Path, dependency: str, site_path: str) -> list[str] | None:
+    """Relative paths to analyze for a single-site recheck, or ``None`` for the whole tree.
+
+    When the dependency name is known, only files that appear to import it (plus
+    the patched file) are walked. That keeps apply rechecks off the whole-repo
+    map path that dominated wall time on large trees.
+    """
+    dep = (dependency or "").strip()
+    if not dep:
+        return None
+    from conduit.prune.grep_imports import prune_by_imports
+
+    hits = prune_by_imports(root, [dep.split(".")[0] or dep])
+    rels: list[str] = []
+    seen: set[str] = set()
+    want = site_path.replace("\\", "/")
+    for path in hits:
+        try:
+            rel = path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            continue
+        if rel not in seen:
+            seen.add(rel)
+            rels.append(rel)
+    if want and want not in seen:
+        rels.append(want)
+    return rels or None
 
 
 def _merge_keyword_findings(found: list[tuple[str, str]], extra: list[tuple[str, str]]) -> None:
@@ -146,6 +181,8 @@ def _merge_keyword_findings(found: list[tuple[str, str]], extra: list[tuple[str,
 def _type_breaks(
     root: Path, service_map, site: ImpactSite, path: str, span: tuple[int, int], fixtures, allow_network,
     original: str = "",
+    *,
+    only_files: list[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Argument kinds and attribute reads in the span that the new release's types rule out."""
     import ast
@@ -166,14 +203,19 @@ def _type_breaks(
         return []
     try:
         # Calls into this repo's own classes and functions, against their own signatures.
-        local = [(text, "") for text in repo_call_breaks(root, path, source, span)]
+        local = [
+            (text, "")
+            for text in repo_call_breaks(root, path, source, span, only_files=only_files)
+        ]
     except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
         local = []
     wheel = new_release_wheel(
         site.dependency, site.to_version, fixtures=fixtures, allow_network=allow_network
     )
     _record_drops(site, original, tree, span, service_map, wheel, fixtures, allow_network)
-    local.extend(_declared_breaks(root, service_map, path, source, span, original, wheel))
+    local.extend(
+        _declared_breaks(root, service_map, path, source, span, original, wheel, only_files=only_files)
+    )
     if wheel is None:
         return local
     try:
@@ -210,7 +252,17 @@ def _type_breaks(
         return local
 
 
-def _declared_breaks(root: Path, service_map, path: str, source: str, span, original: str, wheel) -> list[tuple[str, str]]:
+def _declared_breaks(
+    root: Path,
+    service_map,
+    path: str,
+    source: str,
+    span,
+    original: str,
+    wheel,
+    *,
+    only_files: list[str] | None = None,
+) -> list[tuple[str, str]]:
     """Values whose declared class is not the class the callee declares (see ``declared``)."""
     import ast
 
@@ -231,7 +283,12 @@ def _declared_breaks(root: Path, service_map, path: str, source: str, span, orig
                 found = resolve_callable(modules, chain.sdk_method)
                 if found is not None:
                     traced[(chain.call_lineno, chain.call_expr)] = found
-        return [(text, "") for text in declared_type_breaks(modules, root, path, source, span, original, traced)]
+        return [
+            (text, "")
+            for text in declared_type_breaks(
+                modules, root, path, source, span, original, traced, only_files=only_files
+            )
+        ]
     except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
         return []
 
