@@ -121,14 +121,16 @@ def _breaks_listed(
             inside = span is not None and span[0] <= hit.line <= span[1]
             if same or inside:
                 text = (f"{hit_path}:{hit.line} {hit.expr}: {item.change}", item.symbol)
-            if text not in found:
-                found.append(text)
+                if text not in found:
+                    found.append(text)
     if span is not None:
         _merge_keyword_findings(
             found, _unknown_keyword_breaks(service_map, site, want_path, span, fixtures, allow_network)
         )
+        # Declared/dict-key/type checks need the whole repo (callee defs and
+        # example calls), not only SDK importers. Map analysis stays scoped.
         for item in _type_breaks(
-            root, service_map, site, want_path, span, fixtures, allow_network, original, only_files=only
+            root, service_map, site, want_path, span, fixtures, allow_network, original
         ):
             if item not in found:
                 found.append(item)
@@ -181,8 +183,6 @@ def _merge_keyword_findings(found: list[tuple[str, str]], extra: list[tuple[str,
 def _type_breaks(
     root: Path, service_map, site: ImpactSite, path: str, span: tuple[int, int], fixtures, allow_network,
     original: str = "",
-    *,
-    only_files: list[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Argument kinds and attribute reads in the span that the new release's types rule out."""
     import ast
@@ -203,19 +203,14 @@ def _type_breaks(
         return []
     try:
         # Calls into this repo's own classes and functions, against their own signatures.
-        local = [
-            (text, "")
-            for text in repo_call_breaks(root, path, source, span, only_files=only_files)
-        ]
+        local = [(text, "") for text in repo_call_breaks(root, path, source, span)]
     except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
         local = []
     wheel = new_release_wheel(
         site.dependency, site.to_version, fixtures=fixtures, allow_network=allow_network
     )
     _record_drops(site, original, tree, span, service_map, wheel, fixtures, allow_network)
-    local.extend(
-        _declared_breaks(root, service_map, path, source, span, original, wheel, only_files=only_files)
-    )
+    local.extend(_declared_breaks(root, service_map, path, source, span, original, wheel))
     if wheel is None:
         return local
     try:
@@ -252,17 +247,7 @@ def _type_breaks(
         return local
 
 
-def _declared_breaks(
-    root: Path,
-    service_map,
-    path: str,
-    source: str,
-    span,
-    original: str,
-    wheel,
-    *,
-    only_files: list[str] | None = None,
-) -> list[tuple[str, str]]:
+def _declared_breaks(root: Path, service_map, path: str, source: str, span, original: str, wheel) -> list[tuple[str, str]]:
     """Values whose declared class is not the class the callee declares (see ``declared``)."""
     import ast
 
@@ -283,12 +268,7 @@ def _declared_breaks(
                 found = resolve_callable(modules, chain.sdk_method)
                 if found is not None:
                     traced[(chain.call_lineno, chain.call_expr)] = found
-        return [
-            (text, "")
-            for text in declared_type_breaks(
-                modules, root, path, source, span, original, traced, only_files=only_files
-            )
-        ]
+        return [(text, "") for text in declared_type_breaks(modules, root, path, source, span, original, traced)]
     except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
         return []
 
