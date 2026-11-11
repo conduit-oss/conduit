@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 from conduit.outside_in.specs import ServiceSpec, normalize_dist
 
-_SCHEMA = 27
+_SCHEMA = 28
 _MAX_DEPTH = 4
 _MAX_BYTES = 40_000_000
 # Verb names on an HTTP client. ``close`` is not one: connection objects
@@ -519,6 +519,10 @@ def _promote_domain(direct: _Direct, used: list[Classification]) -> None:
 
     Calls that only decode, render, or annotate do not count. HTTP-verb
     classes are transports and were left out of the candidate set.
+
+    A product Client/Session that wraps a remote host stays product evidence
+    even when the same package also exposes an HTTP verb surface (almost every
+    SDK does). Pipeline-only HTTP classes never enter ``client_classes``.
     """
     found: set[str] = set()
     for class_name, roots in direct.domain_candidates.items():
@@ -530,12 +534,14 @@ def _promote_domain(direct: _Direct, used: list[Classification]) -> None:
             found.add(class_name)
             direct.constructors.add(class_name)
     # Opening a socket in a client constructor is product evidence. The same
-    # shape inside a package that already speaks HTTP verbs is the transport.
+    # shape inside a package that already speaks HTTP verbs is the transport
+    # unless a filtered product Client/Session is also present (below).
     if direct.domain_strong and not direct.http_surface:
         found.update(direct.domain_strong)
-    # A Client or Session in a package that opens a socket is the object the
-    # caller constructs. HTTP verb classes stay transports.
-    if direct.strong and direct.client_classes:
+    # Product Client/Session classes are outside-service evidence on their
+    # own. They do not need a stdlib socket in this package, and an HTTP
+    # helper living beside them does not demote them to a transport.
+    if direct.client_classes:
         found.update(direct.client_classes)
         direct.constructors.update(direct.client_classes)
     direct.domain_classes = found
@@ -1146,31 +1152,145 @@ def _stdlib_of(expanded: str) -> str:
 
 
 _MIN_PATH_TEMPLATES = 3
+# Name tokens that mark an endpoint / host binding. Matched as substrings of
+# the lowered identifier so ``VENDOR_API_URL`` and ``api_url`` both count.
+# ``api_base`` is covered by the ``_base`` check in ``_urlish_identifier``.
+_URL_NAME_TOKENS = (
+    "api_host",
+    "api_url",
+    "base_url",
+    "endpoint",
+    "host",
+    "server_url",
+)
+_URL_NAME_CUES = frozenset({"api", "base", "endpoint", "host", "server", "service"})
 
 
 def _path_templates(tree: ast.AST) -> set[str]:
-    """Literal paths in f-strings shaped ``{..}://{..}/fixed/path`` (host is a placeholder)."""
+    """Fixed API path suffixes built after a templated host.
+
+    Recognizes:
+
+    - f-strings shaped ``{scheme}://{host}/fixed/path``
+    - f-strings shaped ``{api_url}/fixed/path`` (host already in the binding)
+    - ``str.format`` / ``%`` templates with the same shapes
+
+    Plain string constants (docstrings, comments-as-data) are ignored unless
+    they are the template of a ``.format`` call or a ``%`` formatting expression.
+    """
     found: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.JoinedStr):
-            continue
-        parts = node.values
-        for index, part in enumerate(parts[:-1]):
-            text = part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else ""
-            if not text.endswith("://") or not isinstance(parts[index + 1], ast.FormattedValue):
-                continue
+        if isinstance(node, ast.JoinedStr):
+            found.update(_paths_from_joined(node.values))
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+            template = _const_str(node.func.value)
+            if template:
+                found.update(_paths_from_format_string(template))
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            template = _const_str(node.left)
+            if template:
+                found.update(_paths_from_format_string(template))
+    return found
+
+
+def _const_str(node: ast.AST | None) -> str:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return ""
+
+
+def _paths_from_joined(parts: list[ast.AST]) -> set[str]:
+    found: set[str] = set()
+    for index, part in enumerate(parts[:-1]):
+        text = part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else ""
+        # ``f"{scheme}://{host}/fixed/path"``
+        if text.endswith("://") and isinstance(parts[index + 1], ast.FormattedValue):
             tail = parts[index + 2] if index + 2 < len(parts) else None
-            path = tail.value if isinstance(tail, ast.Constant) and isinstance(tail.value, str) else ""
+            path = _const_str(tail)
+            if re.match(r"/[A-Za-z]", path):
+                found.add(path.split("?", 1)[0])
+            continue
+        # ``f"{base}/fixed/path"`` or ``f"{self.api_url}/fixed/path"`` — the
+        # host (or full origin) is already in the interpolated slot.
+        if isinstance(part, ast.FormattedValue):
+            path = _const_str(parts[index + 1])
             if re.match(r"/[A-Za-z]", path):
                 found.add(path.split("?", 1)[0])
     return found
 
 
+def _paths_from_format_string(template: str) -> set[str]:
+    """Literal paths in ``str.format`` / ``%`` templates with a host slot."""
+    found: set[str] = set()
+    # ``https://{host}/fixed/path`` or ``https://%s/fixed/path``
+    for match in re.finditer(
+        r"https?://(?:\{\w*\}|%s|%\(\w+\)s)(/(?:[A-Za-z][^?\s\"']*))",
+        template,
+    ):
+        found.add(match.group(1).split("?", 1)[0])
+    # ``{api_url}/fixed/path`` or ``%s/fixed/path`` when the first slot is the host.
+    for match in re.finditer(
+        r"(?:^|[^\w])(?:\{\w*\}|%s|%\(\w+\)s)(/(?:[A-Za-z][^?\s\"']*))",
+        template,
+    ):
+        found.add(match.group(1).split("?", 1)[0])
+    return found
+
+
+def _urlish_identifier(text: str) -> bool:
+    """True when an identifier looks like a URL / host / endpoint binding.
+
+    Matches shapes such as ``api_url``, ``API_URL``, ``vendor_api_url``,
+    ``server_url``, ``api_base``, and ``*_base``. Vendor-specific spellings are
+    not listed; the shape of the name is the signal.
+    """
+    lowered = (text or "").lower().strip("_")
+    if not lowered:
+        return False
+    # ``*_base`` covers ``api_base``, ``upload_api_base``, ``DEFAULT_API_BASE``.
+    if "_base" in lowered:
+        return True
+    if any(token in lowered for token in _URL_NAME_TOKENS):
+        return True
+    # ``service_uri``, ``remote_url`` — end in url/uri and carry a host cue.
+    if lowered.endswith(("_url", "_uri")) and any(cue in lowered for cue in _URL_NAME_CUES):
+        return True
+    return False
+
+
+def _url_literal_host(text: str) -> str:
+    """Host when ``text`` itself is an API-shaped https URL to a non-local address.
+
+    Used when the binding name is not URL-ish. Package homepages
+    (``__url__ = "https://…readthedocs.io"``) must not count; require an
+    ``api.`` host label or an ``/api`` / ``/vN`` path prefix.
+    """
+    stripped = (text or "").strip()
+    if not stripped.startswith(("http://", "https://")):
+        return ""
+    # Reject prose that only mentions a URL mid-sentence.
+    if any(ch.isspace() for ch in stripped):
+        return ""
+    host = _host_of(stripped)
+    if not host:
+        return ""
+    rest = stripped.split("://", 1)[1]
+    path = "/" + rest.split("/", 1)[1] if "/" in rest else ""
+    labels = host.split(".")
+    if labels[0] == "api" or any(label == "api" for label in labels[1:-1]):
+        return host
+    if re.match(r"/(?:api|v\d+)(?:/|$|\?)", path):
+        return host
+    return ""
+
+
 def _assigned_hosts(tree: ast.AST) -> set[str]:
     """Hosts written into an endpoint default, not a documentation link.
 
-    The target name has to say that it is a URL, a host, an endpoint, or a
-    server. A name one client coins for that default is not required.
+    A binding counts when its name is URL-ish (``api_url``, ``API_URL``,
+    ``server_url``, ``*_base``, …) or when the assigned value is itself an
+    https URL to a non-local host. A name one client coins for that default
+    is not required.
     """
     hosts: set[str] = set()
 
@@ -1192,32 +1312,41 @@ def _assigned_hosts(tree: ast.AST) -> set[str]:
 
     def named(target: ast.AST) -> bool:
         if isinstance(target, ast.Name):
-            text = target.id
-        elif isinstance(target, ast.Attribute):
-            text = target.attr
-        else:
-            return False
-        lowered = text.lower().strip("_")
-        # ``*_base`` is a URL default (``api_base``, ``upload_api_base``). The
-        # specific name is not the signal.
-        return "_base" in lowered or any(
-            token in lowered for token in ("base_url", "api_host", "endpoint", "server_url", "host")
-        )
+            return _urlish_identifier(target.id)
+        if isinstance(target, ast.Attribute):
+            return _urlish_identifier(target.attr)
+        return False
+
+    def value_is_host_url(node: ast.AST | None) -> bool:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return bool(_url_literal_host(node.value))
+        if isinstance(node, ast.IfExp):
+            return value_is_host_url(node.body) or value_is_host_url(node.orelse)
+        if isinstance(node, ast.Call):
+            return any(value_is_host_url(arg) for arg in node.args) or any(
+                keyword.value is not None and value_is_host_url(keyword.value)
+                for keyword in node.keywords
+            )
+        return False
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(named(target) for target in node.targets):
+        if isinstance(node, ast.Assign) and (
+            any(named(target) for target in node.targets) or value_is_host_url(node.value)
+        ):
             take(node.value)
-        elif isinstance(node, ast.AnnAssign) and node.target is not None and named(node.target):
+        elif isinstance(node, ast.AnnAssign) and node.target is not None and (
+            named(node.target) or value_is_host_url(node.value)
+        ):
             take(node.value)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = node.args
             defaults = [*args.defaults]
             positional = [arg.arg for arg in (*args.posonlyargs, *args.args)]
             for arg_name, default in zip(positional[-len(defaults) :], defaults):
-                if named(ast.Name(id=arg_name)):
+                if named(ast.Name(id=arg_name)) or value_is_host_url(default):
                     take(default)
             for arg, default in zip(args.kwonlyargs, args.kw_defaults):
-                if default is not None and named(ast.Name(id=arg.arg)):
+                if default is not None and (named(ast.Name(id=arg.arg)) or value_is_host_url(default)):
                     take(default)
     return hosts
 
@@ -1240,6 +1369,9 @@ def _host_of(text: str) -> str:
     if labels[-1] in _RESERVED_TLDS:
         return ""
     if labels[0] in {"docs", "doc", "www", "en", "wiki"}:
+        return ""
+    # Project doc hosts are not service endpoints.
+    if "readthedocs" in labels:
         return ""
     return host
 
