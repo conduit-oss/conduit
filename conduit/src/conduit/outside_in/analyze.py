@@ -21,12 +21,14 @@ def specs_for(
         found = evidence_spec(service, root=root)
         chosen = [found or spec_for_name(service)]
         # An explicit service still needs the HTTP libraries the repo imports,
-        # so a URL aimed at that service is recognized as an HTTP call.
+        # so a URL aimed at that service is recognized as an HTTP call. Scope
+        # the repo scan: only ``service`` is classified fully; other imports
+        # stay shallow (own code + clear call-link delegates).
         if root is not None:
             from conduit.outside_in.evidence import specs_for_repo
 
             seen_ids = {item.service_id for item in chosen}
-            for spec in specs_for_repo(root):
+            for spec in specs_for_repo(root, focus=service):
                 if spec.transport and spec.service_id not in seen_ids:
                     chosen.append(spec)
                     seen_ids.add(spec.service_id)
