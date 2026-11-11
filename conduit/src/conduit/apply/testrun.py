@@ -226,8 +226,63 @@ def isolate_pytest(command: str, node: str) -> str | None:
     return shlex.join([*prefix, node])
 
 
+def suite_couldnt_run(run: TestRun | None = None, *, output: str = "", exit_code: int | None = None) -> bool:
+    """True when the command did not actually execute tests successfully.
+
+    Covers collection/import failures, interpreter crashes, timeouts, pytest
+    usage/internal errors (exit 2–4), and "no tests collected" (exit 5). A
+    suite in this state must never make a rewrite "verified".
+    """
+    text = (run.output if run is not None else "") or output or ""
+    code = run.exit_code if run is not None else exit_code
+    if code in {2, 3, 4, 5}:
+        return True
+    tokens = (
+        "ERROR collecting",
+        "ImportError",
+        "ModuleNotFoundError",
+        "cannot import",
+        "no tests collected",
+        "collected 0 items",
+        "Fatal Python error",
+        "Segmentation fault",
+        "Traceback (most recent call last):\nKeyboardInterrupt",
+        "TimeoutError",
+        " timed out",
+        "TimeoutExpired",
+        "signal.SIGTERM",
+        "Killed",
+    )
+    return any(token in text for token in tokens)
+
+
 def judge(run: TestRun, baseline: Baseline | None) -> Verdict:
-    """Passed when nothing fails that did not already fail on the baseline."""
+    """Passed when nothing fails that did not already fail on the baseline.
+
+    Collection/crash/timeout/"no tests collected" never count as a pass — even
+    when ``--continue-on-collection-errors`` lets some other tests pass, and even
+    when the only errored nodes also failed on the baseline. A rewrite may only
+    be "verified" when the suite that checks it actually ran. Intermediate
+    bisection still uses ``new`` / ``missing`` / ``reproduces`` to avoid blaming
+    the wrong site; it must not treat a blocked suite as green.
+    """
+    if suite_couldnt_run(run):
+        before = baseline.failing if baseline is not None and baseline.usable else set()
+        preexisting = [test for test in run.failing if test in before]
+        new = [test for test in run.failing if test not in before]
+        missing: list[str] = []
+        if baseline is not None and baseline.usable and run.source == "junit":
+            missing = sorted(
+                test
+                for test, outcome in baseline.outcomes.items()
+                if outcome == "passed" and test not in run.outcomes
+            )
+        return Verdict(
+            False,
+            new or run.failing or ["(test command)"],
+            preexisting,
+            missing,
+        )
     if run.ok and not run.failing:
         return Verdict(True, [], [], [])
     if baseline is None or not baseline.usable or run.source == "exit-code":

@@ -778,20 +778,28 @@ def _load_index(fixtures: Path | None) -> dict[str, dict]:
 
 
 def _download_wheel(package: str, version: str, *, max_bytes: int = 32_000_000) -> Path | None:
-    """Fetch one wheel from PyPI. Skips files larger than ``max_bytes``."""
+    """Fetch one wheel from PyPI. Skips files larger than ``max_bytes``.
+
+    PyPI package JSON is cached (memory + disk) so apply rechecks do not
+    re-fetch the same metadata for every site.
+    """
     if not package or not version:
         return None
     import tempfile
 
     import httpx
 
+    from conduit.feeds.http import cached_get
+
     meta_url = f"https://pypi.org/pypi/{package}/{version}/json"
-    try:
-        response = httpx.get(meta_url, timeout=30.0, follow_redirects=True)
-        response.raise_for_status()
-        meta = response.json()
-    except Exception:
+    body, reason = cached_get(meta_url, timeout=30.0)
+    if body is None:
         return None
+    try:
+        meta = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    del reason
     urls = meta.get("urls") if isinstance(meta, dict) else None
     if not isinstance(urls, list):
         return None

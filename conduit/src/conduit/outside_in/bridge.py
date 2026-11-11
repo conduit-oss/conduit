@@ -14,12 +14,15 @@ def build_service_map(
     *,
     service: str | None = None,
     packet: dict | None = None,
+    only_files: list[str] | None = None,
 ) -> tuple[ServiceMap, BlastReport | None]:
     extra: tuple[str, ...] = ()
     if packet is not None:
         package = str(packet.get("package") or "").strip()
         if package:
             extra = (package,)
-    service_map = analyze_repo(root, service=service, extra_modules=extra)
+    service_map = analyze_repo(
+        root, service=service, extra_modules=extra, only_files=only_files
+    )
     blast = blast_radius(service_map, packet) if packet is not None else None
     return service_map, blast
