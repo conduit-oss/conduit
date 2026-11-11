@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from conduit.apply.repoindex import current_index
 from conduit.apply.signatures import _absolute, _is_package
 
 _MAX_DEPTH = 8
@@ -38,7 +39,16 @@ def repo_modules(
     *,
     only_files: list[str] | None = None,
 ) -> dict[str, ast.Module]:
-    """This repo's modules by dotted name, with ``current`` read from ``tree``."""
+    """This repo's modules by dotted name, with ``current`` read from ``tree``.
+
+    When a :class:`~conduit.apply.repoindex.RepoIndex` is active, every indexed
+    module is visible (``only_files`` does not narrow what can be seen); only the
+    index's incremental updates control what is re-parsed.
+    """
+    index = current_index()
+    if index is not None:
+        return index.modules_for(current, tree)
+
     out: dict[str, ast.Module] = {}
     allowed = {item.replace("\\", "/") for item in only_files} if only_files is not None else None
     if allowed is not None:
