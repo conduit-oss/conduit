@@ -358,3 +358,205 @@ def test_url_literal_in_build_tooling_helper_is_not_a_service(tmp_path: Path):
     assert found.service is False
     assert found.hosts == ()
     assert evidence_spec("acmecalc", version, root=tmp_path) is None
+
+
+def _install_with_requires(
+    root: Path,
+    dist: str,
+    import_name: str,
+    version: str,
+    source: str,
+    requires: list[str] | None = None,
+) -> None:
+    site = root / ".venv" / "lib" / "python3.12" / "site-packages"
+    info = site / f"{dist}-{version}.dist-info"
+    info.mkdir(parents=True, exist_ok=True)
+    meta = [f"Name: {dist}", f"Version: {version}"]
+    for req in requires or ():
+        meta.append(f"Requires-Dist: {req}")
+    (info / "METADATA").write_text("\n".join(meta) + "\n", encoding="utf-8")
+    (info / "top_level.txt").write_text(f"{import_name}\n", encoding="utf-8")
+    package = site / import_name
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(textwrap.dedent(source).lstrip(), encoding="utf-8")
+
+
+def test_wrapper_library_still_surfaces_the_called_service(tmp_path: Path):
+    """A service reached only through a wrapper import is still found (clear link)."""
+    version = "1.0.0"
+    _install_with_requires(
+        tmp_path,
+        "acmeai",
+        "acmeai",
+        version,
+        """
+        import http.client
+
+        ACME_API_URL = "https://api.acmeai.com"
+
+        class Client:
+            def __init__(self, api_url=None):
+                self.api_url = api_url or ACME_API_URL
+
+            def generate(self, prompt):
+                conn = http.client.HTTPSConnection("api.acmeai.com")
+                conn.request("POST", "/v1/generate")
+                return conn.getresponse()
+        """,
+    )
+    _install_with_requires(
+        tmp_path,
+        "orchwrap",
+        "orchwrap",
+        version,
+        """
+        import acmeai
+
+        def run(prompt):
+            return acmeai.Client().generate(prompt)
+        """,
+        requires=["acmeai"],
+    )
+    (tmp_path / "requirements.txt").write_text("orchwrap==1.0.0\nacmeai==1.0.0\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        textwrap.dedent(
+            """
+            import orchwrap
+
+            def main():
+                return orchwrap.run("hi")
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    from conduit.outside_in.evidence import specs_for_repo
+
+    ids = {spec.service_id for spec in specs_for_repo(tmp_path)}
+    assert "acmeai" in ids
+    assert "orchwrap" not in ids
+
+
+def test_unrelated_heavy_optional_dependency_is_not_scanned(tmp_path: Path, monkeypatch):
+    """Requires that the package never calls are not classified during a shallow scan."""
+    version = "1.0.0"
+    _install_with_requires(
+        tmp_path,
+        "acmeai",
+        "acmeai",
+        version,
+        """
+        import http.client
+
+        ACME_API_URL = "https://api.acmeai.com"
+
+        class Client:
+            def __init__(self):
+                self.api_url = ACME_API_URL
+
+            def generate(self, prompt):
+                conn = http.client.HTTPSConnection("api.acmeai.com")
+                conn.request("POST", "/v1/generate")
+                return conn.getresponse()
+        """,
+    )
+    _install_with_requires(
+        tmp_path,
+        "heavystack",
+        "heavystack",
+        version,
+        """
+        def boom():
+            return "never called from the wrapper"
+        """,
+    )
+    _install_with_requires(
+        tmp_path,
+        "orchwrap",
+        "orchwrap",
+        version,
+        """
+        import acmeai
+
+        def run(prompt):
+            return acmeai.Client().generate(prompt)
+        """,
+        requires=["acmeai", "heavystack"],
+    )
+    (tmp_path / "requirements.txt").write_text(
+        "orchwrap==1.0.0\nacmeai==1.0.0\nheavystack==1.0.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text("import orchwrap\n", encoding="utf-8")
+
+    import conduit.outside_in.evidence as evidence
+    from conduit.outside_in.evidence import specs_for_repo
+
+    scanned: list[str] = []
+    real_scan = evidence._scan
+
+    def tracking_scan(code):
+        scanned.append(evidence.normalize_dist(code.package))
+        return real_scan(code)
+
+    monkeypatch.setattr(evidence, "_scan", tracking_scan)
+    evidence._MEMORY.clear()
+
+    ids = {spec.service_id for spec in specs_for_repo(tmp_path)}
+    assert "acmeai" in ids
+    assert "heavystack" not in scanned
+    assert "heavystack" not in ids
+
+
+def test_negative_download_and_pypi_lookup_are_remembered(tmp_path: Path, monkeypatch):
+    """Failed / too-large fetches and PyPI misses are not retried within a run or via disk."""
+    import conduit.outside_in.evidence as evidence
+
+    monkeypatch.delenv("CONDUIT_NO_CACHE", raising=False)
+    monkeypatch.setenv("CONDUIT_CACHE_DIR", str(tmp_path / "conduit-cache"))
+    evidence._MEMORY.clear()
+    evidence._NEGATIVE_MEMORY.clear()
+    evidence._PYPI_VERSIONS.clear()
+
+    fetches: list[str] = []
+
+    def fake_pypi_json(url: str):
+        fetches.append(url)
+        return None
+
+    monkeypatch.setattr(evidence, "_pypi_json", fake_pypi_json)
+
+    assert evidence._pypi_version("zzmissingpkg") == ""
+    assert evidence._pypi_version("zzmissingpkg") == ""
+    assert len(fetches) == 1
+
+    # Persist across a cleared in-memory map by reading the negative disk entry.
+    evidence._NEGATIVE_MEMORY.clear()
+    evidence._PYPI_VERSIONS.clear()
+    assert evidence._pypi_version("zzmissingpkg") == ""
+    assert len(fetches) == 1
+
+    # Too-large / missing artifact choice is remembered for downloads.
+    fetches.clear()
+    evidence._NEGATIVE_MEMORY.clear()
+
+    def meta_then_none(url: str):
+        fetches.append(url)
+        if url.endswith("/json") and "/zztoobig/" in url:
+            return {
+                "info": {"name": "zztoobig", "version": "1.0.0"},
+                "urls": [
+                    {
+                        "packagetype": "bdist_wheel",
+                        "filename": "zztoobig-1.0.0-py3-none-any.whl",
+                        "url": "https://files.example/zztoobig.whl",
+                        "size": evidence._MAX_BYTES + 1,
+                    }
+                ],
+            }
+        return None
+
+    monkeypatch.setattr(evidence, "_pypi_json", meta_then_none)
+    assert evidence._download_code("zztoobig", "1.0.0") is None
+    assert evidence._download_code("zztoobig", "1.0.0") is None
+    # First call reads metadata once; second hits the negative download key.
+    assert sum(1 for item in fetches if "/zztoobig/" in item) == 1
