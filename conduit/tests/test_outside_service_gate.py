@@ -33,15 +33,17 @@ def _install_package(root: Path, dist: str, import_name: str, version: str, sour
 
 
 def test_urlish_api_url_names_and_https_literals_are_hosts():
-    """Host detection is name-shape + URL-literal based, not a vendor list."""
+    """Host detection is name-shape based; plain literals need client surface."""
     tree = ast.parse(
         textwrap.dedent(
             """
             ACME_API_URL = "https://api.acmeai.com"
             api_url = "https://east.acmeai.com/v1"
             server_url = "https://edge.acmeai.com"
-            # Plain name: value must look like an API endpoint.
+            # Plain name without a client in this module does not count.
             DEFAULT = "https://fallback.acmeai.com/v2"
+            # A Call that only mentions a URL is not a host binding.
+            page = urlopen("https://api.acmeai.com/v1/status")
             # Package homepage / prose must not count.
             __url__ = "https://acmeai.readthedocs.io"
             note = "see https://api.acmeai.com for docs"
@@ -56,8 +58,23 @@ def test_urlish_api_url_names_and_https_literals_are_hosts():
         "api.acmeai.com",
         "east.acmeai.com",
         "edge.acmeai.com",
-        "fallback.acmeai.com",
     }
+
+    with_client = ast.parse(
+        textwrap.dedent(
+            """
+            ROOT = "https://fallback.acmeai.com/v2"
+
+            class Client:
+                def __init__(self):
+                    self.root = ROOT
+
+                def generate(self, prompt):
+                    return self.root
+            """
+        )
+    )
+    assert _assigned_hosts(with_client) == {"fallback.acmeai.com"}
 
 
 def test_path_templates_from_fstring_format_and_percent():
@@ -299,3 +316,45 @@ def test_path_templates_alone_keep_a_templated_client_as_product():
     result = _finish("pathy", direct, root=None, depth=0, stack=frozenset())
     assert result.service is True
     assert result.transport is False
+
+
+def test_url_literal_in_build_tooling_helper_is_not_a_service(tmp_path: Path):
+    """An API-looking URL in packaging/build tooling does not make a compute lib a service."""
+    version = "0.3.0"
+    site = tmp_path / ".venv" / "lib" / "python3.12" / "site-packages"
+    info = site / f"acmecalc-{version}.dist-info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "METADATA").write_text(f"Name: acmecalc\nVersion: {version}\n", encoding="utf-8")
+    (info / "top_level.txt").write_text("acmecalc\n", encoding="utf-8")
+    package = site / "acmecalc"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(
+        textwrap.dedent(
+            """
+            def add(left, right):
+                return left + right
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    tooling = package / "packaging"
+    tooling.mkdir(parents=True, exist_ok=True)
+    (tooling / "__init__.py").write_text("", encoding="utf-8")
+    (tooling / "createmsi.py").write_text(
+        textwrap.dedent(
+            """
+            # Build helper only — not the runtime client surface.
+            NUGET_INDEX = "https://api.acmebuild.com/v3/index.json"
+            WRAP_URL = "https://wrapdb.acmebuild.com/v2/releases.json"
+
+            def fetch_index():
+                return NUGET_INDEX
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    found = classify_distribution("acmecalc", version, root=tmp_path)
+    assert found.loaded is True
+    assert found.service is False
+    assert found.hosts == ()
+    assert evidence_spec("acmecalc", version, root=tmp_path) is None

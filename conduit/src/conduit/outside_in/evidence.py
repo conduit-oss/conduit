@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 from conduit.outside_in.specs import ServiceSpec, normalize_dist
 
-_SCHEMA = 28
+_SCHEMA = 29
 _MAX_DEPTH = 4
 _MAX_BYTES = 40_000_000
 # Verb names on an HTTP client. ``close`` is not one: connection objects
@@ -67,13 +67,23 @@ _STDLIB_IO = {
 _SKIP_PARTS = frozenset(
     {
         "benchmarks",
+        "build",
         "docs",
         "example",
         "examples",
+        "meson",
+        "mesonbuild",
+        "packaging",
         "scripts",
         "test",
         "testing",
         "tests",
+        "tooling",
+        "tools",
+        "unittests",
+        "vendor",
+        "vendored",
+        "vendored-meson",
     }
 )
 _RESERVED_TLDS = frozenset({"example", "invalid", "localhost", "test"})
@@ -703,8 +713,10 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
     except SyntaxError:
         return
     aliases, internal = _aliases(tree, own)
-    direct.hosts.update(_assigned_hosts(tree))
-    direct.path_templates.update(_path_templates(tree))
+    # Build / packaging / test / docs modules are not the runtime client surface.
+    if not _incidental_module(name):
+        direct.hosts.update(_assigned_hosts(tree))
+        direct.path_templates.update(_path_templates(tree))
     local_funcs: set[str] = set()
     class_methods: dict[str, set[str]] = {}
     class_nodes: list[ast.ClassDef] = []
@@ -1242,18 +1254,20 @@ def _urlish_identifier(text: str) -> bool:
 
     Matches shapes such as ``api_url``, ``API_URL``, ``vendor_api_url``,
     ``server_url``, ``api_base``, and ``*_base``. Vendor-specific spellings are
-    not listed; the shape of the name is the signal.
+    not listed; the shape of the name is the signal. Cue matches are
+    underscore-token aware so ``pythoncapi_…_url`` does not count as ``api``.
     """
     lowered = (text or "").lower().strip("_")
     if not lowered:
         return False
+    parts = [part for part in lowered.split("_") if part]
     # ``*_base`` covers ``api_base``, ``upload_api_base``, ``DEFAULT_API_BASE``.
-    if "_base" in lowered:
+    if "base" in parts and len(parts) >= 2:
         return True
     if any(token in lowered for token in _URL_NAME_TOKENS):
         return True
-    # ``service_uri``, ``remote_url`` — end in url/uri and carry a host cue.
-    if lowered.endswith(("_url", "_uri")) and any(cue in lowered for cue in _URL_NAME_CUES):
+    # ``service_uri``, ``server_url`` — end in url/uri and carry a host cue token.
+    if parts and parts[-1] in {"url", "uri"} and _URL_NAME_CUES.intersection(parts[:-1]):
         return True
     return False
 
@@ -1284,15 +1298,51 @@ def _url_literal_host(text: str) -> str:
     return ""
 
 
-def _assigned_hosts(tree: ast.AST) -> set[str]:
-    """Hosts written into an endpoint default, not a documentation link.
+def _tree_has_client_surface(tree: ast.AST) -> bool:
+    """True when this module defines a product client or builds request URLs.
 
-    A binding counts when its name is URL-ish (``api_url``, ``API_URL``,
-    ``server_url``, ``*_base``, …) or when the assigned value is itself an
-    https URL to a non-local host. A name one client coins for that default
-    is not required.
+    Used to decide whether a plain-name https literal is part of the runtime
+    client surface, rather than an unrelated constant.
+    """
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not _client_type(node.name):
+            continue
+        methods = _method_names(node)
+        public = {method for method in methods if not method.startswith("_") and method not in {"close", "aclose"}}
+        if public and not (public <= (_HTTP_SURFACE | {"send_request", "open"})):
+            return True
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr) and _paths_from_joined(node.values):
+            return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+            template = _const_str(node.func.value)
+            if template and _paths_from_format_string(template):
+                return True
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            template = _const_str(node.left)
+            if template and _paths_from_format_string(template):
+                return True
+    return False
+
+
+def _assigned_hosts(tree: ast.AST) -> set[str]:
+    """Hosts that feed this module's runtime client surface.
+
+    Counts when:
+
+    - a URL-ish name (``api_url``, ``API_URL``, ``server_url``, ``*_base``, …)
+      is bound to a host, including ``os.environ.get`` defaults on those names
+    - a URL-ish parameter default or ``self.<urlish>`` assignment carries a host
+    - a plain-name https literal is bound in a module that also defines a product
+      client or builds request URLs from a host slot
+
+    A Call that merely mentions an https URL (download helper, wrap index, …)
+    does not count unless the binding target itself is URL-ish.
     """
     hosts: set[str] = set()
+    client_surface = _tree_has_client_surface(tree)
 
     def take(node: ast.AST | None) -> None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -1303,7 +1353,7 @@ def _assigned_hosts(tree: ast.AST) -> set[str]:
             take(node.body)
             take(node.orelse)
         elif isinstance(node, ast.Call):
-            # os.environ.get("BASE", "https://api.example.com/v1")
+            # os.environ.get("BASE", "https://api.example.com/v1") on a URL-ish name
             for arg in node.args:
                 take(arg)
             for keyword in node.keywords:
@@ -1317,36 +1367,40 @@ def _assigned_hosts(tree: ast.AST) -> set[str]:
             return _urlish_identifier(target.attr)
         return False
 
-    def value_is_host_url(node: ast.AST | None) -> bool:
+    def plain_url_constant(node: ast.AST | None) -> bool:
+        """API-shaped https literal (not a Call that only mentions a URL)."""
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return bool(_url_literal_host(node.value))
         if isinstance(node, ast.IfExp):
-            return value_is_host_url(node.body) or value_is_host_url(node.orelse)
-        if isinstance(node, ast.Call):
-            return any(value_is_host_url(arg) for arg in node.args) or any(
-                keyword.value is not None and value_is_host_url(keyword.value)
-                for keyword in node.keywords
-            )
+            return plain_url_constant(node.body) or plain_url_constant(node.orelse)
         return False
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and (
-            any(named(target) for target in node.targets) or value_is_host_url(node.value)
-        ):
-            take(node.value)
-        elif isinstance(node, ast.AnnAssign) and node.target is not None and (
-            named(node.target) or value_is_host_url(node.value)
-        ):
-            take(node.value)
+        if isinstance(node, ast.Assign):
+            if any(named(target) for target in node.targets):
+                take(node.value)
+            elif client_surface and plain_url_constant(node.value):
+                take(node.value)
+        elif isinstance(node, ast.AnnAssign) and node.target is not None:
+            if named(node.target):
+                take(node.value)
+            elif client_surface and plain_url_constant(node.value):
+                take(node.value)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = node.args
             defaults = [*args.defaults]
             positional = [arg.arg for arg in (*args.posonlyargs, *args.args)]
             for arg_name, default in zip(positional[-len(defaults) :], defaults):
-                if named(ast.Name(id=arg_name)) or value_is_host_url(default):
+                if named(ast.Name(id=arg_name)):
+                    take(default)
+                elif client_surface and plain_url_constant(default):
                     take(default)
             for arg, default in zip(args.kwonlyargs, args.kw_defaults):
-                if default is not None and (named(ast.Name(id=arg.arg)) or value_is_host_url(default)):
+                if default is None:
+                    continue
+                if named(ast.Name(id=arg.arg)):
+                    take(default)
+                elif client_surface and plain_url_constant(default):
                     take(default)
     return hosts
 
