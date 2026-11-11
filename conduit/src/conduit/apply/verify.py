@@ -41,6 +41,8 @@ def remaining_breaks(
     ``span`` (1-based, inclusive): a break the rewrite itself introduced,
     such as a parameter the new release removed.
     """
+    from conduit.apply.repoindex import current_index
+
     target = root / site.path
     if original is None:
         try:
@@ -53,6 +55,11 @@ def remaining_breaks(
     except OSError:
         previous = None
     target.parent.mkdir(parents=True, exist_ok=True)
+    index = current_index()
+    if index is not None:
+        # Recheck sees the patched file through the index; other modules stay as
+        # indexed (no whole-repo re-parse). Restore both disk and index after.
+        index.update(site.path, patched)
     try:
         target.write_text(patched, encoding="utf-8")
         return _breaks_listed(
@@ -69,8 +76,12 @@ def remaining_breaks(
                 target.unlink()
             except OSError:
                 pass
+            if index is not None:
+                index.update(site.path, "")
         else:
             target.write_text(previous, encoding="utf-8")
+            if index is not None:
+                index.update(site.path, previous)
 
 
 def _breaks_listed(

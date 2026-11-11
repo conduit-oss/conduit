@@ -1425,6 +1425,20 @@ def _caller_classes(modules, root: Path, trees, chains, path: str, func, index: 
 
 
 def _repo_trees(root: Path, cached: dict[str, ast.Module], *, only_files: list[str] | None = None):
+    from conduit.apply.repoindex import current_index
+
+    index = current_index()
+    if index is not None:
+        # Full visibility from the index; ``only_files`` must not hide callees.
+        seen: set[str] = set()
+        for rel in index.iter_rels():
+            seen.add(rel)
+            yield rel, cached[rel] if rel in cached else index.by_rel[rel]
+        for rel, tree in cached.items():
+            if rel not in seen:
+                yield rel, tree
+        return
+
     allowed = {item.replace("\\", "/") for item in only_files} if only_files is not None else None
     if allowed is not None:
         paths = [root / rel for rel in sorted(allowed)]

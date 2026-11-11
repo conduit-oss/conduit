@@ -2,6 +2,8 @@
 
 Made-up package only. Builds a large synthetic tree, times a single-site
 recheck, and asserts the scoped walk stays well under a whole-repo map.
+Also checks that an upfront repo index keeps far-away callees visible without
+re-parsing the whole tree after each site.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import time
 from pathlib import Path
 
 from conduit.apply.models import ImpactSite
+from conduit.apply.repoindex import RepoIndex, using_index
 from conduit.apply.verify import _recheck_files, remaining_breaks
 from conduit.outside_in.bridge import build_service_map
 
@@ -101,4 +104,93 @@ def test_remaining_breaks_recheck_beats_whole_repo_map(tmp_path: Path):
         whole_seconds,
     )
     # And the original file is restored.
+    assert "old_call" in (root / "app" / "work.py").read_text(encoding="utf-8")
+
+
+def test_indexed_recheck_sees_far_away_callee_without_full_reparse(tmp_path: Path):
+    """A type defined far from the edited site still drives a dict-key finding.
+
+    The index is built once for ~1500 modules; the per-site recheck may re-parse
+    only the patched file (and its restore), never the whole tree again.
+    """
+    root = tmp_path / "repo"
+    _write(
+        root / "wiresdk" / "__init__.py",
+        """\
+        class Client:
+            def old_call(self, n):
+                return n
+
+            def new_call(self, n):
+                return n
+        """,
+    )
+    # Far-away module the rewritten site imports; noise modules do not.
+    _write(
+        root / "far" / "away" / "basket.py",
+        """\
+        class Basket:
+            @classmethod
+            def from_map(cls, values):
+                return cls(values["apples"], values["pears"])
+        """,
+    )
+    _write(root / "far" / "away" / "__init__.py", "")
+    _write(root / "far" / "__init__.py", "")
+    for index in range(1500):
+        _write(
+            root / "noise" / f"pkg_{index}" / f"mod_{index}.py",
+            f"def f_{index}():\n    return {index}\n",
+        )
+    original = textwrap.dedent(
+        """\
+        from wiresdk import Client
+        from far.away.basket import Basket
+
+        def fine(client):
+            return client.old_call(1)
+        """
+    )
+    _write(root / "app" / "work.py", original)
+    # Rewrite drops pears from the Basket.from_map dict — dict-key must fire.
+    patched = textwrap.dedent(
+        """\
+        from wiresdk import Client
+        from far.away.basket import Basket
+
+        def fine(client):
+            client.new_call(1)
+            return Basket.from_map({"apples": 1})
+        """
+    )
+    site = _site(line=4)
+
+    index = RepoIndex.build(root)
+    built = index.parse_count
+    assert built >= 1500
+
+    with using_index(index):
+        before = index.parse_count
+        started = time.perf_counter()
+        found = remaining_breaks(root, site, patched, span=(4, 6), allow_network=False)
+        indexed_seconds = time.perf_counter() - started
+        reparsed = index.parse_count - before
+
+    assert any("missing required 'pears'" in text for text, _symbol in found), found
+    # update(patched) + update(restore) at most; never another whole-repo walk.
+    assert reparsed <= 4, (reparsed, built)
+    assert reparsed < built // 10
+
+    # Without the index, the same recheck re-parses the tree (baseline timing).
+    started = time.perf_counter()
+    cold = remaining_breaks(root, site, patched, span=(4, 6), allow_network=False)
+    cold_seconds = time.perf_counter() - started
+    assert any("missing required 'pears'" in text for text, _symbol in cold), cold
+    # Indexed path should stay well under a cold full-walk recheck on this tree.
+    assert indexed_seconds < max(1.0, cold_seconds * 0.5 + 0.05), (
+        indexed_seconds,
+        cold_seconds,
+        reparsed,
+        built,
+    )
     assert "old_call" in (root / "app" / "work.py").read_text(encoding="utf-8")
