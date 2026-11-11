@@ -253,6 +253,18 @@ def _type_breaks(
             site.dependency or "", site.to_version or "",
         ):
             found.append((text, ""))
+        from conduit.apply.names import name_breaks
+
+        for text in name_breaks(
+            modules,
+            path,
+            source,
+            span,
+            site.dependency or "",
+            site.to_version or "",
+            original=original,
+        ):
+            found.append((text, ""))
         return found
     except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
         return local
