@@ -54,6 +54,7 @@ from conduit.apply.testrefs import find_test_refs
 from conduit.apply.change_why import caught, caught_keys, change_why
 from conduit.apply.dropped import DROPPED, content_dropped, import_swap_why
 from conduit.apply.producers import repo_producers
+from conduit.apply.repoindex import RepoIndex, current_index, using_index
 from conduit.apply.typecheck import FLOWS, parameter_brief, structured_requirements
 from conduit.apply.verify import remaining_breaks
 
@@ -214,22 +215,26 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
             _fill_why(report)
             return report
         covered, texts = _one_per_function(config.root, selected)
-        # Lines that import or construct a removed class go first, so later
-        # rechecks resolve calls through the new client instead of the old one.
-        for site in sorted(selected, key=lambda item: not _names_removed_class(item)):
-            if stop.requested:
-                break
-            if id(site) in covered:
-                report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
-                continue
-            moved = _relocate(config.root, site, texts.get(id(site), "")) if config.write else site
-            if moved is None:
-                why = "line rewritten by an earlier fix in this file"
-                report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=why))
-                continue
-            report.results.append(_apply_one(moved, config, client, report))
-            _sync_ledger()
-            _checkpoint(config, report)
+        # One whole-repo parse for declared/dict-key/typecheck; per-site rechecks
+        # only re-parse files a rewrite changes.
+        index = RepoIndex.build(config.root) if config.recheck_impact else None
+        with using_index(index):
+            # Lines that import or construct a removed class go first, so later
+            # rechecks resolve calls through the new client instead of the old one.
+            for site in sorted(selected, key=lambda item: not _names_removed_class(item)):
+                if stop.requested:
+                    break
+                if id(site) in covered:
+                    report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
+                    continue
+                moved = _relocate(config.root, site, texts.get(id(site), "")) if config.write else site
+                if moved is None:
+                    why = "line rewritten by an earlier fix in this file"
+                    report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=why))
+                    continue
+                report.results.append(_apply_one(moved, config, client, report))
+                _sync_ledger()
+                _checkpoint(config, report)
         _fill_why(report)
     finally:
         _sync_ledger()
@@ -318,243 +323,247 @@ def _apply_batch(
         ordered = _dependency_order(config.root, base, covered, routes)
         rank = {id(site): index for index, site in enumerate(base)}
         ranks: list[int] = []  # report order stays the usual one
-        for site in ordered:
-            if id(site) not in covered and not site.via_wrapper:
-                routes.upcoming[id(site)] = (site, texts.get(id(site), ""))
-        for site in ordered:
-            if stop.requested:
-                report.suite_blocked = report.suite_blocked or (
-                    "tests couldn't run: apply stopped early (timeout or interrupt)"
-                )
-                break
-            routes.upcoming.pop(id(site), None)
-            ranks.append(rank[id(site)])
-            if id(site) in covered:
-                report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
-                _checkpoint(config, report)
-                continue
-            if site.via_wrapper:
-                report.results.append(_apply_one(site, work, client, report))
-                _checkpoint(config, report)
-                continue
-            originals.setdefault(site.path, _read(config.root / site.path))
-            if site.path not in lines.paths:
-                lines.paths.append(site.path)
-            texts_of[id(site)] = texts.get(id(site), "")
-            moved = _relocate(scratch, site, texts_of[id(site)])
-            sink: dict[str, Any] = {"site": site}
-            routes.key = id(site)
-            blocked = _unfixed_feeder(work, report, slots, accepted, id(site), upfront=True)
-            if blocked:
-                # Not rewritten against a base that is still broken.
-                result = SiteResult(site=site, status=SiteStatus.NEEDS_HUMAN, error=blocked, why=blocked)
-            else:
-                result = _apply_one(moved, work, client, report, sink=sink) if moved else None
-            slots[id(site)] = len(report.results)
-            report.results.append(result or SiteResult(site=site, status=SiteStatus.SKIPPED, why="line rewritten by an earlier fix in this file"))
-            if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
-                accepted[id(site)] = sink
-            _checkpoint(config, report)
-        if stop.requested:
-            # Skip the suite retest: wall clock is gone; keep what we have.
-            early = "tests couldn't run: apply stopped early (timeout or interrupt)"
-            report.suite_blocked = report.suite_blocked or early
-            for key in list(accepted):
-                done = report.results[slots[key]]
-                if done.status in {
-                    SiteStatus.FIXED_UNVERIFIED,
-                    SiteStatus.FIXED_VERIFIED,
-                    SiteStatus.FIXED_NOT_COVERED,
-                }:
-                    why = done.why.strip() if done.why else ""
-                    report.results[slots[key]] = replace(
-                        done,
-                        status=SiteStatus.FIXED_TESTS_COULDNT_RUN,
-                        why=f"{early} The change: {why}" if why else early,
-                        error="",
-                    )
-            seen = {id(item.site) for item in report.results}
+        # Scan the scratch tree once; remaining_breaks / _write_file keep it fresh.
+        repo_index = RepoIndex.build(scratch) if work.recheck_impact else None
+        with using_index(repo_index):
             for site in ordered:
-                if id(site) in seen:
-                    continue
+                if id(site) not in covered and not site.via_wrapper:
+                    routes.upcoming[id(site)] = (site, texts.get(id(site), ""))
+            for site in ordered:
+                if stop.requested:
+                    report.suite_blocked = report.suite_blocked or (
+                        "tests couldn't run: apply stopped early (timeout or interrupt)"
+                    )
+                    break
+                routes.upcoming.pop(id(site), None)
                 ranks.append(rank[id(site)])
-                report.results.append(
-                    SiteResult(site=site, status=SiteStatus.SKIPPED, why=early)
-                )
-            if len(ranks) == len(report.results):
-                report.results[:] = [
-                    item for _rank, item in sorted(zip(ranks, report.results), key=lambda pair: pair[0])
-                ]
-            return
-        _retry_routed(work, client, report, originals, texts_of, slots)
-        _drop_traced_reads(work, report, originals, texts_of, slots)
-        _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
-        _record_test_refs(selected, scratch, report, config)
-        failure = ""
-        stashed: dict[str, str] = {}
-        checked_flakes = False
-        for _round in range(config.settings.max_attempts + 1):
-            ok, output = _check(config, scratch, report, lines)
-            if ok or not accepted:
-                failure = "" if ok else output
-                break
-            failure = output
-            if not checked_flakes:
-                checked_flakes = True
-                if _clear_flakes(config, scratch, report):
+                if id(site) in covered:
+                    report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
+                    _checkpoint(config, report)
+                    continue
+                if site.via_wrapper:
+                    report.results.append(_apply_one(site, work, client, report))
+                    _checkpoint(config, report)
+                    continue
+                originals.setdefault(site.path, _read(config.root / site.path))
+                if site.path not in lines.paths:
+                    lines.paths.append(site.path)
+                texts_of[id(site)] = texts.get(id(site), "")
+                moved = _relocate(scratch, site, texts_of[id(site)])
+                sink: dict[str, Any] = {"site": site}
+                routes.key = id(site)
+                blocked = _unfixed_feeder(work, report, slots, accepted, id(site), upfront=True)
+                if blocked:
+                    # Not rewritten against a base that is still broken.
+                    result = SiteResult(site=site, status=SiteStatus.NEEDS_HUMAN, error=blocked, why=blocked)
+                else:
+                    result = _apply_one(moved, work, client, report, sink=sink) if moved else None
+                slots[id(site)] = len(report.results)
+                report.results.append(result or SiteResult(site=site, status=SiteStatus.SKIPPED, why="line rewritten by an earlier fix in this file"))
+                if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
+                    accepted[id(site)] = sink
+                _checkpoint(config, report)
+            if stop.requested:
+                # Skip the suite retest: wall clock is gone; keep what we have.
+                early = "tests couldn't run: apply stopped early (timeout or interrupt)"
+                report.suite_blocked = report.suite_blocked or early
+                for key in list(accepted):
+                    done = report.results[slots[key]]
+                    if done.status in {
+                        SiteStatus.FIXED_UNVERIFIED,
+                        SiteStatus.FIXED_VERIFIED,
+                        SiteStatus.FIXED_NOT_COVERED,
+                    }:
+                        why = done.why.strip() if done.why else ""
+                        report.results[slots[key]] = replace(
+                            done,
+                            status=SiteStatus.FIXED_TESTS_COULDNT_RUN,
+                            why=f"{early} The change: {why}" if why else early,
+                            error="",
+                        )
+                seen = {id(item.site) for item in report.results}
+                for site in ordered:
+                    if id(site) in seen:
+                        continue
+                    ranks.append(rank[id(site)])
+                    report.results.append(
+                        SiteResult(site=site, status=SiteStatus.SKIPPED, why=early)
+                    )
+                if len(ranks) == len(report.results):
+                    report.results[:] = [
+                        item for _rank, item in sorted(zip(ranks, report.results), key=lambda pair: pair[0])
+                    ]
+                return
+            _retry_routed(work, client, report, originals, texts_of, slots)
+            _drop_traced_reads(work, report, originals, texts_of, slots)
+            _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client)
+            _record_test_refs(selected, scratch, report, config)
+            failure = ""
+            stashed: dict[str, str] = {}
+            checked_flakes = False
+            for _round in range(config.settings.max_attempts + 1):
+                ok, output = _check(config, scratch, report, lines)
+                if ok or not accepted:
+                    failure = "" if ok else output
+                    break
+                failure = output
+                if not checked_flakes:
+                    checked_flakes = True
+                    if _clear_flakes(config, scratch, report):
+                        failure = ""
+                        break
+                # A site the recheck held back still has its old code, so a removed
+                # name stays imported and the module cannot load. That is not a
+                # failure of the other rewrites: keep them, and do not call the ones
+                # in that module verified.
+                if _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
                     failure = ""
                     break
-            # A site the recheck held back still has its old code, so a removed
-            # name stays imported and the module cannot load. That is not a
-            # failure of the other rewrites: keep them, and do not call the ones
-            # in that module verified.
-            if _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
-                failure = ""
-                break
-            # Collection error that is not caused by any accepted rewrite (the
-            # bumped tree cannot collect, or an unfixed site elsewhere still
-            # breaks import): keep the rewrites and record that the suite
-            # could not run. Never blame the only rewrite for a collection
-            # failure the bump already causes.
-            if _collection_error(output) and _suite_blocked_by_bump(
-                config, scratch, report, originals, accepted, output
-            ):
-                failure = ""
-                break
-            # An empty blame used to stand for every accepted rewrite, so one
-            # unlocated failure reverted the batch. Leave them in place and
-            # separate the cause after the retries.
-            blamed = _blame(output, scratch, accepted)
-            # Collection errors: every call site in a named file must move
-            # together, so a file is never left half-migrated.
-            if blamed and _collection_error(output):
-                blamed = _sites_in_same_files(blamed, accepted)
-            others_failed = any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
-            if not blamed and len(accepted) == 1 and not others_failed and not _collection_error(output):
-                # The only rewrite is the only place the failure can sit.
-                # Collection errors are handled above: do not pin them on the
-                # lone rewrite when the suite cannot load.
-                blamed = list(accepted)
-            if not blamed or _round == config.settings.max_attempts:
-                break
-            for key in blamed:
-                sink = accepted.pop(key)
-                site = sink["site"]
-                _rebuild(scratch, originals, accepted, texts_of, site.path)
-                moved = _relocate(scratch, site, texts_of[key])
-                note = trim_test_feedback(output)
-                retry_sink: dict[str, Any] = {"site": site}
-                result = None
-                used = report.results[slots[key]].attempts
-                routes.key = key
-                if moved is not None and used < config.settings.max_attempts and sink.get("tokens", 0) < config.settings.max_tokens_per_site:
-                    feedback = (
-                        "Your previous rewrite passed the static check but the tests failed:\n"
-                        f"{sink.get('block', '')}\nTest output:\n{note}"
-                    )
-                    result = _apply_one(moved, work, client, report, feedback=feedback, spent=sink.get("tokens", 0), used=used, sink=retry_sink)
-                if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
-                    accepted[key] = retry_sink
-                    report.results[slots[key]] = result
-                else:
+                # Collection error that is not caused by any accepted rewrite (the
+                # bumped tree cannot collect, or an unfixed site elsewhere still
+                # breaks import): keep the rewrites and record that the suite
+                # could not run. Never blame the only rewrite for a collection
+                # failure the bump already causes.
+                if _collection_error(output) and _suite_blocked_by_bump(
+                    config, scratch, report, originals, accepted, output
+                ):
+                    failure = ""
+                    break
+                # An empty blame used to stand for every accepted rewrite, so one
+                # unlocated failure reverted the batch. Leave them in place and
+                # separate the cause after the retries.
+                blamed = _blame(output, scratch, accepted)
+                # Collection errors: every call site in a named file must move
+                # together, so a file is never left half-migrated.
+                if blamed and _collection_error(output):
+                    blamed = _sites_in_same_files(blamed, accepted)
+                others_failed = any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
+                if not blamed and len(accepted) == 1 and not others_failed and not _collection_error(output):
+                    # The only rewrite is the only place the failure can sit.
+                    # Collection errors are handled above: do not pin them on the
+                    # lone rewrite when the suite cannot load.
+                    blamed = list(accepted)
+                if not blamed or _round == config.settings.max_attempts:
+                    break
+                for key in blamed:
+                    sink = accepted.pop(key)
+                    site = sink["site"]
                     _rebuild(scratch, originals, accepted, texts_of, site.path)
-                    report.results[slots[key]] = _reverted(result or report.results[slots[key]], site, note)
+                    moved = _relocate(scratch, site, texts_of[key])
+                    note = trim_test_feedback(output)
+                    retry_sink: dict[str, Any] = {"site": site}
+                    result = None
+                    used = report.results[slots[key]].attempts
+                    routes.key = key
+                    if moved is not None and used < config.settings.max_attempts and sink.get("tokens", 0) < config.settings.max_tokens_per_site:
+                        feedback = (
+                            "Your previous rewrite passed the static check but the tests failed:\n"
+                            f"{sink.get('block', '')}\nTest output:\n{note}"
+                        )
+                        result = _apply_one(moved, work, client, report, feedback=feedback, spent=sink.get("tokens", 0), used=used, sink=retry_sink)
+                    if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
+                        accepted[key] = retry_sink
+                        report.results[slots[key]] = result
+                    else:
+                        _rebuild(scratch, originals, accepted, texts_of, site.path)
+                        report.results[slots[key]] = _reverted(result or report.results[slots[key]], site, note)
+                _retry_routed(work, client, report, originals, texts_of, slots)
             _retry_routed(work, client, report, originals, texts_of, slots)
-        _retry_routed(work, client, report, originals, texts_of, slots)
-        _drop_traced_reads(work, report, originals, texts_of, slots)
-        if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted and not failure:
-            ok, output = _check(config, scratch, report, lines)
-            failure = "" if ok else output
-            if failure and _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
-                failure = ""
-        if failure and accepted and _collection_error(failure):
-            # Collection failures are not dropped via blame: if the bumped tree
-            # (or unfixed sites elsewhere) still cannot collect, keep the
-            # rewrites and mark them "tests couldn't run".
-            if _suite_blocked_by_bump(config, scratch, report, originals, accepted, failure):
-                failure = ""
-        if failure and accepted:
-            blamed = _blame(failure, scratch, accepted)
-            if blamed and _collection_error(failure):
-                blamed = _sites_in_same_files(blamed, accepted)
-            if blamed and not _collection_error(failure):
-                # These were retried above and the failure still names them.
-                _drop_sites(scratch, originals, accepted, texts_of, slots, report, blamed, failure)
-                ok, output = _check(config, scratch, report, lines) if accepted else (True, "")
-                if ok and accepted and _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted:
-                    # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
-                    ok, output = _check(config, scratch, report, lines)
+            _drop_traced_reads(work, report, originals, texts_of, slots)
+            if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted and not failure:
+                ok, output = _check(config, scratch, report, lines)
                 failure = "" if ok else output
-            elif blamed and _collection_error(failure):
-                # Still a collection error after the bump check: separate without
-                # treating collection as a normal test failure to drop.
-                pass
+                if failure and _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
+                    failure = ""
+            if failure and accepted and _collection_error(failure):
+                # Collection failures are not dropped via blame: if the bumped tree
+                # (or unfixed sites elsewhere) still cannot collect, keep the
+                # rewrites and mark them "tests couldn't run".
+                if _suite_blocked_by_bump(config, scratch, report, originals, accepted, failure):
+                    failure = ""
             if failure and accepted:
-                # A held-back site, or a failure the traceback does not locate,
-                # must not take the other rewrites with it.
-                failure = _separate_failures(
-                    config, scratch, report, lines, originals, texts_of, slots, accepted, failure
-                )
-        _record_test_refs(selected, scratch, report, config)
-        if failure and _collection_error(failure):
-            report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
-            # Keep remaining accepted rewrites: the suite could not run, so they
-            # are not verified and not silently reverted.
-            failure = ""
-        for path, text in stashed.items():
-            _write_file(scratch, path, text)
-        if accepted and not failure:
-            report.trace_note = _cover(config, scratch, lines)
-        for key in accepted:
-            done = report.results[slots[key]]
-            hold = accepted[key].get("hold")
-            if hold:
-                report.results[slots[key]] = replace(done, status=SiteStatus.NEEDS_HUMAN, error=hold, why=hold)
-                continue
-            why = _why_when_uncalled(accepted, key) or done.why
-            site = accepted[key]["site"]
-            note = lines.gaps.get(site.path, "")
-            review = _review_drops(originals.get(site.path, ""), _read(scratch / site.path), site.line)
-            kw = [name for name in (done.dropped or []) if repr(name) not in (review or "")]
-            if kw:
-                shown = ", ".join(repr(name) for name in kw)
-                review = f"{review}, {shown}" if review else f"drops {shown}"
-            if review and why and why not in review:
-                review = f"{review} {why}"
-            if review:
-                # Data the original call passed does not reach the new call.
-                # Tests can still pass. Never call that verified.
-                if note and note not in review:
-                    review = f"{review} {note}"
-                report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_NEEDS_REVIEW, why=review, error="")
-                continue
-            blocked = _tests_couldnt_run_why(report, lines, site.path, why)
-            if blocked:
-                # Suite broken by the bump (collection/import): never "verified"
-                # and never the quieter "not covered by tests".
-                report.results[slots[key]] = replace(
-                    done, status=SiteStatus.FIXED_TESTS_COULDNT_RUN, why=blocked, error=""
-                )
-                continue
-            unproven = _uncovered_why(lines.last, site.path, originals[site.path], accepted[key].get("block", ""), why)
-            if unproven:
-                # The tests pass, but none of them runs this rewrite: never "verified".
-                if note and note not in unproven:
-                    unproven = f"{unproven} {note}"
-                report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_NOT_COVERED, why=unproven)
-                continue
-            if note and note not in why:
-                why = f"{why} {note}".strip()
-            report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_VERIFIED, why=why)
-        for path, before in originals.items():
-            after = _read(scratch / path)
+                blamed = _blame(failure, scratch, accepted)
+                if blamed and _collection_error(failure):
+                    blamed = _sites_in_same_files(blamed, accepted)
+                if blamed and not _collection_error(failure):
+                    # These were retried above and the failure still names them.
+                    _drop_sites(scratch, originals, accepted, texts_of, slots, report, blamed, failure)
+                    ok, output = _check(config, scratch, report, lines) if accepted else (True, "")
+                    if ok and accepted and _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted:
+                        # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
+                        ok, output = _check(config, scratch, report, lines)
+                    failure = "" if ok else output
+                elif blamed and _collection_error(failure):
+                    # Still a collection error after the bump check: separate without
+                    # treating collection as a normal test failure to drop.
+                    pass
+                if failure and accepted:
+                    # A held-back site, or a failure the traceback does not locate,
+                    # must not take the other rewrites with it.
+                    failure = _separate_failures(
+                        config, scratch, report, lines, originals, texts_of, slots, accepted, failure
+                    )
+            _record_test_refs(selected, scratch, report, config)
+            if failure and _collection_error(failure):
+                report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
+                # Keep remaining accepted rewrites: the suite could not run, so they
+                # are not verified and not silently reverted.
+                failure = ""
+            for path, text in stashed.items():
+                _write_file(scratch, path, text)
+            if accepted and not failure:
+                report.trace_note = _cover(config, scratch, lines)
             for key in accepted:
-                if report.results[slots[key]].site.path == path:
-                    report.results[slots[key]].diff = unified_diff_for(path, before, after)
-            if config.write and after != before:
-                _write_file(config.root, path, after)
-        if len(ranks) == len(report.results):
-            report.results[:] = [item for _rank, item in sorted(zip(ranks, report.results), key=lambda pair: pair[0])]
+                done = report.results[slots[key]]
+                hold = accepted[key].get("hold")
+                if hold:
+                    report.results[slots[key]] = replace(done, status=SiteStatus.NEEDS_HUMAN, error=hold, why=hold)
+                    continue
+                why = _why_when_uncalled(accepted, key) or done.why
+                site = accepted[key]["site"]
+                note = lines.gaps.get(site.path, "")
+                review = _review_drops(originals.get(site.path, ""), _read(scratch / site.path), site.line)
+                kw = [name for name in (done.dropped or []) if repr(name) not in (review or "")]
+                if kw:
+                    shown = ", ".join(repr(name) for name in kw)
+                    review = f"{review}, {shown}" if review else f"drops {shown}"
+                if review and why and why not in review:
+                    review = f"{review} {why}"
+                if review:
+                    # Data the original call passed does not reach the new call.
+                    # Tests can still pass. Never call that verified.
+                    if note and note not in review:
+                        review = f"{review} {note}"
+                    report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_NEEDS_REVIEW, why=review, error="")
+                    continue
+                blocked = _tests_couldnt_run_why(report, lines, site.path, why)
+                if blocked:
+                    # Suite broken by the bump (collection/import): never "verified"
+                    # and never the quieter "not covered by tests".
+                    report.results[slots[key]] = replace(
+                        done, status=SiteStatus.FIXED_TESTS_COULDNT_RUN, why=blocked, error=""
+                    )
+                    continue
+                unproven = _uncovered_why(lines.last, site.path, originals[site.path], accepted[key].get("block", ""), why)
+                if unproven:
+                    # The tests pass, but none of them runs this rewrite: never "verified".
+                    if note and note not in unproven:
+                        unproven = f"{unproven} {note}"
+                    report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_NOT_COVERED, why=unproven)
+                    continue
+                if note and note not in why:
+                    why = f"{why} {note}".strip()
+                report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_VERIFIED, why=why)
+            for path, before in originals.items():
+                after = _read(scratch / path)
+                for key in accepted:
+                    if report.results[slots[key]].site.path == path:
+                        report.results[slots[key]].diff = unified_diff_for(path, before, after)
+                if config.write and after != before:
+                    _write_file(config.root, path, after)
+            if len(ranks) == len(report.results):
+                report.results[:] = [item for _rank, item in sorted(zip(ranks, report.results), key=lambda pair: pair[0])]
+
 
 
 _SCRATCH_IGNORE = (".git", ".venv", "venv", "__pycache__", ".pytest_cache", "node_modules")
@@ -2772,3 +2781,6 @@ def _write_file(root: Path, rel: str, content: str) -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+    index = current_index()
+    if index is not None and index.root == root.resolve():
+        index.update(rel, content)

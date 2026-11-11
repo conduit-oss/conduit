@@ -131,11 +131,20 @@ def example_calls(ns: Namespace, root: Path, item: dict, *, limit: int = 2) -> l
     skip = (item.get("path") or "", int(item.get("line") or 0))
     hits: list[tuple[str, int, str]] = []
     seen: set[int] = set()
-    for file in sorted(root.rglob("*.py")):
-        rel = file.relative_to(root).as_posix()
-        if any(part in _SKIP_DIRS or part.startswith(".") for part in rel.split("/")[:-1]):
-            continue
-        module = module_name(rel)
+    from conduit.apply.repoindex import current_index
+
+    index = current_index()
+    if index is not None:
+        rels = index.iter_rels()
+    else:
+        rels = []
+        for file in sorted(root.rglob("*.py")):
+            rel = file.relative_to(root).as_posix()
+            if any(part in _SKIP_DIRS or part.startswith(".") for part in rel.split("/")[:-1]):
+                continue
+            rels.append(rel)
+    for rel in rels:
+        module = next((name for name in _names_for(rel) if name in ns.modules), module_name(rel))
         tree = ns.modules.get(module)
         if tree is None or id(tree) in seen or not ns.is_local(module):
             continue
