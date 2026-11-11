@@ -512,7 +512,9 @@ def _apply_batch(
             for path, text in stashed.items():
                 _write_file(scratch, path, text)
             if accepted and not failure:
-                report.trace_note = _cover(config, scratch, lines)
+                # Cover may still see collection errors under continue-on-collection-errors;
+                # _cover sets suite_blocked so nothing is promoted to verified.
+                report.trace_note = _cover(config, scratch, lines, report)
             for key in accepted:
                 done = report.results[slots[key]]
                 hold = accepted[key].get("hold")
@@ -622,7 +624,15 @@ def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Line
         report.preexisting = verdict.preexisting
         report.missing = list(verdict.missing)
         report.new_failures = verdict.new + verdict.missing
-        ok, output = verdict.passed, ("" if verdict.passed else focus(run, verdict))
+        ok = verdict.passed
+        if ok:
+            output = ""
+        elif verdict.new or verdict.missing:
+            # Keep ERROR collecting / import text when focus would only list
+            # preexisting nodes — suite_blocked detection needs those tokens.
+            output = focus(run, verdict) or run.output or "tests failed"
+        else:
+            output = run.output or "tests failed"
     if not ok and not output:
         # A failing command that prints nothing is still a failure. An empty
         # string would skip the separation step and keep every rewrite.
@@ -630,26 +640,35 @@ def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Line
     return ok, output
 
 
-def _cover(config: ApplyConfig, scratch: Path, lines: _Lines) -> str:
+def _cover(config: ApplyConfig, scratch: Path, lines: _Lines, report: ApplyReport | None = None) -> str:
     """Record executed lines. Whether tests passed here does not matter.
 
     The record is what decides verified or not covered. A note is returned only
     when that record is missing or a rewritten module failed to load, so its
     lines were never written. A test that fails only because the tracer slowed
-    it does not produce a note."""
+    it does not produce a note. If this run still cannot collect the suite,
+    mark ``suite_blocked`` so no site can be promoted to verified.
+    """
     if not config.test_cmd or not lines.paths:
         return ""
     env = dict(os.environ)
     output = ""
     outcomes: dict[str, str] = {}
+    exit_code: int | None = None
     with recording(scratch, lines.paths, env) as record:
         if config.baseline is None:
             _ok, output = _run_cmd(config.test_cmd, scratch, env)
+            exit_code = 0 if _ok else 1
         else:
             run = run_tests(config.test_cmd, scratch, env)
             output = run.output
             outcomes = run.outcomes
-    record.tests_ran = _lines_usable(outcomes, output)
+            exit_code = run.exit_code
+    if report is not None and suite_couldnt_run(output=output, exit_code=exit_code):
+        report.suite_blocked = report.suite_blocked or _suite_blocked_why(output, report)
+        record.tests_ran = False
+    else:
+        record.tests_ran = _lines_usable(outcomes, output)
     lines.last = record
     lines.gaps = _trace_gaps(record, output, lines.paths)
     return " ".join(dict.fromkeys(lines.gaps.values()))
@@ -2772,7 +2791,7 @@ def _run_tests(
             )
         output = (proc.stdout or "") + (proc.stderr or "")
         record.tests_ran = tests_ran({}, output)
-        if proc.returncode == 0:
+        if proc.returncode == 0 and not suite_couldnt_run(output=output, exit_code=proc.returncode):
             return True, "", record
         return False, output.strip() or f"test command exited {proc.returncode}", None
 
