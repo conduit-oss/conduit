@@ -149,6 +149,10 @@ class ApplyReport:
     suite_blocked: str = ""
     #: Test files that still import, patch, or mock a removed symbol (file, line, symbol).
     test_refs: list[dict[str, Any]] = field(default_factory=list)
+    #: Invented target-version import / module-path names ``name_breaks`` caught.
+    invented_names_caught: int = 0
+    #: Corrective model retries triggered by invented-name findings.
+    name_check_retries: int = 0
 
     @property
     def preexisting_note(self) -> str:
@@ -163,6 +167,9 @@ class ApplyReport:
                 for status in SiteStatus
             },
         }
+        # Totals the eval harness counts; kept off the frozen top-level key set.
+        data["summary"]["invented_names_caught"] = self.invented_names_caught
+        data["summary"]["name_check_retries"] = self.name_check_retries
         if self.model_calls:
             data["model_calls"] = [dict(item) for item in self.model_calls]
         if self.preexisting is not None:
@@ -419,29 +426,25 @@ def _apply_batch(
                 if _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
                     failure = ""
                     break
-                # Collection error that is not caused by any accepted rewrite (the
-                # bumped tree cannot collect, or an unfixed site elsewhere still
-                # breaks import): keep the rewrites and record that the suite
-                # could not run. Never blame the only rewrite for a collection
-                # failure the bump already causes.
-                if _collection_error(output) and _suite_blocked_by_bump(
-                    config, scratch, report, originals, accepted, output
-                ):
+                # Suite could not collect/run (collection, ImportError tokens,
+                # crashes, empty suite). Keep accepted rewrites as
+                # FIXED_TESTS_COULDNT_RUN — never model-retry or mass-revert here.
+                # a7fbeb8 made judge fail these cases (closing false-verified);
+                # salvage used to re-prompt every site and empty the diff.
+                if _collection_error(output):
+                    _suite_blocked_by_bump(
+                        config, scratch, report, originals, accepted, output
+                    )
+                    report.suite_blocked = report.suite_blocked or _suite_blocked_why(output, report)
                     failure = ""
                     break
                 # An empty blame used to stand for every accepted rewrite, so one
                 # unlocated failure reverted the batch. Leave them in place and
                 # separate the cause after the retries.
                 blamed = _blame(output, scratch, accepted)
-                # Collection errors: every call site in a named file must move
-                # together, so a file is never left half-migrated.
-                if blamed and _collection_error(output):
-                    blamed = _sites_in_same_files(blamed, accepted)
                 others_failed = any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
-                if not blamed and len(accepted) == 1 and not others_failed and not _collection_error(output):
+                if not blamed and len(accepted) == 1 and not others_failed:
                     # The only rewrite is the only place the failure can sit.
-                    # Collection errors are handled above: do not pin them on the
-                    # lone rewrite when the suite cannot load.
                     blamed = list(accepted)
                 if not blamed or _round == config.settings.max_attempts:
                     break
@@ -476,16 +479,16 @@ def _apply_batch(
                 if failure and _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
                     failure = ""
             if failure and accepted and _collection_error(failure):
-                # Collection failures are not dropped via blame: if the bumped tree
-                # (or unfixed sites elsewhere) still cannot collect, keep the
-                # rewrites and mark them "tests couldn't run".
-                if _suite_blocked_by_bump(config, scratch, report, originals, accepted, failure):
-                    failure = ""
+                # Never mass-revert or model-retry when the suite could not run:
+                # keep compiling rewrites and mark them tests-couldn't-run.
+                _suite_blocked_by_bump(
+                    config, scratch, report, originals, accepted, failure
+                )
+                report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
+                failure = ""
             if failure and accepted:
                 blamed = _blame(failure, scratch, accepted)
-                if blamed and _collection_error(failure):
-                    blamed = _sites_in_same_files(blamed, accepted)
-                if blamed and not _collection_error(failure):
+                if blamed:
                     # These were retried above and the failure still names them.
                     _drop_sites(scratch, originals, accepted, texts_of, slots, report, blamed, failure)
                     ok, output = _check(config, scratch, report, lines) if accepted else (True, "")
@@ -493,13 +496,11 @@ def _apply_batch(
                         # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
                         ok, output = _check(config, scratch, report, lines)
                     failure = "" if ok else output
-                elif blamed and _collection_error(failure):
-                    # Still a collection error after the bump check: separate without
-                    # treating collection as a normal test failure to drop.
-                    pass
-                if failure and accepted:
+                if failure and accepted and not _collection_error(failure):
                     # A held-back site, or a failure the traceback does not locate,
-                    # must not take the other rewrites with it.
+                    # must not take the other rewrites with it. Collection-shaped
+                    # failures are handled above and must not reach bisection that
+                    # empties every accepted edit.
                     failure = _separate_failures(
                         config, scratch, report, lines, originals, texts_of, slots, accepted, failure
                     )
@@ -1111,12 +1112,40 @@ def _import_failure_only(output: str) -> bool:
 
 
 def _collection_error(output: str, *, exit_code: int | None = None) -> bool:
-    """True when the suite could not collect or run (never a verified pass).
+    """True when the suite failed to collect or execute as a suite.
 
-    Includes import/collection failures, interpreter crashes, timeouts, and
-    pytest "no tests collected" / usage exits — see ``suite_couldnt_run``.
+    Used to keep accepted rewrites (mark ``FIXED_TESTS_COULDNT_RUN``) instead of
+    model-retrying and mass-reverting. Broader than a single test's ImportError
+    traceback: a runtime ImportError inside one test still goes through normal
+    salvage. ``suite_couldnt_run`` remains the never-verify gate in ``judge``.
     """
-    return suite_couldnt_run(output=output or "", exit_code=exit_code)
+    text = output or ""
+    if exit_code in {2, 3, 4, 5}:
+        return True
+    tokens = (
+        "ERROR collecting",
+        "no tests collected",
+        "collected 0 items",
+        "Fatal Python error",
+        "Segmentation fault",
+        "Traceback (most recent call last):\nKeyboardInterrupt",
+        "TimeoutError",
+        " timed out",
+        "TimeoutExpired",
+        "signal.SIGTERM",
+        "Killed",
+    )
+    if any(token in text for token in tokens):
+        return True
+    # Module-level load failures that prevent the suite from starting, not a
+    # single test's ``raise ImportError`` assertion path.
+    if "ERROR collecting" in text:
+        return True
+    if re.search(r"(?m)^(E\s+)?(ImportError|ModuleNotFoundError):", text) and (
+        "ERROR collecting" in text or "during collection" in text.lower()
+    ):
+        return True
+    return False
 
 
 def _suite_blocked_by_bump(
@@ -1387,11 +1416,13 @@ def _apply_one(
     pack.connected = _connected(config, site, pack)
     pack.removed_name_uses = _with_received_types(config, site, pack.removed_name_uses)
     pack.producer_rewrites = _producer_rewrites(config, pack)
+    _attach_grounded_names(config, site, pack)
 
     last_error = ""
     last_diff = ""
     earlier: list[str] = []
     mismatched: set[tuple[str, str, str]] = set()
+    name_retried = False
     attempts = used
     site_tokens = spent
     sink = sink if sink is not None else {}
@@ -1477,6 +1508,16 @@ def _apply_one(
             )
         except RecheckError as exc:
             last_error = str(exc)
+            name_hits = _name_findings(exc.findings)
+            if name_hits:
+                report.invented_names_caught += len(name_hits)
+                if name_retried:
+                    # Invented SDK names already got one corrective attempt with the
+                    # concrete missing name and nearby candidates; hand off.
+                    last_error = "SDK name still missing after one retry: " + last_error
+                    break
+                name_retried = True
+                report.name_check_retries += 1
             repeated = _type_mismatches(exc.findings) & mismatched
             if repeated:
                 # A plain type mismatch was already explained once: a further
@@ -2651,6 +2692,52 @@ _MAX_REQUIRES = 2
 _MISMATCH = re.compile(r"^(?P<path>\S+?):\d+ .*?: (?P<kw>\w+)= passes .*? but (?P<owner>[\w.]+) in ")
 #: A dict-key finding (see ``dictkeys.render``); it shares the shape above.
 _KEYED = re.compile(r"= passes a dict with keys .*? reads keys: required ")
+
+
+def _name_findings(findings: list[str]) -> list[str]:
+    """Findings from ``names.name_breaks`` (invented imports / module paths)."""
+    from conduit.apply.names import DOES_NOT_EXIST
+
+    return [text for text in findings if text and DOES_NOT_EXIST in text]
+
+
+def _attach_grounded_names(config: ApplyConfig, site: ImpactSite, pack: ContextPack) -> None:
+    """Put a short list of real target-version names into the context pack."""
+    if not config.recheck_impact:
+        return
+    try:
+        wheel = new_release_wheel(
+            site.dependency,
+            site.to_version,
+            fixtures=config.fixtures,
+            allow_network=config.allow_network,
+        )
+        if wheel is None:
+            return
+        from conduit.apply.names import ground_candidates, merge_candidates
+
+        modules = _modules(str(wheel))
+        hints = [
+            site.symbol,
+            site.expr,
+            site.old_signature,
+            site.new_signature,
+            site.change,
+        ]
+        call_kwargs = list(pack.release_diff.get("call_kwargs") or [])
+        grounded = ground_candidates(
+            modules,
+            package=site.dependency or "",
+            hints=hints,
+            call_kwargs=call_kwargs,
+        )
+        merged = merge_candidates(pack.candidates, grounded)
+        if not merged:
+            return
+        pack.candidates = merged
+        pack.release_diff["candidates"] = merged
+    except Exception:  # noqa: BLE001 — grounding is best-effort; never blocks a fix
+        return
 
 
 def _type_mismatches(findings: list[str]) -> set[tuple[str, str, str]]:

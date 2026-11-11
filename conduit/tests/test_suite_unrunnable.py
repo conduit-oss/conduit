@@ -102,6 +102,10 @@ def test_judge_never_passes_collection_error_with_usable_baseline():
     verdict = judge(run, base)
     assert not verdict.passed
     assert verdict.preexisting == ["checks/test_pre.py::test_b"]
+    # Preexisting collection nodes must not be listed as new failures (that made
+    # salvage treat bump-only breakage as rewrite-caused).
+    assert verdict.new == ["(test command)"]
+    assert "checks/test_pre.py::test_b" not in verdict.new
 
 
 def test_collection_error_keeps_rewrite_but_never_verified(tmp_path: Path):
@@ -236,6 +240,112 @@ def test_scoped_site_ok_but_full_suite_collection_error_never_verified(tmp_path:
     assert result.status != SiteStatus.FIXED_VERIFIED, (result.status, result.error, result.why)
     assert result.status == SiteStatus.FIXED_TESTS_COULDNT_RUN, (result.status, result.error, result.why)
     assert report.suite_blocked
+
+
+def test_collection_error_keeps_edits_never_verified_exit_friendly(tmp_path: Path):
+    """Collection error after a7fbeb8 must keep compiling edits (not empty the diff).
+
+    Made-up package only. The suite cannot collect because a bumped symbol is
+    gone from tests; the rewrite itself is fine and must stay as
+    FIXED_TESTS_COULDNT_RUN with a non-empty file change.
+    """
+    root = tmp_path / "app"
+    _client(root)
+    _write(root / "good.py", "def fine(client):\n    return client.old_call(1)\n")
+    _write(root / "crate" / "__init__.py", "class Present:\n    pass\n")
+    _write(
+        root / "checks" / "test_ok.py",
+        """\
+        import good
+        from support import Client
+
+        def test_fine():
+            assert good.fine(Client()) == 1
+        """,
+    )
+    _write(
+        root / "checks" / "test_broken.py",
+        "from crate import Present\n\ndef test_x():\n    assert Present is not None\n",
+    )
+    baseline = record_baseline(PYTEST, root)
+    assert baseline.usable and not baseline.failing
+    _write(root / "crate" / "__init__.py", "class Other:\n    pass\n")
+    client = FakeModelClient(responses=[_edit("fine", "client.new_call(1)"), "why"])
+    report = apply_sites(
+        _sites(("good.py", 2, "client.old_call")),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=2),
+            write=True,
+            test_cmd=PYTEST,
+            client=client,
+            site_cleared=lambda *_a: True,
+            baseline=baseline,
+        ),
+    )
+    (result,) = report.results
+    text = (root / "good.py").read_text(encoding="utf-8")
+    assert "new_call(1)" in text
+    assert result.diff and "new_call" in result.diff
+    assert result.status == SiteStatus.FIXED_TESTS_COULDNT_RUN, (result.status, result.error, result.why)
+    assert result.status != SiteStatus.FIXED_VERIFIED
+    assert report.suite_blocked
+    # No model retry storm: one propose + one summarize.
+    assert len(client.calls) == 2
+
+
+def test_one_bad_site_reverted_while_good_site_kept(tmp_path: Path):
+    """Assertion failure on one rewrite reverts only that site; the other stays."""
+    root = tmp_path / "app"
+    _client(root)
+    _write(root / "good.py", "def fine(client):\n    return client.old_call(1)\n")
+    _write(root / "bad.py", "def stuck(client):\n    return client.old_call(1)\n")
+    _write(
+        root / "checks" / "test_it.py",
+        """\
+        import good, bad
+        from support import Client
+
+        def test_fine():
+            assert good.fine(Client()) == 1
+
+        def test_stuck():
+            assert bad.stuck(Client()) == 1
+        """,
+    )
+    baseline = record_baseline(PYTEST, root)
+    assert baseline.usable and not baseline.failing
+    client = FakeModelClient(
+        responses=[
+            _edit("fine", "client.new_call(1)"),
+            "why",
+            _edit("stuck", "client.new_call(0)"),
+            "why",
+            _edit("stuck", "client.new_call(0)"),
+            _edit("stuck", "client.new_call(0)"),
+        ]
+    )
+    report = apply_sites(
+        _sites(("good.py", 2, "client.old_call"), ("bad.py", 2, "client.old_call")),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=2),
+            write=True,
+            test_cmd=PYTEST,
+            client=client,
+            site_cleared=lambda *_a: True,
+            baseline=baseline,
+        ),
+    )
+    by_path = {item.site.path: item for item in report.results}
+    fine, stuck = by_path["good.py"], by_path["bad.py"]
+    assert "new_call(1)" in (root / "good.py").read_text(encoding="utf-8")
+    assert "old_call(1)" in (root / "bad.py").read_text(encoding="utf-8")
+    assert fine.status == SiteStatus.FIXED_VERIFIED, (fine.status, fine.error, fine.why)
+    assert stuck.status == SiteStatus.NEEDS_HUMAN
+    assert "reverted" in (stuck.error or "")
+    assert not report.suite_blocked
+    assert fine.diff and "new_call" in fine.diff
 
 
 def test_partial_out_is_written_after_each_site(tmp_path: Path):

@@ -277,12 +277,12 @@ def judge(run: TestRun, baseline: Baseline | None) -> Verdict:
                 for test, outcome in baseline.outcomes.items()
                 if outcome == "passed" and test not in run.outcomes
             )
-        return Verdict(
-            False,
-            new or run.failing or ["(test command)"],
-            preexisting,
-            missing,
-        )
+        # Do not promote preexisting nodes into ``new`` via ``new or run.failing``:
+        # that made bump-only collection errors look rewrite-caused in salvage.
+        failure_ids = list(new)
+        if not failure_ids and not missing:
+            failure_ids = ["(test command)"]
+        return Verdict(False, failure_ids, preexisting, missing)
     if run.ok and not run.failing:
         return Verdict(True, [], [], [])
     if baseline is None or not baseline.usable or run.source == "exit-code":

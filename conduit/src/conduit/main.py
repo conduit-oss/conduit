@@ -431,7 +431,13 @@ def apply_cmd(
     needs_human = any(
         item.status.value == "needs-human" for item in report.results
     )
-    raise typer.Exit(1 if needs_human and not dry_run else 0)
+    # Suite-blocked runs keep compiling edits as "tests couldn't run" and must
+    # not fail the process: exit 1 is for a real apply crash, not an unrunnable
+    # target suite. Individual needs-human still fails the process when the
+    # suite itself could run.
+    if needs_human and not dry_run and not report.suite_blocked:
+        raise typer.Exit(1)
+    raise typer.Exit(0)
 
 
 @app.command("baseline")
