@@ -72,6 +72,38 @@ def test_judge_never_passes_when_suite_couldnt_run():
     assert not verdict.passed
 
 
+def test_judge_never_passes_collection_error_with_usable_baseline():
+    """Hole: continue-on-collection-errors left some tests green; baseline usable.
+
+    Collection errors that only touch nodes already failing on the base used to
+    make judge return passed=True. Verified status must never follow from that.
+    """
+    from conduit.apply.testrun import Baseline
+
+    base = Baseline(
+        command="cmd",
+        exit_code=1,
+        source="junit",
+        outcomes={
+            "checks/test_ok.py::test_a": "passed",
+            "checks/test_pre.py::test_b": "failed",
+        },
+    )
+    run = TestRun(
+        exit_code=2,
+        output="ERROR collecting checks/test_pre.py\nImportError: boom\n1 passed",
+        outcomes={
+            "checks/test_ok.py::test_a": "passed",
+            "checks/test_pre.py::test_b": "error",
+        },
+        source="junit",
+    )
+    assert suite_couldnt_run(run)
+    verdict = judge(run, base)
+    assert not verdict.passed
+    assert verdict.preexisting == ["checks/test_pre.py::test_b"]
+
+
 def test_collection_error_keeps_rewrite_but_never_verified(tmp_path: Path):
     root = tmp_path / "app"
     _write(root / "crate" / "__init__.py", "class Present:\n    pass\n")
@@ -140,6 +172,70 @@ def test_no_tests_collected_is_not_verified(tmp_path: Path):
         SiteStatus.NEEDS_HUMAN,
         SiteStatus.FIXED_NOT_COVERED,
     }
+
+
+def test_scoped_site_ok_but_full_suite_collection_error_never_verified(tmp_path: Path):
+    """Static per-site check passes; full post-apply suite has a collection error.
+
+    Some other tests still pass under continue-on-collection-errors. The rewrite
+    must stay as tests-couldn't-run (never verified).
+    """
+    root = tmp_path / "app"
+    _client(root)
+    _write(root / "good.py", "def fine(client):\n    return client.old_call(1)\n")
+    _write(root / "crate" / "__init__.py", "class Present:\n    pass\n")
+    _write(
+        root / "checks" / "test_ok.py",
+        """\
+        import good
+        from support import Client
+
+        def test_fine():
+            assert good.fine(Client()) == 1
+        """,
+    )
+    # Already-failing test on the baseline (assertion). After the bump it fails
+    # at collection instead — the hole that used to look like "only preexisting".
+    _write(
+        root / "checks" / "test_pre.py",
+        """\
+        def test_pre():
+            assert False
+        """,
+    )
+    baseline = record_baseline(PYTEST, root)
+    assert baseline.usable
+    assert any(outcome == "failed" for outcome in baseline.outcomes.values())
+    # Bump: Present gone; test_pre now fails to import at collection.
+    _write(root / "crate" / "__init__.py", "class Other:\n    pass\n")
+    _write(
+        root / "checks" / "test_pre.py",
+        """\
+        from crate import Present
+
+        def test_pre():
+            assert Present is not None
+        """,
+    )
+    client = FakeModelClient(responses=[_edit("fine", "client.new_call(1)"), "why"])
+    report = apply_sites(
+        _sites(("good.py", 2, "client.old_call")),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            test_cmd=PYTEST,
+            client=client,
+            # Scoped static recheck succeeds; the failure is only at full suite.
+            site_cleared=lambda *_a: True,
+            baseline=baseline,
+        ),
+    )
+    (result,) = report.results
+    assert "new_call(1)" in (root / "good.py").read_text(encoding="utf-8")
+    assert result.status != SiteStatus.FIXED_VERIFIED, (result.status, result.error, result.why)
+    assert result.status == SiteStatus.FIXED_TESTS_COULDNT_RUN, (result.status, result.error, result.why)
+    assert report.suite_blocked
 
 
 def test_partial_out_is_written_after_each_site(tmp_path: Path):

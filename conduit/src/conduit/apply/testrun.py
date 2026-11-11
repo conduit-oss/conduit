@@ -259,21 +259,33 @@ def suite_couldnt_run(run: TestRun | None = None, *, output: str = "", exit_code
 def judge(run: TestRun, baseline: Baseline | None) -> Verdict:
     """Passed when nothing fails that did not already fail on the baseline.
 
-    Collection/crash/timeout/"no tests collected" still count as failure when
-    there is no usable baseline comparison (or the run has no per-test
-    outcomes). With a usable baseline, only *new* failures and missing tests
-    decide — intermediate bisection runs that fail to import a held-back module
-    must not permanently poison the batch. Final verification still refuses
-    "verified" via ``suite_blocked`` / ``FIXED_TESTS_COULDNT_RUN``.
+    Collection/crash/timeout/"no tests collected" never count as a pass — even
+    when ``--continue-on-collection-errors`` lets some other tests pass, and even
+    when the only errored nodes also failed on the baseline. A rewrite may only
+    be "verified" when the suite that checks it actually ran. Intermediate
+    bisection still uses ``new`` / ``missing`` / ``reproduces`` to avoid blaming
+    the wrong site; it must not treat a blocked suite as green.
     """
+    if suite_couldnt_run(run):
+        before = baseline.failing if baseline is not None and baseline.usable else set()
+        preexisting = [test for test in run.failing if test in before]
+        new = [test for test in run.failing if test not in before]
+        missing: list[str] = []
+        if baseline is not None and baseline.usable and run.source == "junit":
+            missing = sorted(
+                test
+                for test, outcome in baseline.outcomes.items()
+                if outcome == "passed" and test not in run.outcomes
+            )
+        return Verdict(
+            False,
+            new or run.failing or ["(test command)"],
+            preexisting,
+            missing,
+        )
     if run.ok and not run.failing:
-        if suite_couldnt_run(run) and not (run.outcomes and any(o == "passed" for o in run.outcomes.values())):
-            # Exit 0 with no real tests (or only a crash message) is not a pass.
-            return Verdict(False, run.failing or ["(test command)"], [], [])
         return Verdict(True, [], [], [])
     if baseline is None or not baseline.usable or run.source == "exit-code":
-        if suite_couldnt_run(run):
-            return Verdict(False, run.failing or ["(test command)"], [], [])
         return Verdict(run.ok, run.failing or ([] if run.ok else ["(test command)"]), [], [])
     before = baseline.failing
     preexisting = [test for test in run.failing if test in before]
@@ -283,11 +295,6 @@ def judge(run: TestRun, baseline: Baseline | None) -> Verdict:
         missing = sorted(
             test for test, outcome in baseline.outcomes.items() if outcome == "passed" and test not in run.outcomes
         )
-    # A suite that could not collect still fails when every "new" failure is a
-    # collection/import error (or nothing ran). Pre-existing failures alone do
-    # not make that a pass.
-    if suite_couldnt_run(run) and not any(o == "passed" for o in run.outcomes.values()):
-        return Verdict(False, new or run.failing or ["(test command)"], preexisting, missing)
     return Verdict(not new and not missing, new, preexisting, missing)
 
 
