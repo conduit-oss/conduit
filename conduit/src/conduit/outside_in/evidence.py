@@ -23,9 +23,11 @@ from urllib.request import Request, urlopen
 
 from conduit.outside_in.specs import ServiceSpec, normalize_dist
 
-_SCHEMA = 27
+_SCHEMA = 30
 _MAX_DEPTH = 4
 _MAX_BYTES = 40_000_000
+# Negative lookup / download outcomes (memory + disk under classify/schemaN).
+_NEGATIVE_MEMORY: dict[str, str] = {}
 # Verb names on an HTTP client. ``close`` is not one: connection objects
 # close without being HTTP libraries. ``options`` is not one either: drivers
 # name a method that and do not speak HTTP.
@@ -67,13 +69,23 @@ _STDLIB_IO = {
 _SKIP_PARTS = frozenset(
     {
         "benchmarks",
+        "build",
         "docs",
         "example",
         "examples",
+        "meson",
+        "mesonbuild",
+        "packaging",
         "scripts",
         "test",
         "testing",
         "tests",
+        "tooling",
+        "tools",
+        "unittests",
+        "vendor",
+        "vendored",
+        "vendored-meson",
     }
 )
 _RESERVED_TLDS = frozenset({"example", "invalid", "localhost", "test"})
@@ -101,7 +113,8 @@ _STOP_TOKENS = frozenset(
         "webhook",
     }
 )
-_MEMORY: dict[tuple[str, str], "Classification"] = {}
+#: Cache key is (name, version, "full"|"shallow"). Shallow and full results differ.
+_MEMORY: dict[tuple[str, str, str], "Classification"] = {}
 
 
 @dataclass(frozen=True)
@@ -169,9 +182,16 @@ class _Direct:
 
 
 def cache_dir() -> Path:
-    from conduit.analysis_cache import cache_root, cache_version
+    """Classify cache root keyed by ``_SCHEMA`` only.
 
-    path = cache_root() / "classify" / cache_version()
+    Other analysis caches use ``analysis_cache.cache_version()`` (source digest).
+    Classification already versions payloads with ``_SCHEMA``, so nesting under
+    the evidence.py content hash would drop the whole classify cache on every
+    edit of this file even when the schema is unchanged.
+    """
+    from conduit.analysis_cache import cache_root
+
+    path = cache_root() / "classify" / f"schema{_SCHEMA}"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -191,17 +211,24 @@ def classify_distribution(
     root: Path | None = None,
     depth: int = 0,
     stack: frozenset[str] | None = None,
+    recurse: bool = True,
 ) -> Classification:
-    """Classify one distribution. Cached per normalized name and version."""
+    """Classify one distribution. Cached per name, version, and recurse mode.
+
+    ``recurse=False`` scans this package's own code only and does not follow
+    ``requires`` into nested classifications. Linked delegate drivers from
+    this package's own call graph are still classified (shallowly).
+    """
     norm = normalize_dist(name)
     if not norm or norm == "python":
         return Classification(name=norm)
     seen = stack or frozenset()
     if norm in seen or depth > _MAX_DEPTH:
         return Classification(name=norm)
+    mode = "full" if recurse else "shallow"
     pinned = _concrete_version(version)
     if pinned:
-        hit = _cached(norm, pinned)
+        hit = _cached(norm, pinned, mode)
         if hit is not None:
             return hit
     local = _local_code(norm, pinned, root)
@@ -211,7 +238,7 @@ def classify_distribution(
     else:
         resolved = pinned or _pypi_version(norm) or ""
         if resolved:
-            hit = _cached(norm, resolved)
+            hit = _cached(norm, resolved, mode)
             if hit is not None:
                 return hit
         code = _local_code(norm, resolved, root) if resolved else None
@@ -220,7 +247,7 @@ def classify_distribution(
     if not resolved and code is not None:
         resolved = code.version
     if resolved:
-        hit = _cached(norm, resolved)
+        hit = _cached(norm, resolved, mode)
         if hit is not None:
             return hit
     if code is not None and code.source == "fixture":
@@ -231,8 +258,15 @@ def classify_distribution(
     if code is None:
         return Classification(name=norm, version=resolved)
     direct = _scan(code)
-    result = _finish(norm, direct, root=root, depth=depth, stack=seen | {norm})
-    key = (norm, result.version or resolved or "unresolved")
+    result = _finish(
+        norm,
+        direct,
+        root=root,
+        depth=depth,
+        stack=seen | {norm},
+        recurse=recurse,
+    )
+    key = (norm, result.version or resolved or "unresolved", mode)
     _MEMORY[key] = result
     if result.loaded:
         _write_disk(key, result)
@@ -252,8 +286,16 @@ def spec_for_distribution(
     return _as_spec(found)
 
 
-def specs_for_repo(root: Path) -> tuple[ServiceSpec, ...]:
-    """Services the repo imports or receives a webhook from, plus HTTP transports."""
+def specs_for_repo(root: Path, *, focus: str | None = None) -> tuple[ServiceSpec, ...]:
+    """Services the repo imports or receives a webhook from, plus HTTP transports.
+
+    Without ``focus``, each import follows clear call links into its used
+    requirements (not unused optionals). With ``focus``, that distribution is
+    classified fully and every other import stays own-code only — enough to
+    spot HTTP transports and wrapper delegates without walking unrelated trees.
+    A wrapper that is not itself a service still contributes the drivers its
+    own call graph reaches (delegates).
+    """
     from conduit.deps.manifests import read_installed
     from conduit.outside_in.distributions import declared_distribution_names, is_stdlib_module
 
@@ -261,17 +303,32 @@ def specs_for_repo(root: Path) -> tuple[ServiceSpec, ...]:
     pins = {normalize_dist(name): version for name, version in read_installed(root).items()}
     declared = {normalize_dist(name): name for name in declared_distribution_names(root)}
     index = _venv_import_index(root)
+    focus_norm = normalize_dist(focus) if focus else ""
     specs: list[ServiceSpec] = []
     seen: set[str] = set()
 
-    def add(name: str, version: str | None, *, module: str = "") -> None:
+    def add(name: str, version: str | None, *, module: str = "", recurse: bool | None = None) -> None:
         norm = normalize_dist(name)
         if not norm or norm in seen or norm == "python" or is_stdlib_module(norm.replace("-", "_")):
             return
         if module and _is_local_module(root, module.split(".", 1)[0]):
             return
         seen.add(norm)
-        found = classify_distribution(norm, version or pins.get(norm) or None, root=root)
+        # No focus (map): follow clear call links for every import.
+        # With focus (impact --dep): only that distribution is classified
+        # fully; other imports stay own-code so unrelated trees stay cold.
+        if recurse is not None:
+            do_recurse = recurse
+        elif focus_norm:
+            do_recurse = norm == focus_norm
+        else:
+            do_recurse = True
+        found = classify_distribution(
+            norm,
+            version or pins.get(norm) or None,
+            root=root,
+            recurse=do_recurse,
+        )
         if module and found.loaded and not _provides(found, module):
             seen.discard(norm)
             alt = normalize_dist(module.replace(".", "-"))
@@ -279,14 +336,27 @@ def specs_for_repo(root: Path) -> tuple[ServiceSpec, ...]:
                 add(alt, pins.get(alt), module=module)
             return
         if not found.service:
-            # The import is a wrapper. The service is the dependency its
-            # own functions call, when the caller's code reaches that call.
+            # The import is a wrapper. Expand product delegates only when
+            # there is no focus (map) or the delegate is the focused dep —
+            # otherwise a shallow scan would pull in every used root.
             for delegate in found.delegates:
-                add(delegate, pins.get(normalize_dist(delegate)))
+                dep_norm = normalize_dist(delegate)
+                if focus_norm and dep_norm != focus_norm:
+                    continue
+                add(
+                    delegate,
+                    pins.get(dep_norm),
+                    recurse=dep_norm == focus_norm,
+                )
             return
         spec = _as_spec(found)
         if spec.service_id not in {item.service_id for item in specs}:
             specs.append(spec)
+
+    # Classify an explicit focus first so a shallow wrapper path cannot
+    # cache the focused distribution before the full scan runs.
+    if focus_norm:
+        add(focus_norm, pins.get(focus_norm), recurse=True)
 
     for module in _imported_modules(root):
         top = module.split(".", 1)[0]
@@ -363,6 +433,7 @@ def _finish(
     root: Path | None,
     depth: int,
     stack: frozenset[str],
+    recurse: bool = True,
 ) -> Classification:
     """Product clients name a host or construct a non-HTTP client.
 
@@ -370,14 +441,20 @@ def _finish(
     network through those verbs, is a transport. A download helper that never
     builds a client is not a service.
     """
-    used = _used_services(direct, root=root, depth=depth, stack=stack)
+    used = (
+        _used_services(direct, root=root, depth=depth, stack=stack)
+        if recurse
+        else []
+    )
     _promote_domain(direct, used)
     if direct.database and not _own_io(direct):
         # Names like connect/cursor are not I/O when those functions only call
         # another dependency the classifier already counts. The service is that
         # dependency. A package that opens the socket, frames a protocol, or
         # implements the calls in C stays the service.
-        delegated = _delegate_services(direct, root=root, depth=depth, stack=stack)
+        delegated = _delegate_services(
+            direct, root=root, depth=depth, stack=stack, recurse=False
+        )
         drivers = [item for item in delegated if item.kind == "database" and not item.transport]
         if drivers:
             return Classification(
@@ -421,6 +498,8 @@ def _finish(
                 # The host was read from this package. The HTTP library it
                 # uses was not attributed, and the host is still the evidence.
                 evidence = f"{norm} -> {sorted(direct.hosts)[0]}"
+            # domain_classes alone (no via / stdlib / host) is not enough
+            # evidence — kind stays unset below when evidence is empty.
     elif direct.http_surface and (direct.strong or transports):
         kind = "api"
         # A transport takes the whole URL from its caller. A client that writes
@@ -430,12 +509,39 @@ def _finish(
             evidence = f"{norm} -> {transports[0].evidence}"
         elif direct.stdlib:
             evidence = f"{norm} -> {direct.stdlib}"
+    elif (
+        not recurse
+        and direct.http_surface
+        and not direct.client_classes
+        and not direct.domain_classes
+        and not direct.hosts
+    ):
+        # Shallow scan only: generic HTTP verb surface with no product client
+        # and no fixed host is a transport without following requires. Must
+        # not run on a full recurse — leaf helpers would poison evidence as
+        # ``-> http`` and flip compute libraries into false services.
+        kind = "api"
+        transport = len(direct.path_templates) < _MIN_PATH_TEMPLATES
+        evidence = f"{norm} -> {direct.stdlib}" if direct.stdlib else f"{norm} -> http"
     if not kind or not evidence:
+        # Own code did not make this a service. When we already walked clear
+        # call links (``recurse``), reuse those hits as delegates. A shallow
+        # scan stays own-code only — linked expansion would re-classify every
+        # used root and defeat focus scoping for impact.
+        if recurse:
+            linked = tuple(
+                dict.fromkeys(
+                    item.name for item in used if item.service and not item.transport
+                )
+            )
+        else:
+            linked = ()
         return Classification(
             name=norm,
             version=direct.version,
             package=direct.package or norm,
             modules=direct.modules,
+            delegates=linked,
             loaded=True,
         )
     constructors = set(direct.constructors)
@@ -481,6 +587,7 @@ def _delegate_services(
     root: Path | None,
     depth: int,
     stack: frozenset[str],
+    recurse: bool = True,
 ) -> list[Classification]:
     """Classify the external roots DB-API methods actually call.
 
@@ -497,10 +604,13 @@ def _delegate_services(
         if not norm or norm in seen or norm in stack:
             continue
         seen.add(norm)
-        sub = classify_distribution(dep, root=root, depth=depth + 1, stack=stack)
+        sub = classify_distribution(
+            dep, root=root, depth=depth + 1, stack=stack, recurse=recurse
+        )
         if sub.service:
             found.append(sub)
     return found
+
 
 
 def cached_classification(name: str) -> Classification | None:
@@ -508,9 +618,11 @@ def cached_classification(name: str) -> Classification | None:
     norm = normalize_dist(name)
     if not norm:
         return None
-    for (key_name, _version), found in _MEMORY.items():
-        if key_name == norm and found.loaded:
-            return found
+    # Prefer a full scan when both modes are present.
+    for mode in ("full", "shallow"):
+        for (key_name, _version, key_mode), found in _MEMORY.items():
+            if key_name == norm and key_mode == mode and found.loaded:
+                return found
     return None
 
 
@@ -519,6 +631,10 @@ def _promote_domain(direct: _Direct, used: list[Classification]) -> None:
 
     Calls that only decode, render, or annotate do not count. HTTP-verb
     classes are transports and were left out of the candidate set.
+
+    A product Client/Session that wraps a remote host stays product evidence
+    even when the same package also exposes an HTTP verb surface (almost every
+    SDK does). Pipeline-only HTTP classes never enter ``client_classes``.
     """
     found: set[str] = set()
     for class_name, roots in direct.domain_candidates.items():
@@ -530,12 +646,14 @@ def _promote_domain(direct: _Direct, used: list[Classification]) -> None:
             found.add(class_name)
             direct.constructors.add(class_name)
     # Opening a socket in a client constructor is product evidence. The same
-    # shape inside a package that already speaks HTTP verbs is the transport.
+    # shape inside a package that already speaks HTTP verbs is the transport
+    # unless a filtered product Client/Session is also present (below).
     if direct.domain_strong and not direct.http_surface:
         found.update(direct.domain_strong)
-    # A Client or Session in a package that opens a socket is the object the
-    # caller constructs. HTTP verb classes stay transports.
-    if direct.strong and direct.client_classes:
+    # Product Client/Session classes are outside-service evidence on their
+    # own. They do not need a stdlib socket in this package, and an HTTP
+    # helper living beside them does not demote them to a transport.
+    if direct.client_classes:
         found.update(direct.client_classes)
         direct.constructors.update(direct.client_classes)
     direct.domain_classes = found
@@ -696,9 +814,40 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
         tree = ast.parse(blob.decode("utf-8", "replace"))
     except SyntaxError:
         return
-    aliases, internal = _aliases(tree, own)
-    direct.hosts.update(_assigned_hosts(tree))
-    direct.path_templates.update(_path_templates(tree))
+    from conduit.outside_in.ast_checks import (
+        AliasesCheck,
+        AssignedHostsCheck,
+        ClientSurfaceCheck,
+        PathTemplatesCheck,
+        UsesStructCheck,
+        run_checks,
+    )
+
+    aliases_check = AliasesCheck(own, stdlib_io=_STDLIB_IO, is_our_module=_is_our_module)
+    path_check = PathTemplatesCheck(
+        paths_from_joined=_paths_from_joined,
+        paths_from_format_string=_paths_from_format_string,
+        const_str=_const_str,
+    )
+    surface_check = ClientSurfaceCheck(
+        path_check,
+        client_type=_client_type,
+        method_names=_method_names,
+        http_surface=_HTTP_SURFACE,
+    )
+    hosts_check = AssignedHostsCheck(
+        surface_check,
+        urlish_identifier=_urlish_identifier,
+        host_of=_host_of,
+        url_literal_host=_url_literal_host,
+    )
+    struct_check = UsesStructCheck(aliases_check, call_name=_call_name, expand=_expand)
+    run_checks(tree, [aliases_check, path_check, surface_check, hosts_check, struct_check])
+    aliases, internal = aliases_check.finish()
+    # Build / packaging / test / docs modules are not the runtime client surface.
+    if not _incidental_module(name):
+        direct.hosts.update(hosts_check.finish())
+        direct.path_templates.update(path_check.finish())
     local_funcs: set[str] = set()
     class_methods: dict[str, set[str]] = {}
     class_nodes: list[ast.ClassDef] = []
@@ -863,7 +1012,7 @@ def _scan_python(name: str, blob: bytes, direct: _Direct, db_defs: set[str], own
                 and not _pipeline_client(class_name, class_methods)
             ):
                 direct.client_classes.add(class_name)
-    if _uses_struct(tree, aliases):
+    if struct_check.finish():
         direct.wire = True
     _note_caller_hits(direct, class_methods, func_calls, func_constructed)
     _note_db_delegates(direct, func_calls, func_deps)
@@ -990,13 +1139,13 @@ def _pipeline_client(class_name: str, class_methods: dict[str, set[str]]) -> boo
 
 def _uses_struct(tree: ast.AST, aliases: dict[str, str]) -> bool:
     """Binary framing. HTTP libraries do not pack message headers this way."""
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        expanded = _expand(_call_name(node.func), aliases)
-        if expanded in {"struct.pack", "struct.unpack", "struct.pack_into", "struct.unpack_from"}:
-            return True
-    return False
+    from conduit.outside_in.ast_checks import AliasesCheck, UsesStructCheck, run_checks
+
+    aliases_check = AliasesCheck(set(), stdlib_io=_STDLIB_IO, is_our_module=_is_our_module)
+    aliases_check.aliases = dict(aliases)
+    check = UsesStructCheck(aliases_check, call_name=_call_name, expand=_expand)
+    run_checks(tree, [check])
+    return check.finish()
 
 
 def _note_caller_hits(
@@ -1086,34 +1235,11 @@ def _body_calls(node: ast.AST) -> list[ast.Call]:
 
 
 def _aliases(tree: ast.AST, own: set[str]) -> tuple[dict[str, str], set[str]]:
-    found: dict[str, str] = {}
-    internal: set[str] = set()
+    from conduit.outside_in.ast_checks import AliasesCheck, run_checks
 
-    def own_module(module: str) -> bool:
-        return _is_our_module(module, own)
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                local = alias.asname or alias.name.split(".", 1)[0]
-                found[local] = _STDLIB_IO.get(alias.name, alias.name)
-                if own_module(alias.name):
-                    internal.add(local)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                for alias in node.names:
-                    internal.add(alias.asname or alias.name)
-                continue
-            if not node.module:
-                continue
-            base = _STDLIB_IO.get(node.module, node.module)
-            inside = own_module(node.module)
-            for alias in node.names:
-                local = alias.asname or alias.name
-                found[local] = f"{base}.{alias.name}"
-                if inside:
-                    internal.add(local)
-    return found, internal
+    check = AliasesCheck(own, stdlib_io=_STDLIB_IO, is_our_module=_is_our_module)
+    run_checks(tree, [check])
+    return check.finish()
 
 
 def _call_name(node: ast.AST) -> str:
@@ -1146,80 +1272,198 @@ def _stdlib_of(expanded: str) -> str:
 
 
 _MIN_PATH_TEMPLATES = 3
+# Name tokens that mark an endpoint / host binding. Matched as substrings of
+# the lowered identifier so ``VENDOR_API_URL`` and ``api_url`` both count.
+# ``api_base`` is covered by the ``_base`` check in ``_urlish_identifier``.
+_URL_NAME_TOKENS = (
+    "api_host",
+    "api_url",
+    "base_url",
+    "endpoint",
+    "host",
+    "server_url",
+)
+_URL_NAME_CUES = frozenset({"api", "base", "endpoint", "host", "server", "service"})
 
 
 def _path_templates(tree: ast.AST) -> set[str]:
-    """Literal paths in f-strings shaped ``{..}://{..}/fixed/path`` (host is a placeholder)."""
+    """Fixed API path suffixes built after a templated host.
+
+    Recognizes:
+
+    - f-strings shaped ``{scheme}://{host}/fixed/path``
+    - f-strings shaped ``{api_url}/fixed/path`` (host already in the binding)
+    - ``str.format`` / ``%`` templates with the same shapes
+
+    Plain string constants (docstrings, comments-as-data) are ignored unless
+    they are the template of a ``.format`` call or a ``%`` formatting expression.
+    """
+    from conduit.outside_in.ast_checks import PathTemplatesCheck, run_checks
+
+    check = PathTemplatesCheck(
+        paths_from_joined=_paths_from_joined,
+        paths_from_format_string=_paths_from_format_string,
+        const_str=_const_str,
+    )
+    run_checks(tree, [check])
+    return check.finish()
+
+
+def _const_str(node: ast.AST | None) -> str:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return ""
+
+
+def _paths_from_joined(parts: list[ast.AST]) -> set[str]:
     found: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.JoinedStr):
-            continue
-        parts = node.values
-        for index, part in enumerate(parts[:-1]):
-            text = part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else ""
-            if not text.endswith("://") or not isinstance(parts[index + 1], ast.FormattedValue):
-                continue
+    for index, part in enumerate(parts[:-1]):
+        text = part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else ""
+        # ``f"{scheme}://{host}/fixed/path"``
+        if text.endswith("://") and isinstance(parts[index + 1], ast.FormattedValue):
             tail = parts[index + 2] if index + 2 < len(parts) else None
-            path = tail.value if isinstance(tail, ast.Constant) and isinstance(tail.value, str) else ""
+            path = _const_str(tail)
+            if re.match(r"/[A-Za-z]", path):
+                found.add(path.split("?", 1)[0])
+            continue
+        # ``f"{base}/fixed/path"`` or ``f"{self.api_url}/fixed/path"`` — the
+        # host (or full origin) is already in the interpolated slot.
+        if isinstance(part, ast.FormattedValue):
+            path = _const_str(parts[index + 1])
             if re.match(r"/[A-Za-z]", path):
                 found.add(path.split("?", 1)[0])
     return found
 
 
-def _assigned_hosts(tree: ast.AST) -> set[str]:
-    """Hosts written into an endpoint default, not a documentation link.
+def _paths_from_format_string(template: str) -> set[str]:
+    """Literal paths in ``str.format`` / ``%`` templates with a host slot."""
+    found: set[str] = set()
+    # ``https://{host}/fixed/path`` or ``https://%s/fixed/path``
+    for match in re.finditer(
+        r"https?://(?:\{\w*\}|%s|%\(\w+\)s)(/(?:[A-Za-z][^?\s\"']*))",
+        template,
+    ):
+        found.add(match.group(1).split("?", 1)[0])
+    # ``{api_url}/fixed/path`` or ``%s/fixed/path`` when the first slot is the host.
+    for match in re.finditer(
+        r"(?:^|[^\w])(?:\{\w*\}|%s|%\(\w+\)s)(/(?:[A-Za-z][^?\s\"']*))",
+        template,
+    ):
+        found.add(match.group(1).split("?", 1)[0])
+    return found
 
-    The target name has to say that it is a URL, a host, an endpoint, or a
-    server. A name one client coins for that default is not required.
+
+def _urlish_identifier(text: str) -> bool:
+    """True when an identifier looks like a URL / host / endpoint binding.
+
+    Matches shapes such as ``api_url``, ``API_URL``, ``vendor_api_url``,
+    ``server_url``, ``api_base``, and ``*_base``. Vendor-specific spellings are
+    not listed; the shape of the name is the signal. Cue matches are
+    underscore-token aware so ``pythoncapi_…_url`` does not count as ``api``.
     """
-    hosts: set[str] = set()
+    lowered = (text or "").lower().strip("_")
+    if not lowered:
+        return False
+    parts = [part for part in lowered.split("_") if part]
+    # ``*_base`` covers ``api_base``, ``upload_api_base``, ``DEFAULT_API_BASE``.
+    if "base" in parts and len(parts) >= 2:
+        return True
+    if any(token in lowered for token in _URL_NAME_TOKENS):
+        return True
+    # ``service_uri``, ``server_url`` — end in url/uri and carry a host cue token.
+    if parts and parts[-1] in {"url", "uri"} and _URL_NAME_CUES.intersection(parts[:-1]):
+        return True
+    return False
 
-    def take(node: ast.AST | None) -> None:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            host = _host_of(node.value)
-            if host:
-                hosts.add(host)
-        elif isinstance(node, ast.IfExp):
-            take(node.body)
-            take(node.orelse)
-        elif isinstance(node, ast.Call):
-            # os.environ.get("BASE", "https://api.example.com/v1")
-            for arg in node.args:
-                take(arg)
-            for keyword in node.keywords:
-                if keyword.value is not None:
-                    take(keyword.value)
 
-    def named(target: ast.AST) -> bool:
-        if isinstance(target, ast.Name):
-            text = target.id
-        elif isinstance(target, ast.Attribute):
-            text = target.attr
-        else:
-            return False
-        lowered = text.lower().strip("_")
-        # ``*_base`` is a URL default (``api_base``, ``upload_api_base``). The
-        # specific name is not the signal.
-        return "_base" in lowered or any(
-            token in lowered for token in ("base_url", "api_host", "endpoint", "server_url", "host")
-        )
+def _url_literal_host(text: str) -> str:
+    """Host when ``text`` itself is an API-shaped https URL to a non-local address.
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(named(target) for target in node.targets):
-            take(node.value)
-        elif isinstance(node, ast.AnnAssign) and node.target is not None and named(node.target):
-            take(node.value)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            args = node.args
-            defaults = [*args.defaults]
-            positional = [arg.arg for arg in (*args.posonlyargs, *args.args)]
-            for arg_name, default in zip(positional[-len(defaults) :], defaults):
-                if named(ast.Name(id=arg_name)):
-                    take(default)
-            for arg, default in zip(args.kwonlyargs, args.kw_defaults):
-                if default is not None and named(ast.Name(id=arg.arg)):
-                    take(default)
-    return hosts
+    Used when the binding name is not URL-ish. Package homepages
+    (``__url__ = "https://…readthedocs.io"``) must not count; require an
+    ``api.`` host label or an ``/api`` / ``/vN`` path prefix.
+    """
+    stripped = (text or "").strip()
+    if not stripped.startswith(("http://", "https://")):
+        return ""
+    # Reject prose that only mentions a URL mid-sentence.
+    if any(ch.isspace() for ch in stripped):
+        return ""
+    host = _host_of(stripped)
+    if not host:
+        return ""
+    rest = stripped.split("://", 1)[1]
+    path = "/" + rest.split("/", 1)[1] if "/" in rest else ""
+    labels = host.split(".")
+    if labels[0] == "api" or any(label == "api" for label in labels[1:-1]):
+        return host
+    if re.match(r"/(?:api|v\d+)(?:/|$|\?)", path):
+        return host
+    return ""
+
+
+def _tree_has_client_surface(tree: ast.AST) -> bool:
+    """True when this module defines a product client or builds request URLs."""
+    from conduit.outside_in.ast_checks import ClientSurfaceCheck, PathTemplatesCheck, run_checks
+
+    path_check = PathTemplatesCheck(
+        paths_from_joined=_paths_from_joined,
+        paths_from_format_string=_paths_from_format_string,
+        const_str=_const_str,
+    )
+    surface = ClientSurfaceCheck(
+        path_check,
+        client_type=_client_type,
+        method_names=_method_names,
+        http_surface=_HTTP_SURFACE,
+    )
+    run_checks(tree, [path_check, surface])
+    path_check.finish()
+    return surface.finish()
+
+
+def _assigned_hosts(tree: ast.AST) -> set[str]:
+    """Hosts that feed this module's runtime client surface.
+
+    Counts when:
+
+    - a URL-ish name (``api_url``, ``API_URL``, ``server_url``, ``*_base``, …)
+      is bound to a host, including ``os.environ.get`` defaults on those names
+    - a URL-ish parameter default or ``self.<urlish>`` assignment carries a host
+    - a plain-name https literal is bound in a module that also defines a product
+      client or builds request URLs from a host slot
+
+    A Call that merely mentions an https URL (download helper, wrap index, …)
+    does not count unless the binding target itself is URL-ish.
+    """
+    from conduit.outside_in.ast_checks import (
+        AssignedHostsCheck,
+        ClientSurfaceCheck,
+        PathTemplatesCheck,
+        run_checks,
+    )
+
+    path_check = PathTemplatesCheck(
+        paths_from_joined=_paths_from_joined,
+        paths_from_format_string=_paths_from_format_string,
+        const_str=_const_str,
+    )
+    surface = ClientSurfaceCheck(
+        path_check,
+        client_type=_client_type,
+        method_names=_method_names,
+        http_surface=_HTTP_SURFACE,
+    )
+    hosts_check = AssignedHostsCheck(
+        surface,
+        urlish_identifier=_urlish_identifier,
+        host_of=_host_of,
+        url_literal_host=_url_literal_host,
+    )
+    run_checks(tree, [path_check, surface, hosts_check])
+    path_check.finish()
+    surface.finish()
+    return hosts_check.finish()
 
 
 def _is_stdlib_root(name: str) -> bool:
@@ -1240,6 +1484,9 @@ def _host_of(text: str) -> str:
     if labels[-1] in _RESERVED_TLDS:
         return ""
     if labels[0] in {"docs", "doc", "www", "en", "wiki"}:
+        return ""
+    # Project doc hosts are not service endpoints.
+    if "readthedocs" in labels:
         return ""
     return host
 
@@ -1343,26 +1590,40 @@ def _download_code(norm: str, version: str) -> _Code | None:
         version = _pypi_version(norm) or ""
     if not version:
         return None
+    neg_key = f"download:{norm}=={version}"
+    prior = _negative_get(neg_key)
+    if prior is not None:
+        return None
     meta = _pypi_json(f"https://pypi.org/pypi/{norm}/{version}/json")
     if not meta:
         return None
     urls = meta.get("urls") if isinstance(meta, dict) else None
     if not isinstance(urls, list):
+        _negative_set(neg_key, "no-urls")
         return None
     chosen = _choose_url(urls)
     if chosen is None:
+        _negative_set(neg_key, "too-large-or-missing")
         return None
     filename = str(chosen.get("filename") or "")
     url = str(chosen.get("url") or "")
     if not filename or not url:
+        _negative_set(neg_key, "empty-url")
         return None
     dest = Path(tempfile.gettempdir()) / "conduit-wheels" / filename
     if not dest.is_file():
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             _fetch_to(url, dest)
-        except Exception:
+        except _TooLargeDownload:
+            _negative_set(neg_key, "too-large")
             return None
+        except Exception:
+            _negative_set(neg_key, "fetch-failed")
+            return None
+    if not dest.is_file():
+        _negative_set(neg_key, "missing-file")
+        return None
     info = meta.get("info") if isinstance(meta.get("info"), dict) else {}
     package = str(info.get("name") or norm)
     return _read_archive(
@@ -1539,31 +1800,94 @@ def _pypi_version(name: str) -> str:
     cached = _PYPI_VERSIONS.get(name)
     if cached is not None:
         return cached
+    if _negative_get(f"pypi-version:{name}") is not None:
+        _PYPI_VERSIONS[name] = ""
+        return ""
     meta = _pypi_json(f"https://pypi.org/pypi/{name}/json")
     version = ""
     if meta:
         info = meta.get("info") if isinstance(meta, dict) else None
         if isinstance(info, dict):
             version = str(info.get("version") or "")
+    if not version:
+        _negative_set(f"pypi-version:{name}", "missing")
     _PYPI_VERSIONS[name] = version
     return version
 
 
 def _pypi_json(url: str) -> dict | None:
+    prior = _negative_get(f"pypi-json:{url}")
+    if prior is not None:
+        return None
     try:
         with urlopen(Request(url, headers={"User-Agent": "conduit-classify"}), timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except Exception:
+        _negative_set(f"pypi-json:{url}", "fetch-failed")
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        _negative_set(f"pypi-json:{url}", "bad-payload")
+        return None
+    return payload
+
+
+class _TooLargeDownload(Exception):
+    """Wheel / sdist exceeded ``_MAX_BYTES`` during fetch."""
 
 
 def _fetch_to(url: str, dest: Path) -> None:
     with urlopen(Request(url, headers={"User-Agent": "conduit-classify"}), timeout=120) as response:
         blob = response.read(_MAX_BYTES + 1)
     if len(blob) > _MAX_BYTES:
-        return
+        raise _TooLargeDownload(url)
     dest.write_bytes(blob)
+
+
+def _negative_get(key: str) -> str | None:
+    hit = _NEGATIVE_MEMORY.get(key)
+    if hit is not None:
+        return hit
+    from conduit.analysis_cache import cache_enabled
+
+    if not cache_enabled():
+        return None
+    path = cache_dir() / f"neg-{_negative_safe(key)}.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("schema") != _SCHEMA:
+        return None
+    reason = str(payload.get("reason") or "negative")
+    _NEGATIVE_MEMORY[key] = reason
+    return reason
+
+
+def _negative_set(key: str, reason: str) -> None:
+    _NEGATIVE_MEMORY[key] = reason
+    from conduit.analysis_cache import cache_enabled
+
+    if not cache_enabled():
+        return
+    path = cache_dir() / f"neg-{_negative_safe(key)}.json"
+    try:
+        path.write_text(
+            json.dumps({"schema": _SCHEMA, "key": key, "reason": reason}),
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
+def _negative_safe(key: str) -> str:
+    digest = re.sub(r"[^a-zA-Z0-9._-]+", "_", key)
+    if len(digest) > 120:
+        import hashlib
+
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return digest
 
 
 def _wheel_dirs() -> list[tuple[Path, str]]:
@@ -1770,13 +2094,13 @@ def _token_ok(token: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", token))
 
 
-def _cache_path(key: tuple[str, str]) -> Path:
-    safe = re.sub(r"[^a-z0-9._-]+", "_", f"{key[0]}-{key[1]}")
+def _cache_path(key: tuple[str, str, str]) -> Path:
+    safe = re.sub(r"[^a-z0-9._-]+", "_", f"{key[0]}-{key[1]}-{key[2]}")
     return cache_dir() / f"v{_SCHEMA}-{safe}.json"
 
 
-def _cached(norm: str, version: str) -> Classification | None:
-    key = (norm, version)
+def _cached(norm: str, version: str, mode: str) -> Classification | None:
+    key = (norm, version, mode)
     hit = _MEMORY.get(key)
     if hit is not None:
         return hit
@@ -1786,7 +2110,7 @@ def _cached(norm: str, version: str) -> Classification | None:
     return disk
 
 
-def _read_disk(key: tuple[str, str]) -> Classification | None:
+def _read_disk(key: tuple[str, str, str]) -> Classification | None:
     from conduit.analysis_cache import cache_enabled
 
     if not cache_enabled():
@@ -1800,6 +2124,10 @@ def _read_disk(key: tuple[str, str]) -> Classification | None:
         return None
     if not isinstance(payload, dict) or payload.get("schema") != _SCHEMA:
         return None
+    if payload.get("mode") not in (None, key[2]):
+        # Older schema-30 entries without mode are treated as full scans only.
+        if key[2] != "full" or payload.get("mode") not in (None, "full"):
+            return None
     return Classification(
         name=str(payload.get("name") or key[0]),
         version=str(payload.get("version") or ""),
@@ -1817,13 +2145,14 @@ def _read_disk(key: tuple[str, str]) -> Classification | None:
     )
 
 
-def _write_disk(key: tuple[str, str], found: Classification) -> None:
+def _write_disk(key: tuple[str, str, str], found: Classification) -> None:
     from conduit.analysis_cache import cache_enabled
 
     if not cache_enabled():
         return
     payload = {
         "schema": _SCHEMA,
+        "mode": key[2],
         "name": found.name,
         "version": found.version,
         "package": found.package,
