@@ -153,6 +153,8 @@ class ApplyReport:
     invented_names_caught: int = 0
     #: Corrective model retries triggered by invented-name findings.
     name_check_retries: int = 0
+    #: Exit code of the most recent ``_check`` test run (suite-couldn't-run gate).
+    last_exit_code: int | None = None
 
     @property
     def preexisting_note(self) -> str:
@@ -427,15 +429,20 @@ def _apply_batch(
                     failure = ""
                     break
                 # Suite could not collect/run (collection, ImportError tokens,
-                # crashes, empty suite). Keep accepted rewrites as
-                # FIXED_TESTS_COULDNT_RUN — never model-retry or mass-revert here.
-                # a7fbeb8 made judge fail these cases (closing false-verified);
-                # salvage used to re-prompt every site and empty the diff.
-                if _collection_error(output):
+                # crashes, empty suite, pytest usage/exit 4). Keep accepted
+                # rewrites as FIXED_TESTS_COULDNT_RUN — never model-retry or
+                # mass-revert here. a7fbeb8 made judge fail these cases
+                # (closing false-verified); salvage used to re-prompt every
+                # site and empty the diff.
+                if _collection_error(output, exit_code=report.last_exit_code):
                     _suite_blocked_by_bump(
                         config, scratch, report, originals, accepted, output
                     )
                     report.suite_blocked = report.suite_blocked or _suite_blocked_why(output, report)
+                    # Keep accepted edits, but never keep a NameError-shaped file.
+                    _drop_newly_undefined_kept(
+                        scratch, report, originals, texts_of, slots, accepted
+                    )
                     # Collection-shaped unload: keep accepted edits; do not
                     # model-retry via salvage or routed pending.
                     if work.routes is not None:
@@ -484,13 +491,16 @@ def _apply_batch(
                 failure = "" if ok else output
                 if failure and _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
                     failure = ""
-            if failure and accepted and _collection_error(failure):
+            if failure and accepted and _collection_error(failure, exit_code=report.last_exit_code):
                 # Never mass-revert or model-retry when the suite could not run:
                 # keep compiling rewrites and mark them tests-couldn't-run.
                 _suite_blocked_by_bump(
                     config, scratch, report, originals, accepted, failure
                 )
                 report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
+                _drop_newly_undefined_kept(
+                    scratch, report, originals, texts_of, slots, accepted
+                )
                 if work.routes is not None:
                     work.routes.pending.clear()
                 failure = ""
@@ -504,7 +514,9 @@ def _apply_batch(
                         # A rewrite that leaned on a reverted one was dropped too: confirm the rest again.
                         ok, output = _check(config, scratch, report, lines)
                     failure = "" if ok else output
-                if failure and accepted and not _collection_error(failure):
+                if failure and accepted and not _collection_error(
+                    failure, exit_code=report.last_exit_code
+                ):
                     # A held-back site, or a failure the traceback does not locate,
                     # must not take the other rewrites with it. Collection-shaped
                     # failures are handled above and must not reach bisection that
@@ -513,10 +525,13 @@ def _apply_batch(
                         config, scratch, report, lines, originals, texts_of, slots, accepted, failure
                     )
             _record_test_refs(selected, scratch, report, config)
-            if failure and _collection_error(failure):
+            if failure and _collection_error(failure, exit_code=report.last_exit_code):
                 report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
                 # Keep remaining accepted rewrites: the suite could not run, so they
-                # are not verified and not silently reverted.
+                # are not verified and not silently reverted — except NameError keeps.
+                _drop_newly_undefined_kept(
+                    scratch, report, originals, texts_of, slots, accepted
+                )
                 if work.routes is not None:
                     work.routes.pending.clear()
                 failure = ""
@@ -623,6 +638,7 @@ def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Line
     env = dict(os.environ)
     if config.baseline is None:
         run = run_tests(config.test_cmd or "", scratch, env)
+        report.last_exit_code = run.exit_code
         ok, output = run.ok and not suite_couldnt_run(run), (
             "" if run.ok and not suite_couldnt_run(run) else (run.output or "tests failed")
         )
@@ -631,6 +647,7 @@ def _check(config: ApplyConfig, scratch: Path, report: ApplyReport, lines: _Line
             report.new_failures = run.failing or ["(test command)"]
     else:
         run = run_tests(config.test_cmd or "", scratch, env)
+        report.last_exit_code = run.exit_code
         verdict = judge(run, config.baseline)
         report.preexisting = verdict.preexisting
         report.missing = list(verdict.missing)
@@ -1128,6 +1145,9 @@ def _collection_error(output: str, *, exit_code: int | None = None) -> bool:
     model-retrying and mass-reverting. Broader than a single test's ImportError
     traceback: a runtime ImportError inside one test still goes through normal
     salvage. ``suite_couldnt_run`` remains the never-verify gate in ``judge``.
+
+    Pytest usage/config errors (exit 4, unrecognized addopts flags, INTERNALERROR
+    before collection) are suite-couldn't-run: keep accepted edits, never revert.
     """
     text = output or ""
     if exit_code in {2, 3, 4, 5}:
@@ -1144,6 +1164,9 @@ def _collection_error(output: str, *, exit_code: int | None = None) -> bool:
         "TimeoutExpired",
         "signal.SIGTERM",
         "Killed",
+        "error: unrecognized arguments",
+        "unrecognized arguments:",
+        "INTERNALERROR",
     )
     if any(token in text for token in tokens):
         return True
@@ -1223,6 +1246,48 @@ def _suite_blocked_why(output: str, report: ApplyReport) -> str:
     if _collection_error(output):
         return "tests couldn't run: suite failed at collection after the bump"
     return "tests couldn't run: the test command could not run after the bump"
+
+
+def _drop_newly_undefined_kept(
+    scratch: Path,
+    report: ApplyReport,
+    originals: dict[str, str],
+    texts: dict[int, str],
+    slots: dict[int, int],
+    accepted: dict[int, dict[str, Any]],
+) -> None:
+    """On the suite-couldn't-run keep path, reject NameError-shaped rewrites.
+
+    Accepted edits stay when the suite cannot run, but a file left with a newly
+    undefined runtime name must not be kept as fixed.
+    """
+    from conduit.apply.names import newly_undefined_breaks
+
+    by_path: dict[str, list[int]] = {}
+    for key, sink in list(accepted.items()):
+        by_path.setdefault(sink["site"].path, []).append(key)
+    for path, keys in by_path.items():
+        before = originals.get(path, "")
+        after = _read(scratch / path)
+        findings = newly_undefined_breaks(before, after, path)
+        if not findings:
+            continue
+        message = _breaks_message(findings)
+        for key in keys:
+            sink = accepted.pop(key, None)
+            if sink is None:
+                continue
+            previous = report.results[slots[key]]
+            report.results[slots[key]] = SiteResult(
+                site=sink["site"],
+                status=SiteStatus.NEEDS_HUMAN,
+                diff=previous.diff,
+                attempts=previous.attempts,
+                error=message,
+                why=message,
+                context=previous.context,
+            )
+        _rebuild(scratch, originals, accepted, texts, path)
 
 
 def _tests_couldnt_run_why(
@@ -2180,9 +2245,12 @@ def _undefined_names(
         for name in sorted(lost):
             if name not in uses:
                 continue
-            owner = next((key for key in keys if name in _bound_by_line(texts.get(key, ""))), None)
-            if owner is None:
-                continue
+            # Prefer a site whose rewrite text bound the name; else first site
+            # in the file (import drops often live outside function_source).
+            owner = next(
+                (key for key in keys if name in _bound_by_line(texts.get(key, ""))),
+                keys[0],
+            )
             site = accepted[owner]["site"]
             line = uses[name]
             out.setdefault(owner, []).append(
@@ -2705,10 +2773,19 @@ _KEYED = re.compile(r"= passes a dict with keys .*? reads keys: required ")
 
 
 def _name_findings(findings: list[str]) -> list[str]:
-    """Findings from ``names.name_breaks`` (invented imports / module paths)."""
-    from conduit.apply.names import DOES_NOT_EXIST
+    """Findings from ``names.name_breaks`` / newly-undefined (same one-retry path)."""
+    from conduit.apply.names import DOES_NOT_EXIST, NEWLY_UNDEFINED
 
-    return [text for text in findings if text and DOES_NOT_EXIST in text]
+    return [
+        text
+        for text in findings
+        if text and (DOES_NOT_EXIST in text or NEWLY_UNDEFINED in text)
+    ]
+
+
+# Cache grounded rows per (package, version, wheel, hint-fingerprint) so sibling
+# sites with the same dependency do not re-walk / re-probe the wheel surface.
+_GROUND_CACHE: dict[tuple[str, str, str, tuple[str, ...]], list[dict[str, str]]] = {}
 
 
 def _attach_grounded_names(config: ApplyConfig, site: ImpactSite, pack: ContextPack) -> None:
@@ -2735,12 +2812,23 @@ def _attach_grounded_names(config: ApplyConfig, site: ImpactSite, pack: ContextP
             site.change,
         ]
         call_kwargs = list(pack.release_diff.get("call_kwargs") or [])
-        grounded = ground_candidates(
-            modules,
-            package=site.dependency or "",
-            hints=hints,
-            call_kwargs=call_kwargs,
+        hint_key = tuple(h for h in hints if h)
+        cache_key = (
+            (site.dependency or "").lower(),
+            site.to_version or "",
+            str(wheel),
+            hint_key,
         )
+        grounded = _GROUND_CACHE.get(cache_key)
+        if grounded is None:
+            grounded = ground_candidates(
+                modules,
+                package=site.dependency or "",
+                hints=hints,
+                call_kwargs=call_kwargs,
+                wheel=wheel,
+            )
+            _GROUND_CACHE[cache_key] = list(grounded)
         merged = merge_candidates(pack.candidates, grounded)
         if not merged:
             return

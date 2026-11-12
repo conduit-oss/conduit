@@ -16,10 +16,13 @@ from conduit.apply.impact_input import sites_from_payload
 from conduit.apply.models import SiteStatus
 from conduit.apply.names import (
     DOES_NOT_EXIST,
+    NEWLY_UNDEFINED,
     ground_candidates,
     merge_candidates,
     name_breaks,
+    newly_undefined_breaks,
     public_surface,
+    resolve_name,
 )
 from conduit.apply.prompts import propose_messages
 from conduit.apply.signatures import _modules
@@ -490,3 +493,122 @@ def test_patched_file_stale_package_import_triggers_name_retry(tmp_path: Path):
     text = (root / "mod.py").read_text(encoding="utf-8")
     assert "RemovedError" in text
     assert "old_call" in text
+
+
+def _lazy_paykit(tmp_path: Path) -> tuple[Path, dict[str, ast.Module]]:
+    """Made-up package with lazy ``__getattr__`` export (wheel surface is subpackages only)."""
+    fixtures = tmp_path / "lazy_fixtures"
+    root = fixtures / "new"
+    (root / "paykit").mkdir(parents=True)
+    (root / "paykit" / "__init__.py").write_text(
+        textwrap.dedent(
+            """\
+            from typing import Any
+
+            _LAZY_IMPORTS = {"Invoice": (".billing", "Invoice"), "InvalidRequestError": (".errors", "InvalidRequestError")}
+
+            def __getattr__(name: str) -> Any:
+                if name == "Invoice":
+                    from .billing import Invoice
+                    return Invoice
+                if name == "InvalidRequestError":
+                    from .errors import InvalidRequestError
+                    return InvalidRequestError
+                raise AttributeError(name)
+            """
+        ),
+        encoding="utf-8",
+    )
+    (root / "paykit" / "billing.py").write_text(
+        "class Invoice:\n    pass\n",
+        encoding="utf-8",
+    )
+    (root / "paykit" / "errors.py").write_text(
+        "class InvalidRequestError(Exception):\n    pass\n",
+        encoding="utf-8",
+    )
+    (root / "paykit" / "apps").mkdir(parents=True, exist_ok=True)
+    (root / "paykit" / "apps" / "__init__.py").write_text("", encoding="utf-8")
+    (fixtures / "index.json").write_text(
+        json.dumps({"packages": {"paykit": {"wheels": {"2.0": "new"}}}}),
+        encoding="utf-8",
+    )
+    return fixtures, _modules(str(root))
+
+
+def test_lazy_getattr_name_not_reported_as_invented(tmp_path: Path):
+    """Static surface only sees subpackages; lazy exports must be unknown/ok, not missing."""
+    fixtures, modules = _lazy_paykit(tmp_path)
+    # Static-only: __getattr__ module → unknown, never a DOES_NOT_EXIST finding.
+    status, _ = resolve_name("paykit.Invoice", "paykit", modules)
+    assert status in {"ok", "unknown"}
+    source = textwrap.dedent(
+        """\
+        from paykit import Invoice
+
+        def broken(client):
+            return Invoice()
+        """
+    )
+    found = name_breaks(
+        modules, "mod.py", source, (3, 4), "paykit", "2.0", original=""
+    )
+    assert found == [], found
+    # Runtime probe against the extracted package confirms the name.
+    wheel = fixtures / "new"
+    status_rt, _ = resolve_name(
+        "paykit.Invoice", "paykit", modules, wheel=wheel
+    )
+    assert status_rt == "ok"
+    found_rt = name_breaks(
+        modules,
+        "mod.py",
+        source,
+        (3, 4),
+        "paykit",
+        "2.0",
+        original="",
+        wheel=wheel,
+    )
+    assert found_rt == [], found_rt
+    # A truly missing name on a non-lazy sibling module still fails.
+    wire = _modules_v2(tmp_path)
+    bad = textwrap.dedent(
+        """\
+        from wirekit import TotallyInvented
+
+        def broken(client):
+            raise TotallyInvented()
+        """
+    )
+    assert name_breaks(wire, "mod.py", bad, (3, 4), "wirekit", "2.0", original="")
+
+
+def test_newly_undefined_breaks_flags_dropped_import():
+    original = textwrap.dedent(
+        """\
+        from wirekit import Client, ServiceUnavailableError
+
+        def broken(client):
+            try:
+                return client.old_call(1)
+            except ServiceUnavailableError:
+                return 0
+        """
+    )
+    patched = textwrap.dedent(
+        """\
+        from wirekit import Client
+
+        def broken(client):
+            try:
+                return client.send(1)
+            except ServiceUnavailableError:
+                return 0
+        """
+    )
+    found = newly_undefined_breaks(original, patched, "mod.py")
+    assert len(found) == 1
+    assert "ServiceUnavailableError" in found[0]
+    assert NEWLY_UNDEFINED in found[0]
+    assert newly_undefined_breaks(original, original, "mod.py") == []

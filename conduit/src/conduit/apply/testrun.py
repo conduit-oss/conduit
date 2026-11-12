@@ -252,6 +252,10 @@ def suite_couldnt_run(run: TestRun | None = None, *, output: str = "", exit_code
         "TimeoutExpired",
         "signal.SIGTERM",
         "Killed",
+        # Pytest usage/config: plugins missing for addopts, bad flags, etc.
+        "error: unrecognized arguments",
+        "unrecognized arguments:",
+        "INTERNALERROR",
     )
     return any(token in text for token in tokens)
 

@@ -43,6 +43,35 @@ def test_dedupe_merges_two_from_lines():
     assert import_line.count("Client") == 1
 
 
+def test_dedupe_merges_parenthesized_multiline_from_imports():
+    """AST-normalized multi-line from-imports with the same module merge once."""
+    source = textwrap.dedent(
+        """\
+        from wirekit import (
+            APIError,
+            APIConnectionError,
+            APIStatusError,
+            APIResponseValidationError,
+        )
+        from wirekit import (
+            APIError,
+            APIConnectionError,
+            APIStatusError,
+            APIResponseValidationError,
+        )
+
+        def f():
+            pass
+        """
+    )
+    out = dedupe_imports(source)
+    assert out.count("from wirekit import") == 1
+    assert out.count("APIError") == 1
+    assert "APIConnectionError" in out
+    assert "APIStatusError" in out
+    assert "APIResponseValidationError" in out
+
+
 def test_strip_inner_import_already_at_module():
     module = "from wirekit import Client\n"
     fn = textwrap.dedent(

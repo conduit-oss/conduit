@@ -253,7 +253,7 @@ def _type_breaks(
             site.dependency or "", site.to_version or "",
         ):
             found.append((text, ""))
-        from conduit.apply.names import name_breaks
+        from conduit.apply.names import name_breaks, newly_undefined_breaks
 
         # Patched file: every package import must exist on the target wheel,
         # including stale leftovers whose local name is no longer used in span.
@@ -266,7 +266,11 @@ def _type_breaks(
             site.to_version or "",
             original=original,
             all_imports=True,
+            wheel=wheel,
         ):
+            found.append((text, ""))
+        # Names the rewrite left used but unbound (NameError at runtime).
+        for text in newly_undefined_breaks(original, source, path):
             found.append((text, ""))
         return found
     except Exception:  # noqa: BLE001 — a static check that cannot run stays silent
