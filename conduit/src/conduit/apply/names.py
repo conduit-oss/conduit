@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -1131,6 +1132,224 @@ def _child_modules(modules: dict[str, ast.Module], parent: str) -> list[str]:
             if rest and not rest.startswith("_"):
                 children.add(rest)
     return sorted(children)
+
+
+@dataclass(frozen=True)
+class RemovedImport:
+    """One ``from <removed module> import ...`` in a consumer file.
+
+    ``moved`` is ``(imported name, dotted home on the target surface)``.
+    ``missing`` names have no equivalent anywhere on that surface.
+    ``replacement`` is empty when nothing moved: the statement stays, and the
+    site needs a human. When anything moved, ``replacement`` is the new import
+    block (names with a home only) and the removed module is not imported.
+    """
+
+    path: str
+    line: int
+    end_line: int
+    module: str
+    moved: tuple[tuple[str, str], ...]
+    missing: tuple[str, ...]
+    replacement: str
+
+
+class RemovedModuleImports:
+    """Relocate imports whose entire module is gone from one target release.
+
+    Homes come from the wheel's public surface (static) plus one runtime
+    ``import`` + ``getattr`` of ``package.<name>`` for lazy re-exports. The
+    same home cache is shared across files so every file is rewritten the
+    same way. No vendor or module names are special-cased.
+    """
+
+    def __init__(
+        self,
+        *,
+        package: str,
+        version: str,
+        modules: dict[str, ast.Module],
+        wheel: Path | None = None,
+        python: str | None = None,
+    ) -> None:
+        self.package = package
+        self.version = version
+        self.modules = modules
+        self.wheel = wheel
+        self.python = python
+        self.top = _top(package)
+        self.surface = public_surface(modules, self.top) if modules and self.top else {}
+        self._homes: dict[str, str | None] = {}
+        self._gone: dict[str, bool] = {}
+
+    def plan(self, source: str, path: str) -> list[RemovedImport]:
+        """Import statements in ``source`` whose module the target release removed."""
+        if not self.top:
+            return []
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            return []
+        found: list[RemovedImport] = []
+        for node in tree.body:
+            if not isinstance(node, ast.ImportFrom) or node.level:
+                continue
+            module = node.module or ""
+            if not (module == self.top or module.startswith(self.top + ".")):
+                continue
+            if not self._module_gone(module):
+                continue
+            if any(alias.name == "*" for alias in node.names):
+                found.append(
+                    RemovedImport(
+                        path=path,
+                        line=node.lineno,
+                        end_line=node.end_lineno or node.lineno,
+                        module=module,
+                        moved=(),
+                        missing=("*",),
+                        replacement="",
+                    )
+                )
+                continue
+            moved: list[tuple[str, str]] = []
+            missing: list[str] = []
+            groups: dict[str, list[tuple[str, str | None]]] = {}
+            order: list[str] = []
+            for alias in node.names:
+                home = self.home_for(alias.name, removed_module=module)
+                if home is None:
+                    missing.append(alias.name)
+                    continue
+                parent, leaf = home.rsplit(".", 1)
+                moved.append((alias.name, home))
+                if parent not in groups:
+                    order.append(parent)
+                    groups[parent] = []
+                groups[parent].append((leaf, alias.asname))
+            replacement = ""
+            if moved:
+                indent = _stmt_indent(source, node.lineno)
+                lines = []
+                for parent in order:
+                    parts = [
+                        name if not asname else f"{name} as {asname}"
+                        for name, asname in groups[parent]
+                    ]
+                    lines.append(f"{indent}from {parent} import {', '.join(parts)}")
+                replacement = "\n".join(lines) + "\n"
+            found.append(
+                RemovedImport(
+                    path=path,
+                    line=node.lineno,
+                    end_line=node.end_lineno or node.lineno,
+                    module=module,
+                    moved=tuple(moved),
+                    missing=tuple(missing),
+                    replacement=replacement,
+                )
+            )
+        return found
+
+    def home_for(self, name: str, *, removed_module: str) -> str | None:
+        """Dotted target-surface symbol for ``name``, or None if it has no home."""
+        if name in self._homes:
+            cached = self._homes[name]
+        else:
+            cached = self._find_home(name)
+            self._homes[name] = cached
+        if cached is None:
+            return None
+        if cached == removed_module or cached.startswith(removed_module + "."):
+            return None
+        return cached
+
+    def _find_home(self, name: str) -> str | None:
+        top = self.top
+        found: list[str] = []
+        for symbol in self.surface:
+            if symbol.rsplit(".", 1)[-1] != name:
+                continue
+            if symbol != top and not symbol.startswith(top + "."):
+                continue
+            if _static_resolve(symbol, top, self.modules) == "ok":
+                found.append(symbol)
+        root_attr = f"{top}.{name}"
+        if root_attr not in found:
+            # Lazy package re-exports are not always in the static surface.
+            status, _leaf = resolve_name(
+                root_attr,
+                self.package,
+                self.modules,
+                wheel=self.wheel,
+                python=self.python,
+            )
+            if status == "ok":
+                found.append(root_attr)
+        if not found:
+            return None
+
+        def rank(symbol: str) -> tuple:
+            parts = symbol.split(".")
+            private = sum(part.startswith("_") for part in parts)
+            return (private, len(parts), symbol)
+
+        return min(found, key=rank)
+
+    def _module_gone(self, module: str) -> bool:
+        cached = self._gone.get(module)
+        if cached is not None:
+            return cached
+        status, missing = _module_status(
+            self.modules,
+            module,
+            self.package,
+            wheel=self.wheel,
+            python=self.python,
+        )
+        gone = bool(
+            status == "missing"
+            and missing
+            and (module == missing or module.startswith(missing + "."))
+        )
+        self._gone[module] = gone
+        return gone
+
+
+def relocate_removed_imports(
+    source: str,
+    path: str,
+    maps: list[RemovedModuleImports],
+) -> tuple[str, list[RemovedImport]]:
+    """Rewrite ``source`` from every map. One plan against the original text."""
+    hits: list[RemovedImport] = []
+    for item in maps:
+        hits.extend(item.plan(source, path))
+    if not hits:
+        return source, []
+    updated = source
+    for hit in sorted(hits, key=lambda item: item.line, reverse=True):
+        if not hit.replacement:
+            continue
+        updated = _replace_line_span(updated, hit.line, hit.end_line, hit.replacement)
+    return updated, hits
+
+
+def _stmt_indent(source: str, line: int) -> str:
+    lines = source.splitlines()
+    if line < 1 or line > len(lines):
+        return ""
+    text = lines[line - 1]
+    return text[: len(text) - len(text.lstrip())]
+
+
+def _replace_line_span(source: str, start: int, end: int, replacement: str) -> str:
+    lines = source.splitlines(keepends=True)
+    prefix = "".join(lines[: start - 1])
+    suffix = "".join(lines[end:])
+    if replacement and not replacement.endswith("\n"):
+        replacement += "\n"
+    return prefix + replacement + suffix
 
 
 def _module_finding(
