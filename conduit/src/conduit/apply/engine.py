@@ -436,6 +436,10 @@ def _apply_batch(
                         config, scratch, report, originals, accepted, output
                     )
                     report.suite_blocked = report.suite_blocked or _suite_blocked_why(output, report)
+                    # Collection-shaped unload: keep accepted edits; do not
+                    # model-retry via salvage or routed pending.
+                    if work.routes is not None:
+                        work.routes.pending.clear()
                     failure = ""
                     break
                 # An empty blame used to stand for every accepted rewrite, so one
@@ -470,8 +474,10 @@ def _apply_batch(
                     else:
                         _rebuild(scratch, originals, accepted, texts_of, site.path)
                         report.results[slots[key]] = _reverted(result or report.results[slots[key]], site, note)
+                if not report.suite_blocked:
+                    _retry_routed(work, client, report, originals, texts_of, slots)
+            if not report.suite_blocked:
                 _retry_routed(work, client, report, originals, texts_of, slots)
-            _retry_routed(work, client, report, originals, texts_of, slots)
             _drop_traced_reads(work, report, originals, texts_of, slots)
             if _final_recheck(config, scratch, report, originals, texts_of, slots, accepted, work, client) and accepted and not failure:
                 ok, output = _check(config, scratch, report, lines)
@@ -485,6 +491,8 @@ def _apply_batch(
                     config, scratch, report, originals, accepted, failure
                 )
                 report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
+                if work.routes is not None:
+                    work.routes.pending.clear()
                 failure = ""
             if failure and accepted:
                 blamed = _blame(failure, scratch, accepted)
@@ -509,6 +517,8 @@ def _apply_batch(
                 report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
                 # Keep remaining accepted rewrites: the suite could not run, so they
                 # are not verified and not silently reverted.
+                if work.routes is not None:
+                    work.routes.pending.clear()
                 failure = ""
             for path, text in stashed.items():
                 _write_file(scratch, path, text)
