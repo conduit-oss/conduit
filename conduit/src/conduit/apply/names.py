@@ -234,12 +234,15 @@ def name_breaks(
     version: str,
     *,
     original: str = "",
+    all_imports: bool = False,
 ) -> list[str]:
     """Findings for SDK imports and module-rooted attribute chains the rewrite uses.
 
     Checks:
     - ``import pkg...`` / ``from pkg... import name`` that the rewrite introduced,
-      or whose local name is used inside the rewritten span
+      or whose local name is used inside the rewritten span — or, when
+      ``all_imports`` is True (patched-file recheck), **every** package import
+      in the file, including stale leftovers the rewrite left behind
     - ``pkg.sub.Name`` attribute chains inside the rewritten span
 
     Attribute reads on values typed as a release class are covered elsewhere
@@ -273,7 +276,7 @@ def name_breaks(
             continue
         local_names = {(alias.asname or alias.name.split(".")[0]) for alias in node.names}
         introduced = _import_key(node) not in old_imports
-        if not introduced and not (used & local_names):
+        if not all_imports and not introduced and not (used & local_names):
             continue
         for text in _check_import(modules, node, path, package, version):
             if text not in out:

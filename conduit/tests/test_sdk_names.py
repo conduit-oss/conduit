@@ -283,6 +283,40 @@ def test_name_breaks_ignores_preexisting_unused_bad_import(tmp_path: Path):
     assert name_breaks(modules, "mod.py", source, (3, 4), "wirekit", "2.0", original=original) == []
 
 
+def test_name_breaks_all_imports_flags_stale_unused_package_import(tmp_path: Path):
+    """Patched-file mode: every package import is checked, even if unused in span."""
+    modules = _modules_v2(tmp_path)
+    original = textwrap.dedent(
+        """\
+        from wirekit import RemovedError
+
+        def broken(client):
+            return client.old_call(1)
+        """
+    )
+    source = textwrap.dedent(
+        """\
+        from wirekit import RemovedError
+
+        def broken(client):
+            return client.send(1)
+        """
+    )
+    found = name_breaks(
+        modules,
+        "mod.py",
+        source,
+        (3, 4),
+        "wirekit",
+        "2.0",
+        original=original,
+        all_imports=True,
+    )
+    assert found
+    assert "RemovedError" in found[0]
+    assert DOES_NOT_EXIST in found[0]
+
+
 def test_invented_import_rejected_then_fixed_on_retry(tmp_path: Path):
     root = _repo(tmp_path)
     fixtures = _fixture(tmp_path)
@@ -411,3 +445,48 @@ def test_propose_messages_forbid_invented_names_without_apply(tmp_path: Path):
     system, user = propose_messages(pack)
     assert "do not invent" in system[1].lower()
     assert "candidates" in user[1]
+
+
+def test_patched_file_stale_package_import_triggers_name_retry(tmp_path: Path):
+    """Apply recheck with all_imports: leftover bad import is caught and retried."""
+    root = tmp_path / "app"
+    root.mkdir()
+    (root / "mod.py").write_text(
+        textwrap.dedent(
+            """\
+            from wirekit import RemovedError
+
+            def broken(client):
+                return client.old_call(1)
+            """
+        ),
+        encoding="utf-8",
+    )
+    fixtures = _fixture(tmp_path)
+    payload = _payload()
+    payload["impacts"][0]["sites"][0]["line"] = 4
+    # Fixes the call but leaves the stale RemovedError import → name check fails,
+    # one retry with the same shape still fails → needs-human, file untouched.
+    first = _edit("def broken(client):\n    return client.send(1)\n")
+    client = FakeModelClient(responses=[first, first, "should not run"])
+    report = apply_sites(
+        sites_from_payload(payload),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=3),
+            write=True,
+            test_cmd=_EXERCISE,
+            client=client,
+            recheck_impact=True,
+            fixtures=fixtures,
+        ),
+    )
+    result = report.results[0]
+    assert result.status == SiteStatus.NEEDS_HUMAN, (result.status, result.error)
+    assert DOES_NOT_EXIST in (result.error or "")
+    assert "RemovedError" in (result.error or "")
+    assert report.invented_names_caught >= 1
+    assert report.name_check_retries == 1
+    text = (root / "mod.py").read_text(encoding="utf-8")
+    assert "RemovedError" in text
+    assert "old_call" in text

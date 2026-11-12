@@ -255,6 +255,8 @@ def _type_breaks(
             found.append((text, ""))
         from conduit.apply.names import name_breaks
 
+        # Patched file: every package import must exist on the target wheel,
+        # including stale leftovers whose local name is no longer used in span.
         for text in name_breaks(
             modules,
             path,
@@ -263,6 +265,7 @@ def _type_breaks(
             site.dependency or "",
             site.to_version or "",
             original=original,
+            all_imports=True,
         ):
             found.append((text, ""))
         return found
