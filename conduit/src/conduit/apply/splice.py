@@ -221,7 +221,11 @@ def add_imports(source: str, new_imports: tuple[str, ...]) -> str:
 
 
 def dedupe_imports(source: str) -> str:
-    """Merge top-level imports that share a module so each (module, name) appears once."""
+    """Merge top-level imports that share a module so each (module, name) appears once.
+
+    Parenthesized and multi-line ``from``-imports are normalized via AST before
+    dedupe, so identical or overlapping blocks merge into one statement.
+    """
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -239,9 +243,6 @@ def dedupe_imports(source: str) -> str:
             key = (node.level, node.module)
             start = node.lineno
             end = node.end_lineno or node.lineno
-            if start != end:
-                # Multi-line imports: leave alone; merging would rewrite poorly.
-                continue
             from_groups.setdefault(key, []).append((start, end, list(node.names)))
         elif isinstance(node, ast.Import):
             kept: list[ast.alias] = []
@@ -253,11 +254,11 @@ def dedupe_imports(source: str) -> str:
                 kept.append(alias)
             start = node.lineno
             end = node.end_lineno or node.lineno
-            if start != end:
-                continue
             if not kept:
                 drop_lines.update(range(start, end + 1))
-            elif len(kept) != len(node.names):
+            elif len(kept) != len(node.names) or start != end:
+                # Collapse multi-line import X as Y lists too.
+                drop_lines.update(range(start + 1, end + 1))
                 replace[start] = ast.unparse(ast.Import(names=kept)) + "\n"
     for (_level, _module), entries in from_groups.items():
         seen_names: set[tuple[str, str | None]] = set()
@@ -269,15 +270,22 @@ def dedupe_imports(source: str) -> str:
                     continue
                 seen_names.add(pair)
                 merged.append(alias)
-        first_start, _first_end, first_aliases = entries[0]
-        unchanged = len(entries) == 1 and len(merged) == len(first_aliases)
+        first_start, first_end, first_aliases = entries[0]
+        unchanged = (
+            len(entries) == 1
+            and len(merged) == len(first_aliases)
+            and first_start == first_end
+        )
         if unchanged:
             continue
-        for start, end, _aliases in entries[1:]:
+        # Drop every line of every block (including the first multi-line range),
+        # then write a single collapsed import at the first block's start.
+        for start, end, _aliases in entries:
             drop_lines.update(range(start, end + 1))
         replace[first_start] = ast.unparse(
             ast.ImportFrom(module=_module, names=merged, level=_level)
         ) + "\n"
+        drop_lines.discard(first_start)
     if not drop_lines and not replace:
         return source
     out: list[str] = []

@@ -8,6 +8,11 @@ After a rewrite, ``name_breaks`` checks new or used SDK imports and
 module-rooted attribute chains against that wheel. One corrective retry is
 allowed; a second miss stays needs-human and is never verified.
 
+Resolution prefers importing the installed/extracted target package the way
+Python does (``getattr`` along the chain, including lazy ``__getattr__``
+modules). Static AST parsing is a fallback; when a module uses lazy export
+tables, static absence is treated as **unknown**, never as invented-missing.
+
 Surface extraction reuses ``outside_in.ast_checks`` single-pass walkers so this
 does not add a parallel AST walker over the release modules.
 """
@@ -15,6 +20,13 @@ does not add a parallel AST walker over the release modules.
 from __future__ import annotations
 
 import ast
+import json
+import subprocess
+import sys
+import tempfile
+import zipfile
+from functools import lru_cache
+from pathlib import Path
 
 from conduit.apply.typecheck import _module_binds
 from conduit.impact.candidates import pick_candidates
@@ -26,6 +38,9 @@ _MAX_NEARBY = 12
 _MAX_SIGNATURE_CHARS = 160
 #: Distinctive phrase so the apply engine can hand off after one name retry.
 DOES_NOT_EXIST = "does not exist in"
+#: Phrase for names the rewrite left used but unbound (pyflakes-style).
+NEWLY_UNDEFINED = "is newly undefined after the rewrite"
+_RUNTIME_TIMEOUT = 8.0
 
 
 def ground_candidates(
@@ -36,16 +51,28 @@ def ground_candidates(
     old_params: list[str] | None = None,
     call_kwargs: list[str] | None = None,
     limit: int = MAX_GROUND_CANDIDATES,
+    wheel: Path | None = None,
+    python: str | None = None,
 ) -> list[dict[str, str]]:
     """Short list of real target-version names near ``hints``.
 
     Builds the public surface once from ``modules``, then ranks with
     ``pick_candidates`` (token similarity, leaf match, parameter overlap).
+    Runtime-confirmed hint names (lazy exports) are promoted onto the surface.
     """
     top = _top(package)
-    if not top or not modules:
+    if not top:
         return []
-    surface = public_surface(modules, top)
+    surface = public_surface(modules, top) if modules else {}
+    for hint in hints:
+        dotted = _hint_to_dotted(hint, top)
+        if not dotted or dotted in surface:
+            continue
+        status, _ = resolve_name(
+            dotted, top, modules, wheel=wheel, python=python
+        )
+        if status == "ok":
+            surface[dotted] = f"{dotted}()"
     if not surface:
         return []
     params = {
@@ -73,6 +100,416 @@ def ground_candidates(
             if len(out) >= limit:
                 return out
     return out
+
+
+def _hint_to_dotted(hint: str, top: str) -> str:
+    text = (hint or "").strip()
+    if not text:
+        return ""
+    if text == top or text.startswith(top + "."):
+        return text
+    return ""
+
+
+def resolve_name(
+    dotted: str,
+    package: str,
+    modules: dict[str, ast.Module],
+    *,
+    wheel: Path | None = None,
+    python: str | None = None,
+) -> tuple[str, object | None]:
+    """Walk ``dotted`` the way Python would.
+
+    Returns ``(status, leaf)`` where status is ``"ok"``, ``"missing"``, or
+    ``"unknown"``. Prefer a real import + ``getattr`` (including lazy
+    ``__getattr__``). Static AST is a fallback; lazy export tables yield
+    ``unknown``, never invented-missing.
+    """
+    top = _top(package)
+    if not dotted or not top:
+        return "missing", None
+    if not (dotted == top or dotted.startswith(top + ".")):
+        return "missing", None
+    runtime = _runtime_resolve(dotted, top, wheel=wheel, python=python)
+    if runtime is not None:
+        return runtime, None
+    return _static_resolve(dotted, top, modules), None
+
+
+@lru_cache(maxsize=256)
+def _runtime_resolve_cached(
+    dotted: str,
+    package: str,
+    wheel_key: str,
+    python: str,
+) -> str | None:
+    wheel = Path(wheel_key) if wheel_key else None
+    return _runtime_resolve_uncached(dotted, package, wheel=wheel, python=python)
+
+
+def _runtime_resolve(
+    dotted: str,
+    package: str,
+    *,
+    wheel: Path | None,
+    python: str | None,
+) -> str | None:
+    py = python or sys.executable
+    key = str(wheel) if wheel is not None else ""
+    try:
+        return _runtime_resolve_cached(dotted, package, key, py)
+    except (OSError, TypeError, ValueError):
+        return _runtime_resolve_uncached(dotted, package, wheel=wheel, python=py)
+
+
+def _runtime_resolve_uncached(
+    dotted: str,
+    package: str,
+    *,
+    wheel: Path | None,
+    python: str | None,
+) -> str | None:
+    """Import the package and walk attributes. ``None`` if the probe cannot run."""
+    script = (
+        "import importlib, json, sys\n"
+        f"pkg = {package!r}\n"
+        f"dotted = {dotted!r}\n"
+        "try:\n"
+        "    mod = importlib.import_module(pkg)\n"
+        "except Exception as exc:\n"
+        "    print(json.dumps({'status': 'probe_failed', 'err': type(exc).__name__}))\n"
+        "    raise SystemExit(0)\n"
+        "cur = mod\n"
+        "parts = dotted.split('.')[1:]\n"
+        "for part in parts:\n"
+        "    try:\n"
+        "        cur = getattr(cur, part)\n"
+        "    except AttributeError:\n"
+        "        print(json.dumps({'status': 'missing'}))\n"
+        "        raise SystemExit(0)\n"
+        "    except Exception as exc:\n"
+        "        print(json.dumps({'status': 'unknown', 'err': type(exc).__name__}))\n"
+        "        raise SystemExit(0)\n"
+        "print(json.dumps({'status': 'ok'}))\n"
+    )
+    cmd_python = python or sys.executable
+    try:
+        if wheel is not None:
+            path = Path(wheel)
+            if path.is_dir():
+                return _run_name_probe(cmd_python, script, env_pythonpath=str(path))
+            if path.is_file():
+                with tempfile.TemporaryDirectory(prefix="conduit-name-") as tmp:
+                    extract = Path(tmp)
+                    with zipfile.ZipFile(path) as zf:
+                        zf.extractall(extract)
+                    return _run_name_probe(cmd_python, script, env_pythonpath=str(extract))
+        return _run_name_probe(cmd_python, script, env_pythonpath=None)
+    except OSError:
+        return None
+
+
+def _run_name_probe(
+    python: str,
+    script: str,
+    *,
+    env_pythonpath: str | None,
+) -> str | None:
+    import os
+
+    env = os.environ.copy()
+    if env_pythonpath:
+        prev = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = env_pythonpath + (os.pathsep + prev if prev else "")
+    try:
+        proc = subprocess.run(
+            [python, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=_RUNTIME_TIMEOUT,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = (proc.stdout or "").strip().splitlines()
+    if not lines:
+        return None
+    try:
+        payload = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return None
+    status = payload.get("status")
+    if status == "ok":
+        return "ok"
+    if status == "missing":
+        return "missing"
+    if status == "unknown":
+        return "unknown"
+    # probe_failed: package not importable here → fall back to static
+    return None
+
+
+def _static_resolve(
+    dotted: str,
+    top: str,
+    modules: dict[str, ast.Module],
+) -> str:
+    if not modules:
+        return "unknown"
+    parts = dotted.split(".")
+    for depth in range(len(parts), 0, -1):
+        mod_name = ".".join(parts[:depth])
+        tree = modules.get(mod_name)
+        if tree is None:
+            continue
+        rest = parts[depth:]
+        if not rest:
+            return "ok"
+        if _module_is_lazy(tree):
+            return "unknown"
+        current = mod_name
+        node: object | None = tree
+        for segment in rest:
+            child = f"{current}.{segment}"
+            if isinstance(node, ast.Module) and _module_is_lazy(node):
+                return "unknown"
+            if _module_present(modules, child):
+                current = child
+                node = modules.get(child) or ast.Module(body=[], type_ignores=[])
+                continue
+            nxt = _attr_on(node, segment, modules, current)
+            if nxt is None:
+                return "missing"
+            node = nxt
+            current = child
+        return "ok"
+    if _module_present(modules, dotted):
+        return "ok"
+    root = modules.get(top)
+    if root is not None and _module_is_lazy(root):
+        return "unknown"
+    return "missing"
+
+
+def _module_is_lazy(tree: ast.Module | None) -> bool:
+    """True when the module exports via ``__getattr__`` or a lazy-import table."""
+    if tree is None:
+        return False
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "__getattr__":
+            return True
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and _lazy_table_name(target.id):
+                    return True
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if _lazy_table_name(node.target.id):
+                return True
+    return False
+
+
+def _lazy_table_name(name: str) -> bool:
+    lower = name.lower()
+    if lower in {
+        "_lazy_imports",
+        "_lazy_import",
+        "_import_map",
+        "_imports",
+        "_module_map",
+        "_lazy",
+        "__getattr__",
+    }:
+        return True
+    return "lazy" in lower and ("import" in lower or "attr" in lower or "map" in lower)
+
+
+def newly_undefined_breaks(original: str, patched: str, path: str) -> list[str]:
+    """Names used after the rewrite that are unbound (and were bound before).
+
+    Same severity as a name break: one corrective retry, then needs-human.
+    Focuses on runtime NameError risk (not annotation-only under
+    ``from __future__ import annotations``).
+    """
+    before = _undefined_names_in(original)
+    after = _undefined_names_in(patched)
+    findings: list[str] = []
+    for name in sorted(after - before):
+        line = _first_use_line(patched, name)
+        findings.append(f"{path}:{line} name: {name} {NEWLY_UNDEFINED}")
+    return findings
+
+
+def _undefined_names_in(source: str) -> set[str]:
+    """Pyflakes-style: Load names that are never bound/imported/builtin.
+
+    When ``from __future__ import annotations`` is present, names that appear
+    only in annotations are skipped (they are not evaluated at runtime).
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    builtins = set(dir(__builtins__)) if isinstance(__builtins__, dict) else set(dir(__builtins__))
+    builtins |= {
+        "True",
+        "False",
+        "None",
+        "Ellipsis",
+        "NotImplemented",
+        "print",
+        "len",
+        "range",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "type",
+        "object",
+        "isinstance",
+        "issubclass",
+        "getattr",
+        "setattr",
+        "hasattr",
+        "Exception",
+        "BaseException",
+        "ValueError",
+        "TypeError",
+        "KeyError",
+        "AttributeError",
+        "ImportError",
+        "RuntimeError",
+        "StopIteration",
+        "enumerate",
+        "zip",
+        "map",
+        "filter",
+        "sorted",
+        "reversed",
+        "iter",
+        "next",
+        "open",
+        "super",
+        "property",
+        "classmethod",
+        "staticmethod",
+        "abs",
+        "min",
+        "max",
+        "sum",
+        "any",
+        "all",
+        "__name__",
+        "__file__",
+        "__package__",
+        "__doc__",
+        "__annotations__",
+    }
+    future_annotations = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in tree.body
+    )
+    # Collect annotation AST nodes to skip when postponed annotations are on.
+    skip_annotation_ids: set[int] = set()
+    if future_annotations:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.arg) and node.annotation is not None:
+                skip_annotation_ids.add(id(node.annotation))
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+                skip_annotation_ids.add(id(node.returns))
+            elif isinstance(node, ast.AnnAssign):
+                skip_annotation_ids.add(id(node.annotation))
+
+    bound: set[str] = set()
+    used: set[str] = set()
+
+    class V(ast.NodeVisitor):
+        def visit(self, node: ast.AST) -> None:
+            if id(node) in skip_annotation_ids:
+                return
+            super().visit(node)
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, ast.Store):
+                bound.add(node.id)
+            elif isinstance(node.ctx, ast.Load):
+                used.add(node.id)
+
+        def visit_arg(self, node: ast.arg) -> None:
+            bound.add(node.arg)
+            self.generic_visit(node)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                bound.add(alias.asname or alias.name.split(".", 1)[0])
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                bound.add(alias.asname or alias.name)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            bound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            bound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            bound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name:
+                bound.add(node.name)
+            self.generic_visit(node)
+
+        def visit_Global(self, node: ast.Global) -> None:
+            bound.update(node.names)
+
+        def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+            bound.update(node.names)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if isinstance(node.target, ast.Name):
+                bound.add(node.target.id)
+            if id(node.annotation) not in skip_annotation_ids:
+                self.visit(node.annotation)
+            if node.value is not None:
+                self.visit(node.value)
+
+    V().visit(tree)
+    return {n for n in used if n not in bound and n not in builtins}
+
+
+def _first_use_line(source: str, name: str) -> int:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return 1
+
+    class Finder(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.line = 1
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, ast.Load) and node.id == name and self.line == 1:
+                self.line = getattr(node, "lineno", 1) or 1
+            self.generic_visit(node)
+
+    finder = Finder()
+    finder.visit(tree)
+    return finder.line
+
 
 
 def public_surface(modules: dict[str, ast.Module], top: str) -> dict[str, str]:
@@ -235,6 +672,8 @@ def name_breaks(
     *,
     original: str = "",
     all_imports: bool = False,
+    wheel: Path | None = None,
+    python: str | None = None,
 ) -> list[str]:
     """Findings for SDK imports and module-rooted attribute chains the rewrite uses.
 
@@ -245,13 +684,17 @@ def name_breaks(
       in the file, including stale leftovers the rewrite left behind
     - ``pkg.sub.Name`` attribute chains inside the rewritten span
 
+    Names that cannot be confirmed (runtime probe failed, or static lazy
+    surface) are skipped — never reported as invented.
+
     Attribute reads on values typed as a release class are covered elsewhere
     (``attribute_breaks`` / ``missing_member``).
     """
     top = _top(package)
     if not top or not package or not version:
         return []
-    if not any(name == top or name.startswith(top + ".") for name in modules):
+    has_modules = any(name == top or name.startswith(top + ".") for name in modules)
+    if not has_modules and wheel is None and python is None:
         # No Python modules for this package in the wheel: cannot decide.
         return []
     try:
@@ -278,7 +721,9 @@ def name_breaks(
         introduced = _import_key(node) not in old_imports
         if not all_imports and not introduced and not (used & local_names):
             continue
-        for text in _check_import(modules, node, path, package, version):
+        for text in _check_import(
+            modules, node, path, package, version, wheel=wheel, python=python
+        ):
             if text not in out:
                 out.append(text)
 
@@ -287,7 +732,17 @@ def name_breaks(
         root, parts = _attr_chain(node)
         if root is None or root.id not in aliases:
             continue
-        for text in _check_chain(modules, path, node, aliases[root.id], parts, package, version):
+        for text in _check_chain(
+            modules,
+            path,
+            node,
+            aliases[root.id],
+            parts,
+            package,
+            version,
+            wheel=wheel,
+            python=python,
+        ):
             if text not in out:
                 out.append(text)
     return out
@@ -418,14 +873,19 @@ def _check_import(
     path: str,
     package: str,
     version: str,
+    *,
+    wheel: Path | None = None,
+    python: str | None = None,
 ) -> list[str]:
     out: list[str] = []
     label = ast.unparse(node).splitlines()[0][:80]
     line = node.lineno
     if isinstance(node, ast.Import):
         for alias in node.names:
-            missing = _missing_module(modules, alias.name)
-            if missing is None:
+            status, missing = _module_status(
+                modules, alias.name, package, wheel=wheel, python=python
+            )
+            if status != "missing" or missing is None:
                 continue
             out.append(_module_finding(path, line, label, missing, package, version, modules))
         return out
@@ -433,18 +893,28 @@ def _check_import(
     module = node.module or ""
     if any(alias.name == "*" for alias in node.names):
         # Star import: cannot enumerate; only require the module itself.
-        missing = _missing_module(modules, module)
-        if missing is not None:
+        status, missing = _module_status(
+            modules, module, package, wheel=wheel, python=python
+        )
+        if status == "missing" and missing is not None:
             out.append(_module_finding(path, line, label, missing, package, version, modules))
         return out
 
-    missing = _missing_module(modules, module)
-    if missing is not None:
+    status, missing = _module_status(
+        modules, module, package, wheel=wheel, python=python
+    )
+    if status == "missing" and missing is not None:
         out.append(_module_finding(path, line, label, missing, package, version, modules))
+        return out
+    if status == "unknown":
         return out
 
     for alias in node.names:
-        if _name_in_module(modules, module, alias.name):
+        dotted = f"{module}.{alias.name}"
+        name_status, _ = resolve_name(
+            dotted, package, modules, wheel=wheel, python=python
+        )
+        if name_status != "missing":
             continue
         candidates = _names_nearby(modules, module)
         out.append(
@@ -462,6 +932,9 @@ def _check_chain(
     parts: list[str],
     package: str,
     version: str,
+    *,
+    wheel: Path | None = None,
+    python: str | None = None,
 ) -> list[str]:
     if not parts:
         return []
@@ -469,50 +942,75 @@ def _check_chain(
     label = ast.unparse(node)[:80]
     line = node.lineno
     for part in parts:
-        # Prefer a submodule when both a binding and a submodule exist.
         child = f"{current}.{part}"
-        if _module_present(modules, child):
-            current = child
-            continue
-        if _name_in_module(modules, current, part):
+        status, _ = resolve_name(
+            child, package, modules, wheel=wheel, python=python
+        )
+        if status == "ok":
+            # Prefer continuing along submodules when present.
+            if _module_present(modules, child):
+                current = child
+                continue
             # A value (class/function/constant): further attributes are not module paths.
-            # Typed attribute checks cover fields on release classes.
             return []
-        # First missing segment: report it.
-        if not _module_present(modules, current) and not modules.get(current):
+        if status == "unknown":
             return []
-        target = child
-        if _module_present(modules, current) or current in modules:
-            nearby: list[str] = []
-            for name in _child_modules(modules, current) + _names_nearby(modules, current):
-                if name not in nearby:
-                    nearby.append(name)
-                if len(nearby) >= _MAX_NEARBY:
-                    break
-            return [
-                f"{path}:{line} {label}: {target} {DOES_NOT_EXIST} {package} {version}"
-                + (f" (names in {current}: {', '.join(nearby)})" if nearby else "")
-            ]
-        return []
+        # missing
+        if not _module_present(modules, current) and current not in modules:
+            # Parent itself unknown/absent under static surface — do not invent.
+            parent_status, _ = resolve_name(
+                current, package, modules, wheel=wheel, python=python
+            )
+            if parent_status != "ok":
+                return []
+        nearby: list[str] = []
+        for name in _child_modules(modules, current) + _names_nearby(modules, current):
+            if name not in nearby:
+                nearby.append(name)
+            if len(nearby) >= _MAX_NEARBY:
+                break
+        return [
+            f"{path}:{line} {label}: {child} {DOES_NOT_EXIST} {package} {version}"
+            + (f" (names in {current}: {', '.join(nearby)})" if nearby else "")
+        ]
     return []
 
 
-def _missing_module(modules: dict[str, ast.Module], dotted: str) -> str | None:
-    """Longest missing prefix of ``dotted``, or None when the module is present."""
+def _module_status(
+    modules: dict[str, ast.Module],
+    dotted: str,
+    package: str,
+    *,
+    wheel: Path | None = None,
+    python: str | None = None,
+) -> tuple[str, str | None]:
+    """``(status, missing_prefix)`` for a module path. ``missing`` only when status is missing."""
     if not dotted:
-        return None
-    if _module_present(modules, dotted):
-        return None
+        return "ok", None
+    status, _ = resolve_name(dotted, package, modules, wheel=wheel, python=python)
+    if status == "ok":
+        return "ok", None
+    if status == "unknown":
+        return "unknown", None
+    # missing: report the longest missing prefix with a known parent
     parts = dotted.split(".")
     for length in range(1, len(parts) + 1):
         candidate = ".".join(parts[:length])
-        if not _module_present(modules, candidate):
-            # Only flag when a parent prefix is known in this wheel.
+        cand_status, _ = resolve_name(
+            candidate, package, modules, wheel=wheel, python=python
+        )
+        if cand_status == "missing":
             parent = ".".join(parts[: length - 1]) if length > 1 else ""
-            if length == 1 or _module_present(modules, parent):
-                return candidate
-            return None
-    return dotted
+            if length == 1 or (
+                parent
+                and resolve_name(parent, package, modules, wheel=wheel, python=python)[0]
+                == "ok"
+            ):
+                return "missing", candidate
+            return "unknown", None
+        if cand_status == "unknown":
+            return "unknown", None
+    return "missing", dotted
 
 
 def _module_present(modules: dict[str, ast.Module] | None, name: str) -> bool:
@@ -521,10 +1019,79 @@ def _module_present(modules: dict[str, ast.Module] | None, name: str) -> bool:
     return name in modules or any(other.startswith(name + ".") for other in modules)
 
 
-def _name_in_module(modules: dict[str, ast.Module], module: str, name: str) -> bool:
+def _name_in_module_static(modules: dict[str, ast.Module], module: str, name: str) -> bool:
     if _module_binds(modules.get(module), name):
         return True
     return _module_present(modules, f"{module}.{name}")
+
+
+def _name_in_module(modules: dict[str, ast.Module], module: str, name: str) -> bool:
+    return _name_in_module_static(modules, module, name)
+
+
+def _attr_on(
+    node: object,
+    name: str,
+    modules: dict[str, ast.Module],
+    current_module: str,
+) -> object | None:
+    """Resolve ``name`` on a module AST or class body; used by static resolve."""
+    if isinstance(node, ast.Module):
+        for item in node.body:
+            if isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                if item.name == name:
+                    return item
+            elif isinstance(item, ast.ImportFrom):
+                for alias in item.names:
+                    local = alias.asname or alias.name
+                    if local != name or alias.name == "*":
+                        continue
+                    child = f"{current_module}.{name}"
+                    if child in modules:
+                        return modules[child]
+                    # Follow re-export to the defining module's binding.
+                    base = _from_module(current_module, item)
+                    if base:
+                        source = modules.get(base)
+                        if source is not None:
+                            found = _attr_on(source, alias.name, modules, base)
+                            if found is not None:
+                                return found
+                    return item
+            elif isinstance(item, ast.Import):
+                for alias in item.names:
+                    local = alias.asname or alias.name.split(".", 1)[0]
+                    if local == name:
+                        child = f"{current_module}.{name}"
+                        if child in modules:
+                            return modules[child]
+                        return item
+            elif isinstance(item, ast.Assign):
+                for target in item.targets:
+                    if isinstance(target, ast.Name) and target.id == name:
+                        return item
+            elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                if item.target.id == name:
+                    return item
+        child = f"{current_module}.{name}"
+        if child in modules or any(m.startswith(child + ".") for m in modules):
+            return modules.get(child) or ast.Module(body=[], type_ignores=[])
+        return None
+    if isinstance(node, ast.ClassDef):
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if item.name == name:
+                    return item
+            elif isinstance(item, ast.Assign):
+                for target in item.targets:
+                    if isinstance(target, ast.Name) and target.id == name:
+                        return item
+            elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                if item.target.id == name:
+                    return item
+        return None
+    return None
+
 
 
 def _names_nearby(modules: dict[str, ast.Module], module: str) -> list[str]:
