@@ -30,6 +30,7 @@ from conduit.apply.context import (
 from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.nonecheck import NONE_CHECK
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
+from conduit.apply.names import RemovedImport, RemovedModuleImports
 from conduit.apply.plain import plain_why
 from conduit.apply.prompts import propose_messages, summarize_messages
 from conduit.apply.unused import drop_unused_imports
@@ -50,7 +51,7 @@ from conduit.apply.testrun import (
     run_tests,
     suite_couldnt_run,
 )
-from conduit.apply.testrefs import find_test_refs
+from conduit.apply.testrefs import _python_files, find_test_refs, is_test_path
 from conduit.apply.change_why import caught, caught_keys, change_why
 from conduit.apply.dropped import DROPPED, content_dropped, import_swap_why
 from conduit.apply.producers import repo_producers
@@ -219,11 +220,18 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
 
     try:
         selected = sites if config.max_sites is None else sites[: config.max_sites]
+        _UNSPLICED.clear()
         if config.test_cmd and not config.dry_run and client is not None:
             _apply_batch(selected, config, client, report, stop=stop)
             _fill_why(report)
             return report
         covered, texts = _one_per_function(config.root, selected)
+        import_shifts: list[RemovedImport] = []
+        relocated_originals: dict[str, str] = {}
+        if config.write and not config.dry_run:
+            import_maps = _load_import_maps(config, selected)
+            _bind_import_maps(config.root, import_maps)
+            import_shifts = _relocate_tree(config.root, config.root, import_maps, relocated_originals)
         # One whole-repo parse for declared/dict-key/typecheck; per-site rechecks
         # only re-parse files a rewrite changes.
         index = RepoIndex.build(config.root) if config.recheck_impact else None
@@ -236,6 +244,25 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
                 if id(site) in covered:
                     report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
                     continue
+                hit = _import_hit(site, import_shifts)
+                if hit is not None:
+                    why = _import_shift_why(hit, site.change)
+                    before = relocated_originals.get(site.path, "")
+                    after = _read(config.root / site.path)
+                    diff = unified_diff_for(site.path, before, after) if before else ""
+                    result_status = SiteStatus.NEEDS_HUMAN if hit.missing else SiteStatus.FIXED_UNVERIFIED
+                    report.results.append(
+                        SiteResult(
+                            site=site,
+                            status=result_status,
+                            why=why,
+                            error=why if hit.missing else "",
+                            diff=diff,
+                        )
+                    )
+                    _sync_ledger()
+                    _checkpoint(config, report)
+                    continue
                 moved = _relocate(config.root, site, texts.get(id(site), "")) if config.write else site
                 if moved is None:
                     why = "line rewritten by an earlier fix in this file"
@@ -246,6 +273,7 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
                 _checkpoint(config, report)
         _fill_why(report)
     finally:
+        _unbind_import_maps(config.root)
         _sync_ledger()
         _checkpoint(config, report)
         _restore_partial_handlers(previous)
@@ -321,6 +349,9 @@ def _apply_batch(
         scratch = Path(tmp) / "tree"
         shutil.copytree(config.root, scratch, ignore=shutil.ignore_patterns(*_SCRATCH_IGNORE))
         originals: dict[str, str] = {}
+        import_maps = _load_import_maps(config, selected)
+        _bind_import_maps(scratch, import_maps)
+        import_shifts = _relocate_tree(scratch, config.root, import_maps, originals)
         lines = _Lines(paths=[])
         accepted: dict[int, dict[str, Any]] = {}  # id(site) -> sink, in application order
         routes = _RouteState(accepted=accepted)
@@ -358,6 +389,38 @@ def _apply_batch(
                 if site.path not in lines.paths:
                     lines.paths.append(site.path)
                 texts_of[id(site)] = texts.get(id(site), "")
+                hit = _import_hit(site, import_shifts)
+                if hit is not None:
+                    why = _import_shift_why(hit, site.change)
+                    diff = unified_diff_for(
+                        site.path, originals.get(site.path, ""), _read(scratch / site.path)
+                    )
+                    if hit.missing:
+                        result = SiteResult(
+                            site=site,
+                            status=SiteStatus.NEEDS_HUMAN,
+                            why=why,
+                            error=why,
+                            diff=diff,
+                        )
+                    else:
+                        result = SiteResult(
+                            site=site,
+                            status=SiteStatus.FIXED_UNVERIFIED,
+                            why=why,
+                            diff=diff,
+                        )
+                        accepted[id(site)] = {
+                            "site": site,
+                            "block": hit.replacement.strip(),
+                            "edit": None,
+                            "tokens": 0,
+                            "mechanical_import": True,
+                        }
+                    slots[id(site)] = len(report.results)
+                    report.results.append(result)
+                    _checkpoint(config, report)
+                    continue
                 moved = _relocate(scratch, site, texts_of[id(site)])
                 sink: dict[str, Any] = {"site": site}
                 routes.key = id(site)
@@ -402,6 +465,8 @@ def _apply_batch(
                     report.results[:] = [
                         item for _rank, item in sorted(zip(ranks, report.results), key=lambda pair: pair[0])
                     ]
+                _unbind_import_maps(scratch)
+                _UNSPLICED.clear()
                 return
             _retry_routed(work, client, report, originals, texts_of, slots)
             _drop_traced_reads(work, report, originals, texts_of, slots)
@@ -410,6 +475,9 @@ def _apply_batch(
             failure = ""
             stashed: dict[str, str] = {}
             checked_flakes = False
+            collection_retried = False
+            # Output of the edited tree's collection/usage failure, not a bare probe.
+            suite_output = ""
             for _round in range(config.settings.max_attempts + 1):
                 ok, output = _check(config, scratch, report, lines)
                 if ok or not accepted:
@@ -428,39 +496,57 @@ def _apply_batch(
                 if _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
                     failure = ""
                     break
-                # Suite could not collect/run (collection, ImportError tokens,
-                # crashes, empty suite, pytest usage/exit 4). Keep accepted
-                # rewrites as FIXED_TESTS_COULDNT_RUN — never model-retry or
-                # mass-revert here. a7fbeb8 made judge fail these cases
-                # (closing false-verified); salvage used to re-prompt every
-                # site and empty the diff.
-                if _collection_error(output, exit_code=report.last_exit_code):
-                    _suite_blocked_by_bump(
-                        config, scratch, report, originals, accepted, output
+                # Usage/exit 4 and collection the edits did not cause stay
+                # couldn't-run. An import collection (exit 2) that the edits
+                # caused, or that still starts in an edited file, is retried
+                # once with the error text, then reverted to needs-human.
+                action, keys, probed = _import_collection_action(
+                    config, scratch, report, originals, accepted, output, retried=collection_retried
+                )
+                if action == "keep":
+                    suite_output = output
+                    _keep_unrunnable(
+                        config, scratch, report, originals, accepted, texts_of, slots, output,
+                        routes, probed=probed,
                     )
-                    report.suite_blocked = report.suite_blocked or _suite_blocked_why(output, report)
-                    # Keep accepted edits, but never keep a NameError-shaped file.
-                    _drop_newly_undefined_kept(
-                        scratch, report, originals, texts_of, slots, accepted
-                    )
-                    # Collection-shaped unload: keep accepted edits; do not
-                    # model-retry via salvage or routed pending.
-                    if work.routes is not None:
-                        work.routes.pending.clear()
                     failure = ""
                     break
-                # An empty blame used to stand for every accepted rewrite, so one
-                # unlocated failure reverted the batch. Leave them in place and
-                # separate the cause after the retries.
-                blamed = _blame(output, scratch, accepted)
-                others_failed = any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
-                if not blamed and len(accepted) == 1 and not others_failed:
-                    # The only rewrite is the only place the failure can sit.
-                    blamed = list(accepted)
-                if not blamed or _round == config.settings.max_attempts:
+                if action == "drop" or (action == "retry" and _round == config.settings.max_attempts):
+                    suite_bit, failure = _drop_import_collection(
+                        config, scratch, report, lines, originals, texts_of, slots, accepted,
+                        routes, keys, output,
+                    )
+                    if suite_bit:
+                        suite_output = suite_bit
                     break
+                if action == "retry":
+                    collection_retried = True
+                    model_keys = [key for key in keys if not accepted[key].get("mechanical_import")]
+                    if not model_keys:
+                        suite_bit, failure = _drop_import_collection(
+                            config, scratch, report, lines, originals, texts_of, slots, accepted,
+                            routes, keys, output,
+                        )
+                        if suite_bit:
+                            suite_output = suite_bit
+                        break
+                    blamed = model_keys
+                else:
+                    # An empty blame used to stand for every accepted rewrite, so one
+                    # unlocated failure reverted the batch. Leave them in place and
+                    # separate the cause after the retries.
+                    blamed = _blame(output, scratch, accepted)
+                    others_failed = any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
+                    if not blamed and len(accepted) == 1 and not others_failed:
+                        # The only rewrite is the only place the failure can sit.
+                        blamed = list(accepted)
+                    if not blamed or _round == config.settings.max_attempts:
+                        break
                 for key in blamed:
                     sink = accepted.pop(key)
+                    if sink.get("mechanical_import"):
+                        accepted[key] = sink
+                        continue
                     site = sink["site"]
                     _rebuild(scratch, originals, accepted, texts_of, site.path)
                     moved = _relocate(scratch, site, texts_of[key])
@@ -492,18 +578,26 @@ def _apply_batch(
                 if failure and _absorb_blocked_import(output, report, scratch, originals, accepted, slots, lines, stashed):
                     failure = ""
             if failure and accepted and _collection_error(failure, exit_code=report.last_exit_code):
-                # Never mass-revert or model-retry when the suite could not run:
-                # keep compiling rewrites and mark them tests-couldn't-run.
-                _suite_blocked_by_bump(
-                    config, scratch, report, originals, accepted, failure
+                # The loop already had its one retry. Usage and external collection
+                # stay couldn't-run. An import collection still blamed on an edit
+                # is reverted instead of counted as fixed.
+                action, keys, probed = _import_collection_action(
+                    config, scratch, report, originals, accepted, failure, retried=True,
                 )
-                report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
-                _drop_newly_undefined_kept(
-                    scratch, report, originals, texts_of, slots, accepted
-                )
-                if work.routes is not None:
-                    work.routes.pending.clear()
-                failure = ""
+                if action == "drop":
+                    suite_bit, failure = _drop_import_collection(
+                        config, scratch, report, lines, originals, texts_of, slots, accepted,
+                        routes, keys, failure,
+                    )
+                    if suite_bit:
+                        suite_output = suite_bit
+                else:
+                    suite_output = failure
+                    _keep_unrunnable(
+                        config, scratch, report, originals, accepted, texts_of, slots, failure,
+                        routes, probed=probed,
+                    )
+                    failure = ""
             if failure and accepted:
                 blamed = _blame(failure, scratch, accepted)
                 if blamed:
@@ -526,15 +620,23 @@ def _apply_batch(
                     )
             _record_test_refs(selected, scratch, report, config)
             if failure and _collection_error(failure, exit_code=report.last_exit_code):
-                report.suite_blocked = report.suite_blocked or _suite_blocked_why(failure, report)
-                # Keep remaining accepted rewrites: the suite could not run, so they
-                # are not verified and not silently reverted — except NameError keeps.
-                _drop_newly_undefined_kept(
-                    scratch, report, originals, texts_of, slots, accepted
+                action, keys, probed = _import_collection_action(
+                    config, scratch, report, originals, accepted, failure, retried=True,
                 )
-                if work.routes is not None:
-                    work.routes.pending.clear()
-                failure = ""
+                if action == "drop" and keys:
+                    suite_bit, failure = _drop_import_collection(
+                        config, scratch, report, lines, originals, texts_of, slots, accepted,
+                        routes, keys, failure,
+                    )
+                    if suite_bit:
+                        suite_output = suite_bit
+                else:
+                    suite_output = failure or suite_output
+                    _keep_unrunnable(
+                        config, scratch, report, originals, accepted, texts_of, slots, failure,
+                        routes, probed=probed,
+                    )
+                    failure = ""
             for path, text in stashed.items():
                 _write_file(scratch, path, text)
             if accepted and not failure:
@@ -550,6 +652,14 @@ def _apply_batch(
                 why = _why_when_uncalled(accepted, key) or done.why
                 site = accepted[key]["site"]
                 note = lines.gaps.get(site.path, "")
+                blocked = _tests_couldnt_run_why(report, lines, site.path, why)
+                if blocked:
+                    # Suite broken by the bump (collection/import): never "verified"
+                    # and never a "fixed" status the eval counts as a successful fix.
+                    report.results[slots[key]] = replace(
+                        done, status=SiteStatus.FIXED_TESTS_COULDNT_RUN, why=blocked, error=""
+                    )
+                    continue
                 review = _review_drops(originals.get(site.path, ""), _read(scratch / site.path), site.line)
                 kw = [name for name in (done.dropped or []) if repr(name) not in (review or "")]
                 if kw:
@@ -564,14 +674,6 @@ def _apply_batch(
                         review = f"{review} {note}"
                     report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_NEEDS_REVIEW, why=review, error="")
                     continue
-                blocked = _tests_couldnt_run_why(report, lines, site.path, why)
-                if blocked:
-                    # Suite broken by the bump (collection/import): never "verified"
-                    # and never the quieter "not covered by tests".
-                    report.results[slots[key]] = replace(
-                        done, status=SiteStatus.FIXED_TESTS_COULDNT_RUN, why=blocked, error=""
-                    )
-                    continue
                 unproven = _uncovered_why(lines.last, site.path, originals[site.path], accepted[key].get("block", ""), why)
                 if unproven:
                     # The tests pass, but none of them runs this rewrite: never "verified".
@@ -582,6 +684,7 @@ def _apply_batch(
                 if note and note not in why:
                     why = f"{why} {note}".strip()
                 report.results[slots[key]] = replace(done, status=SiteStatus.FIXED_VERIFIED, why=why)
+            _demote_unkept_fixes(report, scratch, originals, suite_output)
             for path, before in originals.items():
                 after = _read(scratch / path)
                 for key in accepted:
@@ -591,6 +694,8 @@ def _apply_batch(
                     _write_file(config.root, path, after)
             if len(ranks) == len(report.results):
                 report.results[:] = [item for _rank, item in sorted(zip(ranks, report.results), key=lambda pair: pair[0])]
+        _unbind_import_maps(scratch)
+        _UNSPLICED.clear()
 
 
 
@@ -1046,6 +1151,9 @@ def _rebuild(scratch: Path, originals: dict[str, str], accepted: dict[int, dict[
         site = sink["site"]
         if site.path != path:
             continue
+        if sink.get("mechanical_import"):
+            # Re-applied for the whole file after the splices, not as a model edit.
+            continue
         moved = _relocate(scratch, site, texts.get(key, ""))
         try:
             if moved is None:
@@ -1055,8 +1163,10 @@ def _rebuild(scratch: Path, originals: dict[str, str], accepted: dict[int, dict[
             patched, _span = drop_unused_imports(pack.full_source, patched, span, path, scratch)
         except (PatchError, ContextError):
             accepted.pop(key)
+            _UNSPLICED.append(key)
             continue
         _write_file(scratch, path, patched)
+    _reapply_imports(scratch, path)
 
 
 def _blame(output: str, scratch: Path, accepted: dict[int, dict[str, Any]]) -> list[int]:
@@ -1136,6 +1246,363 @@ def _import_failure_only(output: str) -> bool:
     if "AssertionError" in output or re.search(r"^FAILED\s+", output, re.M):
         return False
     return True
+
+
+# Target-release import maps for the tree currently being rewritten, keyed by
+# the tree root. ``_rebuild`` reapplies them so a splice back to the original
+# file does not restore an import whose module the release removed.
+_IMPORT_MAPS: dict[str, tuple[RemovedModuleImports, ...]] = {}
+# Sites whose accepted edit could not be re-spliced. Their result must not stay "fixed".
+_UNSPLICED: list[int] = []
+
+
+def _bind_import_maps(root: Path, maps: list[RemovedModuleImports]) -> None:
+    _IMPORT_MAPS[str(root.resolve())] = tuple(maps)
+
+
+def _unbind_import_maps(root: Path) -> None:
+    _IMPORT_MAPS.pop(str(root.resolve()), None)
+
+
+def _import_maps(root: Path) -> tuple[RemovedModuleImports, ...]:
+    return _IMPORT_MAPS.get(str(root.resolve()), ())
+
+
+def _load_import_maps(config: ApplyConfig, sites: list[ImpactSite]) -> list[RemovedModuleImports]:
+    """One map per bumped package, built once from that version's wheel."""
+    seen: set[tuple[str, str]] = set()
+    maps: list[RemovedModuleImports] = []
+    for site in sites:
+        dep = site.dependency or ""
+        version = site.to_version or ""
+        key = (dep, version)
+        if not dep or not version or key in seen:
+            continue
+        seen.add(key)
+        try:
+            wheel = new_release_wheel(
+                dep,
+                version,
+                fixtures=config.fixtures,
+                allow_network=config.allow_network,
+            )
+        except Exception:  # noqa: BLE001 — no wheel, no mechanical relocate
+            wheel = None
+        if wheel is None:
+            continue
+        maps.append(
+            RemovedModuleImports(
+                package=dep,
+                version=version,
+                modules=_modules(str(wheel)),
+                wheel=wheel,
+            )
+        )
+    return maps
+
+
+def _relocate_tree(
+    dest: Path,
+    source_root: Path,
+    maps: list[RemovedModuleImports],
+    originals: dict[str, str],
+) -> list[RemovedImport]:
+    """Rewrite every non-test file under ``dest`` once. Record originals first."""
+    from conduit.apply.names import relocate_removed_imports
+
+    if not maps:
+        return []
+    shifts: list[RemovedImport] = []
+    for path in _python_files(dest):
+        rel = path.relative_to(dest).as_posix()
+        if is_test_path(rel):
+            continue
+        text = _read(path)
+        updated, hits = relocate_removed_imports(text, rel, maps)
+        shifts.extend(hits)
+        if updated == text:
+            continue
+        if rel not in originals:
+            prior = _read(source_root / rel) if source_root != dest else text
+            originals[rel] = prior
+        _write_file(dest, rel, updated)
+    return shifts
+
+
+def _reapply_imports(root: Path, rel: str) -> None:
+    """Put removed-module imports back on their target homes after a rebuild."""
+    from conduit.apply.names import relocate_removed_imports
+
+    maps = list(_import_maps(root))
+    if not maps or is_test_path(rel):
+        return
+    text = _read(root / rel)
+    updated, _hits = relocate_removed_imports(text, rel, maps)
+    if updated != text:
+        _write_file(root, rel, updated)
+
+
+_CLAIMED_FIXED = {
+    SiteStatus.FIXED_VERIFIED,
+    SiteStatus.FIXED_UNVERIFIED,
+    SiteStatus.FIXED_NOT_COVERED,
+    SiteStatus.FIXED_NEEDS_REVIEW,
+}
+
+
+def _demote_unkept_fixes(
+    report: ApplyReport,
+    scratch: Path,
+    originals: dict[str, str],
+    suite_output: str,
+) -> None:
+    """A rewrite that is not in the tree, or that left collection broken, is not fixed.
+
+    Exit-4 / usage failures stay ``fixed, tests couldn't run`` when the edit is
+    still in the file. Import collection (exit 2) that names the file does not.
+    """
+    origins = _import_error_origins(suite_output)
+    import_fail = _import_collection_failure(suite_output, None) or (
+        "ImportError" in suite_output or "ModuleNotFoundError" in suite_output
+    )
+    usage = _usage_suite_error(suite_output, None)
+    unspliced = set(_UNSPLICED)
+    for index, result in enumerate(list(report.results)):
+        if result.status not in _CLAIMED_FIXED:
+            continue
+        path = result.site.path
+        current = _read(scratch / path)
+        original = originals.get(path, "")
+        absent = bool(original) and current == original
+        dropped = id(result.site) in unspliced
+        blamed = any(_same_file(origin, path) for origin in origins)
+        diff = unified_diff_for(path, original, current) if original else result.diff
+        if absent or dropped or (blamed and import_fail):
+            if absent or dropped:
+                message = "rewrite was not kept; not counted as fixed"
+            else:
+                message = "collection failed in this file after the rewrite; not counted as fixed"
+            report.results[index] = replace(
+                result, status=SiteStatus.NEEDS_HUMAN, error=message, why=message, diff=diff,
+            )
+            continue
+        if usage or (suite_output and report.suite_blocked):
+            why = result.why or ""
+            blocked = report.suite_blocked or "tests couldn't run"
+            if blocked not in why:
+                why = f"{blocked} The change: {why}".strip()
+            report.results[index] = replace(
+                result, status=SiteStatus.FIXED_TESTS_COULDNT_RUN, why=why, error="", diff=diff or result.diff,
+            )
+
+
+def _import_hit(site: ImpactSite, shifts: list[RemovedImport]) -> RemovedImport | None:
+    for hit in shifts:
+        if hit.path == site.path and hit.line <= site.line <= hit.end_line:
+            return hit
+    return None
+
+
+def _import_shift_why(hit: RemovedImport, change: str) -> str:
+    tail = f" ({change})" if change else ""
+    if hit.missing and not hit.moved:
+        names = ", ".join(hit.missing)
+        return (
+            f"{hit.path}:{hit.line} imports {names} from {hit.module}, "
+            f"which the target release removed, and no equivalent is on its surface{tail}"
+        )
+    moved = ", ".join(f"{name} -> {home}" for name, home in hit.moved)
+    if hit.missing:
+        names = ", ".join(hit.missing)
+        return (
+            f"Moved {moved}. No equivalent on the target surface for "
+            f"{names} from {hit.module}{tail}"
+        )
+    shown = hit.replacement.strip().replace("\n", " ")
+    return f"Replaced the import from `{hit.module}` with `{shown}`{tail}"
+
+
+def _usage_suite_error(output: str, exit_code: int | None) -> bool:
+    """Pytest usage/config (exit 4) and internal errors. Edits stay couldn't-run."""
+    if exit_code == 4:
+        return True
+    text = output or ""
+    return any(
+        token in text
+        for token in (
+            "error: unrecognized arguments",
+            "unrecognized arguments:",
+            "INTERNALERROR",
+        )
+    )
+
+
+def _import_collection_failure(output: str, exit_code: int | None) -> bool:
+    """Exit 2 or a collection ImportError. Not a usage/exit-4 error."""
+    if _usage_suite_error(output, exit_code):
+        return False
+    text = output or ""
+    has_import = "ImportError" in text or "ModuleNotFoundError" in text
+    collecting = "ERROR collecting" in text or "during collection" in text.lower()
+    if exit_code == 2 and (has_import or collecting):
+        return True
+    return bool(collecting and has_import)
+
+
+_FRAME_FILE = re.compile(r"([\w./\\-]+\.py):\d+")
+
+
+def _import_error_origins(output: str) -> set[str]:
+    """Last Python frame before each import/collection error."""
+    origins: set[str] = set()
+    frames: list[str] = []
+    for line in (output or "").splitlines():
+        match = _FRAME_FILE.search(line)
+        if match and ": in " in line:
+            frames.append(match.group(1).replace("\\", "/"))
+            continue
+        stripped = line.strip()
+        if re.match(r"^(E\s+)?(ImportError|ModuleNotFoundError)\b", stripped) or (
+            "ERROR collecting" in line and frames
+        ):
+            if frames:
+                origins.add(frames[-1])
+            frames = []
+    return origins
+
+
+def _same_file(origin: str, rel: str) -> bool:
+    """True when a traceback path is this repo-relative file, on a slash boundary."""
+    origin = origin.replace("\\", "/")
+    rel = rel.replace("\\", "/")
+    return origin == rel or origin.endswith("/" + rel)
+
+
+def _origin_keys(accepted: dict[int, dict[str, Any]], origins: set[str]) -> list[int]:
+    keys: list[int] = []
+    for key, sink in accepted.items():
+        path = sink["site"].path.replace("\\", "/")
+        if any(_same_file(origin, path) for origin in origins):
+            keys.append(key)
+    return keys
+
+
+def _keep_unrunnable(
+    config: ApplyConfig,
+    scratch: Path,
+    report: ApplyReport,
+    originals: dict[str, str],
+    accepted: dict[int, dict[str, Any]],
+    texts: dict[int, str],
+    slots: dict[int, int],
+    output: str,
+    routes: _RouteState | None,
+    *,
+    probed: bool,
+) -> None:
+    """Keep accepted edits when the suite could not run for a reason outside them."""
+    if not probed:
+        _suite_blocked_by_bump(config, scratch, report, originals, accepted, output)
+    report.suite_blocked = report.suite_blocked or _suite_blocked_why(output, report)
+    _drop_newly_undefined_kept(scratch, report, originals, texts, slots, accepted)
+    if routes is not None:
+        routes.pending.clear()
+
+
+def _import_collection_action(
+    config: ApplyConfig,
+    scratch: Path,
+    report: ApplyReport,
+    originals: dict[str, str],
+    accepted: dict[int, dict[str, Any]],
+    output: str,
+    *,
+    retried: bool,
+) -> tuple[str, list[int], bool]:
+    """How to treat this test failure: keep, retry, drop, or none.
+
+    The third item is true when the bare bumped tree was already re-run.
+    ``none`` is an ordinary test failure (assertion), handled by salvage.
+    """
+    exit_code = report.last_exit_code
+    if _usage_suite_error(output, exit_code):
+        return "keep", [], False
+    if _import_collection_failure(output, exit_code):
+        hits = _origin_keys(accepted, _import_error_origins(output))
+        if hits:
+            return ("drop" if retried else "retry"), hits, False
+        if report.retest_runs >= _RETEST_BUDGET:
+            return "keep", [], False
+        bare_blocked = _suite_blocked_by_bump(
+            config, scratch, report, originals, accepted, output
+        )
+        if bare_blocked:
+            return "keep", [], True
+        return ("drop" if retried else "retry"), list(accepted), True
+    if _collection_error(output, exit_code=exit_code):
+        return "keep", [], False
+    return "none", [], False
+
+
+def _drop_import_collection(
+    config: ApplyConfig,
+    scratch: Path,
+    report: ApplyReport,
+    lines: _Lines,
+    originals: dict[str, str],
+    texts: dict[int, str],
+    slots: dict[int, int],
+    accepted: dict[int, dict[str, Any]],
+    routes: _RouteState | None,
+    keys: list[int],
+    output: str,
+) -> tuple[str, str]:
+    """Revert edits that caused or left a collection failure.
+
+    Returns ``(collection output for the sweep, outstanding non-collection failure)``.
+    """
+    _drop_sites(scratch, originals, accepted, texts, slots, report, keys, output)
+
+    def _blocked(text: str) -> tuple[str, str]:
+        report.suite_blocked = report.suite_blocked or _suite_blocked_why(text, report)
+        if routes is not None:
+            routes.pending.clear()
+        return text, ""
+
+    if not accepted:
+        return _blocked(output)
+    ok, nxt = _check(config, scratch, report, lines)
+    if ok:
+        return "", ""
+    if _import_collection_failure(nxt, report.last_exit_code):
+        still = _origin_keys(accepted, _import_error_origins(nxt))
+        if still:
+            _drop_sites(scratch, originals, accepted, texts, slots, report, still, nxt)
+            if not accepted:
+                return _blocked(nxt)
+            ok, nxt = _check(config, scratch, report, lines)
+            if ok:
+                return "", ""
+        hits = _origin_keys(accepted, _import_error_origins(nxt))
+        if _collection_error(nxt, exit_code=report.last_exit_code) and not hits:
+            _keep_unrunnable(
+                config, scratch, report, originals, accepted, texts, slots, nxt,
+                routes, probed=False,
+            )
+            return nxt, ""
+        if hits:
+            _drop_sites(scratch, originals, accepted, texts, slots, report, hits, nxt)
+            return _blocked(nxt)
+    if _usage_suite_error(nxt, report.last_exit_code) or (
+        _collection_error(nxt, exit_code=report.last_exit_code)
+        and not _origin_keys(accepted, _import_error_origins(nxt))
+    ):
+        _keep_unrunnable(
+            config, scratch, report, originals, accepted, texts, slots, nxt,
+            routes, probed=False,
+        )
+        return nxt, ""
+    return "", nxt
 
 
 def _collection_error(output: str, *, exit_code: int | None = None) -> bool:
@@ -1568,6 +2035,7 @@ def _apply_one(
                     status, why = SiteStatus.FIXED_NOT_COVERED, unproven
             if config.write:
                 _write_file(config.root, site.path, patched)
+                _reapply_imports(config.root, site.path)
             sink.update(edit=edit, block=block)
             sink["tokens"] = site_tokens
             sink["flows"] = flows
@@ -2774,7 +3242,7 @@ _KEYED = re.compile(r"= passes a dict with keys .*? reads keys: required ")
 
 def _name_findings(findings: list[str]) -> list[str]:
     """Findings from ``names.name_breaks`` / newly-undefined (same one-retry path)."""
-    from conduit.apply.names import DOES_NOT_EXIST, NEWLY_UNDEFINED
+    from conduit.apply.names import DOES_NOT_EXIST, NEWLY_UNDEFINED, RemovedImport, RemovedModuleImports
 
     return [
         text
