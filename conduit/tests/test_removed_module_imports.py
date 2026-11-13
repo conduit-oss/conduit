@@ -28,8 +28,31 @@ def _write(path: Path, source: str) -> None:
     path.write_text(textwrap.dedent(source).lstrip("\n"), encoding="utf-8")
 
 
-def _wheel(tmp_path: Path) -> tuple[Path, dict]:
-    """Target acmekit: legacy module gone, Kept re-exported, Nested kept, Lost absent."""
+def _wheel(tmp_path: Path) -> tuple[Path, dict, dict]:
+    """Target acmekit: legacy module gone, Kept re-exported, Nested kept, Lost absent.
+
+    The 1.0 tree is the source release: Kept and Nested are classes there, the
+    same kind the 2.0 surface exports.
+    """
+    old = tmp_path / "fixtures" / "old"
+    _write(
+        old / "acmekit" / "__init__.py",
+        """\
+        """,
+    )
+    _write(
+        old / "acmekit" / "legacy.py",
+        """\
+        class Kept:
+            pass
+
+        class Nested:
+            pass
+
+        class Lost:
+            pass
+        """,
+    )
     root = tmp_path / "fixtures" / "new"
     _write(
         root / "acmekit" / "__init__.py",
@@ -62,27 +85,29 @@ def _wheel(tmp_path: Path) -> tuple[Path, dict]:
     )
     fixtures = tmp_path / "fixtures"
     (fixtures / "index.json").write_text(
-        json.dumps({"packages": {"acmekit": {"wheels": {"2.0": "new"}}}}),
+        json.dumps({"packages": {"acmekit": {"wheels": {"1.0": "old", "2.0": "new"}}}}),
         encoding="utf-8",
     )
     modules = _modules(str(root))
-    return fixtures, modules
+    old_modules = _modules(str(old))
+    return fixtures, modules, old_modules
 
 
-def _maps(modules: dict) -> list[RemovedModuleImports]:
+def _maps(modules: dict, old_modules: dict | None = None) -> list[RemovedModuleImports]:
     return [
         RemovedModuleImports(
             package="acmekit",
             version="2.0",
             modules=modules,
             wheel=None,
+            old_modules=old_modules,
         )
     ]
 
 
 def test_relocates_every_file_the_same_way_and_leaves_a_live_module(tmp_path: Path):
-    _fixtures, modules = _wheel(tmp_path)
-    maps = _maps(modules)
+    _fixtures, modules, old_modules = _wheel(tmp_path)
+    maps = _maps(modules, old_modules)
     source = (
         "from acmekit.legacy import Kept, Nested, Lost\n"
         "from acmekit.client import Client\n"
@@ -111,9 +136,9 @@ def test_relocates_every_file_the_same_way_and_leaves_a_live_module(tmp_path: Pa
 
 
 def test_leaves_the_import_when_no_name_has_a_home(tmp_path: Path):
-    _fixtures, modules = _wheel(tmp_path)
+    _fixtures, modules, old_modules = _wheel(tmp_path)
     source = "from acmekit.legacy import Lost\n\nraise Lost\n"
-    updated, hits = relocate_removed_imports(source, "only.py", _maps(modules))
+    updated, hits = relocate_removed_imports(source, "only.py", _maps(modules, old_modules))
     assert updated == source
     assert hits[0].replacement == ""
     assert hits[0].missing == ("Lost",)
@@ -126,7 +151,7 @@ def test_rewrites_import_and_attribute_uses_from_the_target_surface(tmp_path: Pa
     A name the target release does not export stays a bare identifier and is
     missing, so the caller can mark the site needs-human. No invented alias.
     """
-    _fixtures, modules = _wheel(tmp_path)
+    _fixtures, modules, old_modules = _wheel(tmp_path)
     source = (
         "import acmekit.legacy\n"
         "from acmekit.client import Client\n"
@@ -134,7 +159,7 @@ def test_rewrites_import_and_attribute_uses_from_the_target_surface(tmp_path: Pa
         "def use():\n"
         "    return acmekit.legacy.Kept, acmekit.legacy.Nested, acmekit.legacy.Lost, Client\n"
     )
-    updated, hits = relocate_removed_imports(source, "use.py", _maps(modules))
+    updated, hits = relocate_removed_imports(source, "use.py", _maps(modules, old_modules))
     assert "acmekit.legacy" not in updated
     assert "import acmekit\n" in updated
     assert "acmekit.Kept" in updated
@@ -149,9 +174,9 @@ def test_rewrites_import_and_attribute_uses_from_the_target_surface(tmp_path: Pa
 
 
 def test_attribute_alias_and_names_with_no_home(tmp_path: Path):
-    _fixtures, modules = _wheel(tmp_path)
+    _fixtures, modules, old_modules = _wheel(tmp_path)
     aliased = "import acmekit.legacy as old\n\nvalue = old.Kept\n"
-    updated, hits = relocate_removed_imports(aliased, "alias.py", _maps(modules))
+    updated, hits = relocate_removed_imports(aliased, "alias.py", _maps(modules, old_modules))
     assert "acmekit.legacy" not in updated
     assert "old" not in updated
     assert "import acmekit\n" in updated
@@ -159,17 +184,91 @@ def test_attribute_alias_and_names_with_no_home(tmp_path: Path):
     assert hits[0].missing == ()
 
     nowhere = "import acmekit.legacy\n\nraise acmekit.legacy.Lost\n"
-    updated, hits = relocate_removed_imports(nowhere, "missing.py", _maps(modules))
+    updated, hits = relocate_removed_imports(nowhere, "missing.py", _maps(modules, old_modules))
     assert "acmekit.legacy" not in updated
     assert "raise Lost\n" in updated
     assert any(hit.missing == ("Lost",) for hit in hits)
     assert all(not hit.moved for hit in hits if hit.missing == ("Lost",))
 
 
+def test_same_name_move_requires_the_same_kind(tmp_path: Path):
+    """An exception does not move onto a same-name class that is not an exception.
+
+    A same-kind exception still moves. A function does not move onto a class.
+    """
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    _write(old / "acmekit" / "__init__.py", "")
+    _write(
+        old / "acmekit" / "legacy.py",
+        """\
+        class Timeout(Exception):
+            pass
+
+        class Boom(Exception):
+            pass
+
+        def ping():
+            return 1
+        """,
+    )
+    _write(
+        new / "acmekit" / "__init__.py",
+        """\
+        class Timeout:
+            def __init__(self, seconds):
+                self.seconds = seconds
+
+        class Boom(Exception):
+            pass
+
+        class ping:
+            pass
+        """,
+    )
+    mapper = RemovedModuleImports(
+        package="acmekit",
+        version="2.0",
+        modules=_modules(str(new)),
+        old_modules=_modules(str(old)),
+    )
+    source = (
+        "from acmekit.legacy import Timeout, Boom, ping\n"
+        "\n"
+        "def use():\n"
+        "    return Timeout, Boom, ping\n"
+    )
+    updated, hits = relocate_removed_imports(source, "use.py", [mapper])
+    assert "Timeout" not in "".join(
+        part for part in updated.splitlines() if part.startswith("from ")
+    )
+    assert "from acmekit import Boom" in updated or "from acmekit import Boom\n" in updated
+    assert "ping" not in "".join(
+        part for part in updated.splitlines() if "import" in part and "Boom" not in part
+    )
+    assert hits[0].missing == ("Timeout", "ping") or set(hits[0].missing) == {"Timeout", "ping"}
+    assert any(name == "Boom" for name, _home in hits[0].moved)
+    assert all(name != "Timeout" for name, _home in hits[0].moved)
+
+    dotted = (
+        "import acmekit.legacy\n"
+        "\n"
+        "def use(err):\n"
+        "    if isinstance(err, acmekit.legacy.Timeout):\n"
+        "        raise err\n"
+        "    return acmekit.legacy.Boom\n"
+    )
+    updated, hits = relocate_removed_imports(dotted, "attr.py", [mapper])
+    assert "acmekit.legacy.Timeout" in updated or "Timeout" in updated
+    assert "acmekit.Timeout" not in updated
+    assert "acmekit.Boom" in updated or "from acmekit import Boom" in updated
+    assert any("Timeout" in hit.missing for hit in hits)
+
+
 def test_leaves_an_import_of_a_module_the_target_still_has(tmp_path: Path):
-    _fixtures, modules = _wheel(tmp_path)
+    _fixtures, modules, old_modules = _wheel(tmp_path)
     source = "import acmekit.client\n\nclient = acmekit.client.Client\n"
-    updated, hits = relocate_removed_imports(source, "live.py", _maps(modules))
+    updated, hits = relocate_removed_imports(source, "live.py", _maps(modules, old_modules))
     assert updated == source
     assert hits == []
 
@@ -188,11 +287,22 @@ def test_runtime_getattr_finds_a_lazy_reexport(tmp_path: Path):
         """,
     )
     modules = _modules(str(root))
+    old = tmp_path / "old"
+    _write(
+        old / "acmekit" / "legacy.py",
+        """\
+        class Kept:
+            pass
+        """,
+    )
+    _write(old / "acmekit" / "__init__.py", "")
     surface_map = RemovedModuleImports(
         package="acmekit",
         version="2.0",
         modules=modules,
         wheel=root,
+        old_modules=_modules(str(old)),
+        old_wheel=old,
     )
     source = "from acmekit.legacy import Kept\n"
     updated, hits = relocate_removed_imports(source, "use.py", [surface_map])
@@ -233,7 +343,7 @@ def _import_payload(*specs: tuple[str, int]) -> dict:
 
 
 def test_apply_rewrites_every_file_in_one_pass_without_the_model(tmp_path: Path):
-    fixtures, _modules_unused = _wheel(tmp_path)
+    fixtures, _modules_unused, _old_unused = _wheel(tmp_path)
     root = tmp_path / "app"
     _write(root / "a.py", "from acmekit.legacy import Kept, Lost\n\nA = Kept\nERR = Lost\n")
     _write(root / "pkg" / "b.py", "from acmekit.legacy import Kept, Lost\n\nB = Kept\nERR = Lost\n")

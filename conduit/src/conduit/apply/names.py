@@ -20,6 +20,7 @@ does not add a parallel AST walker over the release modules.
 from __future__ import annotations
 
 import ast
+import builtins
 import json
 import subprocess
 import sys
@@ -211,6 +212,111 @@ def _runtime_resolve_uncached(
         return None
 
 
+def _runtime_kind(
+    dotted: str,
+    package: str,
+    *,
+    wheel: Path | None,
+    python: str | None = None,
+) -> str | None:
+    """Kind of ``dotted`` from an import + ``getattr`` of ``wheel``.
+
+    ``exception`` is a ``BaseException`` subclass. ``class`` is any other class.
+    ``callable`` is a function (not a class). ``module`` is a module. ``None``
+    when the probe cannot run. A wheel is required so the ambient install is
+    not consulted.
+    """
+    if wheel is None or not dotted or not package:
+        return None
+    py = python or sys.executable
+    key = str(wheel)
+    try:
+        return _runtime_kind_cached(dotted, package, key, py)
+    except (OSError, TypeError, ValueError):
+        return _runtime_kind_uncached(dotted, package, wheel=wheel, python=py)
+
+
+@lru_cache(maxsize=256)
+def _runtime_kind_cached(dotted: str, package: str, wheel_key: str, python: str) -> str | None:
+    wheel = Path(wheel_key) if wheel_key else None
+    return _runtime_kind_uncached(dotted, package, wheel=wheel, python=python)
+
+
+def _runtime_kind_uncached(
+    dotted: str,
+    package: str,
+    *,
+    wheel: Path | None,
+    python: str | None,
+) -> str | None:
+    if wheel is None or not package:
+        return None
+    script = (
+        "import importlib, inspect, json\n"
+        f"dotted = {dotted!r}\n"
+        "parent, _, leaf = dotted.rpartition('.')\n"
+        "try:\n"
+        "    mod = importlib.import_module(parent or dotted)\n"
+        "    obj = getattr(mod, leaf) if leaf else mod\n"
+        "except Exception:\n"
+        "    print(json.dumps({'kind': ''}))\n"
+        "    raise SystemExit(0)\n"
+        "if inspect.ismodule(obj):\n"
+        "    kind = 'module'\n"
+        "elif isinstance(obj, type):\n"
+        "    kind = 'exc_type' if issubclass(obj, BaseException) else 'class'\n"
+        "elif callable(obj):\n"
+        "    kind = 'callable'\n"
+        "else:\n"
+        "    kind = 'value'\n"
+        "print(json.dumps({'kind': kind}))\n"
+    )
+    cmd_python = python or sys.executable
+    path = Path(wheel)
+    try:
+        if path.is_dir():
+            return _read_kind_probe(cmd_python, script, str(path))
+        if path.is_file():
+            with tempfile.TemporaryDirectory(prefix="conduit-kind-") as tmp:
+                extract = Path(tmp)
+                with zipfile.ZipFile(path) as zf:
+                    zf.extractall(extract)
+                return _read_kind_probe(cmd_python, script, str(extract))
+    except OSError:
+        return None
+    return None
+
+
+def _read_kind_probe(python: str, script: str, pythonpath: str) -> str | None:
+    import os
+
+    env = os.environ.copy()
+    prev = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = pythonpath + (os.pathsep + prev if prev else "")
+    try:
+        proc = subprocess.run(
+            [python, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=_RUNTIME_TIMEOUT,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = (proc.stdout or "").strip().splitlines()
+    if not lines:
+        return None
+    try:
+        payload = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return None
+    kind = str(payload.get("kind") or "")
+    if kind in {"exc_type", "class", "callable", "module", "value"}:
+        return kind
+    return None
+
+
 def _run_name_probe(
     python: str,
     script: str,
@@ -292,6 +398,148 @@ def _static_resolve(
     if root is not None and _module_is_lazy(root):
         return "unknown"
     return "missing"
+
+
+def _builtin_exception_names() -> frozenset[str]:
+    """Builtin exception class names. Not a list of product APIs."""
+    found: set[str] = set()
+    for name in dir(builtins):
+        obj = getattr(builtins, name, None)
+        if isinstance(obj, type) and issubclass(obj, BaseException):
+            found.add(name)
+    return frozenset(found)
+
+
+_BUILTIN_EXCEPTIONS = _builtin_exception_names()
+
+
+def _static_kind(dotted: str, top: str, modules: dict[str, ast.Module]) -> str | None:
+    """Kind of ``dotted`` from the wheel's AST, or None when it cannot be told.
+
+    A class whose bases cannot be classified is None: it might still be an
+    exception. A class with no bases is a class. A ``BaseException`` subclass
+    is an exception, not a plain class.
+    """
+    node, module = _static_defining_node(dotted, top, modules)
+    if node is None:
+        return None
+    if isinstance(node, ast.Module):
+        return "module"
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return "callable"
+    if isinstance(node, ast.ClassDef):
+        flag = _class_is_exception(node, modules, module, set())
+        if flag is None:
+            return None
+        return "exc_type" if flag else "class"
+    return None
+
+
+def _static_defining_node(
+    dotted: str,
+    top: str,
+    modules: dict[str, ast.Module],
+) -> tuple[ast.AST | None, str]:
+    if not modules or not dotted or not top:
+        return None, ""
+    if not (dotted == top or dotted.startswith(top + ".")):
+        return None, ""
+    if dotted in modules:
+        return modules[dotted], dotted
+    parts = dotted.split(".")
+    for depth in range(len(parts), 0, -1):
+        mod_name = ".".join(parts[:depth])
+        tree = modules.get(mod_name)
+        if tree is None:
+            continue
+        rest = parts[depth:]
+        if not rest:
+            return tree, mod_name
+        if _module_is_lazy(tree):
+            return None, ""
+        current = mod_name
+        node: object | None = tree
+        for segment in rest:
+            child = f"{current}.{segment}"
+            if isinstance(node, ast.Module) and _module_is_lazy(node):
+                return None, ""
+            if child in modules:
+                current = child
+                node = modules[child]
+                continue
+            nxt = _attr_on(node, segment, modules, current)
+            if nxt is None:
+                return None, ""
+            node = nxt
+            current = child
+        if isinstance(node, ast.AST):
+            return node, _owner_module(node, modules) or mod_name
+    return None, ""
+
+
+def _owner_module(node: ast.AST, modules: dict[str, ast.Module]) -> str:
+    for name, tree in modules.items():
+        if tree is node:
+            return name
+        for item in tree.body:
+            if item is node:
+                return name
+    return ""
+
+
+def _class_is_exception(
+    node: ast.ClassDef,
+    modules: dict[str, ast.Module],
+    module: str,
+    seen: set[int],
+) -> bool | None:
+    """True when a base is an exception, False when none are, None if unknown."""
+    if id(node) in seen:
+        return None
+    seen.add(id(node))
+    if not node.bases:
+        return False
+    unknown = False
+    for base in node.bases:
+        kind = _base_exception_kind(base, modules, module, seen)
+        if kind is True:
+            return True
+        if kind is None:
+            unknown = True
+    if unknown:
+        return None
+    return False
+
+
+def _base_exception_kind(
+    base: ast.expr,
+    modules: dict[str, ast.Module],
+    module: str,
+    seen: set[int],
+) -> bool | None:
+    if isinstance(base, ast.Name):
+        if base.id in _BUILTIN_EXCEPTIONS:
+            return True
+        if base.id in {"object", "type"}:
+            return False
+        tree = modules.get(module)
+        found = _attr_on(tree, base.id, modules, module) if tree is not None else None
+        if isinstance(found, ast.ClassDef):
+            return _class_is_exception(found, modules, _owner_module(found, modules) or module, seen)
+        return None
+    if isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name):
+        qual = f"{base.value.id}.{base.attr}"
+        if qual in modules:
+            return False
+        for name, tree in modules.items():
+            if name == base.value.id or name.endswith("." + base.value.id):
+                found = _attr_on(tree, base.attr, modules, name)
+                if isinstance(found, ast.ClassDef):
+                    return _class_is_exception(
+                        found, modules, _owner_module(found, modules) or name, seen
+                    )
+        return None
+    return None
 
 
 def _module_is_lazy(tree: ast.Module | None) -> bool:
@@ -1171,15 +1419,20 @@ class RemovedModuleImports:
         modules: dict[str, ast.Module],
         wheel: Path | None = None,
         python: str | None = None,
+        old_modules: dict[str, ast.Module] | None = None,
+        old_wheel: Path | None = None,
     ) -> None:
         self.package = package
         self.version = version
         self.modules = modules
         self.wheel = wheel
         self.python = python
+        self.old_modules = old_modules or {}
+        self.old_wheel = old_wheel
         self.top = _top(package)
         self.surface = public_surface(modules, self.top) if modules and self.top else {}
         self._homes: dict[str, str | None] = {}
+        self._kinds: dict[tuple[bool, str], str | None] = {}
         self._gone: dict[str, bool] = {}
 
     def plan(self, source: str, path: str) -> list[RemovedImport]:
@@ -1252,7 +1505,13 @@ class RemovedModuleImports:
         return found
 
     def home_for(self, name: str, *, removed_module: str) -> str | None:
-        """Dotted target-surface symbol for ``name``, or None if it has no home."""
+        """Dotted target-surface symbol for ``name``, or None if it has no home.
+
+        A same-name candidate is accepted only when the old symbol and the
+        candidate are the same kind (exception, class, callable, or module).
+        A different kind, or a kind that cannot be read from either wheel,
+        is not a home: the site stays needs-human.
+        """
         if name in self._homes:
             cached = self._homes[name]
         else:
@@ -1262,7 +1521,23 @@ class RemovedModuleImports:
             return None
         if cached == removed_module or cached.startswith(removed_module + "."):
             return None
+        old_kind = self._symbol_kind(f"{removed_module}.{name}", old=True)
+        new_kind = self._symbol_kind(cached, old=False)
+        if old_kind is None or new_kind is None or old_kind != new_kind:
+            return None
         return cached
+
+    def _symbol_kind(self, dotted: str, *, old: bool) -> str | None:
+        key = (old, dotted)
+        if key in self._kinds:
+            return self._kinds[key]
+        modules = self.old_modules if old else self.modules
+        wheel = self.old_wheel if old else self.wheel
+        kind = _runtime_kind(dotted, self.package, wheel=wheel, python=self.python)
+        if kind is None:
+            kind = _static_kind(dotted, self.top, modules)
+        self._kinds[key] = kind
+        return kind
 
     def _find_home(self, name: str) -> str | None:
         top = self.top

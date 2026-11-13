@@ -1290,12 +1290,26 @@ def _load_import_maps(config: ApplyConfig, sites: list[ImpactSite]) -> list[Remo
             wheel = None
         if wheel is None:
             continue
+        from_version = site.from_version or ""
+        old_wheel = None
+        if from_version and from_version != version:
+            try:
+                old_wheel = new_release_wheel(
+                    dep,
+                    from_version,
+                    fixtures=config.fixtures,
+                    allow_network=config.allow_network,
+                )
+            except Exception:  # noqa: BLE001 — no old wheel, kinds stay unknown
+                old_wheel = None
         maps.append(
             RemovedModuleImports(
                 package=dep,
                 version=version,
                 modules=_modules(str(wheel)),
                 wheel=wheel,
+                old_modules=_modules(str(old_wheel)) if old_wheel is not None else {},
+                old_wheel=old_wheel,
             )
         )
     return maps
