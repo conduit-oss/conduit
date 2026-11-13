@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 from conduit.outside_in.specs import ServiceSpec, normalize_dist
 
-_SCHEMA = 30
+_SCHEMA = 31
 _MAX_DEPTH = 4
 _MAX_BYTES = 40_000_000
 # Negative lookup / download outcomes (memory + disk under classify/schemaN).
@@ -266,6 +266,16 @@ def classify_distribution(
         stack=seen | {norm},
         recurse=recurse,
     )
+    if not result.service and recurse:
+        inherited = _facade_classification(
+            norm,
+            code,
+            root=root,
+            depth=depth,
+            stack=seen | {norm},
+        )
+        if inherited is not None:
+            result = inherited
     key = (norm, result.version or resolved or "unresolved", mode)
     _MEMORY[key] = result
     if result.loaded:
@@ -424,6 +434,134 @@ def _provides(found: Classification, module: str) -> bool:
         if module == name or module.startswith(name + ".") or name.startswith(module + "."):
             return True
     return False
+
+
+def _reexport_roots(code: _Code) -> set[str] | None:
+    """Import roots a release only re-exports.
+
+    ``None`` when any module defines its own code. A compatibility publish
+    that is only ``from other import *`` plus a ``Requires-Dist`` on the
+    package that actually ships ``other`` is one of these.
+    """
+    imported: set[str] = set()
+    saw = False
+    for name, blob in code.files:
+        if not str(name).endswith(".py") or _incidental_module(str(name)):
+            continue
+        saw = True
+        try:
+            tree = ast.parse(blob.decode("utf-8", "replace"))
+        except SyntaxError:
+            return None
+        for node in tree.body:
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+                continue
+            if isinstance(node, ast.Assign) and node.targets and all(
+                isinstance(target, ast.Name)
+                and target.id.startswith("__")
+                and target.id.endswith("__")
+                for target in node.targets
+            ):
+                continue
+            if isinstance(node, ast.ImportFrom):
+                if node.level or not node.module:
+                    return None
+                imported.add(node.module.split(".", 1)[0])
+                continue
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root_name = alias.name.split(".", 1)[0]
+                    if root_name:
+                        imported.add(root_name)
+                continue
+            return None
+    if not saw or not imported:
+        return None
+    own = {module.split(".", 1)[0] for module in code.modules}
+    external = {
+        name
+        for name in imported
+        if name not in own and not _is_stdlib_root(name)
+    }
+    return external or None
+
+
+def _facade_classification(
+    norm: str,
+    code: _Code,
+    *,
+    root: Path | None,
+    depth: int,
+    stack: frozenset[str],
+) -> Classification | None:
+    """Service classification inherited from the package this release re-exports.
+
+    The published name is kept. Modules, hosts, and constructors come from the
+    dependency that actually ships the imported root, so ``import name`` still
+    matches the client. A dependency that is not itself a service is not one.
+    """
+    if depth > _MAX_DEPTH or not code.require_pins:
+        return None
+    external = _reexport_roots(code)
+    if not external:
+        return None
+    for dep, pin in code.require_pins.items():
+        if not dep or dep in stack or _is_stdlib_root(dep.replace("-", "_")):
+            continue
+        impl = classify_distribution(
+            dep,
+            pin or None,
+            root=root,
+            depth=depth + 1,
+            stack=stack,
+            recurse=True,
+        )
+        if not impl.loaded or not impl.service:
+            continue
+        provided = {module.split(".", 1)[0] for module in impl.modules}
+        if not (external & provided):
+            continue
+        return Classification(
+            name=norm,
+            version=code.version,
+            package=norm,
+            service=True,
+            kind=impl.kind,
+            transport=impl.transport,
+            constructors=impl.constructors,
+            hosts=impl.hosts,
+            host_mode=impl.host_mode,
+            modules=impl.modules,
+            evidence=f"{norm} -> {impl.evidence or impl.name}",
+            loaded=True,
+        )
+    return None
+
+
+def reexport_dependency(path: Path) -> tuple[str, str] | None:
+    """``(name, version)`` of the client a wheel only re-exports, if it is one.
+
+    Used when diffing two releases: the shim wheel has no API surface, so the
+    comparison has to use the dependency that ships the imported module.
+    """
+    parsed = _dist_from_filename(path.name)
+    norm, version = parsed if parsed else ("", "")
+    code = _read_archive(path, norm, version, source="wheel")
+    if code is None or not code.require_pins:
+        return None
+    external = _reexport_roots(code)
+    if not external:
+        return None
+    for dep, pin in code.require_pins.items():
+        if not dep or _is_stdlib_root(dep.replace("-", "_")):
+            continue
+        other = _download_code(dep, pin or _pypi_version(dep) or "")
+        if other is None:
+            continue
+        provided = {module.split(".", 1)[0] for module in other.modules}
+        if external & provided:
+            return dep, pin or other.version
+    return None
 
 
 def _finish(
@@ -748,6 +886,8 @@ class _Code:
     modules: tuple[str, ...]
     #: installed, cache, fixture, or pypi. Fixture wheels are partial API extracts.
     source: str = ""
+    #: Requirement name -> exact ``==`` pin, or "" when the specifier is a range.
+    require_pins: dict[str, str] = field(default_factory=dict)
 
 
 def _scan(code: _Code) -> _Direct:
@@ -1551,13 +1691,15 @@ def _installed_code(norm: str, version: str, root: Path | None) -> _Code | None:
         if not files:
             continue
         modules = _import_modules(files, _top_level_file(info), meta.get("name") or norm)
+        raw_requires = meta.get("requires", "")
         return _Code(
             package=meta.get("name") or norm,
             version=dist_version,
             files=files,
-            requires=_requires(meta.get("requires", "")),
+            requires=_requires(raw_requires),
             modules=modules,
             source="installed",
+            require_pins=_require_pins(raw_requires),
         )
     if distribution is None or root is not None:
         return None
@@ -1696,6 +1838,7 @@ def _read_archive(
         requires=requires,
         modules=modules,
         source=source,
+        require_pins=_require_pins(meta_text),
     )
 
 
@@ -1735,6 +1878,37 @@ def _modules_from(files: list[tuple[str, bytes]], top_level: tuple[str, ...]) ->
         if len(parts) <= 4 and ".".join(parts) not in found and pure.endswith("/__init__.py"):
             found.append(".".join(parts))
     return tuple(found)
+
+
+def _require_pins(blob: str) -> dict[str, str]:
+    """Map a requirement name to its exact ``==`` version, or "" if unpinned.
+
+    Extras are skipped. Ranges stay in the map with an empty version so a
+    re-export shim can still be followed when the import root matches.
+    """
+    pins: dict[str, str] = {}
+    for line in blob.splitlines():
+        if not line.lower().startswith("requires-dist:"):
+            continue
+        body = line.split(":", 1)[1].strip()
+        dep, _, marker = body.partition(";")
+        if "extra" in marker.lower():
+            continue
+        match = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)\s*(.*)$", dep.strip())
+        if not match:
+            continue
+        name = normalize_dist(match.group(1))
+        if not name or name == "python" or name in pins:
+            continue
+        spec = match.group(2).strip()
+        if spec.startswith("(") and spec.endswith(")"):
+            spec = spec[1:-1].strip()
+        exact = ""
+        pinned = re.fullmatch(r"==\s*([^\s,]+)", spec)
+        if pinned:
+            exact = pinned.group(1)
+        pins[name] = exact
+    return pins
 
 
 def _requires(blob: str) -> list[str]:

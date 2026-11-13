@@ -566,7 +566,7 @@ def _impact_body(
     # The distribution under analysis is the one this repo pins, not whichever
     # release is newest. A newer release that grew its own I/O does not make
     # the pinned release a service, and the reverse is true too.
-    spec = evidence_spec(dep, pinned or None)
+    spec = evidence_spec(dep, pinned or None, root=root)
     if spec is None or spec.family:
         console.print(
             f"[red]{dep} is not an outside service.[/red] "
@@ -583,7 +583,9 @@ def _impact_body(
 
     typed = {dep: pinned} if pinned and installed_version(dep) not in {"", pinned} else {}
     with types_from(typed):
-        service_map, _blast = build_service_map(root)
+        # Focus the requested dependency. A whole-repo classify follows every
+        # import and the type walk then evicts distributions mid-extract.
+        service_map, _blast = build_service_map(root, service=dep)
     impacts, diffed, notes = collect_impacts(
         root,
         service_map,
