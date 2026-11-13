@@ -1315,23 +1315,195 @@ class RemovedModuleImports:
         self._gone[module] = gone
         return gone
 
+    def rewrite_attribute_imports(
+        self, source: str, path: str
+    ) -> tuple[str, list[RemovedImport]]:
+        """Rewrite ``import pkg.gone`` and ``pkg.gone.Name`` from the target surface.
+
+        A name that exists on the target becomes its real dotted home, and the
+        import becomes whatever that home needs. A name with no home is left as
+        the bare identifier and recorded as missing so the site stays
+        needs-human. The gone module is not kept when every use was an attribute.
+        """
+        if not self.top:
+            return source, []
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            return source, []
+        bindings: list[tuple[ast.Import, str, tuple[str, ...]]] = []
+        for node in tree.body:
+            if not isinstance(node, ast.Import):
+                continue
+            for alias in node.names:
+                module = alias.name
+                if not self._attribute_module_gone(module):
+                    continue
+                prefix = (alias.asname,) if alias.asname else tuple(module.split("."))
+                bindings.append((node, module, prefix))
+        if not bindings:
+            return source, []
+        prefix_module = {prefix: module for _node, module, prefix in bindings}
+        symbol_values: set[int] = set()
+        uses: list[tuple[ast.Attribute, str]] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute):
+                continue
+            parts = _expr_parts(node.value)
+            module = prefix_module.get(parts) if parts is not None else None
+            if module is None or not node.attr.isidentifier():
+                continue
+            uses.append((node, module))
+            symbol_values.add(id(node.value))
+        bare_modules: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Name, ast.Attribute)):
+                continue
+            parts = _expr_parts(node)
+            module = prefix_module.get(parts) if parts is not None else None
+            if module is not None and id(node) not in symbol_values:
+                bare_modules.add(module)
+        if not uses and not bare_modules:
+            return source, []
+
+        moved_by_module: dict[str, list[tuple[str, str]]] = {}
+        missing_by_module: dict[str, list[str]] = {}
+        parents: list[str] = []
+        edits: list[tuple[int, int, str]] = []
+        use_hits: dict[int, list[tuple[str, str | None, str]]] = {}
+        line_starts = _line_starts(source)
+        for node, module in uses:
+            home = self.home_for(node.attr, removed_module=module)
+            if home is None:
+                missing_by_module.setdefault(module, [])
+                if node.attr not in missing_by_module[module]:
+                    missing_by_module[module].append(node.attr)
+                replacement = node.attr
+                recorded: str | None = None
+            else:
+                parent = home.rsplit(".", 1)[0]
+                if parent not in parents:
+                    parents.append(parent)
+                moved_by_module.setdefault(module, [])
+                pair = (node.attr, home)
+                if pair not in moved_by_module[module]:
+                    moved_by_module[module].append(pair)
+                replacement = home
+                recorded = home
+            start, end = _expr_span(line_starts, node)
+            edits.append((start, end, replacement))
+            use_hits.setdefault(node.lineno, []).append((module, recorded, node.attr))
+
+        by_stmt: dict[int, tuple[ast.Import, list[str]]] = {}
+        for node, module, _prefix in bindings:
+            slot = by_stmt.setdefault(id(node), (node, []))
+            if module not in slot[1]:
+                slot[1].append(module)
+        existing = _imported_modules_bound(tree)
+        for node, modules in by_stmt.values():
+            if any(module in bare_modules for module in modules):
+                continue
+            for alias in node.names:
+                if not alias.asname and self._attribute_module_gone(alias.name):
+                    existing.discard(alias.name)
+        needed = [parent for parent in parents if parent not in existing]
+        hits: list[RemovedImport] = []
+        placed_new_imports = False
+        for node, modules in by_stmt.values():
+            if any(module in bare_modules for module in modules):
+                for module in modules:
+                    hits.append(
+                        RemovedImport(
+                            path=path,
+                            line=node.lineno,
+                            end_line=node.end_lineno or node.lineno,
+                            module=module,
+                            moved=tuple(moved_by_module.get(module, ())),
+                            missing=tuple(missing_by_module.get(module, ())) or (module,),
+                            replacement="",
+                        )
+                    )
+                continue
+            start, end = _stmt_span(source, node.lineno, node.end_lineno or node.lineno)
+            if not placed_new_imports:
+                kept = [
+                    alias.name if not alias.asname else f"{alias.name} as {alias.asname}"
+                    for alias in node.names
+                    if not self._attribute_module_gone(alias.name)
+                ]
+                indent = _stmt_indent(source, node.lineno)
+                lines = [f"{indent}import {name}" for name in kept]
+                lines.extend(f"{indent}import {parent}" for parent in needed)
+                text = ("\n".join(lines) + "\n") if lines else ""
+                edits.append((start, end, text))
+                placed_new_imports = True
+                replacement = text
+            else:
+                edits.append((start, end, ""))
+                replacement = ""
+            for module in modules:
+                hits.append(
+                    RemovedImport(
+                        path=path,
+                        line=node.lineno,
+                        end_line=node.end_lineno or node.lineno,
+                        module=module,
+                        moved=tuple(moved_by_module.get(module, ())),
+                        missing=tuple(missing_by_module.get(module, ())),
+                        replacement=replacement if module == modules[0] else "",
+                    )
+                )
+        for line, items in sorted(use_hits.items()):
+            moved = tuple((name, home) for _module, home, name in items if home)
+            missing = tuple(name for _module, home, name in items if not home)
+            module = items[0][0]
+            hits.append(
+                RemovedImport(
+                    path=path,
+                    line=line,
+                    end_line=line,
+                    module=module,
+                    moved=moved,
+                    missing=missing,
+                    replacement="",
+                )
+            )
+        if not edits:
+            return source, hits
+        updated = source
+        for start, end, text in sorted(edits, key=lambda item: item[0], reverse=True):
+            updated = updated[:start] + text + updated[end:]
+        return updated, hits
+
+    def _attribute_module_gone(self, module: str) -> bool:
+        if not module or module == self.top:
+            return False
+        if not (module == self.top or module.startswith(self.top + ".")):
+            return False
+        return self._module_gone(module)
+
 
 def relocate_removed_imports(
     source: str,
     path: str,
     maps: list[RemovedModuleImports],
 ) -> tuple[str, list[RemovedImport]]:
-    """Rewrite ``source`` from every map. One plan against the original text."""
+    """Rewrite ``source`` from every map. One plan against the original text.
+
+    ``from <gone> import Name`` is rewritten first. A plain ``import <gone>``
+    plus dotted uses (``gone.Name``) is rewritten from the same homes.
+    """
     hits: list[RemovedImport] = []
     for item in maps:
         hits.extend(item.plan(source, path))
-    if not hits:
-        return source, []
     updated = source
-    for hit in sorted(hits, key=lambda item: item.line, reverse=True):
+    for hit in sorted(hits, key=lambda found: found.line, reverse=True):
         if not hit.replacement:
             continue
         updated = _replace_line_span(updated, hit.line, hit.end_line, hit.replacement)
+    for item in maps:
+        updated, attr_hits = item.rewrite_attribute_imports(updated, path)
+        hits.extend(attr_hits)
     return updated, hits
 
 
@@ -1341,6 +1513,53 @@ def _stmt_indent(source: str, line: int) -> str:
         return ""
     text = lines[line - 1]
     return text[: len(text) - len(text.lstrip())]
+
+
+def _expr_parts(node: ast.AST) -> tuple[str, ...] | None:
+    """Dotted name parts of a ``Name`` or ``Attribute`` chain, or None."""
+    parts: list[str] = []
+    cur: ast.AST | None = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if not isinstance(cur, ast.Name):
+        return None
+    parts.append(cur.id)
+    parts.reverse()
+    return tuple(parts)
+
+
+def _line_starts(source: str) -> list[int]:
+    starts = [0]
+    for line in source.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    return starts
+
+
+def _expr_span(starts: list[int], node: ast.AST) -> tuple[int, int]:
+    lineno = getattr(node, "lineno", 1)
+    end_lineno = getattr(node, "end_lineno", lineno)
+    col = getattr(node, "col_offset", 0)
+    end_col = getattr(node, "end_col_offset", col)
+    return starts[lineno - 1] + col, starts[end_lineno - 1] + end_col
+
+
+def _stmt_span(source: str, start_line: int, end_line: int) -> tuple[int, int]:
+    lines = source.splitlines(keepends=True)
+    start = sum(len(lines[i]) for i in range(max(start_line - 1, 0)))
+    end = sum(len(lines[i]) for i in range(min(end_line, len(lines))))
+    return start, end
+
+
+def _imported_modules_bound(tree: ast.AST) -> set[str]:
+    found: set[str] = set()
+    for node in getattr(tree, "body", ()):
+        if not isinstance(node, ast.Import):
+            continue
+        for alias in node.names:
+            if not alias.asname:
+                found.add(alias.name)
+    return found
 
 
 def _replace_line_span(source: str, start: int, end: int, replacement: str) -> str:
