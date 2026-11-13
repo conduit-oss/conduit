@@ -120,6 +120,60 @@ def test_leaves_the_import_when_no_name_has_a_home(tmp_path: Path):
     assert hits[0].moved == ()
 
 
+def test_rewrites_import_and_attribute_uses_from_the_target_surface(tmp_path: Path):
+    """``import pkg.gone`` plus ``pkg.gone.Name`` moves to the name's real home.
+
+    A name the target release does not export stays a bare identifier and is
+    missing, so the caller can mark the site needs-human. No invented alias.
+    """
+    _fixtures, modules = _wheel(tmp_path)
+    source = (
+        "import acmekit.legacy\n"
+        "from acmekit.client import Client\n"
+        "\n"
+        "def use():\n"
+        "    return acmekit.legacy.Kept, acmekit.legacy.Nested, acmekit.legacy.Lost, Client\n"
+    )
+    updated, hits = relocate_removed_imports(source, "use.py", _maps(modules))
+    assert "acmekit.legacy" not in updated
+    assert "import acmekit\n" in updated
+    assert "acmekit.Kept" in updated
+    assert "acmekit.Nested" in updated
+    assert "Lost" in updated
+    assert "from acmekit.client import Client" in updated
+    missing = [hit.missing for hit in hits if hit.missing]
+    assert any("Lost" in item for item in missing)
+    again, again_hits = relocate_removed_imports(updated, "use.py", _maps(modules))
+    assert again == updated
+    assert again_hits == []
+
+
+def test_attribute_alias_and_names_with_no_home(tmp_path: Path):
+    _fixtures, modules = _wheel(tmp_path)
+    aliased = "import acmekit.legacy as old\n\nvalue = old.Kept\n"
+    updated, hits = relocate_removed_imports(aliased, "alias.py", _maps(modules))
+    assert "acmekit.legacy" not in updated
+    assert "old" not in updated
+    assert "import acmekit\n" in updated
+    assert "acmekit.Kept" in updated
+    assert hits[0].missing == ()
+
+    nowhere = "import acmekit.legacy\n\nraise acmekit.legacy.Lost\n"
+    updated, hits = relocate_removed_imports(nowhere, "missing.py", _maps(modules))
+    assert "acmekit.legacy" not in updated
+    assert "raise Lost\n" in updated
+    assert any(hit.missing == ("Lost",) for hit in hits)
+    assert all(not hit.moved for hit in hits if hit.missing == ("Lost",))
+
+
+def test_leaves_an_import_of_a_module_the_target_still_has(tmp_path: Path):
+    _fixtures, modules = _wheel(tmp_path)
+    source = "import acmekit.client\n\nclient = acmekit.client.Client\n"
+    updated, hits = relocate_removed_imports(source, "live.py", _maps(modules))
+    assert updated == source
+    assert hits == []
+
+
 def test_runtime_getattr_finds_a_lazy_reexport(tmp_path: Path):
     root = tmp_path / "wheel"
     _write(
