@@ -2917,6 +2917,377 @@ def _stmt_containing(tree: ast.Module, line: int) -> ast.AST | None:
     return None
 
 
+def method_survives_on_relocated_receiver(
+    source: str,
+    *,
+    line: int,
+    expr: str,
+    symbol: str,
+    kind: str,
+    package: str,
+    maps: list[RemovedModuleImports] | tuple[RemovedModuleImports, ...] = (),
+) -> str | None:
+    """When a removed/relocated method is called on a local, ``self.attr``, or
+    module global, follow that receiver to its constructor in this file.
+
+    If the RHS is an SDK constructor/factory and the method still exists with a
+    compatible signature on the class that constructor resolves to in the *new*
+    release, the call site needs no rewrite (return a short why). The
+    constructor line is what client-move / relocation should handle.
+
+    Returns ``None`` when the receiver cannot be traced (parameter, cross-file,
+    conditional reassignment), the method is gone, kinds disagree, or signatures
+    are incompatible — callers keep today's needs-human path. Never invents a
+    replacement name.
+    """
+    if kind and kind not in {"removed", "renamed", ""}:
+        return None
+    if not symbol or not package or not maps:
+        return None
+    method = symbol.rsplit(".", 1)[-1]
+    if not method or method[:1].isupper():
+        # Symbol is a class/module, not a method call site.
+        return None
+    owner_tail = ""
+    parts = [part for part in symbol.split(".") if part]
+    if len(parts) >= 2 and parts[-2][:1].isupper():
+        owner_tail = parts[-2]
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    call = _call_at_line(tree, line, method, expr)
+    if call is None or not isinstance(call.func, ast.Attribute):
+        return None
+    constructed = _trace_receiver_constructor(tree, call.func.value, line)
+    if constructed is None:
+        return None
+    mapper = next((item for item in maps if item.package == package or item.top == package), None)
+    if mapper is None:
+        return None
+    dotted = _sdk_constructor_dotted(tree, constructed, mapper.top)
+    if dotted is None:
+        return None
+    class_name = dotted.rsplit(".", 1)[-1]
+    if not class_name[:1].isupper():
+        return None
+    # Same-name *class* on the target surface. ``_find_home`` alone can return a
+    # CamelCase factory method (``Client.Index``); keep only class-kind homes so
+    # the same-kind guard stays intact and methods are not treated as classes.
+    home = _class_home_on_target(mapper, class_name)
+    if home is None:
+        return None
+    old_kind = mapper._symbol_kind(dotted, old=True)
+    if old_kind is None and owner_tail == class_name:
+        old_kind = "class"
+    if old_kind is not None and old_kind != "class":
+        return None
+    new_method = f"{home}.{method}"
+    new_node, _new_mod = _static_defining_node(new_method, mapper.top, mapper.modules)
+    if not isinstance(new_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        status, _ = resolve_name(
+            new_method, mapper.package, mapper.modules, wheel=mapper.wheel, python=mapper.python
+        )
+        if status != "ok":
+            return None
+        # Runtime says it exists but AST has no def — treat as unknown, not fine.
+        return None
+    old_node = _old_method_node(mapper, dotted, owner_tail, method, symbol)
+    if old_node is not None and not _method_signatures_compatible(old_node, new_node):
+        return None
+    return (
+        f"{expr or method} still resolves via relocated {class_name}; "
+        f"rewrite the constructor, not this call"
+    )
+
+
+def _call_at_line(
+    tree: ast.AST, line: int, method: str, expr: str
+) -> ast.Call | None:
+    """The ``receiver.method(...)`` call on ``line``, preferring ``expr`` match."""
+    found: list[ast.Call] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if getattr(node, "lineno", None) != line and getattr(node.func, "lineno", None) != line:
+            continue
+        if node.func.attr != method:
+            continue
+        found.append(node)
+    if not found:
+        return None
+    if expr:
+        tip = expr.rsplit(".", 1)[-1]
+        for node in found:
+            if node.func.attr == tip or expr in ast.unparse(node.func):
+                return node
+    return found[0]
+
+
+def _trace_receiver_constructor(
+    tree: ast.Module, receiver: ast.AST, call_line: int
+) -> ast.Call | None:
+    """Assignment RHS that built ``receiver``, when it is a single constructor call.
+
+    Locals, ``self.attr`` / ``cls.attr``, and module globals in this file only.
+    Parameters, multi-branch reassignments, and non-call RHS return None.
+    """
+    if isinstance(receiver, ast.Name):
+        return _trace_name_constructor(tree, receiver.id, call_line)
+    if (
+        isinstance(receiver, ast.Attribute)
+        and isinstance(receiver.value, ast.Name)
+        and receiver.value.id in {"self", "cls"}
+    ):
+        return _trace_attr_constructor(tree, receiver.attr, call_line)
+    return None
+
+
+def _trace_name_constructor(tree: ast.Module, name: str, call_line: int) -> ast.Call | None:
+    enclosing = _enclosing_function(tree, call_line)
+    if enclosing is not None:
+        # A parameter with no assignment in this function cannot be traced.
+        for arg in (*enclosing.args.posonlyargs, *enclosing.args.args, *enclosing.args.kwonlyargs):
+            if arg.arg == name:
+                assigned = _assignments_to_name(enclosing, name, before=call_line)
+                return _single_constructor(assigned)
+        assigned = _assignments_to_name(enclosing, name, before=call_line)
+        if assigned:
+            return _single_constructor(assigned)
+    return _single_constructor(_assignments_to_name(tree, name, before=call_line))
+
+
+def _trace_attr_constructor(tree: ast.Module, attr: str, call_line: int) -> ast.Call | None:
+    owner = _enclosing_class(tree, call_line)
+    if owner is None:
+        return None
+    assigned: list[ast.AST] = []
+    for item in owner.body:
+        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for stmt in ast.walk(item):
+            value = _self_attr_value(stmt, attr)
+            if value is not None:
+                assigned.append(value)
+    return _single_constructor(assigned)
+
+
+def _self_attr_value(stmt: ast.AST, attr: str) -> ast.AST | None:
+    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+        target = stmt.targets[0]
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id in {"self", "cls"}
+            and target.attr == attr
+        ):
+            return stmt.value
+    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Attribute):
+        target = stmt.target
+        if (
+            isinstance(target.value, ast.Name)
+            and target.value.id in {"self", "cls"}
+            and target.attr == attr
+            and stmt.value is not None
+        ):
+            return stmt.value
+    return None
+
+
+def _assignments_to_name(
+    scope: ast.AST, name: str, *, before: int | None = None
+) -> list[ast.AST]:
+    found: list[ast.AST] = []
+    body = getattr(scope, "body", ())
+    for stmt in body:
+        line = getattr(stmt, "lineno", 0) or 0
+        if before is not None and line and line >= before:
+            continue
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    found.append(stmt.value)
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            if stmt.target.id == name and stmt.value is not None:
+                found.append(stmt.value)
+    return found
+
+
+def _single_constructor(values: list[ast.AST]) -> ast.Call | None:
+    """One constructor call when every non-trivial assignment agrees; else None.
+
+    A ``None`` placeholder (lazy init) is ignored. Any other non-call RHS, or
+    two constructor callees that disagree, refuses the trace.
+    """
+    calls: list[ast.Call] = []
+    for value in values:
+        if isinstance(value, ast.Call):
+            calls.append(value)
+        elif isinstance(value, ast.Constant) and value.value is None:
+            continue
+        else:
+            return None
+    if not calls:
+        return None
+    keys = {ast.unparse(call.func) for call in calls}
+    if len(keys) != 1:
+        return None
+    return calls[-1]
+
+
+def _enclosing_function(tree: ast.AST, line: int) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    found: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        start = getattr(node, "lineno", None)
+        end = getattr(node, "end_lineno", None) or start
+        if start is None or end is None:
+            continue
+        if start <= line <= end:
+            if found is None or start >= getattr(found, "lineno", 0):
+                found = node
+    return found
+
+
+def _enclosing_class(tree: ast.AST, line: int) -> ast.ClassDef | None:
+    found: ast.ClassDef | None = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        start = getattr(node, "lineno", None)
+        end = getattr(node, "end_lineno", None) or start
+        if start is None or end is None:
+            continue
+        if start <= line <= end:
+            if found is None or start >= getattr(found, "lineno", 0):
+                found = node
+    return found
+
+
+def _sdk_constructor_dotted(tree: ast.Module, call: ast.Call, top: str) -> str | None:
+    """Dotted SDK path for ``pkg.Class(...)`` / ``Class(...)`` / ``client.Class(...)``.
+
+    After a client-move rewrite the constructor is often ``client.Index(name)``.
+    A CamelCase attribute on any receiver is treated as constructing that class
+    name so the relocated home can be found; invented lowercase methods are not.
+    """
+    bindings = _package_root_bindings(tree, top)
+    from_imports = _package_from_imports(tree, top)
+    func = call.func
+    if isinstance(func, ast.Name):
+        if func.id in from_imports:
+            return from_imports[func.id]
+        return None
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        base = func.value.id
+        if base in bindings:
+            return f"{bindings[base]}.{func.attr}"
+        if base == top or base in from_imports:
+            root = bindings.get(base) or from_imports.get(base) or top
+            if root == top or root.startswith(top + "."):
+                return f"{top}.{func.attr}" if root == top else f"{root}.{func.attr}"
+            return f"{root}.{func.attr}"
+        # ``client = Client(...); client.Index(name)`` after a client-move.
+        if func.attr[:1].isupper():
+            return f"{top}.{func.attr}"
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
+        parts = _expr_parts(func)
+        if parts and parts[0] in bindings:
+            return ".".join([bindings[parts[0]], *parts[1:]])
+        if parts and parts[0] == top:
+            return ".".join(parts)
+        if parts and parts[-1][:1].isupper():
+            return f"{top}.{parts[-1]}"
+    return None
+
+
+def _class_home_on_target(mapper: RemovedModuleImports, class_name: str) -> str | None:
+    """Best target-surface symbol for ``class_name`` that is actually a class."""
+    found: list[str] = []
+    for symbol in mapper.surface:
+        if symbol.rsplit(".", 1)[-1] != class_name:
+            continue
+        if not (symbol == mapper.top or symbol.startswith(mapper.top + ".")):
+            continue
+        if _static_kind(symbol, mapper.top, mapper.modules) == "class":
+            found.append(symbol)
+    root = f"{mapper.top}.{class_name}"
+    if root not in found and _static_kind(root, mapper.top, mapper.modules) == "class":
+        found.append(root)
+    if not found:
+        return None
+
+    def rank(symbol: str) -> tuple:
+        parts = symbol.split(".")
+        private = sum(part.startswith("_") for part in parts)
+        return (private, len(parts), symbol)
+
+    return min(found, key=rank)
+
+
+def _old_method_node(
+    mapper: RemovedModuleImports,
+    dotted_class: str,
+    owner_tail: str,
+    method: str,
+    symbol: str,
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    candidates = [
+        symbol if symbol.startswith(mapper.top + ".") else "",
+        f"{dotted_class}.{method}",
+        f"{mapper.top}.{owner_tail}.{method}" if owner_tail else "",
+        f"{mapper.top}.{method}",
+    ]
+    for cand in candidates:
+        if not cand or not mapper.old_modules:
+            continue
+        node, _mod = _static_defining_node(cand, mapper.top, mapper.old_modules)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return node
+    return None
+
+
+def _method_signatures_compatible(
+    old: ast.FunctionDef | ast.AsyncFunctionDef,
+    new: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    """True when every required parameter of ``new`` existed on ``old``.
+
+    A new required name the old method did not accept is incompatible. Extra
+    optional parameters on the new side are fine. ``**kwargs`` on the old side
+    accepts any new keyword.
+    """
+    old_names, old_varkw = _param_set(old)
+    new_required, _new_varkw = _required_param_set(new)
+    if old_varkw:
+        return True
+    return new_required <= old_names
+
+
+def _param_set(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[set[str], bool]:
+    args = node.args
+    names = {
+        arg.arg
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)
+        if arg.arg not in {"self", "cls"}
+    }
+    return names, args.kwarg is not None
+
+
+def _required_param_set(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[set[str], bool]:
+    args = node.args
+    positional = [arg for arg in (*args.posonlyargs, *args.args) if arg.arg not in {"self", "cls"}]
+    n_def = len(args.defaults)
+    required = {arg.arg for arg in positional[: max(0, len(positional) - n_def)]}
+    required |= {
+        arg.arg
+        for arg, default in zip(args.kwonlyargs, args.kw_defaults)
+        if default is None and arg.arg not in {"self", "cls"}
+    }
+    return required, args.kwarg is not None
+
+
 def relocate_removed_imports(
     source: str,
     path: str,

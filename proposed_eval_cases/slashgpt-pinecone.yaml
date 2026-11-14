@@ -1,0 +1,37 @@
+id: slashgpt-pinecone
+smoke: true
+failure_kind: relocated-constructor-receiver
+description: >
+  pinecone 2.2.4 → 3.2.2 on receptron/SlashGPT. DBPinecone.__init__ calls
+  pinecone.init then self.index = pinecone.Index(table_name); fetch_data calls
+  self.index.query(...). The Index class relocated; query survives. Apply must
+  rewrite the constructor/init path and leave the traced query site alone
+  (not needs-human).
+repo:
+  url: https://github.com/receptron/SlashGPT
+  commit: 0c46b09cd78aa0458140bd84757319d54723a9c3
+dependency:
+  name: pinecone
+  from: "2.2.4"
+  to: "3.2.2"
+timeout_seconds: 900
+expected:
+  must_fix:
+    - path: src/slashgpt/dbs/db_pinecone.py
+      contains: "pinecone.init("
+    - path: src/slashgpt/dbs/db_pinecone.py
+      contains: "self.index = pinecone.Index("
+    - path: src/slashgpt/dbs/db_pinecone.py
+      contains: "self.index.query("
+  forbidden_names:
+    - "pinecone.init"
+    - "pinecone.Index"
+  required_patterns:
+    - "Pinecone\\("
+    - "self\\.index\\.query\\("
+  untouched_globs:
+    - "tests/**"
+    - "**/test_*.py"
+  notes: >
+    Not in conduit-hosted/cases. Classic self.attr constructed in __init__,
+    method called in another method on the same class.

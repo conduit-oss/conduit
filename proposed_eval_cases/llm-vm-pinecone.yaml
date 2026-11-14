@@ -1,0 +1,42 @@
+id: llm-vm-pinecone
+held_out: true
+failure_kind: relocated-constructor-receiver
+tags:
+  - held-out
+description: >
+  pinecone 2.2.4 → 3.2.2 on anarchy-ai/LLM-VM. PineconeDB stores the module on
+  self (`self.pinecone = pinecone`), calls self.pinecone.init, builds
+  self.index = self.pinecone.Index(name), then self.index.upsert / self.index.query.
+  Instance methods are unchanged after Index relocation (true-negative for
+  method sites). Constructor goes through a module alias on self — a slightly
+  harder receiver shape than plain pinecone.Index(...).
+repo:
+  url: https://github.com/anarchy-ai/LLM-VM
+  commit: b9ea64606f422d020c9a583cd5f33e9ed7efcbeb
+dependency:
+  name: pinecone
+  from: "2.2.4"
+  to: "3.2.2"
+timeout_seconds: 900
+expected:
+  must_fix:
+    - path: src/llm_vm/vector_db.py
+      contains: "self.pinecone.init("
+    - path: src/llm_vm/vector_db.py
+      contains: "self.pinecone.Index("
+    - path: src/llm_vm/vector_db.py
+      contains: "self.index.upsert("
+    - path: src/llm_vm/vector_db.py
+      contains: "self.index.query("
+  forbidden_names:
+    - "pinecone.init"
+  required_patterns:
+    - "Pinecone\\("
+    - "self\\.index\\.(query|upsert)\\("
+  untouched_globs:
+    - "tests/**"
+    - "**/test_*.py"
+  notes: >
+    Not in conduit-hosted/cases. Held out. True-negative emphasis: Index.query /
+    upsert need no rewrite. Module-alias constructor (self.pinecone.Index) may
+    still need human help if tracing stops at the alias — useful gap signal.
