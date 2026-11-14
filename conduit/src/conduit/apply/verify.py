@@ -36,10 +36,15 @@ def remaining_breaks(
     Writes ``patched`` over ``site.path`` in place, then restores the previous
     text. Avoids copying the whole tree (large repos spent minutes per site on
     that alone). Calls ``collect_impacts`` for ``site.dependency`` with the same
-    from/to versions. A hit counts when it shares the original path and
-    expression (line may shift after the edit), or when it falls inside
-    ``span`` (1-based, inclusive): a break the rewrite itself introduced,
-    such as a parameter the new release removed.
+    from/to versions.
+
+    When ``span`` is set (1-based, inclusive), only hits inside that span count:
+    the original expression if the rewrite left it there, plus breaks the
+    rewrite itself introduced (removed names, dropped parameters, and so on).
+    Same-expression hits elsewhere in the file are sibling sites and are not
+    remaining breaks of *this* site. When ``span`` is omitted, a same-path hit
+    still counts if it shares the original expression (or line when expression
+    is empty), so callers without a span keep the older whole-file check.
     """
     from conduit.apply.repoindex import current_index
 
@@ -130,7 +135,9 @@ def _breaks_listed(
                 continue
             same = (hit.expr == want_expr) if want_expr else hit.line == site.line
             inside = span is not None and span[0] <= hit.line <= span[1]
-            if same or inside:
+            # Span-scoped recheck: sibling same-expr uses in other functions are
+            # their own sites. Without a span, keep same-expr matching.
+            if inside or (span is None and same):
                 text = (f"{hit_path}:{hit.line} {hit.expr}: {item.change}", item.symbol)
                 if text not in found:
                     found.append(text)
