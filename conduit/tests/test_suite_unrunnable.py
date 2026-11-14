@@ -57,6 +57,11 @@ def test_suite_couldnt_run_detects_collection_crash_timeout_and_empty():
     assert suite_couldnt_run(TestRun(exit_code=5, output="no tests collected", outcomes={}, source="exit-code"))
     assert suite_couldnt_run(output="Fatal Python error: Segmentation fault")
     assert suite_couldnt_run(output="TimeoutError: timed out")
+    assert suite_couldnt_run(
+        output="ERROR: usage: python -m pytest [options]\nerror: unrecognized arguments: --cov-report"
+    )
+    assert suite_couldnt_run(output="INTERNALERROR> Traceback (most recent call last):")
+    assert suite_couldnt_run(TestRun(exit_code=4, output="usage: pytest", outcomes={}, source="exit-code"))
     assert not suite_couldnt_run(TestRun(exit_code=0, output="1 passed", outcomes={"t": "passed"}, source="junit"))
     assert not suite_couldnt_run(TestRun(exit_code=1, output="FAILED t", outcomes={"t": "failed"}, source="junit"))
 
@@ -102,6 +107,10 @@ def test_judge_never_passes_collection_error_with_usable_baseline():
     verdict = judge(run, base)
     assert not verdict.passed
     assert verdict.preexisting == ["checks/test_pre.py::test_b"]
+    # Preexisting collection nodes must not be listed as new failures (that made
+    # salvage treat bump-only breakage as rewrite-caused).
+    assert verdict.new == ["(test command)"]
+    assert "checks/test_pre.py::test_b" not in verdict.new
 
 
 def test_collection_error_keeps_rewrite_but_never_verified(tmp_path: Path):
@@ -238,6 +247,112 @@ def test_scoped_site_ok_but_full_suite_collection_error_never_verified(tmp_path:
     assert report.suite_blocked
 
 
+def test_collection_error_keeps_edits_never_verified_exit_friendly(tmp_path: Path):
+    """Collection error after a7fbeb8 must keep compiling edits (not empty the diff).
+
+    Made-up package only. The suite cannot collect because a bumped symbol is
+    gone from tests; the rewrite itself is fine and must stay as
+    FIXED_TESTS_COULDNT_RUN with a non-empty file change.
+    """
+    root = tmp_path / "app"
+    _client(root)
+    _write(root / "good.py", "def fine(client):\n    return client.old_call(1)\n")
+    _write(root / "crate" / "__init__.py", "class Present:\n    pass\n")
+    _write(
+        root / "checks" / "test_ok.py",
+        """\
+        import good
+        from support import Client
+
+        def test_fine():
+            assert good.fine(Client()) == 1
+        """,
+    )
+    _write(
+        root / "checks" / "test_broken.py",
+        "from crate import Present\n\ndef test_x():\n    assert Present is not None\n",
+    )
+    baseline = record_baseline(PYTEST, root)
+    assert baseline.usable and not baseline.failing
+    _write(root / "crate" / "__init__.py", "class Other:\n    pass\n")
+    client = FakeModelClient(responses=[_edit("fine", "client.new_call(1)"), "why"])
+    report = apply_sites(
+        _sites(("good.py", 2, "client.old_call")),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=2),
+            write=True,
+            test_cmd=PYTEST,
+            client=client,
+            site_cleared=lambda *_a: True,
+            baseline=baseline,
+        ),
+    )
+    (result,) = report.results
+    text = (root / "good.py").read_text(encoding="utf-8")
+    assert "new_call(1)" in text
+    assert result.diff and "new_call" in result.diff
+    assert result.status == SiteStatus.FIXED_TESTS_COULDNT_RUN, (result.status, result.error, result.why)
+    assert result.status != SiteStatus.FIXED_VERIFIED
+    assert report.suite_blocked
+    # No model retry storm: one propose + one summarize.
+    assert len(client.calls) == 2
+
+
+def test_one_bad_site_reverted_while_good_site_kept(tmp_path: Path):
+    """Assertion failure on one rewrite reverts only that site; the other stays."""
+    root = tmp_path / "app"
+    _client(root)
+    _write(root / "good.py", "def fine(client):\n    return client.old_call(1)\n")
+    _write(root / "bad.py", "def stuck(client):\n    return client.old_call(1)\n")
+    _write(
+        root / "checks" / "test_it.py",
+        """\
+        import good, bad
+        from support import Client
+
+        def test_fine():
+            assert good.fine(Client()) == 1
+
+        def test_stuck():
+            assert bad.stuck(Client()) == 1
+        """,
+    )
+    baseline = record_baseline(PYTEST, root)
+    assert baseline.usable and not baseline.failing
+    client = FakeModelClient(
+        responses=[
+            _edit("fine", "client.new_call(1)"),
+            "why",
+            _edit("stuck", "client.new_call(0)"),
+            "why",
+            _edit("stuck", "client.new_call(0)"),
+            _edit("stuck", "client.new_call(0)"),
+        ]
+    )
+    report = apply_sites(
+        _sites(("good.py", 2, "client.old_call"), ("bad.py", 2, "client.old_call")),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=2),
+            write=True,
+            test_cmd=PYTEST,
+            client=client,
+            site_cleared=lambda *_a: True,
+            baseline=baseline,
+        ),
+    )
+    by_path = {item.site.path: item for item in report.results}
+    fine, stuck = by_path["good.py"], by_path["bad.py"]
+    assert "new_call(1)" in (root / "good.py").read_text(encoding="utf-8")
+    assert "old_call(1)" in (root / "bad.py").read_text(encoding="utf-8")
+    assert fine.status == SiteStatus.FIXED_VERIFIED, (fine.status, fine.error, fine.why)
+    assert stuck.status == SiteStatus.NEEDS_HUMAN
+    assert "reverted" in (stuck.error or "")
+    assert not report.suite_blocked
+    assert fine.diff and "new_call" in fine.diff
+
+
 def test_partial_out_is_written_after_each_site(tmp_path: Path):
     root = tmp_path / "app"
     _write(root / "good.py", "def fine(client):\n    return client.old_call(1)\n")
@@ -335,3 +450,172 @@ def test_sigterm_during_apply_writes_partial_and_stops(tmp_path: Path, monkeypat
     )
     # Never leave a verified claim when the run was interrupted.
     assert all(item["status"] != SiteStatus.FIXED_VERIFIED.value for item in report.to_dict()["results"])
+
+
+def test_pytest_usage_addopts_missing_plugin_keeps_rewrite_never_verified(tmp_path: Path):
+    """Pytest exit-4 / unrecognized addopts flag must keep edits, not revert them.
+
+    Made-up package only. pyproject addopts reference a plugin that is not
+    installed — the suite cannot run. A correct rewrite must stay as
+    FIXED_TESTS_COULDNT_RUN (never verified, never reverted).
+    """
+    root = tmp_path / "app"
+    _client(root)
+    _write(root / "good.py", "def fine(client):\n    return client.old_call(1)\n")
+    _write(
+        root / "checks" / "test_ok.py",
+        """\
+        import good
+        from support import Client
+
+        def test_fine():
+            assert good.fine(Client()) == 1
+        """,
+    )
+    _write(
+        root / "pyproject.toml",
+        """\
+        [tool.pytest.ini_options]
+        addopts = "--made-up-cov-flag"
+        """,
+    )
+    # Baseline recorded without the broken addopts so it is usable.
+    baseline_cmd = (
+        f"{sys.executable} -m pytest -q -p no:cacheprovider "
+        f"-c /dev/null checks"
+    )
+    baseline = record_baseline(baseline_cmd, root)
+    assert baseline.usable and not baseline.failing
+    # Post-bump suite uses the project's pyproject (unrecognized addopts).
+    command = f"{sys.executable} -m pytest -q -p no:cacheprovider checks"
+    client = FakeModelClient(responses=[_edit("fine", "client.new_call(1)"), "why"])
+    report = apply_sites(
+        _sites(("good.py", 2, "client.old_call")),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=2),
+            write=True,
+            test_cmd=command,
+            client=client,
+            site_cleared=lambda *_a: True,
+            baseline=baseline,
+        ),
+    )
+    (result,) = report.results
+    text = (root / "good.py").read_text(encoding="utf-8")
+    assert "new_call(1)" in text
+    assert result.status == SiteStatus.FIXED_TESTS_COULDNT_RUN, (
+        result.status,
+        result.error,
+        result.why,
+        report.last_exit_code,
+    )
+    assert result.status != SiteStatus.FIXED_VERIFIED
+    assert "reverted" not in (result.error or "")
+    assert report.suite_blocked
+    # No model retry storm on a usage/config error.
+    assert len(client.calls) == 2
+
+
+def test_newly_undefined_name_not_kept_as_fixed_when_suite_blocked(tmp_path: Path):
+    """A rewrite that drops an in-function import still used must not stay fixed.
+
+    The model removes ``ServiceUnavailableError`` from the function's import while
+    the except clause still names it. That is a NameError; even with a blocked
+    suite it must be needs-human (never FIXED_TESTS_COULDNT_RUN / never verified).
+    """
+    import json as _json
+
+    root = tmp_path / "app"
+    root.mkdir()
+    _write(
+        root / "mod.py",
+        """\
+        def broken(client):
+            from wirekit import Client, ServiceUnavailableError
+            try:
+                return client.old_call(1)
+            except ServiceUnavailableError:
+                return Client
+        """,
+    )
+    fixtures = tmp_path / "fixtures"
+    pkg = fixtures / "new" / "wirekit"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(
+        "class Client:\n    def send(self, n): return n\n"
+        "class ServiceUnavailableError(Exception): pass\n"
+        "class WireError(Exception): pass\n",
+        encoding="utf-8",
+    )
+    (fixtures / "index.json").write_text(
+        _json.dumps({"packages": {"wirekit": {"wheels": {"2.0": "new"}}}}),
+        encoding="utf-8",
+    )
+    _write(root / "crate" / "__init__.py", "class Present:\n    pass\n")
+    _write(
+        root / "checks" / "test_broken.py",
+        "from crate import Present\n\ndef test_x():\n    assert Present is not None\n",
+    )
+    baseline = record_baseline(PYTEST, root)
+    _write(root / "crate" / "__init__.py", "class Other:\n    pass\n")
+    # Drops ServiceUnavailableError from the inner import; except still uses it.
+    bad = _json.dumps(
+        {
+            "function_source": (
+                "def broken(client):\n"
+                "    from wirekit import Client\n"
+                "    try:\n"
+                "        return client.send(1)\n"
+                "    except ServiceUnavailableError:\n"
+                "        return Client\n"
+            ),
+            "new_imports": [],
+        }
+    )
+    payload = {
+        "dependency": "wirekit",
+        "impacts": [
+            {
+                "dependency": "wirekit",
+                "from_version": "1.0",
+                "to_version": "2.0",
+                "change": "old_call renamed to send",
+                "kind": "param_renamed",
+                "symbol": "wirekit.Client.send",
+                "sites": [
+                    {
+                        "path": "mod.py",
+                        "line": 4,
+                        "expr": "client.old_call",
+                        "confidence": "high",
+                        "via_wrapper": False,
+                    }
+                ],
+            }
+        ],
+    }
+    client = FakeModelClient(responses=[bad, bad, "should not run"])
+    report = apply_sites(
+        sites_from_payload(payload),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=3),
+            write=True,
+            test_cmd=PYTEST,
+            client=client,
+            recheck_impact=True,
+            fixtures=fixtures,
+            baseline=baseline if baseline.usable else None,
+        ),
+    )
+    (result,) = report.results
+    assert result.status == SiteStatus.NEEDS_HUMAN, (result.status, result.error, result.why)
+    assert result.status != SiteStatus.FIXED_VERIFIED
+    assert result.status != SiteStatus.FIXED_TESTS_COULDNT_RUN
+    err = (result.error or "") + (result.why or "")
+    assert "ServiceUnavailableError" in err or "newly undefined" in err
+    text = (root / "mod.py").read_text(encoding="utf-8")
+    # Reverted: original still imports ServiceUnavailableError in the function.
+    assert "from wirekit import Client, ServiceUnavailableError" in text
+    assert "old_call" in text

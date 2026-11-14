@@ -777,7 +777,13 @@ def _load_index(fixtures: Path | None) -> dict[str, dict]:
     return {str(key).lower(): value for key, value in packages.items() if isinstance(value, dict)}
 
 
-def _download_wheel(package: str, version: str, *, max_bytes: int = 32_000_000) -> Path | None:
+def _download_wheel(
+    package: str,
+    version: str,
+    *,
+    max_bytes: int = 32_000_000,
+    _depth: int = 0,
+) -> Path | None:
     """Fetch one wheel from PyPI. Skips files larger than ``max_bytes``.
 
     PyPI package JSON is cached (memory + disk) so apply rechecks do not
@@ -816,7 +822,7 @@ def _download_wheel(package: str, version: str, *, max_bytes: int = 32_000_000) 
         return None
     dest = Path(tempfile.gettempdir()) / "conduit-wheels" / filename
     if dest.is_file():
-        return dest
+        return _implementation_wheel(dest, package, version, _depth)
     dest.parent.mkdir(parents=True, exist_ok=True)
     # Write to a private temp path then replace, so a concurrent reader never
     # sees a partial wheel and a failed fetch never deletes another process's
@@ -838,7 +844,33 @@ def _download_wheel(package: str, version: str, *, max_bytes: int = 32_000_000) 
         return None
     finally:
         tmp_path.unlink(missing_ok=True)
-    return dest if dest.is_file() else None
+    if not dest.is_file():
+        return None
+    return _implementation_wheel(dest, package, version, _depth)
+
+
+def _implementation_wheel(wheel: Path, package: str, version: str, depth: int) -> Path:
+    """Use the dependency wheel when this release only re-exports it.
+
+    A compatibility publish can contain no client code. Diffing that file
+    reports an empty surface. One follow to the required distribution that
+    ships the imported module is the surface callers actually import.
+    """
+    if depth >= 2:
+        return wheel
+    from conduit.outside_in.evidence import reexport_dependency
+
+    try:
+        found = reexport_dependency(wheel)
+    except OSError:
+        return wheel
+    if not found:
+        return wheel
+    dep, dep_version = found
+    if not dep or not dep_version or normalize_dist(dep) == normalize_dist(package):
+        return wheel
+    other = _download_wheel(dep, dep_version, _depth=depth + 1)
+    return other if other is not None else wheel
 
 
 def _prefer_wheel(wheels: list[dict]) -> dict | None:

@@ -183,6 +183,7 @@ def splice_edit_with_span(
     new_fn = validate_function_source(edit.function_source, expected_name=pack.function_name)
     if pack.function_name:
         new_fn = strip_kept_decorators(new_fn, pack.decorators)
+    new_fn = strip_inner_imports_already_at_module(new_fn, pack.full_source, edit.new_imports)
     lines = pack.full_source.splitlines(keepends=True)
     start = pack.function_start_line - 1
     end = pack.function_end_line
@@ -194,6 +195,7 @@ def splice_edit_with_span(
     patched = "".join(patched_lines)
     before = patched.count("\n")
     patched = add_imports(patched, edit.new_imports)
+    patched = dedupe_imports(patched)
     shift = patched.count("\n") - before
     span = (start + 1 + shift, start + shift + max(len(fn_lines), 1))
     try:
@@ -205,28 +207,213 @@ def splice_edit_with_span(
 
 
 def add_imports(source: str, new_imports: tuple[str, ...]) -> str:
-    """Insert import lines after the existing import block; skip duplicates."""
+    """Insert import lines after the existing import block; merge by (module, name)."""
     if not new_imports:
         return source
-    existing = {_normalize_import(line) for line in _import_lines(source)}
-    to_add: list[str] = []
     for line in new_imports:
         cleaned = line.strip()
         if not cleaned:
             continue
         if not cleaned.startswith(("import ", "from ")):
             raise PatchError(f"not an import line: {cleaned!r}")
-        key = _normalize_import(cleaned)
-        if key in existing:
-            continue
-        existing.add(key)
-        to_add.append(cleaned)
-    if not to_add:
+        source = _merge_one_import(source, cleaned)
+    return source
+
+
+def dedupe_imports(source: str) -> str:
+    """Merge top-level imports that share a module so each (module, name) appears once.
+
+    Parenthesized and multi-line ``from``-imports are normalized via AST before
+    dedupe, so identical or overlapping blocks merge into one statement.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
         return source
     lines = source.splitlines(keepends=True)
+    # Collect ImportFrom groups: (level, module) -> list of (lineno, end, aliases)
+    from_groups: dict[tuple[int, str | None], list[tuple[int, int, list[ast.alias]]]] = {}
+    import_seen: set[tuple[str, str | None]] = set()
+    drop_lines: set[int] = set()
+    replace: dict[int, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "__future__" or any(a.name == "*" for a in node.names):
+                continue
+            key = (node.level, node.module)
+            start = node.lineno
+            end = node.end_lineno or node.lineno
+            from_groups.setdefault(key, []).append((start, end, list(node.names)))
+        elif isinstance(node, ast.Import):
+            kept: list[ast.alias] = []
+            for alias in node.names:
+                pair = (alias.name, alias.asname)
+                if pair in import_seen:
+                    continue
+                import_seen.add(pair)
+                kept.append(alias)
+            start = node.lineno
+            end = node.end_lineno or node.lineno
+            if not kept:
+                drop_lines.update(range(start, end + 1))
+            elif len(kept) != len(node.names) or start != end:
+                # Collapse multi-line import X as Y lists too.
+                drop_lines.update(range(start + 1, end + 1))
+                replace[start] = ast.unparse(ast.Import(names=kept)) + "\n"
+    for (_level, _module), entries in from_groups.items():
+        seen_names: set[tuple[str, str | None]] = set()
+        merged: list[ast.alias] = []
+        for _start, _end, aliases in entries:
+            for alias in aliases:
+                pair = (alias.name, alias.asname)
+                if pair in seen_names:
+                    continue
+                seen_names.add(pair)
+                merged.append(alias)
+        first_start, first_end, first_aliases = entries[0]
+        unchanged = (
+            len(entries) == 1
+            and len(merged) == len(first_aliases)
+            and first_start == first_end
+        )
+        if unchanged:
+            continue
+        # Drop every line of every block (including the first multi-line range),
+        # then write a single collapsed import at the first block's start.
+        for start, end, _aliases in entries:
+            drop_lines.update(range(start, end + 1))
+        replace[first_start] = ast.unparse(
+            ast.ImportFrom(module=_module, names=merged, level=_level)
+        ) + "\n"
+        drop_lines.discard(first_start)
+    if not drop_lines and not replace:
+        return source
+    out: list[str] = []
+    for number, line in enumerate(lines, 1):
+        if number in drop_lines:
+            continue
+        if number in replace:
+            out.append(replace[number])
+        else:
+            out.append(line)
+    return "".join(out)
+
+
+def strip_inner_imports_already_at_module(
+    function_source: str, module_source: str, new_imports: tuple[str, ...]
+) -> str:
+    """Drop in-function imports whose (module, name) is already (or will be) at module scope."""
+    text = textwrap.dedent(function_source.strip("\n")) + "\n"
+    try:
+        fn_tree = ast.parse(text)
+    except SyntaxError:
+        return function_source
+    defs = [n for n in fn_tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    if len(defs) != 1:
+        return function_source
+    present = _module_import_pairs(module_source)
+    for line in new_imports:
+        present |= _pairs_from_line(line.strip())
+    plain = {(name, asname) for _mod, name, asname in present}
+    fn = defs[0]
+    drop: set[int] = set()
+    for node in fn.body:
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "__future__" or any(a.name == "*" for a in node.names):
+                continue
+            if all((node.module, a.name, a.asname) in present for a in node.names):
+                drop.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+        elif isinstance(node, ast.Import):
+            if all((a.name, a.asname) in plain for a in node.names):
+                drop.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    if not drop:
+        return function_source
+    kept = [line for number, line in enumerate(text.splitlines(keepends=True), 1) if number not in drop]
+    return "".join(kept)
+
+
+def _unique_aliases(aliases: list[ast.alias]) -> list[ast.alias]:
+    seen: set[tuple[str, str | None]] = set()
+    out: list[ast.alias] = []
+    for alias in aliases:
+        pair = (alias.name, alias.asname)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        out.append(alias)
+    return out
+
+
+def _module_import_pairs(source: str) -> set[tuple[str | None, str, str | None]]:
+    """Set of (module, name, asname) for top-level from-imports, and (name, name, asname) for import."""
+    out: set[tuple[str | None, str, str | None]] = set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return out
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                out.add((node.module, alias.name, alias.asname))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                out.add((alias.name, alias.name, alias.asname))
+    return out
+
+
+def _pairs_from_line(line: str) -> set[tuple[str | None, str, str | None]]:
+    if not line:
+        return set()
+    try:
+        tree = ast.parse(line)
+    except SyntaxError:
+        return set()
+    return _module_import_pairs(line) if tree.body else set()
+
+
+def _merge_one_import(source: str, cleaned: str) -> str:
+    """Add ``cleaned`` into ``source``, merging into an existing from-import when possible."""
+    try:
+        added = ast.parse(cleaned).body[0]
+    except (SyntaxError, IndexError) as exc:
+        raise PatchError(f"not an import line: {cleaned!r}") from exc
+    if not isinstance(added, (ast.Import, ast.ImportFrom)):
+        raise PatchError(f"not an import line: {cleaned!r}")
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+    lines = source.splitlines(keepends=True)
+    if isinstance(added, ast.ImportFrom) and added.module != "__future__" and not any(
+        a.name == "*" for a in added.names
+    ):
+        for node in tree.body:
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module == added.module
+                and node.level == added.level
+                and not any(a.name == "*" for a in node.names)
+                and node.lineno == (node.end_lineno or node.lineno)
+            ):
+                have = {(a.name, a.asname) for a in node.names}
+                extra = [a for a in added.names if (a.name, a.asname) not in have]
+                if not extra:
+                    return source
+                merged = list(node.names) + extra
+                stmt = ast.ImportFrom(module=node.module, names=merged, level=node.level)
+                lines[node.lineno - 1] = ast.unparse(stmt) + "\n"
+                return "".join(lines)
+    # Exact-line / normalized duplicate for plain import or new from-import.
+    existing = {_normalize_import(line) for line in _import_lines(source)}
+    if _normalize_import(cleaned) in existing:
+        return source
+    # Also skip when every name of a plain import is already present.
+    if isinstance(added, ast.Import):
+        present = {(a.name, a.asname) for n in tree.body if isinstance(n, ast.Import) for a in n.names}
+        if all((a.name, a.asname) in present for a in added.names):
+            return source
     insert_at = _import_block_end(source)
-    block = "".join(item + "\n" for item in to_add)
-    return "".join(lines[:insert_at]) + block + "".join(lines[insert_at:])
+    return "".join(lines[:insert_at]) + cleaned + "\n" + "".join(lines[insert_at:])
 
 
 def unified_diff_for(path: str, before: str, after: str) -> str:

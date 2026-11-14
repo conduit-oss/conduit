@@ -17,7 +17,10 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "- Rewrite ONLY the flagged function body (same function name).\n"
         "- You may list new import lines if required; do not edit other functions.\n"
         "- Use only the release-diff evidence, new signature/docstring, and candidates "
-        "provided (candidates are newer-wheel public symbols that share name tokens).\n"
+        "provided (candidates are real target-version public modules/classes/functions/"
+        "methods ranked near this site). Prefer those names; otherwise reuse names "
+        "already present in this file's imports or function_source. Do not invent "
+        "import paths or symbols that are not listed.\n"
         "- Respond with a JSON object only:\n"
         '  {"function_source": "<full def ...>", "new_imports": ["import ...", ...]}\n'
         "- function_source must be the complete function definition (def/async def),\n"
@@ -27,6 +30,8 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "- If feedback says a value has the wrong type or lacks an attribute in the new\n"
         "  release, build or read a value of the expected type inside this function from\n"
         "  its own inputs (helpers outside this function keep their current types).\n"
+        "- If feedback says a name or module does not exist in the new release, use only\n"
+        "  names listed there as existing nearby; do not invent import paths or symbols.\n"
     )
     user = {
         "file": pack.file_path,
