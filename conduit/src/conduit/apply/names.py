@@ -31,7 +31,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from conduit.apply.typecheck import _module_binds
-from conduit.impact.candidates import pick_candidates
+from conduit.impact.candidates import pick_candidates, symbol_tokens
 from conduit.outside_in.ast_checks import AstCheck, run_checks
 
 #: Cap for prompt grounding and for "nearby names" in findings.
@@ -1801,6 +1801,1098 @@ class RemovedModuleImports:
             return False
         return self._module_gone(module)
 
+    def rewrite_calls_onto_client(
+        self, source: str, path: str
+    ) -> tuple[str, list[RemovedImport]]:
+        """Move removed module-level calls onto a client instance when unambiguous.
+
+        Detects names that exist on the source wheel's module surface but are
+        missing from the target, while a same-named or clearly matching method
+        lives on a public client class (constructor + methods). Inserts one
+        client construction near the first use (or reuses an existing one),
+        carrying config kwargs from a removed ``init`` call when present.
+
+        Subclassing a removed class is not rewritten into an invented base:
+        those sites stay needs-human. Same-kind mismatches are refused. When
+        no unique client method is grounded on the target wheel, the file is
+        left alone and the name is recorded as missing.
+        """
+        if not self.top or not self.old_modules:
+            return source, []
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            return source, []
+        clients = _discover_client_classes(self.modules, self.top, self.surface)
+        if not clients:
+            return source, []
+        bindings = _package_root_bindings(tree, self.top)
+        from_imports = _package_from_imports(tree, self.top)
+        if not bindings and not from_imports:
+            return source, []
+
+        sites = _collect_client_move_sites(tree, bindings, from_imports, self.top)
+        if not sites:
+            return source, []
+
+        method_surface = _client_method_surface(clients, self.modules, self.top)
+        if not method_surface:
+            return source, []
+
+        planned: list[_ClientMovePlan] = []
+        missing: list[str] = []
+        mismatches: list[tuple[str, str, str]] = []
+        init_kwargs: str | None = None
+        init_site: _ClientMoveSite | None = None
+
+        for site in sites:
+            old_dotted = site.old_dotted
+            if site.kind == "base":
+                # Subclassing a removed class: do not invent a replacement base.
+                if _name_missing_on_target(
+                    old_dotted, self.top, self.modules, self.wheel, self.python
+                ) and _name_present_on_source(
+                    old_dotted, self.top, self.old_modules, self.old_wheel, self.python
+                ):
+                    missing.append(site.leaf)
+                    planned.append(
+                        _ClientMovePlan(
+                            site=site,
+                            action="needs_human",
+                            replacement="",
+                            home="",
+                        )
+                    )
+                continue
+
+            if not _name_missing_on_target(
+                old_dotted, self.top, self.modules, self.wheel, self.python
+            ):
+                continue
+            if not _name_present_on_source(
+                old_dotted, self.top, self.old_modules, self.old_wheel, self.python
+            ):
+                # Also accept when the parent class/path was present and this leaf
+                # was a classmethod/attr on it (nested chain already checked).
+                parent = old_dotted.rsplit(".", 1)[0] if "." in old_dotted else ""
+                if not (
+                    parent
+                    and parent != self.top
+                    and _name_present_on_source(
+                        parent, self.top, self.old_modules, self.old_wheel, self.python
+                    )
+                ):
+                    continue
+
+            if site.leaf == "init" and site.kind == "call":
+                # Module ``init`` becomes client construction args; no method match required.
+                init_kwargs = site.call_args_src or ""
+                init_site = site
+                planned.append(
+                    _ClientMovePlan(
+                        site=site,
+                        action="init",
+                        replacement="",
+                        home="",
+                    )
+                )
+                continue
+
+            home, mismatch = self._client_method_home(
+                old_dotted, site.leaf, method_surface, clients
+            )
+            if home is None:
+                missing.append(site.leaf)
+                if mismatch is not None:
+                    mismatches.append((site.leaf, mismatch[0], mismatch[1]))
+                planned.append(
+                    _ClientMovePlan(
+                        site=site,
+                        action="needs_human",
+                        replacement="",
+                        home="",
+                    )
+                )
+                continue
+            # Ground the suggested client path against the target wheel.
+            ground_name = home.ground_symbol
+            status, _ = resolve_name(
+                ground_name,
+                self.package,
+                self.modules,
+                wheel=self.wheel,
+                python=self.python,
+            )
+            if status == "missing":
+                missing.append(site.leaf)
+                planned.append(
+                    _ClientMovePlan(
+                        site=site,
+                        action="needs_human",
+                        replacement="",
+                        home="",
+                    )
+                )
+                continue
+            if status != "ok" and ground_name not in self.surface and ground_name not in method_surface:
+                # Unknown / ungrounded — do not invent.
+                missing.append(site.leaf)
+                planned.append(
+                    _ClientMovePlan(
+                        site=site,
+                        action="needs_human",
+                        replacement="",
+                        home="",
+                    )
+                )
+                continue
+            planned.append(
+                _ClientMovePlan(
+                    site=site,
+                    action="method",
+                    replacement=home.attr_path,
+                    home=home.client_qual,
+                    client_short=home.client_short,
+                    client_import=home.client_import,
+                )
+            )
+
+        movable = [item for item in planned if item.action in {"method", "init"}]
+        if not movable and not any(item.action == "needs_human" for item in planned):
+            return source, []
+
+        hits: list[RemovedImport] = []
+        if not movable:
+            # Only needs-human markers; leave source unchanged.
+            for item in planned:
+                if item.action != "needs_human":
+                    continue
+                hits.append(
+                    RemovedImport(
+                        path=path,
+                        line=item.site.line,
+                        end_line=item.site.end_line,
+                        module=self.top,
+                        moved=(),
+                        missing=(item.site.leaf,),
+                        replacement="",
+                        kind_mismatches=tuple(
+                            row for row in mismatches if row[0] == item.site.leaf
+                        ),
+                    )
+                )
+            return source, hits
+
+        # One client class for all moves in this file when they agree.
+        client_quals = {item.home for item in movable if item.action == "method" and item.home}
+        if len(client_quals) > 1:
+            # Ambiguous across multiple clients — refuse rather than guess.
+            for item in movable:
+                hits.append(
+                    RemovedImport(
+                        path=path,
+                        line=item.site.line,
+                        end_line=item.site.end_line,
+                        module=self.top,
+                        moved=(),
+                        missing=(item.site.leaf,),
+                        replacement="",
+                    )
+                )
+            return source, hits
+
+        method_plan = next((item for item in movable if item.action == "method"), None)
+        if method_plan is None and init_site is not None:
+            # Only an init call: still construct the best client if one is unique.
+            if len(clients) != 1:
+                hits.append(
+                    RemovedImport(
+                        path=path,
+                        line=init_site.line,
+                        end_line=init_site.end_line,
+                        module=self.top,
+                        moved=(),
+                        missing=("init",),
+                        replacement="",
+                    )
+                )
+                return source, hits
+            only = clients[0]
+            client_qual = only.qual
+            client_short = only.short
+            client_import = only.import_from
+        else:
+            client_qual = method_plan.home if method_plan else next(iter(client_quals))
+            client_short = method_plan.client_short if method_plan else client_qual.rsplit(".", 1)[-1]
+            client_import = (
+                method_plan.client_import
+                if method_plan
+                else client_qual.rsplit(".", 1)[0]
+            )
+
+        updated, client_var, inserted = _apply_client_move_edits(
+            source,
+            tree,
+            planned,
+            client_short=client_short,
+            client_import=client_import,
+            client_qual=client_qual,
+            package=self.top,
+            init_kwargs=init_kwargs,
+            init_site=init_site,
+        )
+        moved_rows: list[tuple[str, str]] = []
+        for item in planned:
+            if item.action == "method":
+                moved_rows.append((item.site.leaf, f"{client_short}.{item.replacement}"))
+            elif item.action == "init":
+                moved_rows.append((item.site.leaf, f"{client_short}()"))
+        for item in planned:
+            if item.action == "needs_human":
+                hits.append(
+                    RemovedImport(
+                        path=path,
+                        line=item.site.line,
+                        end_line=item.site.end_line,
+                        module=self.top,
+                        moved=(),
+                        missing=(item.site.leaf,),
+                        replacement="",
+                        kind_mismatches=tuple(
+                            row for row in mismatches if row[0] == item.site.leaf
+                        ),
+                    )
+                )
+            elif item.action in {"method", "init"}:
+                hits.append(
+                    RemovedImport(
+                        path=path,
+                        line=item.site.line,
+                        end_line=item.site.end_line,
+                        module=self.top,
+                        moved=tuple(moved_rows),
+                        missing=(),
+                        replacement=(
+                            f"{client_var} = {client_short}({init_kwargs or ''})"
+                            if inserted and item is movable[0]
+                            else ""
+                        ),
+                    )
+                )
+        return updated, hits
+
+    def _client_method_home(
+        self,
+        old_dotted: str,
+        leaf: str,
+        method_surface: dict[str, _ClientMethodHome],
+        clients: list["_ClientClass"],
+    ) -> tuple["_ClientMethodHome | None", tuple[str, str] | None]:
+        """Pick a unique client method home for ``old_dotted``, or refuse.
+
+        Same-leaf matches on a single client win. Otherwise ``pick_candidates``
+        must rank one clear winner that still grounds on the target surface.
+        Same-kind: a non-callable old symbol may only map when the site is a
+        call (factory-style); otherwise a kind mismatch is returned.
+        """
+        by_leaf = [
+            home
+            for home in method_surface.values()
+            if home.attr_path.rsplit(".", 1)[-1] == leaf
+        ]
+        # Prefer the shortest attr path on the shortest public client qual.
+        by_leaf.sort(key=lambda home: (home.attr_path.count("."), len(home.client_qual), home.attr_path))
+        chosen: _ClientMethodHome | None = None
+        if len({(home.client_qual, home.attr_path) for home in by_leaf}) == 1:
+            chosen = by_leaf[0]
+        elif by_leaf:
+            # Multiple same-leaf methods: only accept if they share one client
+            # and one attr path after preferring non-private modules.
+            public = [home for home in by_leaf if not any(
+                part.startswith("_") for part in home.client_qual.split(".")
+            )]
+            pool = public or by_leaf
+            keys = {(home.client_qual.rsplit(".", 1)[-1], home.attr_path) for home in pool}
+            if len(keys) == 1:
+                chosen = pool[0]
+        if chosen is None:
+            # Token / leaf ranking over the full client method surface.
+            signatures = {
+                f"{home.client_qual}.{home.attr_path}": home.signature
+                for home in method_surface.values()
+            }
+            rows = pick_candidates(old_dotted, signatures, limit=4)
+            if not rows:
+                # Try leaf-only hint.
+                rows = pick_candidates(leaf, signatures, limit=4)
+            if not rows:
+                return None, None
+            top = rows[0]["symbol"]
+            # Require a clear winner: unique top, or leaf match on top only.
+            if len(rows) > 1:
+                top_leaf = top.rsplit(".", 1)[-1]
+                second = rows[1]["symbol"]
+                if top_leaf != leaf and symbol_tokens(old_dotted) & symbol_tokens(top) == (
+                    symbol_tokens(old_dotted) & symbol_tokens(second)
+                ):
+                    return None, None
+            for home in method_surface.values():
+                if f"{home.client_qual}.{home.attr_path}" == top:
+                    chosen = home
+                    break
+                # Resource-class symbols may be stored under ground_symbol.
+                if home.ground_symbol == top or top.endswith("." + home.attr_path):
+                    chosen = home
+                    break
+            if chosen is None:
+                # Build a home from the ranked symbol when it is clearly a
+                # client attribute path we synthesized.
+                for client in clients:
+                    prefix = client.qual + "."
+                    if top.startswith(prefix):
+                        attr = top[len(prefix) :]
+                        if attr in {h.attr_path for h in method_surface.values() if h.client_qual == client.qual}:
+                            chosen = method_surface.get(f"{client.qual}::{attr}")
+                            break
+        if chosen is None:
+            return None, None
+
+        old_kind = self._symbol_kind(old_dotted, old=True)
+        # Methods are callables. A removed class used as a factory call is
+        # allowed onto a same-named method; other kind mismatches are refused.
+        if old_kind not in {None, "callable", "class", "value"}:
+            return None, None
+        if old_kind == "class":
+            # Only call sites may treat a removed class as a factory method.
+            # Type/base uses are handled elsewhere as needs-human.
+            pass
+        return chosen, None
+
+
+@dataclass(frozen=True)
+class _ClientClass:
+    qual: str
+    short: str
+    import_from: str
+    node: ast.ClassDef
+    module: str
+
+
+@dataclass(frozen=True)
+class _ClientMethodHome:
+    client_qual: str
+    client_short: str
+    client_import: str
+    attr_path: str
+    ground_symbol: str
+    signature: str
+
+
+@dataclass(frozen=True)
+class _ClientMoveSite:
+    line: int
+    end_line: int
+    old_dotted: str
+    leaf: str
+    kind: str  # call | attr | base
+    expr_node: ast.AST
+    call_node: ast.Call | None = None
+    call_args_src: str | None = None
+    stmt_node: ast.AST | None = None
+
+
+@dataclass(frozen=True)
+class _ClientMovePlan:
+    site: _ClientMoveSite
+    action: str  # method | init | needs_human
+    replacement: str
+    home: str
+    client_short: str = ""
+    client_import: str = ""
+
+
+def _discover_client_classes(
+    modules: dict[str, ast.Module],
+    top: str,
+    surface: dict[str, str],
+) -> list[_ClientClass]:
+    """Public classes with a constructor and at least one public method."""
+    found: list[_ClientClass] = []
+    seen: set[str] = set()
+    for qual, _sig in surface.items():
+        if not (qual == top or qual.startswith(top + ".")):
+            continue
+        if qual.count(".") < 1:
+            continue
+        node, module = _static_defining_node(qual, top, modules)
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if node.name.startswith("_"):
+            continue
+        methods = [
+            item
+            for item in node.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not item.name.startswith("_")
+        ]
+        has_init = any(
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__"
+            for item in node.body
+        )
+        if not has_init or not methods:
+            continue
+        # Skip obvious exception types — they are not clients.
+        flag = _class_is_exception(node, modules, module, set())
+        if flag:
+            continue
+        if qual in seen:
+            continue
+        seen.add(qual)
+        parent = qual.rsplit(".", 1)[0]
+        found.append(
+            _ClientClass(
+                qual=qual,
+                short=node.name,
+                import_from=parent if parent != qual else top,
+                node=node,
+                module=module or parent,
+            )
+        )
+    # Prefer root-exported / shorter quals.
+    found.sort(key=lambda item: (item.qual.count("."), any(p.startswith("_") for p in item.qual.split(".")), item.qual))
+    # Dedupe by short name keeping the best qual.
+    best: dict[str, _ClientClass] = {}
+    for item in found:
+        best.setdefault(item.short, item)
+    return list(best.values())
+
+
+def _client_method_surface(
+    clients: list[_ClientClass],
+    modules: dict[str, ast.Module],
+    top: str,
+) -> dict[str, _ClientMethodHome]:
+    """``client_qual::attr.path`` → home for methods reachable on a client."""
+    out: dict[str, _ClientMethodHome] = {}
+    for client in clients:
+        for attr_path, ground, signature in _walk_client_methods(
+            client.node, client.qual, client.module, modules, top, prefix=""
+        ):
+            key = f"{client.qual}::{attr_path}"
+            out.setdefault(
+                key,
+                _ClientMethodHome(
+                    client_qual=client.qual,
+                    client_short=client.short,
+                    client_import=client.import_from,
+                    attr_path=attr_path,
+                    ground_symbol=ground,
+                    signature=signature,
+                ),
+            )
+    return out
+
+
+def _walk_client_methods(
+    node: ast.ClassDef,
+    class_qual: str,
+    module: str,
+    modules: dict[str, ast.Module],
+    top: str,
+    *,
+    prefix: str,
+    depth: int = 0,
+) -> list[tuple[str, str, str]]:
+    """Attribute paths and ground symbols for methods on ``node`` and nested resources."""
+    if depth > 4:
+        return []
+    rows: list[tuple[str, str, str]] = []
+    for item in node.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if item.name.startswith("_") and item.name != "__init__":
+                continue
+            if item.name == "__init__":
+                continue
+            attr = f"{prefix}{item.name}" if prefix else item.name
+            qual = f"{class_qual}.{item.name}" if not prefix else f"{class_qual}.{attr}"
+            # Property / cached_property: treat as attribute, walk return type.
+            if _is_attr_property(item):
+                target = _annotation_class(item.returns, module, modules, top)
+                if target is not None:
+                    target_node, target_mod, target_qual = target
+                    rows.extend(
+                        _walk_client_methods(
+                            target_node,
+                            target_qual,
+                            target_mod,
+                            modules,
+                            top,
+                            prefix=attr + ".",
+                            depth=depth + 1,
+                        )
+                    )
+                continue
+            rows.append((attr, qual if not prefix else _nested_ground(class_qual, attr, item, module, modules), _cheap_signature(qual, item)))
+        elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+            name = item.target.id
+            if name.startswith("_"):
+                continue
+            target = _annotation_class(item.annotation, module, modules, top)
+            if target is None:
+                continue
+            target_node, target_mod, target_qual = target
+            attr = f"{prefix}{name}" if prefix else name
+            rows.extend(
+                _walk_client_methods(
+                    target_node,
+                    target_qual,
+                    target_mod,
+                    modules,
+                    top,
+                    prefix=attr + ".",
+                    depth=depth + 1,
+                )
+            )
+    # Also follow ``self.attr = Resource(self)`` assigns inside ``__init__``.
+    for item in node.body:
+        if not (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__"):
+            continue
+        for stmt in item.body:
+            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+                continue
+            target = stmt.targets[0]
+            if not (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+            ):
+                continue
+            name = target.attr
+            if name.startswith("_"):
+                continue
+            callee = stmt.value
+            if not isinstance(callee, ast.Call):
+                continue
+            resolved = _call_class(callee.func, module, modules, top)
+            if resolved is None:
+                continue
+            target_node, target_mod, target_qual = resolved
+            attr = f"{prefix}{name}" if prefix else name
+            rows.extend(
+                _walk_client_methods(
+                    target_node,
+                    target_qual,
+                    target_mod,
+                    modules,
+                    top,
+                    prefix=attr + ".",
+                    depth=depth + 1,
+                )
+            )
+    return rows
+
+
+def _nested_ground(
+    class_qual: str,
+    attr_path: str,
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    module: str,
+    modules: dict[str, ast.Module],
+) -> str:
+    """Best-effort dotted symbol for grounding a nested client method."""
+    return f"{class_qual}.{attr_path}"
+
+
+def _is_attr_property(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    for dec in node.decorator_list:
+        if isinstance(dec, ast.Name) and dec.id in {"property", "cached_property"}:
+            return True
+        if isinstance(dec, ast.Attribute) and dec.attr in {"property", "cached_property"}:
+            return True
+    return False
+
+
+def _annotation_class(
+    annotation: ast.expr | None,
+    module: str,
+    modules: dict[str, ast.Module],
+    top: str,
+) -> tuple[ast.ClassDef, str, str] | None:
+    if annotation is None:
+        return None
+    return _resolve_class_expr(annotation, module, modules, top)
+
+
+def _call_class(
+    func: ast.expr,
+    module: str,
+    modules: dict[str, ast.Module],
+    top: str,
+) -> tuple[ast.ClassDef, str, str] | None:
+    return _resolve_class_expr(func, module, modules, top)
+
+
+def _resolve_class_expr(
+    expr: ast.expr,
+    module: str,
+    modules: dict[str, ast.Module],
+    top: str,
+) -> tuple[ast.ClassDef, str, str] | None:
+    """Resolve an annotation / callee expression to a ClassDef in the wheel."""
+    parts = _expr_parts(expr)
+    if parts is None:
+        # Subscript like list[X] — ignore.
+        if isinstance(expr, ast.Subscript):
+            return _resolve_class_expr(expr.value, module, modules, top)
+        return None
+    # Relative to current module: resources.Chat, Chat, package.Chat
+    candidates: list[str] = []
+    dotted = ".".join(parts)
+    candidates.append(dotted)
+    if not dotted.startswith(top + ".") and module:
+        candidates.append(f"{module}.{dotted}")
+        # Climb package parents for ``resources.Chat`` from ``pkg._client``.
+        mod_parts = module.split(".")
+        for i in range(len(mod_parts), 0, -1):
+            candidates.append(".".join([*mod_parts[:i], *parts]))
+    if len(parts) == 1:
+        # Same-module name or imported alias.
+        tree = modules.get(module)
+        if tree is not None:
+            found = _attr_on(tree, parts[0], modules, module)
+            if isinstance(found, ast.ClassDef):
+                return found, _owner_module(found, modules) or module, f"{module}.{parts[0]}"
+    for cand in candidates:
+        node, owner = _static_defining_node(cand, top, modules)
+        if isinstance(node, ast.ClassDef):
+            return node, owner or module, cand
+        # Module path then leaf class.
+        if "." in cand:
+            parent, leaf = cand.rsplit(".", 1)
+            tree = modules.get(parent)
+            if tree is not None:
+                found = _attr_on(tree, leaf, modules, parent)
+                if isinstance(found, ast.ClassDef):
+                    return found, parent, f"{parent}.{leaf}"
+    return None
+
+
+def _package_root_bindings(tree: ast.AST, top: str) -> dict[str, str]:
+    """Local name → package top for ``import pkg`` / ``import pkg as alias``."""
+    out: dict[str, str] = {}
+    for node in getattr(tree, "body", ()):
+        if not isinstance(node, ast.Import):
+            continue
+        for alias in node.names:
+            if alias.name == top:
+                out[alias.asname or top] = top
+    return out
+
+
+def _package_from_imports(tree: ast.AST, top: str) -> dict[str, str]:
+    """Local name → ``top.name`` for ``from top import name`` bindings."""
+    out: dict[str, str] = {}
+    for node in getattr(tree, "body", ()):
+        if not isinstance(node, ast.ImportFrom) or node.level:
+            continue
+        if node.module != top:
+            continue
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            local = alias.asname or alias.name
+            out[local] = f"{top}.{alias.name}"
+    return out
+
+
+def _collect_client_move_sites(
+    tree: ast.Module,
+    bindings: dict[str, str],
+    from_imports: dict[str, str],
+    top: str,
+) -> list[_ClientMoveSite]:
+    """Call / attr / base sites that reference removed package-level names."""
+    sites: list[_ClientMoveSite] = []
+    # Map call func id → Call for detecting calls vs bare attributes.
+    call_funcs: dict[int, ast.Call] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            call_funcs[id(node.func)] = node
+
+    base_ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                base_ids.add(id(base))
+
+    def args_src(call: ast.Call) -> str:
+        try:
+            text = ast.unparse(call)
+            return text[text.index("(") + 1 : text.rindex(")")]
+        except Exception:  # noqa: BLE001
+            return ""
+
+    # ``pkg.name`` / ``pkg.Class.method`` via import pkg
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        parts = _expr_parts(node)
+        if parts is None or len(parts) < 2:
+            continue
+        root = parts[0]
+        if root in bindings:
+            chain = parts[1:]
+            old_dotted = ".".join([top, *chain])
+            leaf = chain[-1]
+            kind = "attr"
+            call = call_funcs.get(id(node))
+            if id(node) in base_ids:
+                kind = "base"
+                # For bases, the removed name is the class (first chain segment
+                # when nested, or the leaf).
+                if len(chain) >= 1:
+                    old_dotted = f"{top}.{chain[0]}"
+                    leaf = chain[0]
+            elif call is not None:
+                kind = "call"
+            sites.append(
+                _ClientMoveSite(
+                    line=node.lineno,
+                    end_line=getattr(node, "end_lineno", None) or node.lineno,
+                    old_dotted=old_dotted,
+                    leaf=leaf,
+                    kind=kind,
+                    expr_node=node,
+                    call_node=call,
+                    call_args_src=args_src(call) if call is not None else None,
+                    stmt_node=None,
+                )
+            )
+        elif root in from_imports:
+            # ``Name.method`` where Name was ``from pkg import Name``.
+            imported = from_imports[root]
+            chain = parts[1:]
+            old_dotted = ".".join([imported, *chain]) if chain else imported
+            leaf = chain[-1] if chain else root
+            kind = "attr"
+            call = call_funcs.get(id(node))
+            if id(node) in base_ids:
+                kind = "base"
+                old_dotted = imported
+                leaf = imported.rsplit(".", 1)[-1]
+            elif call is not None:
+                kind = "call"
+            # Only interested when this is a method on an imported class, or
+            # the imported name itself used as a call that may move.
+            sites.append(
+                _ClientMoveSite(
+                    line=node.lineno,
+                    end_line=getattr(node, "end_lineno", None) or node.lineno,
+                    old_dotted=old_dotted,
+                    leaf=leaf,
+                    kind=kind,
+                    expr_node=node,
+                    call_node=call,
+                    call_args_src=args_src(call) if call is not None else None,
+                )
+            )
+
+    # Bare ``Name(...)`` where Name came from ``from pkg import Name``.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id not in from_imports:
+            continue
+        imported = from_imports[node.func.id]
+        if id(node.func) in base_ids:
+            continue
+        sites.append(
+            _ClientMoveSite(
+                line=node.lineno,
+                end_line=getattr(node, "end_lineno", None) or node.lineno,
+                old_dotted=imported,
+                leaf=imported.rsplit(".", 1)[-1],
+                kind="call",
+                expr_node=node.func,
+                call_node=node,
+                call_args_src=args_src(node),
+            )
+        )
+
+    # ``class X(Name)`` where Name came from from-import.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for base in node.bases:
+            if isinstance(base, ast.Name) and base.id in from_imports:
+                imported = from_imports[base.id]
+                sites.append(
+                    _ClientMoveSite(
+                        line=base.lineno,
+                        end_line=getattr(base, "end_lineno", None) or base.lineno,
+                        old_dotted=imported,
+                        leaf=imported.rsplit(".", 1)[-1],
+                        kind="base",
+                        expr_node=base,
+                    )
+                )
+    return sites
+
+
+def _name_missing_on_target(
+    dotted: str,
+    top: str,
+    modules: dict[str, ast.Module],
+    wheel: Path | None,
+    python: str | None,
+) -> bool:
+    status = _static_resolve(dotted, top, modules)
+    if status == "ok":
+        return False
+    if status == "missing":
+        # Confirm with runtime when possible (lazy exports).
+        if wheel is not None:
+            runtime, _ = resolve_name(dotted, top, modules, wheel=wheel, python=python)
+            if runtime == "ok":
+                return False
+            if runtime == "missing":
+                return True
+            # unknown → treat static missing as missing for mechanical moves
+        return True
+    if status == "unknown" and wheel is not None:
+        runtime, _ = resolve_name(dotted, top, modules, wheel=wheel, python=python)
+        return runtime == "missing"
+    return False
+
+
+def _name_present_on_source(
+    dotted: str,
+    top: str,
+    modules: dict[str, ast.Module],
+    wheel: Path | None,
+    python: str | None,
+) -> bool:
+    status = _static_resolve(dotted, top, modules)
+    if status == "ok":
+        return True
+    if wheel is not None:
+        runtime, _ = resolve_name(dotted, top, modules, wheel=wheel, python=python)
+        return runtime == "ok"
+    return False
+
+
+def _apply_client_move_edits(
+    source: str,
+    tree: ast.Module,
+    planned: list[_ClientMovePlan],
+    *,
+    client_short: str,
+    client_import: str,
+    client_qual: str,
+    package: str,
+    init_kwargs: str | None,
+    init_site: _ClientMoveSite | None,
+) -> tuple[str, str, bool]:
+    """Apply call rewrites and ensure one client construction. Returns var name."""
+    existing = _find_existing_client_var(tree, client_short)
+    client_var = existing or _pick_client_var_name(tree, client_short)
+    inserted = existing is None
+
+    edits: list[tuple[int, int, str]] = []
+    line_starts = _line_starts(source)
+    init_replaced = False
+
+    for item in planned:
+        if item.action == "needs_human":
+            continue
+        if item.action == "init":
+            stmt = _stmt_containing(tree, item.site.line)
+            if stmt is None:
+                continue
+            start, end = _stmt_span(
+                source, stmt.lineno, getattr(stmt, "end_lineno", None) or stmt.lineno
+            )
+            if inserted and not init_replaced:
+                # Replace the init call with the client construction in one edit
+                # so insert+delete offsets cannot overlap.
+                indent = _stmt_indent(source, stmt.lineno)
+                kwargs = init_kwargs or ""
+                edits.append(
+                    (start, end, f"{indent}{client_var} = {client_short}({kwargs})\n")
+                )
+                init_replaced = True
+            else:
+                # Client already exists (or construction inserted elsewhere): drop init.
+                edits.append((start, end, ""))
+            continue
+        if item.action == "method":
+            node = item.site.expr_node
+            start, end = _expr_span(line_starts, node)
+            edits.append((start, end, f"{client_var}.{item.replacement}"))
+
+    # Import the client class when needed.
+    import_line = _ensure_client_import_edit(
+        source, tree, client_short=client_short, client_import=client_import, package=package
+    )
+    if import_line is not None:
+        edits.append(import_line)
+
+    # Insert construction near first movable use when no existing client and no init.
+    if inserted and not init_replaced:
+        first_line = min(
+            (item.site.line for item in planned if item.action == "method"),
+            default=1,
+        )
+        indent = _stmt_indent(source, first_line)
+        kwargs = init_kwargs or ""
+        construction = f"{indent}{client_var} = {client_short}({kwargs})\n"
+        starts = _line_starts(source)
+        pos = starts[first_line - 1] if 1 <= first_line <= len(starts) else 0
+        edits.append((pos, pos, construction))
+
+    if not edits:
+        return source, client_var, False
+    updated = source
+    for start, end, text in sorted(edits, key=lambda item: (item[0], item[1]), reverse=True):
+        updated = updated[:start] + text + updated[end:]
+    try:
+        ast.parse(updated)
+    except (SyntaxError, ValueError):
+        return source, client_var, False
+    return updated, client_var, inserted
+
+
+def _find_existing_client_var(tree: ast.Module, client_short: str) -> str | None:
+    """Return the local name of an existing ``Client(...)`` construction, if any."""
+    for node in getattr(tree, "body", ()):
+        found = _client_var_in_assign(node, client_short)
+        if found:
+            return found
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for stmt in node.body:
+                found = _client_var_in_assign(stmt, client_short)
+                if found:
+                    return found
+    return None
+
+
+def _client_var_in_assign(node: ast.AST, client_short: str) -> str | None:
+    if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+        return None
+    target = node.targets[0]
+    if not isinstance(target, ast.Name):
+        return None
+    value = node.value
+    if not isinstance(value, ast.Call):
+        return None
+    func = value.func
+    if isinstance(func, ast.Name) and func.id == client_short:
+        return target.id
+    if isinstance(func, ast.Attribute) and func.attr == client_short:
+        return target.id
+    return None
+
+
+def _pick_client_var_name(tree: ast.Module, client_short: str) -> str:
+    bound = set(_bound_names(tree))
+    if "client" not in bound:
+        return "client"
+    snake = _camel_to_snake(client_short) + "_client"
+    if snake not in bound:
+        return snake
+    base = snake
+    index = 2
+    while f"{base}{index}" in bound:
+        index += 1
+    return f"{base}{index}"
+
+
+def _camel_to_snake(name: str) -> str:
+    out: list[str] = []
+    for index, ch in enumerate(name):
+        if ch.isupper() and index:
+            out.append("_")
+        out.append(ch.lower())
+    return "".join(out) or "client"
+
+
+def _bound_names(tree: ast.Module) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".", 1)[0])
+    return names
+
+
+def _ensure_client_import_edit(
+    source: str,
+    tree: ast.Module,
+    *,
+    client_short: str,
+    client_import: str,
+    package: str,
+) -> tuple[int, int, str] | None:
+    """Insert ``from <module> import Client`` when the class is not already bound."""
+    if client_short in _bound_names(tree):
+        # May already be imported or defined.
+        for node in getattr(tree, "body", ()):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                for alias in node.names:
+                    if (alias.asname or alias.name) == client_short:
+                        return None
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == client_import or alias.name.endswith("." + client_short):
+                        return None
+    # Prefer ``from package import Client`` when client_import is the package
+    # or a private module that re-exports at package root.
+    module = package if client_import == package or client_import.startswith(package + "._") else client_import
+    # If the defining module is private, import from package root when the
+    # short name is on the package surface.
+    if "._" in module or module.split(".")[-1].startswith("_"):
+        module = package
+    line = f"from {module} import {client_short}\n"
+    # Insert after the last existing import, or at file start.
+    last_import_end = 0
+    for node in getattr(tree, "body", ()):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            last_import_end = getattr(node, "end_lineno", None) or node.lineno
+        elif isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant):
+            # docstring
+            continue
+        else:
+            break
+    if last_import_end:
+        starts = _line_starts(source)
+        if last_import_end < len(starts):
+            pos = starts[last_import_end]
+        else:
+            pos = len(source)
+        return (pos, pos, line)
+    return (0, 0, line)
+
+
+def _stmt_containing(tree: ast.Module, line: int) -> ast.AST | None:
+    for node in getattr(tree, "body", ()):
+        start = getattr(node, "lineno", None)
+        end = getattr(node, "end_lineno", None) or start
+        if start is not None and end is not None and start <= line <= end:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                for child in node.body:
+                    c_start = getattr(child, "lineno", None)
+                    c_end = getattr(child, "end_lineno", None) or c_start
+                    if c_start is not None and c_end is not None and c_start <= line <= c_end:
+                        return child
+            return node
+    return None
+
 
 def relocate_removed_imports(
     source: str,
@@ -1811,6 +2903,8 @@ def relocate_removed_imports(
 
     ``from <gone> import Name`` is rewritten first. A plain ``import <gone>``
     plus dotted uses (``gone.Name``) is rewritten from the same homes.
+    Module-level calls whose replacement is a method on a client class are
+    rewritten last (one client construction, reused when already present).
     """
     hits: list[RemovedImport] = []
     for item in maps:
@@ -1823,6 +2917,9 @@ def relocate_removed_imports(
     for item in maps:
         updated, attr_hits = item.rewrite_attribute_imports(updated, path)
         hits.extend(attr_hits)
+    for item in maps:
+        updated, client_hits = item.rewrite_calls_onto_client(updated, path)
+        hits.extend(client_hits)
     return updated, hits
 
 

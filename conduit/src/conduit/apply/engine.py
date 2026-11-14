@@ -1439,6 +1439,11 @@ def _import_shift_why(hit: RemovedImport, change: str) -> str:
             f"which the target release removed, and no equivalent is on its surface{tail}"
         )
     moved = ", ".join(f"{name} -> {home}" for name, home in hit.moved)
+    # Client-method moves record homes like ``Client.list_things`` (or
+    # ``client.list_things``) rather than a new import module path.
+    client_move = bool(hit.moved) and any(
+        "." in home and not home.startswith(hit.module + ".") for _name, home in hit.moved
+    )
     if hit.missing:
         if kind_bits:
             named = ", ".join(kind_bits)
@@ -1451,6 +1456,8 @@ def _import_shift_why(hit: RemovedImport, change: str) -> str:
             f"Moved {moved}. No equivalent on the target surface for "
             f"{names} from {hit.module}{tail}"
         )
+    if client_move:
+        return f"Moved module-level calls onto a client: {moved}{tail}"
     shown = hit.replacement.strip().replace("\n", " ")
     return f"Replaced the import from `{hit.module}` with `{shown}`{tail}"
 
