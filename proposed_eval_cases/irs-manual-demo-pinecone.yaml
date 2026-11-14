@@ -1,0 +1,32 @@
+id: irs-manual-demo-pinecone
+smoke: true
+failure_kind: resource-to-client-call-shape
+description: >
+  pinecone 2.2.1 → 3.2.2 on Unstructured-IO/irs-manual-demo. cli_app.py calls
+  `pinecone.init(api_key=..., environment=...)` before
+  `Pinecone.from_existing_index(...)`. On 3.2.2 `pinecone.init` is a raise-only
+  *args/**kwargs stub. The replacement is `Pinecone(api_key=...)` (langchain's
+  vectorstore helper may still wrap the client).
+repo:
+  url: https://github.com/Unstructured-IO/irs-manual-demo
+  commit: 281247061aaf9d8714bb0c2876443aef3832f3c2
+dependency:
+  name: pinecone
+  from: "2.2.1"
+  to: "3.2.2"
+timeout_seconds: 900
+expected:
+  must_fix:
+    - path: cli_app.py
+      contains: "pinecone.init("
+  forbidden_names:
+    - "pinecone.init"
+  required_patterns:
+    - "Pinecone\\("
+  untouched_globs:
+    - "tests/**"
+    - "**/test_*.py"
+  notes: >
+    Labeled from the pinned cli_app.py and requirements
+    (pinecone-client==2.2.1). Targets the raise-only stub → removed impact
+    path. No model run.

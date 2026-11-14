@@ -1,0 +1,35 @@
+id: streamlit-qa-pinecone
+held_out: true
+failure_kind: resource-to-client-call-shape
+tags:
+  - held-out
+description: >
+  pinecone 2.2.4 → 3.2.2 on karlospn/building-qa-app-with-openai-pinecone-and-streamlit.
+  app.py calls `pinecone.init(api_key=..., environment=...)` and
+  `pinecone.Index(...)`. On 3.2.2 those are raise-only *args/**kwargs stubs.
+  The replacement is a `Pinecone(api_key=...)` client and `pc.Index(...)`.
+repo:
+  url: https://github.com/karlospn/building-qa-app-with-openai-pinecone-and-streamlit
+  commit: 34cd2afce5361b37a4221d93b85eedabf8b5e3c3
+dependency:
+  name: pinecone
+  from: "2.2.4"
+  to: "3.2.2"
+timeout_seconds: 900
+expected:
+  must_fix:
+    - path: app.py
+      contains: "pinecone.init("
+    - path: app.py
+      contains: "pinecone.Index("
+  forbidden_names:
+    - "pinecone.init"
+  required_patterns:
+    - "Pinecone\\("
+  untouched_globs:
+    - "tests/**"
+    - "**/test_*.py"
+  notes: >
+    Held-out generalization case. requirements.txt pins pinecone-client
+    without a version; the pinned source still uses the v2 module-level API.
+    No model run.
