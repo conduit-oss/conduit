@@ -2669,6 +2669,15 @@ def _name_missing_on_target(
     wheel: Path | None,
     python: str | None,
 ) -> bool:
+    # Raise-only *args/**kwargs stubs still resolve as present on the AST, but
+    # they always fail at call time — treat them as missing so client-move runs.
+    # Invented-name checks use resolve_name directly and stay unchanged.
+    node, _owner = _static_defining_node(dotted, top, modules)
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        from conduit.impact.api import is_raise_only_stub
+
+        if is_raise_only_stub(node):
+            return True
     status = _static_resolve(dotted, top, modules)
     if status == "ok":
         return False

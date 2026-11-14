@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import tempfile
 import zipfile
 from dataclasses import asdict, dataclass
@@ -12,6 +13,7 @@ from conduit.analysis_cache import file_sha256, read_json, write_json
 from conduit.impact.model import ApiChange
 
 _SKIP_DIRS = {"tests", "test", "testing", "__pycache__"}
+_IDENT = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\b")
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,10 @@ class Symbol:
     kwonly: tuple[str, ...]
     required: tuple[str, ...]
     deprecated: bool
+    #: True when the callable is only ``*args``/``**kwargs`` and raises.
+    raise_only_stub: bool = False
+    #: Identifier tokens from the raised message (filtered later against the surface).
+    stub_hints: tuple[str, ...] = ()
 
 
 def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
@@ -88,22 +94,44 @@ def diff_wheels(old: Path, new: Path) -> list[ApiChange]:
                 )
             )
         else:
-            if other.deprecated and not sym.deprecated:
+            # Raise-only *args/**kwargs stubs are removals, not signature edits.
+            # Diffing params would report param_removed (named params vanished)
+            # and hide the client-move path that needs kind=removed. Only when
+            # the new binding is a stub and the old one was not — a stub that
+            # stays a stub is not a new removal.
+            if other.raise_only_stub and not sym.raise_only_stub:
+                hint = _stub_replacement_on_surface(other.stub_hints, new_public)
                 changes.append(
                     _alias(
                         ApiChange(
-                            kind="deprecated",
+                            kind="removed",
                             symbol=name,
                             old=name,
-                            new=name,
-                            detail=f"{_short(name)} deprecated",
-                            confidence="low",
+                            new=hint,
+                            detail=f"{_short(name)} removed",
+                            confidence="high",
                             source="wheel",
                         ),
                         aliases,
                     )
                 )
-            changes.extend(_alias(item, aliases) for item in _signature(sym, other))
+            else:
+                if other.deprecated and not sym.deprecated:
+                    changes.append(
+                        _alias(
+                            ApiChange(
+                                kind="deprecated",
+                                symbol=name,
+                                old=name,
+                                new=name,
+                                detail=f"{_short(name)} deprecated",
+                                confidence="low",
+                                source="wheel",
+                            ),
+                            aliases,
+                        )
+                    )
+                changes.extend(_alias(item, aliases) for item in _signature(sym, other))
         if _response_shape_changed(name, old_returns, new_returns, other is None, new_models):
             changes.append(
                 _alias(
@@ -375,6 +403,8 @@ def _api_from_cache(payload: dict) -> dict[str, Symbol] | None:
             kwonly=tuple(raw.get("kwonly") or ()),
             required=tuple(raw.get("required") or ()),
             deprecated=bool(raw.get("deprecated")),
+            raise_only_stub=bool(raw.get("raise_only_stub")),
+            stub_hints=tuple(raw.get("stub_hints") or ()),
         )
     return found
 
@@ -402,7 +432,15 @@ def _class_methods(node: ast.ClassDef) -> list[ast.AST]:
 
 
 def _clone(qual: str, sym: Symbol) -> Symbol:
-    return Symbol(qual, sym.params, sym.kwonly, sym.required, sym.deprecated)
+    return Symbol(
+        qual,
+        sym.params,
+        sym.kwonly,
+        sym.required,
+        sym.deprecated,
+        sym.raise_only_stub,
+        sym.stub_hints,
+    )
 
 
 def _dynamic_members(
@@ -646,10 +684,7 @@ def _apply_lazy_reexports(
                     public = f"{module}.{name}{rest}"
                     if any(part.startswith("_") for part in public.split(".")):
                         continue
-                    found.setdefault(
-                        public,
-                        Symbol(public, sym.params, sym.kwonly, sym.required, sym.deprecated),
-                    )
+                    found.setdefault(public, _clone(public, sym))
                 continue
             qual = f"{target}.{name}"
             sym = all_symbols.get(qual)
@@ -657,10 +692,7 @@ def _apply_lazy_reexports(
             if sym is None:
                 found.setdefault(public, Symbol(public, (), (), (), False))
             else:
-                found.setdefault(
-                    public,
-                    Symbol(public, sym.params, sym.kwonly, sym.required, sym.deprecated),
-                )
+                found.setdefault(public, _clone(public, sym))
 
 
 def _lazy_import_map(tree: ast.AST) -> dict[str, tuple[str, bool]]:
@@ -816,10 +848,207 @@ def _symbol(qualname: str, node: ast.AST) -> Symbol:
             None,
         )
         params, kwonly, required = _params(init) if init is not None else ((), (), ())
-        return Symbol(qualname, params, kwonly, required, _deprecated(node) or (init is not None and _deprecated(init)))
+        return Symbol(
+            qualname,
+            params,
+            kwonly,
+            required,
+            _deprecated(node) or (init is not None and _deprecated(init)),
+        )
     assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     params, kwonly, required = _params(node)
-    return Symbol(qualname, params, kwonly, required, _deprecated(node))
+    stub = is_raise_only_stub(node)
+    hints = stub_message_hints(node) if stub else ()
+    return Symbol(qualname, params, kwonly, required, _deprecated(node), stub, hints)
+
+
+def is_raise_only_stub(node: ast.AST) -> bool:
+    """True for ``def f(*args, **kwargs): ... raise ...`` with no real work.
+
+    A docstring and string / example assignments before the raise are allowed.
+    Named parameters or any non-raise body (return, call, pass-through) means
+    this is not a removal stub.
+    """
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    if not _vararg_kwargs_only(node):
+        return False
+    return _body_only_raises(node)
+
+
+def stub_message_hints(node: ast.AST) -> tuple[str, ...]:
+    """Identifier tokens mentioned in a raise-only stub's message / example."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return ()
+    texts: list[str] = []
+    for child in node.body:
+        texts.extend(_string_texts(child))
+    found: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        for match in _IDENT.finditer(text):
+            name = match.group(1)
+            if name in seen or name in _STUB_HINT_STOPWORDS:
+                continue
+            seen.add(name)
+            found.append(name)
+    return tuple(found)
+
+
+def _stub_replacement_on_surface(hints: tuple[str, ...], new_public: set[str]) -> str:
+    """Pick a hint that exists on the new public surface; never invent names."""
+    if not hints or not new_public:
+        return ""
+    by_leaf: dict[str, list[str]] = {}
+    for name in new_public:
+        leaf = name.rsplit(".", 1)[-1]
+        by_leaf.setdefault(leaf, []).append(name)
+    matches: list[str] = []
+    for hint in hints:
+        for cand in by_leaf.get(hint, ()):
+            if cand not in matches:
+                matches.append(cand)
+    if not matches:
+        return ""
+    # Prefer a single PascalCase type/client name when several hints hit.
+    ranked = sorted(
+        matches,
+        key=lambda name: (
+            0 if name.rsplit(".", 1)[-1][:1].isupper() else 1,
+            len(name),
+        ),
+    )
+    return ranked[0]
+
+
+def _vararg_kwargs_only(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    args = node.args
+    positional = [*args.posonlyargs, *args.args]
+    for arg in positional:
+        if arg.arg in {"self", "cls"}:
+            continue
+        return False
+    if args.kwonlyargs:
+        return False
+    return args.vararg is not None or args.kwarg is not None
+
+
+def _body_only_raises(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    body = list(node.body)
+    if body and isinstance(body[0], ast.Expr) and _is_docstring(body[0]):
+        body = body[1:]
+    while body and _is_message_assignment(body[0]):
+        body = body[1:]
+    if len(body) != 1 or not isinstance(body[0], ast.Raise):
+        return False
+    # Abstract-method placeholders are not API removals.
+    if _raises_not_implemented(body[0].exc):
+        return False
+    return True
+
+
+def _raises_not_implemented(exc: ast.AST | None) -> bool:
+    if exc is None:
+        return False
+    target = exc.func if isinstance(exc, ast.Call) else exc
+    if isinstance(target, ast.Name):
+        return target.id == "NotImplementedError"
+    if isinstance(target, ast.Attribute):
+        return target.attr == "NotImplementedError"
+    return False
+
+
+def _is_docstring(node: ast.stmt) -> bool:
+    return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(
+        node.value.value, str
+    )
+
+
+def _is_message_assignment(node: ast.stmt) -> bool:
+    """Allow string / example bindings used only to build the raise message."""
+    if isinstance(node, ast.Assign):
+        return _is_message_expr(node.value)
+    if isinstance(node, ast.AnnAssign) and node.value is not None:
+        return _is_message_expr(node.value)
+    return False
+
+
+def _is_message_expr(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return True
+    if isinstance(node, ast.JoinedStr):
+        return True
+    if isinstance(node, ast.Name):
+        return True
+    if isinstance(node, ast.Attribute):
+        return True
+    if isinstance(node, ast.Call):
+        return all(_is_message_expr(arg) for arg in node.args) and all(
+            _is_message_expr(kw.value) for kw in node.keywords if kw.value is not None
+        )
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        return _is_message_expr(node.left) and _is_message_expr(node.right)
+    return False
+
+
+def _string_texts(node: ast.AST) -> list[str]:
+    found: list[str] = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Constant) and isinstance(child.value, str):
+            found.append(child.value)
+    return found
+
+
+_STUB_HINT_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "be",
+        "by",
+        "call",
+        "class",
+        "client",
+        "create",
+        "def",
+        "do",
+        "else",
+        "example",
+        "for",
+        "from",
+        "get",
+        "if",
+        "import",
+        "in",
+        "instead",
+        "instance",
+        "is",
+        "level",
+        "longer",
+        "method",
+        "name",
+        "no",
+        "not",
+        "now",
+        "of",
+        "or",
+        "os",
+        "package",
+        "please",
+        "return",
+        "self",
+        "something",
+        "stuff",
+        "the",
+        "there",
+        "to",
+        "top",
+        "use",
+        "your",
+    }
+)
 
 
 def _params(node: ast.AST | None) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
