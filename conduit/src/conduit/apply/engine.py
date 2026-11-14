@@ -1418,8 +1418,21 @@ def _import_hit(site: ImpactSite, shifts: list[RemovedImport]) -> RemovedImport 
 
 
 def _import_shift_why(hit: RemovedImport, change: str) -> str:
+    from conduit.apply.names import _kind_label
+
     tail = f" ({change})" if change else ""
+    kind_bits = [
+        f"{name} ({_kind_label(old_kind)} -> {_kind_label(new_kind)})"
+        for name, old_kind, new_kind in hit.kind_mismatches
+    ]
     if hit.missing and not hit.moved:
+        if kind_bits:
+            named = ", ".join(kind_bits)
+            return (
+                f"{hit.path}:{hit.line} imports {named} from {hit.module}, "
+                f"which the target release removed, but the same-name "
+                f"candidate is a different kind{tail}"
+            )
         names = ", ".join(hit.missing)
         return (
             f"{hit.path}:{hit.line} imports {names} from {hit.module}, "
@@ -1427,6 +1440,12 @@ def _import_shift_why(hit: RemovedImport, change: str) -> str:
         )
     moved = ", ".join(f"{name} -> {home}" for name, home in hit.moved)
     if hit.missing:
+        if kind_bits:
+            named = ", ".join(kind_bits)
+            return (
+                f"Moved {moved}. Same-name candidate is a different kind for "
+                f"{named} from {hit.module}{tail}"
+            )
         names = ", ".join(hit.missing)
         return (
             f"Moved {moved}. No equivalent on the target surface for "

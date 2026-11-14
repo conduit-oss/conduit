@@ -1388,6 +1388,9 @@ class RemovedImport:
 
     ``moved`` is ``(imported name, dotted home on the target surface)``.
     ``missing`` names have no equivalent anywhere on that surface.
+    ``kind_mismatches`` is ``(name, old_kind, new_kind)`` when a same-name
+    candidate exists but is a different kind (exception, class, callable, or
+    module); those names are also listed in ``missing`` and are not rewritten.
     ``replacement`` is empty when nothing moved: the statement stays, and the
     site needs a human. When anything moved, ``replacement`` is the new import
     block (names with a home only) and the removed module is not imported.
@@ -1400,6 +1403,14 @@ class RemovedImport:
     moved: tuple[tuple[str, str], ...]
     missing: tuple[str, ...]
     replacement: str
+    kind_mismatches: tuple[tuple[str, str, str], ...] = ()
+
+
+def _kind_label(kind: str) -> str:
+    """Human label for a symbol kind. ``exc_type`` reads as ``exception``."""
+    if kind == "exc_type":
+        return "exception"
+    return kind
 
 
 class RemovedModuleImports:
@@ -1467,12 +1478,15 @@ class RemovedModuleImports:
                 continue
             moved: list[tuple[str, str]] = []
             missing: list[str] = []
+            mismatches: list[tuple[str, str, str]] = []
             groups: dict[str, list[tuple[str, str | None]]] = {}
             order: list[str] = []
             for alias in node.names:
-                home = self.home_for(alias.name, removed_module=module)
+                home, mismatch = self._home_choice(alias.name, removed_module=module)
                 if home is None:
                     missing.append(alias.name)
+                    if mismatch is not None:
+                        mismatches.append((alias.name, mismatch[0], mismatch[1]))
                     continue
                 parent, leaf = home.rsplit(".", 1)
                 moved.append((alias.name, home))
@@ -1500,6 +1514,7 @@ class RemovedModuleImports:
                     moved=tuple(moved),
                     missing=tuple(missing),
                     replacement=replacement,
+                    kind_mismatches=tuple(mismatches),
                 )
             )
         return found
@@ -1512,20 +1527,33 @@ class RemovedModuleImports:
         A different kind, or a kind that cannot be read from either wheel,
         is not a home: the site stays needs-human.
         """
+        home, _mismatch = self._home_choice(name, removed_module=removed_module)
+        return home
+
+    def _home_choice(
+        self, name: str, *, removed_module: str
+    ) -> tuple[str | None, tuple[str, str] | None]:
+        """``(home, None)`` when accepted, else ``(None, mismatch_or_None)``.
+
+        ``mismatch`` is ``(old_kind, new_kind)`` when a same-name candidate
+        exists but the kinds differ (or either kind is unknown).
+        """
         if name in self._homes:
             cached = self._homes[name]
         else:
             cached = self._find_home(name)
             self._homes[name] = cached
         if cached is None:
-            return None
+            return None, None
         if cached == removed_module or cached.startswith(removed_module + "."):
-            return None
+            return None, None
         old_kind = self._symbol_kind(f"{removed_module}.{name}", old=True)
         new_kind = self._symbol_kind(cached, old=False)
         if old_kind is None or new_kind is None or old_kind != new_kind:
-            return None
-        return cached
+            if old_kind is not None and new_kind is not None:
+                return None, (old_kind, new_kind)
+            return None, None
+        return cached, None
 
     def _symbol_kind(self, dotted: str, *, old: bool) -> str | None:
         key = (old, dotted)
@@ -1533,9 +1561,10 @@ class RemovedModuleImports:
             return self._kinds[key]
         modules = self.old_modules if old else self.modules
         wheel = self.old_wheel if old else self.wheel
-        kind = _runtime_kind(dotted, self.package, wheel=wheel, python=self.python)
+        # Static surface first; runtime import + getattr when AST cannot tell.
+        kind = _static_kind(dotted, self.top, modules)
         if kind is None:
-            kind = _static_kind(dotted, self.top, modules)
+            kind = _runtime_kind(dotted, self.package, wheel=wheel, python=self.python)
         self._kinds[key] = kind
         return kind
 
@@ -1643,16 +1672,22 @@ class RemovedModuleImports:
 
         moved_by_module: dict[str, list[tuple[str, str]]] = {}
         missing_by_module: dict[str, list[str]] = {}
+        mismatch_by_module: dict[str, list[tuple[str, str, str]]] = {}
         parents: list[str] = []
         edits: list[tuple[int, int, str]] = []
-        use_hits: dict[int, list[tuple[str, str | None, str]]] = {}
+        use_hits: dict[int, list[tuple[str, str | None, str, tuple[str, str] | None]]] = {}
         line_starts = _line_starts(source)
         for node, module in uses:
-            home = self.home_for(node.attr, removed_module=module)
+            home, mismatch = self._home_choice(node.attr, removed_module=module)
             if home is None:
                 missing_by_module.setdefault(module, [])
                 if node.attr not in missing_by_module[module]:
                     missing_by_module[module].append(node.attr)
+                if mismatch is not None:
+                    mismatch_by_module.setdefault(module, [])
+                    row = (node.attr, mismatch[0], mismatch[1])
+                    if row not in mismatch_by_module[module]:
+                        mismatch_by_module[module].append(row)
                 replacement = node.attr
                 recorded: str | None = None
             else:
@@ -1665,9 +1700,10 @@ class RemovedModuleImports:
                     moved_by_module[module].append(pair)
                 replacement = home
                 recorded = home
+                mismatch = None
             start, end = _expr_span(line_starts, node)
             edits.append((start, end, replacement))
-            use_hits.setdefault(node.lineno, []).append((module, recorded, node.attr))
+            use_hits.setdefault(node.lineno, []).append((module, recorded, node.attr, mismatch))
 
         by_stmt: dict[int, tuple[ast.Import, list[str]]] = {}
         for node, module, _prefix in bindings:
@@ -1696,6 +1732,7 @@ class RemovedModuleImports:
                             moved=tuple(moved_by_module.get(module, ())),
                             missing=tuple(missing_by_module.get(module, ())) or (module,),
                             replacement="",
+                            kind_mismatches=tuple(mismatch_by_module.get(module, ())),
                         )
                     )
                 continue
@@ -1726,11 +1763,17 @@ class RemovedModuleImports:
                         moved=tuple(moved_by_module.get(module, ())),
                         missing=tuple(missing_by_module.get(module, ())),
                         replacement=replacement if module == modules[0] else "",
+                        kind_mismatches=tuple(mismatch_by_module.get(module, ())),
                     )
                 )
         for line, items in sorted(use_hits.items()):
-            moved = tuple((name, home) for _module, home, name in items if home)
-            missing = tuple(name for _module, home, name in items if not home)
+            moved = tuple((name, home) for _module, home, name, _mm in items if home)
+            missing = tuple(name for _module, home, name, _mm in items if not home)
+            mismatches = tuple(
+                (name, mm[0], mm[1])
+                for _module, home, name, mm in items
+                if not home and mm is not None
+            )
             module = items[0][0]
             hits.append(
                 RemovedImport(
@@ -1741,6 +1784,7 @@ class RemovedModuleImports:
                     moved=moved,
                     missing=missing,
                     replacement="",
+                    kind_mismatches=mismatches,
                 )
             )
         if not edits:
