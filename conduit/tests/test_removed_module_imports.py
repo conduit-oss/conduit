@@ -642,3 +642,303 @@ def test_module_to_module_is_accepted(tmp_path: Path):
     assert hits[0].kind_mismatches == ()
     assert any(name == "helpers" for name, _home in hits[0].moved)
 
+
+def _gone_type_wheels(tmp_path: Path) -> Path:
+    """acmekit 1.0: legacy.GoneType + old_call. 2.0: new_call only; GoneType gone."""
+    old = tmp_path / "fixtures" / "old"
+    new = tmp_path / "fixtures" / "new"
+    _write(old / "acmekit" / "__init__.py", "def old_call(x):\n    return x\n")
+    _write(
+        old / "acmekit" / "legacy.py",
+        "class GoneType:\n    pass\n\nclass Kept:\n    pass\n",
+    )
+    _write(new / "acmekit" / "__init__.py", "def new_call(x):\n    return x\n\nclass Kept:\n    pass\n")
+    fixtures = tmp_path / "fixtures"
+    (fixtures / "index.json").write_text(
+        json.dumps({"packages": {"acmekit": {"wheels": {"1.0": "old", "2.0": "new"}}}}),
+        encoding="utf-8",
+    )
+    return fixtures
+
+
+def _call_and_import_payload(*, call_line: int, import_line: int = 1) -> dict:
+    return {
+        "dependency": "acmekit",
+        "impacts": [
+            {
+                "dependency": "acmekit",
+                "from_version": "1.0",
+                "to_version": "2.0",
+                "change": "acmekit.legacy.GoneType removed",
+                "confidence": "high",
+                "source": "wheel",
+                "kind": "removed",
+                "symbol": "acmekit.legacy.GoneType",
+                "sites": [
+                    {
+                        "path": "use.py",
+                        "line": import_line,
+                        "expr": "import GoneType",
+                        "confidence": "high",
+                        "via_wrapper": False,
+                    }
+                ],
+            },
+            {
+                "dependency": "acmekit",
+                "from_version": "1.0",
+                "to_version": "2.0",
+                "change": "old_call renamed to new_call",
+                "confidence": "high",
+                "source": "wheel",
+                "kind": "removed",
+                "symbol": "acmekit.old_call",
+                "old": "old_call",
+                "new": "new_call",
+                "sites": [
+                    {
+                        "path": "use.py",
+                        "line": call_line,
+                        "expr": "acmekit.old_call",
+                        "confidence": "high",
+                        "via_wrapper": False,
+                    }
+                ],
+            },
+        ],
+        "deprecations": [],
+        "diffed": ["acmekit"],
+        "notes": [],
+    }
+
+
+def test_dead_removed_import_after_rewrite_is_dropped_not_needs_human(tmp_path: Path):
+    """Removed name used only as an annotation on the rewritten line: drop import, keep rewrite."""
+    fixtures = _gone_type_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        """\
+        from acmekit.legacy import GoneType
+        import acmekit
+
+        def use(x):
+            res: GoneType = acmekit.old_call(x)
+            return res
+        """,
+    )
+    edit = json.dumps(
+        {
+            "function_source": "def use(x):\n    res = acmekit.new_call(x)\n    return res\n",
+            "new_imports": [],
+        }
+    )
+    report = apply_sites(
+        sites_from_payload(_call_and_import_payload(call_line=5)),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=2),
+            write=True,
+            client=FakeModelClient(responses=[edit, "Rewrote old_call to new_call."]),
+            fixtures=fixtures,
+        ),
+    )
+    text = (root / "use.py").read_text(encoding="utf-8")
+    assert "GoneType" not in text
+    assert "acmekit.legacy" not in text
+    assert "acmekit.new_call" in text
+    assert "acmekit.old_call" not in text
+    assert not any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
+    assert not any(item.status == SiteStatus.FIXED_VERIFIED for item in report.results)
+    assert any(
+        item.status in {SiteStatus.FIXED_UNVERIFIED, SiteStatus.FIXED_NOT_COVERED, SiteStatus.SKIPPED}
+        for item in report.results
+    )
+
+
+def test_removed_import_still_used_after_rewrite_is_needs_human(tmp_path: Path):
+    """Removed name still used elsewhere after the rewrite: needs-human as before."""
+    fixtures = _gone_type_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        """\
+        from acmekit.legacy import GoneType
+        import acmekit
+
+        def use(x):
+            res: GoneType = acmekit.old_call(x)
+            return res, GoneType
+        """,
+    )
+    edit = json.dumps(
+        {
+            "function_source": (
+                "def use(x):\n"
+                "    res = acmekit.new_call(x)\n"
+                "    return res, GoneType\n"
+            ),
+            "new_imports": [],
+        }
+    )
+    report = apply_sites(
+        sites_from_payload(_call_and_import_payload(call_line=5)),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=2),
+            write=True,
+            client=FakeModelClient(responses=[edit, "Rewrote old_call to new_call."]),
+            fixtures=fixtures,
+        ),
+    )
+    text = (root / "use.py").read_text(encoding="utf-8")
+    assert "from acmekit.legacy import GoneType" in text
+    import_results = [item for item in report.results if "import" in item.site.expr]
+    assert import_results
+    assert any(item.status == SiteStatus.NEEDS_HUMAN for item in import_results)
+    assert not any(item.status == SiteStatus.FIXED_VERIFIED for item in report.results)
+
+
+def test_dead_removed_import_alias_is_dropped(tmp_path: Path):
+    """Removed name imported with an alias, dead after the rewrite: alias import dropped."""
+    fixtures = _gone_type_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        """\
+        from acmekit.legacy import GoneType as GT
+        import acmekit
+
+        def use(x):
+            res: GT = acmekit.old_call(x)
+            return res
+        """,
+    )
+    edit = json.dumps(
+        {
+            "function_source": "def use(x):\n    res = acmekit.new_call(x)\n    return res\n",
+            "new_imports": [],
+        }
+    )
+    report = apply_sites(
+        sites_from_payload(_call_and_import_payload(call_line=5)),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=2),
+            write=True,
+            client=FakeModelClient(responses=[edit, "Rewrote old_call to new_call."]),
+            fixtures=fixtures,
+        ),
+    )
+    text = (root / "use.py").read_text(encoding="utf-8")
+    assert "GoneType" not in text
+    assert " as GT" not in text
+    assert "acmekit.legacy" not in text
+    assert "acmekit.new_call" in text
+    assert not any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
+    assert not any(item.status == SiteStatus.FIXED_VERIFIED for item in report.results)
+
+
+def test_from_import_drops_only_the_dead_removed_name(tmp_path: Path):
+    """from-import of A and B where only A is removed and dead: only A dropped, B stays."""
+    fixtures = _gone_type_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        """\
+        from acmekit.legacy import GoneType, Kept
+        import acmekit
+
+        def use(x):
+            res: GoneType = acmekit.old_call(x)
+            return res, Kept
+        """,
+    )
+    edit = json.dumps(
+        {
+            "function_source": (
+                "def use(x):\n"
+                "    res = acmekit.new_call(x)\n"
+                "    return res, Kept\n"
+            ),
+            "new_imports": [],
+        }
+    )
+    report = apply_sites(
+        sites_from_payload(_call_and_import_payload(call_line=5)),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=2),
+            write=True,
+            client=FakeModelClient(responses=[edit, "Rewrote old_call to new_call."]),
+            fixtures=fixtures,
+        ),
+    )
+    text = (root / "use.py").read_text(encoding="utf-8")
+    assert "GoneType" not in text
+    assert "acmekit.legacy" not in text
+    assert "Kept" in text
+    assert "from acmekit import Kept" in text or "import Kept" in text
+    assert "acmekit.new_call" in text
+    assert not any(item.status == SiteStatus.NEEDS_HUMAN for item in report.results)
+    assert not any(item.status == SiteStatus.FIXED_VERIFIED for item in report.results)
+
+
+def test_unused_removed_import_alone_is_dropped_by_apply(tmp_path: Path):
+    """A removed name with no uses in the file is dropped; not needs-human."""
+    fixtures = _gone_type_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        """\
+        from acmekit.legacy import GoneType
+
+        VALUE = 1
+        """,
+    )
+    report = apply_sites(
+        sites_from_payload(
+            {
+                "dependency": "acmekit",
+                "impacts": [
+                    {
+                        "dependency": "acmekit",
+                        "from_version": "1.0",
+                        "to_version": "2.0",
+                        "change": "acmekit.legacy.GoneType removed",
+                        "confidence": "high",
+                        "source": "wheel",
+                        "kind": "removed",
+                        "symbol": "acmekit.legacy.GoneType",
+                        "sites": [
+                            {
+                                "path": "use.py",
+                                "line": 1,
+                                "expr": "import GoneType",
+                                "confidence": "high",
+                                "via_wrapper": False,
+                            }
+                        ],
+                    }
+                ],
+                "deprecations": [],
+                "diffed": ["acmekit"],
+                "notes": [],
+            }
+        ),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            client=FakeModelClient(responses=[]),
+            fixtures=fixtures,
+        ),
+    )
+    text = (root / "use.py").read_text(encoding="utf-8")
+    assert "GoneType" not in text
+    assert "acmekit.legacy" not in text
+    (result,) = report.results
+    assert result.status == SiteStatus.FIXED_UNVERIFIED
+    assert result.status != SiteStatus.NEEDS_HUMAN
+    assert result.status != SiteStatus.FIXED_VERIFIED
+

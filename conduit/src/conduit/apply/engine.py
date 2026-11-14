@@ -235,6 +235,7 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
         # One whole-repo parse for declared/dict-key/typecheck; per-site rechecks
         # only re-parse files a rewrite changes.
         index = RepoIndex.build(config.root) if config.recheck_impact else None
+        deferred_imports: list[tuple[ImpactSite, RemovedImport]] = []
         with using_index(index):
             # Lines that import or construct a removed class go first, so later
             # rechecks resolve calls through the new client instead of the old one.
@@ -246,6 +247,11 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
                     continue
                 hit = _import_hit(site, import_shifts)
                 if hit is not None:
+                    if hit.missing and hit.from_import:
+                        # Still-used removed imports may become dead after a
+                        # sibling rewrite in this file; finalize after the loop.
+                        deferred_imports.append((site, hit))
+                        continue
                     why = _import_shift_why(hit, site.change)
                     before = relocated_originals.get(site.path, "")
                     after = _read(config.root / site.path)
@@ -269,6 +275,14 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
                     report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=why))
                     continue
                 report.results.append(_apply_one(moved, config, client, report))
+                _sync_ledger()
+                _checkpoint(config, report)
+            for site, hit in deferred_imports:
+                report.results.append(
+                    _finalize_missing_import(
+                        site, hit, config.root, relocated_originals, write=bool(config.write and not config.dry_run)
+                    )
+                )
                 _sync_ledger()
                 _checkpoint(config, report)
         _fill_why(report)
@@ -363,6 +377,7 @@ def _apply_batch(
         ordered = _dependency_order(config.root, base, covered, routes)
         rank = {id(site): index for index, site in enumerate(base)}
         ranks: list[int] = []  # report order stays the usual one
+        deferred_imports: list[tuple[ImpactSite, RemovedImport]] = []
         # Scan the scratch tree once; remaining_breaks / _write_file keep it fresh.
         repo_index = RepoIndex.build(scratch) if work.recheck_impact else None
         with using_index(repo_index):
@@ -376,12 +391,13 @@ def _apply_batch(
                     )
                     break
                 routes.upcoming.pop(id(site), None)
-                ranks.append(rank[id(site)])
                 if id(site) in covered:
+                    ranks.append(rank[id(site)])
                     report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
                     _checkpoint(config, report)
                     continue
                 if site.via_wrapper:
+                    ranks.append(rank[id(site)])
                     report.results.append(_apply_one(site, work, client, report))
                     _checkpoint(config, report)
                     continue
@@ -391,6 +407,12 @@ def _apply_batch(
                 texts_of[id(site)] = texts.get(id(site), "")
                 hit = _import_hit(site, import_shifts)
                 if hit is not None:
+                    if hit.missing and hit.from_import:
+                        # Defer: a rewrite later in this file may clear the uses.
+                        # Rank is recorded when finalized so early-stop lengths match.
+                        deferred_imports.append((site, hit))
+                        continue
+                    ranks.append(rank[id(site)])
                     why = _import_shift_why(hit, site.change)
                     diff = unified_diff_for(
                         site.path, originals.get(site.path, ""), _read(scratch / site.path)
@@ -421,6 +443,7 @@ def _apply_batch(
                     report.results.append(result)
                     _checkpoint(config, report)
                     continue
+                ranks.append(rank[id(site)])
                 moved = _relocate(scratch, site, texts_of[id(site)])
                 sink: dict[str, Any] = {"site": site}
                 routes.key = id(site)
@@ -434,6 +457,25 @@ def _apply_batch(
                 report.results.append(result or SiteResult(site=site, status=SiteStatus.SKIPPED, why="line rewritten by an earlier fix in this file"))
                 if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
                     accepted[id(site)] = sink
+                _checkpoint(config, report)
+            for site, hit in deferred_imports:
+                ranks.append(rank[id(site)])
+                originals.setdefault(site.path, _read(config.root / site.path))
+                if site.path not in lines.paths:
+                    lines.paths.append(site.path)
+                result = _finalize_missing_import(
+                    site, hit, scratch, originals, write=True
+                )
+                slots[id(site)] = len(report.results)
+                report.results.append(result)
+                if result.status == SiteStatus.FIXED_UNVERIFIED:
+                    accepted[id(site)] = {
+                        "site": site,
+                        "block": result.diff or "",
+                        "edit": None,
+                        "tokens": 0,
+                        "mechanical_import": True,
+                    }
                 _checkpoint(config, report)
             if stop.requested:
                 # Skip the suite retest: wall clock is gone; keep what we have.
@@ -1415,6 +1457,54 @@ def _import_hit(site: ImpactSite, shifts: list[RemovedImport]) -> RemovedImport 
         if hit.path == site.path and hit.line <= site.line <= hit.end_line:
             return hit
     return None
+
+
+def _finalize_missing_import(
+    site: ImpactSite,
+    hit: RemovedImport,
+    root: Path,
+    originals: dict[str, str],
+    *,
+    write: bool,
+) -> SiteResult:
+    """After sibling rewrites: drop a dead removed import, else needs-human.
+
+    A name the target release removed must not block or revert a rewrite when,
+    after that rewrite, the name has no remaining uses in the file. Kind
+    mismatches that are still used keep today's needs-human behavior.
+    """
+    from conduit.apply.names import drop_dead_missing_import, missing_import_still_used
+
+    before = originals.get(site.path, _read(root / site.path))
+    current = _read(root / site.path)
+    if missing_import_still_used(current, hit):
+        why = _import_shift_why(hit, site.change)
+        diff = unified_diff_for(site.path, before, current) if before else ""
+        return SiteResult(
+            site=site,
+            status=SiteStatus.NEEDS_HUMAN,
+            why=why,
+            error=why,
+            diff=diff,
+        )
+    updated = drop_dead_missing_import(current, hit) if write else current
+    if write and updated != current:
+        _write_file(root, site.path, updated)
+        current = updated
+    names = ", ".join(hit.missing)
+    why = (
+        f"Dropped unused import of {names} from {hit.module}; the target release "
+        f"removed it and no remaining uses were left after the rewrite"
+    )
+    if site.change:
+        why = f"{why} ({site.change})"
+    diff = unified_diff_for(site.path, before, current) if before else ""
+    return SiteResult(
+        site=site,
+        status=SiteStatus.FIXED_UNVERIFIED,
+        why=why,
+        diff=diff,
+    )
 
 
 def _import_shift_why(hit: RemovedImport, change: str) -> str:
