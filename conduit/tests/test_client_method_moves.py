@@ -13,7 +13,11 @@ from conduit.apply.client import FakeModelClient
 from conduit.apply.engine import ApplyConfig, apply_sites
 from conduit.apply.impact_input import sites_from_payload
 from conduit.apply.models import SiteStatus
-from conduit.apply.names import RemovedModuleImports, relocate_removed_imports
+from conduit.apply.names import (
+    RemovedModuleImports,
+    _static_defining_node,
+    relocate_removed_imports,
+)
 from conduit.apply.signatures import _modules
 
 from test_apply import _settings
@@ -329,3 +333,134 @@ def test_apply_rewrites_module_calls_onto_client_without_model(tmp_path: Path):
         for item in report.results
     )
     assert not any(item.status == SiteStatus.FIXED_VERIFIED for item in report.results)
+
+
+def _cyclic_reexport_wheels(tmp_path: Path) -> Path:
+    """Target wheel re-exports in a cycle (A↔B) and self-re-exports at the root."""
+    old = tmp_path / "fixtures" / "old"
+    new = tmp_path / "fixtures" / "new"
+    _write(
+        old / "acmekit" / "__init__.py",
+        """\
+        def list_things():
+            return []
+        """,
+    )
+    _write(
+        new / "acmekit" / "__init__.py",
+        """\
+        from .a import Client, shared
+        from acmekit import shared as also_shared
+        """,
+    )
+    _write(
+        new / "acmekit" / "a.py",
+        """\
+        from acmekit.b import Client, shared
+        """,
+    )
+    _write(
+        new / "acmekit" / "b.py",
+        """\
+        from acmekit.a import Client, shared
+        """,
+    )
+    fixtures = tmp_path / "fixtures"
+    (fixtures / "index.json").write_text(
+        json.dumps({"packages": {"acmekit": {"wheels": {"1.0": "old", "2.0": "new"}}}}),
+        encoding="utf-8",
+    )
+    return fixtures
+
+
+def test_cyclic_reexports_do_not_crash_apply(tmp_path: Path):
+    """A↔B re-exports and a self re-export must not RecursionError during apply."""
+    fixtures = _cyclic_reexport_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        """\
+        import acmekit
+
+        def use():
+            return acmekit.list_things()
+        """,
+    )
+    # Must finish: cycle-safe resolve + client-relocate errors fall through.
+    report = apply_sites(
+        sites_from_payload(
+            {
+                "dependency": "acmekit",
+                "impacts": [
+                    {
+                        "dependency": "acmekit",
+                        "from_version": "1.0",
+                        "to_version": "2.0",
+                        "change": "list_things removed",
+                        "confidence": "high",
+                        "source": "wheel",
+                        "kind": "removed",
+                        "symbol": "acmekit.list_things",
+                        "sites": [
+                            {
+                                "path": "use.py",
+                                "line": 4,
+                                "expr": "acmekit.list_things",
+                                "confidence": "high",
+                                "via_wrapper": False,
+                            }
+                        ],
+                    }
+                ],
+                "deprecations": [],
+                "diffed": ["acmekit"],
+                "notes": [],
+            }
+        ),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            client=FakeModelClient(responses=[]),
+            fixtures=fixtures,
+        ),
+    )
+    assert report.results
+    text = (root / "use.py").read_text(encoding="utf-8")
+    # No client to relocate onto: source falls through unchanged.
+    assert "acmekit.list_things" in text
+    maps = [
+        RemovedModuleImports(
+            package="acmekit",
+            version="2.0",
+            modules=_modules(str(fixtures / "new")),
+            wheel=fixtures / "new",
+            old_modules=_modules(str(fixtures / "old")),
+            old_wheel=fixtures / "old",
+        )
+    ]
+    updated, _hits = relocate_removed_imports(text, "use.py", maps)
+    assert updated == text
+
+
+def test_deep_acyclic_reexport_chain_resolves(tmp_path: Path):
+    """A long acyclic re-export chain still reaches the defining binding."""
+    root = tmp_path / "pkg"
+    _write(
+        root / "acmekit" / "__init__.py",
+        """\
+        from acmekit.m0 import deep_name
+        """,
+    )
+    for i in range(12):
+        nxt = i + 1
+        if nxt < 12:
+            body = f"from acmekit.m{nxt} import deep_name\n"
+        else:
+            body = "def deep_name():\n    return 1\n"
+        _write(root / "acmekit" / f"m{i}.py", body)
+    modules = _modules(str(root))
+    node, owner = _static_defining_node("acmekit.deep_name", "acmekit", modules)
+    assert node is not None
+    assert getattr(node, "name", None) == "deep_name"
+    assert owner == "acmekit.m11"
