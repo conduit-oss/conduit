@@ -19,6 +19,7 @@ from conduit.apply.names import (
     relocate_removed_imports,
 )
 from conduit.apply.signatures import _modules
+from conduit.impact.api import diff_wheels
 
 from test_apply import _settings
 
@@ -464,3 +465,185 @@ def test_deep_acyclic_reexport_chain_resolves(tmp_path: Path):
     assert node is not None
     assert getattr(node, "name", None) == "deep_name"
     assert owner == "acmekit.m11"
+
+
+def _stub_wheels(tmp_path: Path) -> Path:
+    """Old: real module API. New: raise-only *args/**kwargs stubs + Client."""
+    old = tmp_path / "fixtures" / "old"
+    new = tmp_path / "fixtures" / "new"
+    _write(
+        old / "acmekit" / "__init__.py",
+        """\
+        def init(api_key=None, region=None):
+            return None
+
+        def list_things(limit=10):
+            return []
+
+        def create_thing(name):
+            return name
+        """,
+    )
+    _write(
+        new / "acmekit" / "__init__.py",
+        """\
+        from .client import Client
+        from .warnings import init, list_things, create_thing, wrap_call
+        """,
+    )
+    _write(
+        new / "acmekit" / "client.py",
+        """\
+        class Client:
+            def __init__(self, api_key=None, region=None):
+                self.api_key = api_key
+                self.region = region
+
+            def list_things(self, limit=10):
+                return []
+
+            def create_thing(self, name):
+                return name
+        """,
+    )
+    _write(
+        new / "acmekit" / "warnings.py",
+        """\
+        def init(*args, **kwargs):
+            example = \"\"\"
+            from acmekit import Client
+            client = Client(api_key='k')
+            \"\"\"
+            raise AttributeError(
+                "init is no longer a top-level attribute. "
+                "Please create an instance of the Client class instead. "
+                f"Example: {example}"
+            )
+
+        def list_things(*args, **kwargs):
+            \"\"\"Gone; use Client.list_things.\"\"\"
+            raise AttributeError(
+                "list_things is no longer a top-level attribute of acmekit. "
+                "Use Client instead."
+            )
+
+        def create_thing(*args, **kwargs):
+            raise AttributeError("create_thing moved onto Client")
+
+        def wrap_call(*args, **kwargs):
+            return _real_call(*args, **kwargs)
+
+        def _real_call(*args, **kwargs):
+            return kwargs.get("value", args[:1] or None)
+        """,
+    )
+    fixtures = tmp_path / "fixtures"
+    (fixtures / "index.json").write_text(
+        json.dumps({"packages": {"acmekit": {"wheels": {"1.0": "old", "2.0": "new"}}}}),
+        encoding="utf-8",
+    )
+    return fixtures
+
+
+def test_raise_only_stub_counts_as_removed(tmp_path: Path):
+    """Raise-only *args/**kwargs stubs are kind=removed, not param_removed."""
+    fixtures = _stub_wheels(tmp_path)
+    changes = diff_wheels(fixtures / "old", fixtures / "new")
+    init_hits = [item for item in changes if item.symbol.endswith(".init")]
+    assert init_hits
+    assert all(item.kind == "removed" for item in init_hits)
+    assert not any(item.kind == "param_removed" and item.symbol.endswith(".init") for item in changes)
+    # Hint from the raise message that exists on the new surface.
+    assert any(item.new.endswith("Client") for item in init_hits)
+
+
+def test_raise_only_stub_with_docstring_counts_as_removed(tmp_path: Path):
+    """A docstring before the raise still counts as a removal stub."""
+    fixtures = _stub_wheels(tmp_path)
+    changes = diff_wheels(fixtures / "old", fixtures / "new")
+    list_hits = [item for item in changes if item.symbol.endswith(".list_things")]
+    assert list_hits
+    assert all(item.kind == "removed" for item in list_hits)
+    assert not any(
+        item.kind == "param_removed" and item.symbol.endswith(".list_things") for item in changes
+    )
+
+
+def test_real_args_kwargs_wrapper_is_not_removed(tmp_path: Path):
+    """A real *args/**kwargs passthrough must not be classified as removed."""
+    fixtures = _stub_wheels(tmp_path)
+    # Present only on the new wheel as a passthrough; also compare against an
+    # old wheel that had the same named function so the symbol survives.
+    _write(
+        fixtures / "old" / "acmekit" / "__init__.py",
+        """\
+        def init(api_key=None, region=None):
+            return None
+
+        def list_things(limit=10):
+            return []
+
+        def create_thing(name):
+            return name
+
+        def wrap_call(*args, **kwargs):
+            return kwargs.get("value")
+        """,
+    )
+    changes = diff_wheels(fixtures / "old", fixtures / "new")
+    wrap_hits = [item for item in changes if item.symbol.endswith(".wrap_call")]
+    assert not any(item.kind == "removed" for item in wrap_hits)
+
+
+def test_not_implemented_args_kwargs_is_not_removed(tmp_path: Path):
+    """Abstract NotImplementedError placeholders are not treated as removals."""
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    _write(
+        old / "acmekit" / "__init__.py",
+        """\
+        def hook(value):
+            return value
+        """,
+    )
+    _write(
+        new / "acmekit" / "__init__.py",
+        """\
+        def hook(*args, **kwargs):
+            raise NotImplementedError("subclass must implement")
+        """,
+    )
+    changes = diff_wheels(old, new)
+    hook_hits = [item for item in changes if item.symbol.endswith(".hook")]
+    assert not any(item.kind == "removed" for item in hook_hits)
+
+
+def test_stub_module_calls_rewrite_onto_client(tmp_path: Path):
+    """Raise-only stubs are missing for client-move; calls relocate like removals."""
+    fixtures = _stub_wheels(tmp_path)
+    maps = [
+        RemovedModuleImports(
+            package="acmekit",
+            version="2.0",
+            modules=_modules(str(fixtures / "new")),
+            wheel=fixtures / "new",
+            old_modules=_modules(str(fixtures / "old")),
+            old_wheel=fixtures / "old",
+        )
+    ]
+    source = (
+        "import acmekit\n"
+        "\n"
+        "def use():\n"
+        "    acmekit.init(api_key='k', region='us')\n"
+        "    return acmekit.list_things(), acmekit.create_thing('a')\n"
+    )
+    updated, hits = relocate_removed_imports(source, "use.py", maps)
+    assert "acmekit.init" not in updated
+    assert "acmekit.list_things" not in updated
+    assert "acmekit.create_thing" not in updated
+    assert "from acmekit import Client" in updated
+    assert updated.count("Client(") == 1
+    assert "list_things()" in updated
+    assert "create_thing('a')" in updated
+    assert any(hit.moved for hit in hits)

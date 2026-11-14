@@ -1,0 +1,34 @@
+id: gptflix-pinecone
+held_out: true
+failure_kind: resource-to-client-call-shape
+tags:
+  - held-out
+description: >
+  pinecone 2.2.1 → 3.2.2 on stephansturges/GPTflix. chat/main.py calls
+  `pinecone.init(api_key=..., environment=...)` and `pinecone.Index(...)`.
+  On 3.2.2 those are raise-only *args/**kwargs stubs that raise AttributeError.
+  The replacement is a `Pinecone(api_key=...)` client and `pc.Index(...)`.
+repo:
+  url: https://github.com/stephansturges/GPTflix
+  commit: 6f2db9a42acf1fb025eff3e7fdfea435686f620b
+dependency:
+  name: pinecone
+  from: "2.2.1"
+  to: "3.2.2"
+timeout_seconds: 900
+expected:
+  must_fix:
+    - path: chat/main.py
+      contains: "pinecone.init("
+    - path: chat/main.py
+      contains: "pinecone.Index("
+  forbidden_names:
+    - "pinecone.init"
+  required_patterns:
+    - "Pinecone\\("
+  untouched_globs:
+    - "tests/**"
+    - "**/test_*.py"
+  notes: >
+    Held-out generalization case. requirements.txt pins pinecone-client==2.2.1.
+    No model run.

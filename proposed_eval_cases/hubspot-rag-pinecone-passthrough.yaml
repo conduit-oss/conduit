@@ -1,0 +1,33 @@
+id: hubspot-rag-pinecone-passthrough
+smoke: true
+failure_kind: true-negative
+description: >
+  pinecone 3.1.0 → 3.2.2 true negative on hubspotdev/hubspot-rag-assistant.
+  query.py already uses the v3 client: `Pinecone(api_key=...)`, `pc.Index(...)`,
+  and `index.query(vector=..., top_k=..., include_metadata=True)`. `Index.query`
+  is a real method with named parameters (plus *args/**kwargs) that performs
+  work on both pins — not a raise-only stub. Module-level init stubs exist on
+  both pins but are not called. Impact should report 0 call-site changes.
+repo:
+  url: https://github.com/hubspotdev/hubspot-rag-assistant
+  commit: 098cf326ec6f2e1a658d22d879e5245ffe0dda41
+dependency:
+  name: pinecone
+  from: "3.1.0"
+  to: "3.2.2"
+timeout_seconds: 900
+expected:
+  impact_changes: 0
+  must_fix:
+    - path: query.py
+      contains: "Pinecone(api_key="
+    - path: query.py
+      contains: "index.query("
+  untouched_globs:
+    - "tests/**"
+    - "**/test_*.py"
+  notes: >
+    True negative for the raise-only stub rule: the called surface is a real
+    *args/**kwargs-capable method that does work, not a raise-only stub.
+    Verified by reading query.py and pinecone 3.1.0 / 3.2.2 Index.query.
+    No model run.
