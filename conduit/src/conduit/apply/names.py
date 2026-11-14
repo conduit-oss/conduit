@@ -1283,8 +1283,23 @@ def _attr_on(
     name: str,
     modules: dict[str, ast.Module],
     current_module: str,
+    *,
+    seen: frozenset[tuple[str, str]] | None = None,
 ) -> object | None:
-    """Resolve ``name`` on a module AST or class body; used by static resolve."""
+    """Resolve ``name`` on a module AST or class body; used by static resolve.
+
+    Re-export following is cycle-safe: ``(module, name)`` pairs already visited
+    return None (unresolved) instead of recursing forever. Real SDK packages
+    often re-export from each other or from themselves.
+    """
+    key = (current_module, name)
+    visited = seen or frozenset()
+    if key in visited:
+        return None
+    visited = visited | {key}
+    # Cap walk length so pathological graphs cannot blow the stack.
+    if len(visited) > 64:
+        return None
     if isinstance(node, ast.Module):
         for item in node.body:
             if isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1303,7 +1318,9 @@ def _attr_on(
                     if base:
                         source = modules.get(base)
                         if source is not None:
-                            found = _attr_on(source, alias.name, modules, base)
+                            found = _attr_on(
+                                source, alias.name, modules, base, seen=visited
+                            )
                             if found is not None:
                                 return found
                     return item
@@ -2918,7 +2935,13 @@ def relocate_removed_imports(
         updated, attr_hits = item.rewrite_attribute_imports(updated, path)
         hits.extend(attr_hits)
     for item in maps:
-        updated, client_hits = item.rewrite_calls_onto_client(updated, path)
+        # Client relocation walks wheel ASTs (including re-export graphs). Any
+        # unexpected failure here must not crash apply: fall through with no
+        # mechanical relocation so the normal model path can run.
+        try:
+            updated, client_hits = item.rewrite_calls_onto_client(updated, path)
+        except Exception:  # noqa: BLE001 — narrow: client relocate only
+            client_hits = []
         hits.extend(client_hits)
     return updated, hits
 
