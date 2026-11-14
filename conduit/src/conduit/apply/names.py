@@ -1411,6 +1411,9 @@ class RemovedImport:
     ``replacement`` is empty when nothing moved: the statement stays, and the
     site needs a human. When anything moved, ``replacement`` is the new import
     block (names with a home only) and the removed module is not imported.
+    ``from_import`` is True for ``from <gone> import ...`` plan hits. Attribute
+    and client-move hits leave it False so apply can drop a dead from-import
+    after a rewrite without clearing unrelated needs-human markers.
     """
 
     path: str
@@ -1421,6 +1424,7 @@ class RemovedImport:
     missing: tuple[str, ...]
     replacement: str
     kind_mismatches: tuple[tuple[str, str, str], ...] = ()
+    from_import: bool = False
 
 
 def _kind_label(kind: str) -> str:
@@ -1490,6 +1494,7 @@ class RemovedModuleImports:
                         moved=(),
                         missing=("*",),
                         replacement="",
+                        from_import=True,
                     )
                 )
                 continue
@@ -1532,6 +1537,7 @@ class RemovedModuleImports:
                     missing=tuple(missing),
                     replacement=replacement,
                     kind_mismatches=tuple(mismatches),
+                    from_import=True,
                 )
             )
         return found
@@ -2944,6 +2950,127 @@ def relocate_removed_imports(
             client_hits = []
         hits.extend(client_hits)
     return updated, hits
+
+
+def _load_name_uses(tree: ast.AST) -> set[str]:
+    """Names loaded in ``tree``, including those inside string annotations."""
+    uses: set[str] = set()
+
+    def add(node: ast.AST) -> None:
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                uses.add(sub.id)
+            elif isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                try:
+                    add(ast.parse(sub.value.strip(), mode="eval"))
+                except SyntaxError:
+                    pass
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            uses.add(node.id)
+        annotations: list[ast.AST] = []
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            annotations.append(node.annotation)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns is not None:
+            annotations.append(node.returns)
+        elif isinstance(node, ast.AnnAssign) and node.annotation is not None:
+            annotations.append(node.annotation)
+        for annotation in annotations:
+            add(annotation)
+    return uses
+
+
+def missing_import_still_used(source: str, hit: RemovedImport) -> bool:
+    """True when any ``hit.missing`` name is still loaded in ``source``.
+
+    Bound names follow aliases on the matching import when it is still present;
+    if that import is already gone, the original imported names are checked.
+    A star import is always treated as still used (needs a human).
+    """
+    if not hit.missing:
+        return False
+    if "*" in hit.missing:
+        return True
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return True
+    bound = _missing_bound_names(tree, hit)
+    if not bound:
+        # Import already removed; treat leftover mentions of the original names.
+        bound = set(hit.missing)
+    uses = _load_name_uses(tree)
+    return bool(bound & uses)
+
+
+def drop_dead_missing_import(source: str, hit: RemovedImport) -> str:
+    """``source`` with ``hit``'s import trimmed or deleted when names are unused."""
+    if not hit.missing or not hit.from_import:
+        return source
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return source
+    target: ast.ImportFrom | None = None
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.level:
+            continue
+        if (node.module or "") != hit.module:
+            continue
+        if node.lineno <= hit.line <= (node.end_lineno or node.lineno):
+            target = node
+            break
+        if target is None and any(alias.name in hit.missing for alias in node.names):
+            target = node
+    if target is None:
+        for node in tree.body:
+            if (
+                isinstance(node, ast.ImportFrom)
+                and not node.level
+                and any(alias.name in hit.missing for alias in node.names)
+            ):
+                target = node
+                break
+    if target is None:
+        return source
+    uses = _load_name_uses(tree)
+    kept = [
+        alias
+        for alias in target.names
+        if alias.name not in hit.missing
+        or (alias.asname or alias.name) in uses
+    ]
+    indent = _stmt_indent(source, target.lineno)
+    if not kept:
+        return _replace_line_span(source, target.lineno, target.end_lineno or target.lineno, "")
+    if len(kept) == len(target.names):
+        return source
+    parts = [
+        alias.name if not alias.asname else f"{alias.name} as {alias.asname}"
+        for alias in kept
+    ]
+    text = f"{indent}from {target.module} import {', '.join(parts)}\n"
+    return _replace_line_span(source, target.lineno, target.end_lineno or target.lineno, text)
+
+
+def _missing_bound_names(tree: ast.AST, hit: RemovedImport) -> set[str]:
+    """Local names bound by ``hit``'s import for its missing imported names."""
+    for node in getattr(tree, "body", ()):
+        if not isinstance(node, ast.ImportFrom) or node.level:
+            continue
+        if (node.module or "") != hit.module:
+            continue
+        if not (node.lineno <= hit.line <= (node.end_lineno or node.lineno)):
+            # After rewrites, accept the same module import that still names them.
+            if not any(alias.name in hit.missing for alias in node.names):
+                continue
+        return {
+            (alias.asname or alias.name)
+            for alias in node.names
+            if alias.name in hit.missing or alias.name == "*"
+        }
+    return set()
 
 
 def _stmt_indent(source: str, line: int) -> str:
