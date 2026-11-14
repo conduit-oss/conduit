@@ -202,6 +202,95 @@ def test_sdk_client_without_host_name_still_counts_via_client_class(tmp_path: Pa
     assert "Client" in found.constructors
 
 
+def test_reexport_shim_inherits_the_dependency_that_ships_the_import(tmp_path: Path):
+    """A release that only re-exports another distribution is that dependency.
+
+    Made-up names: ``acmeclient`` ships module ``acmeapi``. ``acmeshim`` publishes
+    under a different name and its only code is ``from acmeapi import *``.
+    """
+    _install_package(
+        tmp_path,
+        "acmeclient",
+        "acmeapi",
+        "1.0.0",
+        """
+        import http.client
+
+        ACME_API_URL = "https://api.acmeai.com"
+
+        class Client:
+            def __init__(self, api_url=None):
+                self.api_url = api_url or ACME_API_URL
+
+            def generate(self, prompt):
+                conn = http.client.HTTPSConnection("api.acmeai.com")
+                conn.request("POST", "/v1/generate")
+                return conn.getresponse()
+        """,
+    )
+    _install_shim(
+        tmp_path,
+        dist="acmeshim",
+        version="1.2.0",
+        import_name="acmeshim_backfill",
+        requires="acmeclient (==1.0.0)",
+        source="from acmeapi import *\n",
+    )
+    found = classify_distribution("acmeshim", "1.2.0", root=tmp_path)
+    assert found.loaded is True
+    assert found.service is True
+    assert found.transport is False
+    assert "acmeapi" in found.modules
+    assert "Client" in found.constructors
+    assert evidence_spec("acmeshim", "1.2.0", root=tmp_path) is not None
+
+
+def test_reexport_of_an_ordinary_library_is_not_a_service(tmp_path: Path):
+    _install_package(
+        tmp_path,
+        "plainlib",
+        "plainmod",
+        "1.0.0",
+        """
+        def add(left, right):
+            return left + right
+        """,
+    )
+    _install_shim(
+        tmp_path,
+        dist="plainshim",
+        version="1.0.0",
+        import_name="plainshim",
+        requires="plainlib (==1.0.0)",
+        source="from plainmod import *\n",
+    )
+    found = classify_distribution("plainshim", "1.0.0", root=tmp_path)
+    assert found.service is False
+    assert evidence_spec("plainshim", "1.0.0", root=tmp_path) is None
+
+
+def _install_shim(
+    root: Path,
+    *,
+    dist: str,
+    version: str,
+    import_name: str,
+    requires: str,
+    source: str,
+) -> None:
+    site = root / ".venv" / "lib" / "python3.12" / "site-packages"
+    info = site / f"{dist}-{version}.dist-info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "METADATA").write_text(
+        f"Name: {dist}\nVersion: {version}\nRequires-Dist: {requires}\n",
+        encoding="utf-8",
+    )
+    (info / "top_level.txt").write_text(f"{import_name}\n", encoding="utf-8")
+    package = site / import_name
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(source, encoding="utf-8")
+
+
 def test_pure_transport_session_is_still_refused(tmp_path: Path):
     """A generic HTTP Session with no fixed remote host stays a transport."""
     version = "0.1.0"

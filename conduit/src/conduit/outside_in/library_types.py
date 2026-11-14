@@ -57,6 +57,10 @@ _DEPTH = 8
 # Cap retained distribution ASTs. Each entry can hold hundreds of modules; an
 # unbounded map of "tops" (including mis-resolved names) was the OOM source.
 _MAX_CACHED_DISTS = 8
+#: Bound on nested ``_define`` calls. Alias expansion can mint a new qualname
+#: on every step; without a cap that chain raises RecursionError and impact
+#: exits instead of reporting the diff.
+_MAX_DEFINE_DEPTH = 48
 _FIXTURE_WHEELS = (
     Path(__file__).resolve().parents[3] / "fixtures" / "impact" / "wheels",
     Path(__file__).resolve().parents[3] / "fixtures" / "impact" / "wheels" / "deps",
@@ -143,6 +147,10 @@ class LibraryTypes:
         self._defining: set[str] = set()
         self._ctor_args: dict[tuple[str, str], str] = {}
         self._extracting = False
+        #: Distributions whose modules are on the stack. Evicting one mid-extract
+        #: drops its AST and the next lookup parses it again, which recurses
+        #: until the interpreter raises RecursionError.
+        self._loading: set[str] = set()
 
     def release(self) -> None:
         """Drop parsed ASTs and per-top module maps. Facts stay usable."""
@@ -157,6 +165,7 @@ class LibraryTypes:
         self._ctor_args.clear()
         self._stack.clear()
         self._defining.clear()
+        self._loading.clear()
 
     def _clear_mod_asts(self, mods: dict[str, _Mod]) -> None:
         for mod in mods.values():
@@ -167,8 +176,15 @@ class LibraryTypes:
             mod.class_ann.clear()
             mod.bindings.clear()
 
-    def _evict_dist(self, top: str) -> None:
-        """Free one distribution's ASTs; allow a later re-parse if needed."""
+    def _evict_dist(self, top: str, *, force: bool = False) -> None:
+        """Free one distribution's ASTs; allow a later re-parse if needed.
+
+        A distribution currently being loaded stays unless ``force`` (the
+        extract just finished and facts are already stored). Dropping it
+        mid-extract makes the next lookup start that extract again.
+        """
+        if top in self._loading and not force:
+            return
         mods = self._dist.pop(top, None)
         if mods:
             self._clear_mod_asts(mods)
@@ -183,7 +199,16 @@ class LibraryTypes:
             self._dist_order.remove(top)
         self._dist_order.append(top)
         while len(self._dist_order) > _MAX_CACHED_DISTS:
-            self._evict_dist(self._dist_order[0])
+            victim = next(
+                (name for name in self._dist_order if name not in self._loading),
+                None,
+            )
+            if victim is None:
+                break
+            before = len(self._dist_order)
+            self._evict_dist(victim)
+            if len(self._dist_order) >= before:
+                break
 
     def delegated_calls(self, qualname: str) -> tuple[str, ...]:
         """External calls this function makes, following ``self`` methods.
@@ -426,6 +451,10 @@ class LibraryTypes:
     def _define(self, qualname: str) -> tuple[_Mod, ast.AST | None, str] | None:
         qualname = self._resolve_alias(qualname)
         if not qualname or qualname in self._defining:
+            return None
+        # Each step can be a brand-new qualname, so the set above never repeats.
+        # Stop and treat the type as unknown instead of overflowing the stack.
+        if len(self._defining) >= _MAX_DEFINE_DEPTH:
             return None
         self._defining.add(qualname)
         try:
@@ -771,6 +800,11 @@ class LibraryTypes:
         top = (top or "").strip()
         if not top:
             return {}
+        # Re-entering the load that is already on the stack (a base or return
+        # type points back at us) must not start a second extract.
+        if top in self._loading:
+            cached = self._dist.get(top)
+            return cached or {}
         if top in self._facts and top not in self._dist:
             # Facts-only hit: no AST modules, queries answer from ``_facts``.
             self._dist[top] = None
@@ -780,6 +814,13 @@ class LibraryTypes:
             return cached
         if top in self._dist:
             return {}
+        self._loading.add(top)
+        try:
+            return self._modules_uncached(top)
+        finally:
+            self._loading.discard(top)
+
+    def _modules_uncached(self, top: str) -> dict[str, _Mod]:
         pin = _TYPED_FROM.get(top) or self._pins.get(top, "")
         from conduit.analysis_cache import cache_enabled
 
@@ -821,7 +862,7 @@ class LibraryTypes:
                 self._facts[top] = facts
                 write_json("libtypes", file_sha256(wheel), facts.to_json())
                 # Facts answer later queries; free the AST forest now.
-                self._evict_dist(top)
+                self._evict_dist(top, force=True)
                 return {}
         return mods
 

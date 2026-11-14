@@ -211,6 +211,42 @@ def test_impact_cli_is_offline(monkeypatch):
     assert "not an outside service" in refused.stdout
 
 
+def test_impact_classifies_only_the_requested_dependency(monkeypatch):
+    """``impact --dep`` must not full-scan every import in the repo."""
+    import conduit.outside_in.bridge as bridge
+
+    seen: dict[str, str | None] = {}
+    real = bridge.build_service_map
+
+    def spy(root, service=None, **kwargs):
+        seen["service"] = service
+        return real(root, service=service, **kwargs)
+
+    monkeypatch.setattr(bridge, "build_service_map", spy)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("live network")
+
+    monkeypatch.setattr("httpx.get", boom)
+    monkeypatch.setattr("httpx.stream", boom)
+    monkeypatch.setattr("httpx.Client", boom)
+    result = CliRunner().invoke(
+        app,
+        [
+            "impact",
+            "--path",
+            str(FIXTURE),
+            "--dep",
+            "sqlalchemy",
+            "--fixtures",
+            str(IMPACT),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert seen.get("service") == "sqlalchemy"
+
+
 def test_watch_prints_impact_instead_of_a_bare_version_bump():
     result = watch_outside(FIXTURE, client=FeedClient(root=FEEDS, allow_network=False))
     assert result.warnings == [], result.warnings

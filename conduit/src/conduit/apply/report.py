@@ -29,6 +29,8 @@ def format_report(report: ApplyReport, *, include_context: bool = False) -> str:
     if report.preexisting:
         lines.append(report.preexisting_note)
     lines.append(f"tokens_used: {report.tokens_used}")
+    lines.append(f"invented_names_caught: {report.invented_names_caught}")
+    lines.append(f"name_check_retries: {report.name_check_retries}")
     if report.flaky:
         lines.append("flaky, not ours: " + ", ".join(report.flaky))
     if report.trace_note:
