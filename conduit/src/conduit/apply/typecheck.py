@@ -657,14 +657,21 @@ def _expr_classes(modules, typed, expr: ast.AST, depth: int) -> list[tuple[str, 
     return out
 
 
-def repo_call_breaks(root: Path, path: str, source: str, span: tuple[int, int]) -> list[str]:
+def repo_call_breaks(
+    root: Path,
+    path: str,
+    source: str,
+    span: tuple[int, int],
+    *,
+    only_files: list[str] | None = None,
+) -> list[str]:
     """Calls in the span to a class or function this repo defines, checked against its own
     signature: a keyword it does not take, or a required argument left out."""
     tree = ast.parse(source)
     trees = {path: tree}
     defs: dict[str, list[ast.AST]] = {}
     by_file: dict[str, dict[str, ast.AST]] = {}
-    for rel, module in _repo_trees(root, trees):
+    for rel, module in _repo_trees(root, trees, only_files=only_files):
         for node in module.body:
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 defs.setdefault(node.name, []).append(node)
@@ -1417,9 +1424,33 @@ def _caller_classes(modules, root: Path, trees, chains, path: str, func, index: 
     return [] if unknown else out
 
 
-def _repo_trees(root: Path, cached: dict[str, ast.Module]):
-    for file in sorted(root.rglob("*.py")):
-        rel = file.relative_to(root).as_posix()
+def _repo_trees(root: Path, cached: dict[str, ast.Module], *, only_files: list[str] | None = None):
+    from conduit.apply.repoindex import current_index
+
+    index = current_index()
+    if index is not None:
+        # Full visibility from the index; ``only_files`` must not hide callees.
+        seen: set[str] = set()
+        for rel in index.iter_rels():
+            seen.add(rel)
+            yield rel, cached[rel] if rel in cached else index.by_rel[rel]
+        for rel, tree in cached.items():
+            if rel not in seen:
+                yield rel, tree
+        return
+
+    allowed = {item.replace("\\", "/") for item in only_files} if only_files is not None else None
+    if allowed is not None:
+        paths = [root / rel for rel in sorted(allowed)]
+    else:
+        paths = sorted(root.rglob("*.py"))
+    for file in paths:
+        if not file.is_file():
+            continue
+        try:
+            rel = file.relative_to(root).as_posix()
+        except ValueError:
+            continue
         if any(part in {"tests", "test", ".venv", "venv", "node_modules"} or part.startswith(".") for part in rel.split("/")[:-1]):
             continue
         if rel in cached:
