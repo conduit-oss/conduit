@@ -466,3 +466,179 @@ def test_collection_failure_caused_by_the_edit_is_not_fixed(tmp_path: Path):
                   for call in client.calls for turn in call["turns"])
     assert retried
 
+
+def _kind_wheels(
+    tmp_path: Path,
+    *,
+    old_body: str,
+    new_body: str,
+) -> Path:
+    """Build acmekit 1.0/2.0 fixtures. ``legacy`` is gone in 2.0; names live at root."""
+    old = tmp_path / "fixtures" / "old"
+    new = tmp_path / "fixtures" / "new"
+    _write(old / "acmekit" / "__init__.py", "")
+    _write(old / "acmekit" / "legacy.py", old_body)
+    _write(new / "acmekit" / "__init__.py", new_body)
+    fixtures = tmp_path / "fixtures"
+    (fixtures / "index.json").write_text(
+        json.dumps({"packages": {"acmekit": {"wheels": {"1.0": "old", "2.0": "new"}}}}),
+        encoding="utf-8",
+    )
+    return fixtures
+
+
+def _kind_payload(symbol: str, path: str, line: int) -> dict:
+    return {
+        "dependency": "acmekit",
+        "impacts": [
+            {
+                "dependency": "acmekit",
+                "from_version": "1.0",
+                "to_version": "2.0",
+                "change": f"{symbol} removed with acmekit.legacy",
+                "confidence": "high",
+                "source": "wheel",
+                "kind": "removed",
+                "symbol": symbol,
+                "sites": [
+                    {
+                        "path": path,
+                        "line": line,
+                        "expr": "import",
+                        "confidence": "high",
+                        "via_wrapper": False,
+                    }
+                ],
+            }
+        ],
+        "deprecations": [],
+        "diffed": ["acmekit"],
+        "notes": [],
+    }
+
+
+def test_exception_to_non_exception_mismatch_is_needs_human(tmp_path: Path):
+    """An exception must not relocate onto a same-name non-exception class."""
+    fixtures = _kind_wheels(
+        tmp_path,
+        old_body="class Timeout(Exception):\n    pass\n",
+        new_body=(
+            "class Timeout:\n"
+            "    def __init__(self, seconds):\n"
+            "        self.seconds = seconds\n"
+        ),
+    )
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        "from acmekit.legacy import Timeout\n\n\ndef use(err):\n    raise Timeout from err\n",
+    )
+    report = apply_sites(
+        sites_from_payload(_kind_payload("acmekit.legacy.Timeout", "use.py", 1)),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            client=FakeModelClient(responses=[]),
+            fixtures=fixtures,
+        ),
+    )
+    text = (root / "use.py").read_text(encoding="utf-8")
+    assert "from acmekit import Timeout" not in text
+    assert "from acmekit.legacy import Timeout" in text
+    (result,) = report.results
+    assert result.status == SiteStatus.NEEDS_HUMAN
+    assert "exception" in result.why.lower()
+    assert "class" in result.why.lower()
+
+
+def test_exception_to_exception_is_accepted(tmp_path: Path):
+    """A same-kind exception relocation is kept."""
+    fixtures = _kind_wheels(
+        tmp_path,
+        old_body="class Boom(Exception):\n    pass\n",
+        new_body="class Boom(Exception):\n    pass\n",
+    )
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        "from acmekit.legacy import Boom\n\n\ndef use():\n    raise Boom\n",
+    )
+    report = apply_sites(
+        sites_from_payload(_kind_payload("acmekit.legacy.Boom", "use.py", 1)),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            client=FakeModelClient(responses=[]),
+            fixtures=fixtures,
+        ),
+    )
+    text = (root / "use.py").read_text(encoding="utf-8")
+    assert "acmekit.legacy" not in text
+    assert "from acmekit import Boom" in text
+    (result,) = report.results
+    assert result.status == SiteStatus.FIXED_UNVERIFIED
+    assert result.status != SiteStatus.NEEDS_HUMAN
+
+
+def test_class_to_callable_mismatch_is_needs_human(tmp_path: Path):
+    """A class must not relocate onto a same-name function."""
+    fixtures = _kind_wheels(
+        tmp_path,
+        old_body="class Widget:\n    pass\n",
+        new_body="def Widget():\n    return 1\n",
+    )
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        "from acmekit.legacy import Widget\n\n\ndef use():\n    return Widget()\n",
+    )
+    report = apply_sites(
+        sites_from_payload(_kind_payload("acmekit.legacy.Widget", "use.py", 1)),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            client=FakeModelClient(responses=[]),
+            fixtures=fixtures,
+        ),
+    )
+    text = (root / "use.py").read_text(encoding="utf-8")
+    assert "from acmekit import Widget" not in text
+    assert "from acmekit.legacy import Widget" in text
+    (result,) = report.results
+    assert result.status == SiteStatus.NEEDS_HUMAN
+    assert "class" in result.why.lower()
+    assert "callable" in result.why.lower()
+
+
+def test_module_to_module_is_accepted(tmp_path: Path):
+    """A submodule that still exists under a new parent is relocated."""
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    _write(old / "acmekit" / "__init__.py", "")
+    _write(old / "acmekit" / "legacy" / "__init__.py", "")
+    _write(
+        old / "acmekit" / "legacy" / "helpers.py",
+        "def ping():\n    return 1\n",
+    )
+    _write(new / "acmekit" / "__init__.py", "")
+    _write(
+        new / "acmekit" / "helpers.py",
+        "def ping():\n    return 1\n",
+    )
+    mapper = RemovedModuleImports(
+        package="acmekit",
+        version="2.0",
+        modules=_modules(str(new)),
+        old_modules=_modules(str(old)),
+    )
+    source = "from acmekit.legacy import helpers\n\nVALUE = helpers.ping()\n"
+    updated, hits = relocate_removed_imports(source, "use.py", [mapper])
+    assert "acmekit.legacy" not in updated
+    assert "from acmekit import helpers" in updated
+    assert hits[0].missing == ()
+    assert hits[0].kind_mismatches == ()
+    assert any(name == "helpers" for name, _home in hits[0].moved)
+
