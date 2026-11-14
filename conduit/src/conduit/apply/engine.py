@@ -30,7 +30,11 @@ from conduit.apply.context import (
 from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.nonecheck import NONE_CHECK
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
-from conduit.apply.names import RemovedImport, RemovedModuleImports
+from conduit.apply.names import (
+    RemovedImport,
+    RemovedModuleImports,
+    method_survives_on_relocated_receiver,
+)
 from conduit.apply.plain import plain_why
 from conduit.apply.prompts import propose_messages, summarize_messages
 from conduit.apply.unused import drop_unused_imports
@@ -2057,6 +2061,24 @@ def _apply_one(
             why="context pack only (--dry-run); model not called",
             context=pack,
         )
+
+    # Removed/relocated method on an instance: if the receiver traces to an SDK
+    # constructor whose new-release class still exposes a compatible method, the
+    # call site is fine. The constructor line is rewritten elsewhere.
+    maps = list(_import_maps(config.root))
+    if not maps and site.dependency and site.to_version:
+        maps = _load_import_maps(config, [site])
+    survived = method_survives_on_relocated_receiver(
+        pack.full_source,
+        line=site.line,
+        expr=site.expr or "",
+        symbol=site.symbol or "",
+        kind=site.kind or "",
+        package=site.dependency or "",
+        maps=maps,
+    )
+    if survived:
+        return SiteResult(site=site, status=SiteStatus.SKIPPED, why=survived, context=pack)
 
     if client is None:
         return SiteResult(

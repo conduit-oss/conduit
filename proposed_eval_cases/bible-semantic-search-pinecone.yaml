@@ -1,0 +1,44 @@
+id: bible-semantic-search-pinecone
+smoke: true
+failure_kind: relocated-constructor-receiver
+description: >
+  pinecone 2.2.4 → 3.2.2 on chrislee973/bible-semantic-search. PineconeIndex
+  builds `index = pinecone.Index(index_name)` in connect_to_index (assigned to
+  self.index) and later calls self.index.upsert / self.index.query /
+  self.index.delete. Index moved off the module-level constructor onto a
+  Pinecone client; query/upsert/delete remain on the relocated Index class.
+  Constructor/init sites need the client rewrite; instance method sites must
+  not become needs-human.
+repo:
+  url: https://github.com/chrislee973/bible-semantic-search
+  commit: 7610a650b5712841510af76d1ac4698e6b7f8eaa
+dependency:
+  name: pinecone
+  from: "2.2.4"
+  to: "3.2.2"
+timeout_seconds: 900
+expected:
+  must_fix:
+    - path: pinecone_index.py
+      contains: "pinecone.init("
+    - path: pinecone_index.py
+      contains: "pinecone.Index("
+    - path: pinecone_index.py
+      contains: "self.index.upsert("
+    - path: pinecone_index.py
+      contains: "self.index.query("
+    - path: pinecone_index.py
+      contains: "self.index.delete("
+  forbidden_names:
+    - "pinecone.init"
+    - "pinecone.Index"
+  required_patterns:
+    - "Pinecone\\("
+    - "self\\.index\\.(query|upsert|delete)\\("
+  untouched_globs:
+    - "tests/**"
+    - "**/test_*.py"
+  notes: >
+    Not in conduit-hosted/cases. Receiver is a local assigned onto self.index
+    in a helper; exercises constructor tracing across __init__ → helper →
+    later methods. Instance methods are unchanged after the Index relocation.

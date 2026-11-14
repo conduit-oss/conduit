@@ -1,0 +1,42 @@
+id: dreamgpt-pinecone
+smoke: true
+failure_kind: relocated-constructor-receiver
+description: >
+  pinecone 2.2.4 → 3.2.2 on DivergentAI/dreamGPT. Store._initDatabase sets
+  self.index = pinecone.Index(index_name) after pinecone.init; addEntity /
+  addEntities / updateEntity / getSimilar call self.index.upsert and
+  self.index.query. True-negative for instance methods: query/upsert stay on
+  the relocated Index and must not be rewritten or marked needs-human; only
+  the constructor/init path needs the client move.
+repo:
+  url: https://github.com/DivergentAI/dreamGPT
+  commit: 5d11a415affb453664f36eac8196594fde53c920
+dependency:
+  name: pinecone
+  from: "2.2.4"
+  to: "3.2.2"
+timeout_seconds: 900
+expected:
+  must_fix:
+    - path: dreamgpt/store/store.py
+      contains: "pinecone.init("
+    - path: dreamgpt/store/store.py
+      contains: "self.index = pinecone.Index("
+    - path: dreamgpt/store/store.py
+      contains: "self.index.upsert("
+    - path: dreamgpt/store/store.py
+      contains: "self.index.query("
+  forbidden_names:
+    - "pinecone.init"
+    - "pinecone.Index"
+  required_patterns:
+    - "Pinecone\\("
+    - "self\\.index\\.upsert\\("
+    - "self\\.index\\.query\\("
+  untouched_globs:
+    - "tests/**"
+    - "**/test_*.py"
+  notes: >
+    Not in conduit-hosted/cases. Explicit true-negative for unchanged instance
+    methods after Index relocation; constructor built in a lazy _initDatabase
+    helper.

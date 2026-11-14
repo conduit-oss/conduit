@@ -464,3 +464,277 @@ def test_deep_acyclic_reexport_chain_resolves(tmp_path: Path):
     assert node is not None
     assert getattr(node, "name", None) == "deep_name"
     assert owner == "acmekit.m11"
+
+
+def _relocated_index_wheels(tmp_path: Path) -> Path:
+    """acmekit 1.0: Index at package root. 2.0: Index moved to acmekit.data.
+
+    ``query`` / ``upsert`` survive on the moved class. ``legacy_scan`` does not.
+    A Client is also present so constructor sites can still move onto it.
+    """
+    old = tmp_path / "fixtures" / "old"
+    new = tmp_path / "fixtures" / "new"
+    _write(
+        old / "acmekit" / "__init__.py",
+        """\
+        class Index:
+            def __init__(self, name):
+                self.name = name
+
+            def query(self, vector, top_k=3):
+                return []
+
+            def upsert(self, vectors):
+                return None
+
+            def legacy_scan(self):
+                return []
+
+        class Client:
+            def __init__(self, api_key=None):
+                self.api_key = api_key
+        """,
+    )
+    _write(
+        new / "acmekit" / "__init__.py",
+        """\
+        from .client import Client
+        """,
+    )
+    _write(
+        new / "acmekit" / "client.py",
+        """\
+        class Client:
+            def __init__(self, api_key=None):
+                self.api_key = api_key
+
+            def Index(self, name):
+                from acmekit.data import Index
+                return Index(name)
+        """,
+    )
+    _write(
+        new / "acmekit" / "data.py",
+        """\
+        class Index:
+            def __init__(self, name, host=None):
+                self.name = name
+                self.host = host
+
+            def query(self, vector, top_k=3):
+                return []
+
+            def upsert(self, vectors):
+                return None
+        """,
+    )
+    fixtures = tmp_path / "fixtures"
+    (fixtures / "index.json").write_text(
+        json.dumps({"packages": {"acmekit": {"wheels": {"1.0": "old", "2.0": "new"}}}}),
+        encoding="utf-8",
+    )
+    return fixtures
+
+
+def _removed_method_payload(path: str, line: int, expr: str, symbol: str) -> dict:
+    return {
+        "dependency": "acmekit",
+        "impacts": [
+            {
+                "dependency": "acmekit",
+                "from_version": "1.0",
+                "to_version": "2.0",
+                "change": f"{symbol.rsplit('.', 1)[-1]} removed",
+                "confidence": "high",
+                "source": "wheel",
+                "kind": "removed",
+                "symbol": symbol,
+                "sites": [
+                    {
+                        "path": path,
+                        "line": line,
+                        "expr": expr,
+                        "confidence": "high",
+                        "via_wrapper": False,
+                    }
+                ],
+            }
+        ],
+        "deprecations": [],
+        "diffed": ["acmekit"],
+        "notes": [],
+    }
+
+
+def test_self_attr_receiver_traced_to_constructor_is_not_needs_human(tmp_path: Path):
+    """``self.index = acmekit.Index(...)`` then ``self.index.query`` stays fine."""
+    fixtures = _relocated_index_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "store.py",
+        """\
+        import acmekit
+
+        class Store:
+            def __init__(self, name):
+                self.index = acmekit.Index(name)
+
+            def search(self, vector):
+                return self.index.query(vector, top_k=2)
+        """,
+    )
+    report = apply_sites(
+        sites_from_payload(
+            _removed_method_payload("store.py", 8, "self.index.query", "acmekit.Index.query")
+        ),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            client=FakeModelClient(responses=[]),
+            fixtures=fixtures,
+        ),
+    )
+    (result,) = report.results
+    assert result.status != SiteStatus.NEEDS_HUMAN
+    assert result.status == SiteStatus.SKIPPED
+    assert "relocated" in result.why.lower() or "constructor" in result.why.lower()
+    text = (root / "store.py").read_text(encoding="utf-8")
+    assert "self.index.query" in text
+
+
+def test_lazy_init_self_attr_receiver_traced_to_constructor(tmp_path: Path):
+    """Constructor in a lazy-init helper still clears a later ``self.index.query``."""
+    fixtures = _relocated_index_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "store.py",
+        """\
+        import acmekit
+
+        class Store:
+            def __init__(self, name):
+                self.name = name
+                self.index = None
+
+            def _ensure(self):
+                if self.index is None:
+                    self.index = acmekit.Index(self.name)
+
+            def search(self, vector):
+                self._ensure()
+                return self.index.query(vector)
+        """,
+    )
+    report = apply_sites(
+        sites_from_payload(
+            _removed_method_payload("store.py", 14, "self.index.query", "acmekit.Index.query")
+        ),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            client=FakeModelClient(responses=[]),
+            fixtures=fixtures,
+        ),
+    )
+    (result,) = report.results
+    assert result.status == SiteStatus.SKIPPED
+    assert result.status != SiteStatus.NEEDS_HUMAN
+    assert result.status != SiteStatus.FIXED_VERIFIED
+
+
+def test_local_variable_receiver_traced_to_constructor(tmp_path: Path):
+    """A local ``index = acmekit.Index(...)`` receiver is fine when query survives."""
+    fixtures = _relocated_index_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        """\
+        import acmekit
+
+        def search(name, vector):
+            index = acmekit.Index(name)
+            return index.query(vector)
+        """,
+    )
+    report = apply_sites(
+        sites_from_payload(
+            _removed_method_payload("use.py", 5, "index.query", "acmekit.Index.query")
+        ),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            client=FakeModelClient(responses=[]),
+            fixtures=fixtures,
+        ),
+    )
+    (result,) = report.results
+    assert result.status == SiteStatus.SKIPPED
+    assert result.status != SiteStatus.NEEDS_HUMAN
+
+
+def test_parameter_receiver_stays_needs_human(tmp_path: Path):
+    """A receiver passed in as a parameter cannot be traced — needs-human."""
+    fixtures = _relocated_index_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "use.py",
+        """\
+        def search(index, vector):
+            return index.query(vector)
+        """,
+    )
+    report = apply_sites(
+        sites_from_payload(
+            _removed_method_payload("use.py", 2, "index.query", "acmekit.Index.query")
+        ),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            client=FakeModelClient(responses=[]),
+            fixtures=fixtures,
+        ),
+    )
+    (result,) = report.results
+    assert result.status == SiteStatus.NEEDS_HUMAN
+    assert result.status != SiteStatus.FIXED_VERIFIED
+
+
+def test_method_gone_on_new_class_stays_needs_human(tmp_path: Path):
+    """A method that really disappeared on the relocated class stays needs-human."""
+    fixtures = _relocated_index_wheels(tmp_path)
+    root = tmp_path / "app"
+    _write(
+        root / "store.py",
+        """\
+        import acmekit
+
+        class Store:
+            def __init__(self, name):
+                self.index = acmekit.Index(name)
+
+            def scan(self):
+                return self.index.legacy_scan()
+        """,
+    )
+    report = apply_sites(
+        sites_from_payload(
+            _removed_method_payload(
+                "store.py", 8, "self.index.legacy_scan", "acmekit.Index.legacy_scan"
+            )
+        ),
+        ApplyConfig(
+            root=root,
+            settings=_settings(max_attempts=1),
+            write=True,
+            client=FakeModelClient(responses=[]),
+            fixtures=fixtures,
+        ),
+    )
+    (result,) = report.results
+    assert result.status == SiteStatus.NEEDS_HUMAN
+    assert result.status != SiteStatus.SKIPPED
+    assert result.status != SiteStatus.FIXED_VERIFIED

@@ -1,0 +1,40 @@
+id: babyagi-archive-pinecone
+held_out: true
+failure_kind: relocated-constructor-receiver
+tags:
+  - held-out
+description: >
+  pinecone 2.2.4 → 3.2.2 on yoheinakajima/babyagi_archive. PineconeResultsStorage
+  does pinecone.init, self.index = pinecone.Index(...), then self.index.upsert
+  and self.index.query. Same constructor-then-instance-method shape as the
+  smoke set. Held out — do not tune against a model run on this case.
+repo:
+  url: https://github.com/yoheinakajima/babyagi_archive
+  commit: e8726e3f83b81e51bdbfebf6df6ab034d52e58ec
+dependency:
+  name: pinecone
+  from: "2.2.4"
+  to: "3.2.2"
+timeout_seconds: 900
+expected:
+  must_fix:
+    - path: extensions/pinecone_storage.py
+      contains: "pinecone.init("
+    - path: extensions/pinecone_storage.py
+      contains: "self.index = pinecone.Index("
+    - path: extensions/pinecone_storage.py
+      contains: "self.index.upsert("
+    - path: extensions/pinecone_storage.py
+      contains: "self.index.query("
+  forbidden_names:
+    - "pinecone.init"
+    - "pinecone.Index"
+  required_patterns:
+    - "Pinecone\\("
+    - "self\\.index\\.(query|upsert)\\("
+  untouched_globs:
+    - "tests/**"
+    - "**/test_*.py"
+  notes: >
+    Not in conduit-hosted/cases. Held out. Distinct from yoheinakajima/instagraph
+    (openai case).
