@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 
+from conduit.deps.text import read_manifest_text
 from conduit.prune.grep_imports import SKIP_DIRS
 
 # Flatten order: earlier wins. npm last so it cannot overwrite a PyPI pin.
@@ -147,27 +148,28 @@ def read_installed_by_ecosystem(root: Path) -> dict[str, dict[str, str]]:
                 bucket[key] = val
 
     for req in iter_pip_manifests(root, scope="main"):
-        try:
-            text = req.read_text(encoding="utf-8")
-        except OSError:
+        text = read_manifest_text(req)
+        if text is None:
             continue
         _put("pypi", _parse_requirements_lines(text), overwrite=False)
 
     pyproject = root / "pyproject.toml"
     if pyproject.is_file():
-        _put(
-            "pypi",
-            _parse_pyproject_deps(pyproject.read_text(encoding="utf-8")),
-            overwrite=False,
-        )
+        text = read_manifest_text(pyproject)
+        if text is not None:
+            _put("pypi", _parse_pyproject_deps(text), overwrite=False)
 
     pkg = root / "package.json"
     if pkg.is_file():
-        _put("npm", _parse_package_json_deps(pkg.read_text(encoding="utf-8")))
+        text = read_manifest_text(pkg)
+        if text is not None:
+            _put("npm", _parse_package_json_deps(text))
 
     gomod = root / "go.mod"
     if gomod.is_file():
-        _put("go", _parse_go_mod(gomod.read_text(encoding="utf-8")))
+        text = read_manifest_text(gomod)
+        if text is not None:
+            _put("go", _parse_go_mod(text))
 
     return by_eco
 

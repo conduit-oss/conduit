@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from conduit.deps.manifests import iter_pip_manifests
+from conduit.deps.text import read_manifest_text
 
 _NAME = r"[A-Za-z0-9_.\-]+"
 
@@ -30,10 +31,11 @@ def resolve_client_version(
     name = (package or "").strip()
     if not name:
         return "", "not compared: no package name to resolve"
-    exact, ranges = _declared_specs(root, name)
+    exact, ranges, unreadable = _declared_specs(root, name)
     if exact:
         return exact, ""
-    locked = _lock_version(root, name)
+    locked, lock_unreadable = _lock_version(root, name)
+    unreadable = [*unreadable, *lock_unreadable]
     if locked:
         return locked, ""
     installed = installed_version(name)
@@ -57,6 +59,11 @@ def resolve_client_version(
             return match, ""
         return "", (
             f"not compared: requirement {spec!r} for {name} matched no version on PyPI"
+        )
+    if unreadable:
+        shown = ", ".join(path.name for path in unreadable)
+        return "", (
+            f"not compared: could not decode dependency manifest ({shown})"
         )
     return "", (
         "not compared: no version could be determined "
@@ -145,8 +152,9 @@ def unbounded_lower_spec(root: Path, package: str) -> str:
     A lockfile or an exact pin already names one version. A range that
     also has an upper bound is resolved to its highest match instead.
     """
-    exact, ranges = _declared_specs(root, package)
-    if exact or _lock_version(root, package):
+    exact, ranges, _unreadable = _declared_specs(root, package)
+    locked, _lock_unreadable = _lock_version(root, package)
+    if exact or locked:
         return ""
     for spec in ranges:
         if _is_unbounded_lower(spec):
@@ -258,14 +266,15 @@ def _dist_info_identity(path: Path) -> tuple[str, str]:
     return name, version
 
 
-def _declared_specs(root: Path, package: str) -> tuple[str, list[str]]:
+def _declared_specs(root: Path, package: str) -> tuple[str, list[str], list[Path]]:
     exact = ""
     ranges: list[str] = []
+    unreadable: list[Path] = []
     root = root.resolve()
     for req in iter_pip_manifests(root, scope="main"):
-        try:
-            text = req.read_text(encoding="utf-8")
-        except OSError:
+        text = read_manifest_text(req)
+        if text is None:
+            unreadable.append(req)
             continue
         for line in text.splitlines():
             spec = _spec_from_requirement_line(line, package)
@@ -277,16 +286,16 @@ def _declared_specs(root: Path, package: str) -> tuple[str, list[str]]:
                 ranges.append(spec)
     pyproject = root / "pyproject.toml"
     if pyproject.is_file():
-        try:
-            text = pyproject.read_text(encoding="utf-8")
-        except OSError:
+        text = read_manifest_text(pyproject)
+        if text is None:
+            unreadable.append(pyproject)
             text = ""
         for spec in _pyproject_specs(text, package):
             if _is_exact(spec) and not exact:
                 exact = _exact_version(spec)
             elif not _is_exact(spec) and spec not in ranges:
                 ranges.append(spec)
-    return exact, ranges
+    return exact, ranges, unreadable
 
 
 def _spec_from_requirement_line(line: str, package: str) -> str:
@@ -339,29 +348,38 @@ def _exact_version(spec: str) -> str:
     return token
 
 
-def _lock_version(root: Path, package: str) -> str:
+def _lock_version(root: Path, package: str) -> tuple[str, list[Path]]:
     root = root.resolve()
+    unreadable: list[Path] = []
     for name in ("poetry.lock", "uv.lock"):
         path = root / name
         if path.is_file():
-            found = _toml_lock_version(path, package)
+            found, failed = _toml_lock_version(path, package)
+            if failed:
+                unreadable.append(path)
             if found:
-                return found
+                return found, unreadable
     pipfile = root / "Pipfile.lock"
     if pipfile.is_file():
-        return _pipfile_lock_version(pipfile, package)
-    return ""
+        found, failed = _pipfile_lock_version(pipfile, package)
+        if failed:
+            unreadable.append(pipfile)
+        return found, unreadable
+    return "", unreadable
 
 
-def _toml_lock_version(path: Path, package: str) -> str:
+def _toml_lock_version(path: Path, package: str) -> tuple[str, bool]:
     try:
         import tomlkit
     except ImportError:
-        return ""
+        return "", False
+    text = read_manifest_text(path)
+    if text is None:
+        return "", True
     try:
-        doc = tomlkit.parse(path.read_text(encoding="utf-8"))
+        doc = tomlkit.parse(text)
     except Exception:
-        return ""
+        return "", False
     wanted = package.lower().replace("_", "-")
     packages = doc.get("package")
     if isinstance(packages, list):
@@ -372,18 +390,21 @@ def _toml_lock_version(path: Path, package: str) -> str:
             if name == wanted:
                 version = str(item.get("version") or "").strip()
                 if version:
-                    return version
-    return ""
+                    return version, False
+    return "", False
 
 
-def _pipfile_lock_version(path: Path, package: str) -> str:
+def _pipfile_lock_version(path: Path, package: str) -> tuple[str, bool]:
+    text = read_manifest_text(path)
+    if text is None:
+        return "", True
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ""
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return "", False
     wanted = package.lower().replace("_", "-")
     if not isinstance(data, dict):
-        return ""
+        return "", False
     for section in ("default", "develop"):
         block = data.get(section)
         if not isinstance(block, dict):
@@ -394,8 +415,8 @@ def _pipfile_lock_version(path: Path, package: str) -> str:
             raw = str(meta.get("version") or "").strip()
             if raw.startswith("=="):
                 raw = raw[2:]
-            return raw
-    return ""
+            return raw, False
+    return "", False
 
 
 def _pypi_versions(package: str) -> list[str]:

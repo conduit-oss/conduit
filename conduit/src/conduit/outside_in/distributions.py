@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from conduit.deps.manifests import iter_pip_manifests
+from conduit.deps.text import read_manifest_text
 from conduit.outside_in.specs import ServiceSpec, evidence_spec, normalize_dist
 
 _STDLIB = frozenset(getattr(sys, "stdlib_module_names", ())) | {"__future__", "builtins"}
@@ -46,38 +47,30 @@ def declared_distribution_names(root: Path) -> list[str]:
         found.append(token)
 
     for path in iter_pip_manifests(root, scope="main"):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
+        text = read_manifest_text(path)
+        if text is None:
             continue
         for name in _requirement_names(text):
             add(name)
 
     pyproject = root / "pyproject.toml"
     if pyproject.is_file():
-        try:
-            text = pyproject.read_text(encoding="utf-8")
-        except OSError:
-            text = ""
+        text = read_manifest_text(pyproject) or ""
         for name in _pyproject_names(text):
             add(name)
 
     for name in ("poetry.lock", "uv.lock"):
         path = root / name
         if path.is_file():
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError:
+            text = read_manifest_text(path)
+            if text is None:
                 continue
             for item in _lock_names(text):
                 add(item)
 
     pipfile = root / "Pipfile.lock"
     if pipfile.is_file():
-        try:
-            text = pipfile.read_text(encoding="utf-8")
-        except OSError:
-            text = ""
+        text = read_manifest_text(pipfile) or ""
         for item in _pipfile_names(text):
             add(item)
 
