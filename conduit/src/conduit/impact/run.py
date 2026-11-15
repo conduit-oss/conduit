@@ -146,6 +146,8 @@ def collect_impacts(
                         return_classes=getattr(changes, "return_classes", None),
                         surviving=getattr(changes, "surviving", None),
                         methods=getattr(changes, "methods", None),
+                        before_posparams=getattr(changes, "before_posparams", None) or {},
+                        after_posparams=getattr(changes, "after_posparams", None) or {},
                     ),
                     getattr(changes, "added_signatures", None) or {},
                     added_params=getattr(changes, "added_params", None) or {},
@@ -411,6 +413,8 @@ def _changes_for(
                 changes.added_signatures = getattr(wheel_diff, "added_signatures", {}) or {}
                 changes.added_params = getattr(wheel_diff, "added_params", {}) or {}
                 changes.before_params = getattr(wheel_diff, "before_params", {}) or {}
+                changes.before_posparams = getattr(wheel_diff, "before_posparams", {}) or {}
+                changes.after_posparams = getattr(wheel_diff, "after_posparams", {}) or {}
                 compared = True
                 wheel_compared = True
                 spec_changes, spec_compared, spec_note = diff_shipped_specs(
@@ -513,6 +517,8 @@ class _ChangeList(list):
     added_signatures: dict
     added_params: dict
     before_params: dict
+    before_posparams: dict
+    after_posparams: dict
 
     def __init__(self) -> None:
         super().__init__()
@@ -522,6 +528,8 @@ class _ChangeList(list):
         self.added_signatures = {}
         self.added_params = {}
         self.before_params = {}
+        self.before_posparams = {}
+        self.after_posparams = {}
 
 
 def _with_candidates(

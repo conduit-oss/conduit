@@ -136,6 +136,8 @@ class _Direct:
     confidence: str
     #: Splatted / partial keyword introductions: ``(name, lineno, expr)``.
     param_origins: tuple[tuple[str, int, str], ...] = ()
+    positional_count: int = 0
+    bindable: bool = True
 
 
 @dataclass
@@ -2878,6 +2880,7 @@ def _make_direct(
     scope = _scope_node(unit, call.enclosing)
     fields, returns_raw = _response_uses(scope, call.node)
     params, origins = _keyword_bundle(call.node, unit, call.enclosing)
+    positional_count, bindable = _call_bind_shape(call.node)
     return _Direct(
         rel=unit.rel,
         enclosing=call.enclosing,
@@ -2892,6 +2895,8 @@ def _make_direct(
         returns_raw=returns_raw,
         confidence=confidence,
         param_origins=origins,
+        positional_count=positional_count,
+        bindable=bindable,
     )
 
 
@@ -3584,6 +3589,19 @@ def _keywords(call: ast.Call, unit: ModUnit | None = None, enclosing: str = "") 
     return names
 
 
+def _call_bind_shape(call: ast.Call) -> tuple[int, bool]:
+    """Positional arity and whether args can be bound to a signature safely.
+
+    ``*args`` or a ``**`` splat means the call may pass names we cannot see, so
+    intersect keeps today's keyword-only behavior for that site.
+    """
+    if any(isinstance(arg, ast.Starred) for arg in call.args):
+        return 0, False
+    if any(kw.arg is None for kw in call.keywords):
+        return len(call.args), False
+    return len(call.args), True
+
+
 def _keyword_bundle(
     call: ast.Call, unit: ModUnit | None = None, enclosing: str = ""
 ) -> tuple[tuple[str, ...], tuple[tuple[str, int, str], ...]]:
@@ -3862,6 +3880,8 @@ def _propagate(directs: list[_Direct], edges: list[_Edge]) -> list[Chain]:
             confidence=direct.confidence,
             via_wrapper=False,
             param_origins=origins,
+            positional_count=direct.positional_count,
+            bindable=direct.bindable,
         )
         chains.append(initial)
         if (
@@ -3899,6 +3919,8 @@ def _propagate(directs: list[_Direct], edges: list[_Edge]) -> list[Chain]:
                     confidence=min_confidence(chain.confidence, edge.confidence),
                     via_wrapper=True,
                     param_origins=origins,
+                    positional_count=direct.positional_count,
+                    bindable=direct.bindable,
                 )
                 chains.append(extended)
                 queue.append((extended, caller, path + (caller,), False))
