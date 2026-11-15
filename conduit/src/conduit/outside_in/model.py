@@ -43,6 +43,11 @@ class Chain:
     via_wrapper: bool
     #: Where a splatted / forwarded keyword was introduced: ``(name, rel, line, expr)``.
     param_origins: tuple[tuple[str, str, int, str], ...] = ()
+    #: Positional args on the SDK call (not ``*args``). Used with the old/new
+    #: wheel signatures at intersect time.
+    positional_count: int = 0
+    #: False when ``*args`` / ``**kwargs`` mean positionals cannot be bound safely.
+    bindable: bool = True
 
     @property
     def call_site(self) -> str:

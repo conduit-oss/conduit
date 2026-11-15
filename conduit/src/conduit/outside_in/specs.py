@@ -49,7 +49,7 @@ LIMITATIONS: tuple[str, ...] = (
     "Not a Dependabot replacement: no lockfile bumps, no CVE alerts, and no new-version notices for ordinary libraries.",
     "A variable passed to getattr, globals(), a callable stored on a parameter, and DI containers are invisible. A string literal passed to getattr, functools.partial, and a lambda that calls the SDK are tracked.",
     "Imports inside a function are tracked, including an import in an enclosing function. Name binding inside a function is not flow-sensitive past that.",
-    "Positional arguments are not matched to SDK parameter names.",
+    "Positional arguments are bound to the old wheel signature at impact time; *args/**kwargs calls are left keyword-only.",
     "A cloud service chosen by a variable (client(name)) is not tied to an operation.",
     "Webhook payload fields are the ones read in the handler and a helper it calls in the same file.",
     "Star-imports are inventoried and not bound to call sites.",

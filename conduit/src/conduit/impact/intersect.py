@@ -18,6 +18,8 @@ def intersect(
     return_classes: dict[str, set[str]] | None = None,
     surviving: set[str] | None = None,
     methods: dict[str, str] | None = None,
+    before_posparams: dict[str, tuple[str, ...]] | None = None,
+    after_posparams: dict[str, tuple[str, ...]] | None = None,
 ) -> list[Impact]:
     relevant = [chain for chain in chains if _same_dependency(chain, dependency)]
     impacts: list[Impact] = []
@@ -25,6 +27,8 @@ def intersect(
     # Two removed symbols can share one detail and one call. Emit that
     # file:line once per change text. A different change on the same line stays.
     emitted: set[tuple] = set()
+    old_params = before_posparams or {}
+    new_params = after_posparams or {}
     ordered = sorted(changes, key=lambda item: (0 if item.confidence != "low" else 1, item.detail))
     for change in ordered:
         if change.confidence == "low" and any(change.old and change.old == old for old, _site in covered):
@@ -36,6 +40,8 @@ def intersect(
             return_classes or {},
             surviving or set(),
             methods or {},
+            old_params,
+            new_params,
         )
         fresh: list[SiteHit] = []
         # One removed name can appear under its defining path and a public
@@ -86,11 +92,22 @@ def _sites(
     return_classes: dict[str, set[str]],
     surviving: set[str],
     methods: dict[str, str] | None = None,
+    before_posparams: dict[str, tuple[str, ...]] | None = None,
+    after_posparams: dict[str, tuple[str, ...]] | None = None,
 ) -> list[SiteHit]:
     found: list[SiteHit] = []
     seen: set[tuple[str, int, str]] = set()
     for chain in chains:
-        confidence = _match(change, chain, peers, return_classes, surviving, methods or {})
+        confidence = _match(
+            change,
+            chain,
+            peers,
+            return_classes,
+            surviving,
+            methods or {},
+            before_posparams or {},
+            after_posparams or {},
+        )
         if confidence is None:
             continue
         origins = _param_origin_hits(change, chain, confidence)
@@ -165,6 +182,8 @@ def _match(
     return_classes: dict[str, set[str]],
     surviving: set[str],
     methods: dict[str, str] | None = None,
+    before_posparams: dict[str, tuple[str, ...]] | None = None,
+    after_posparams: dict[str, tuple[str, ...]] | None = None,
 ) -> str | None:
     if change.source == "webhook":
         return _webhook_match(change, chain)
@@ -174,7 +193,16 @@ def _match(
         return _http_match(change, chain)
     if chain.kind in {"version_gate", "http_call", "http_response"}:
         return None
-    return _python_match(change, chain, peers, return_classes, surviving, methods)
+    return _python_match(
+        change,
+        chain,
+        peers,
+        return_classes,
+        surviving,
+        methods,
+        before_posparams or {},
+        after_posparams or {},
+    )
 
 
 def _http_match(change: ApiChange, chain: Chain) -> str | None:
@@ -201,10 +229,9 @@ def _http_match(change: ApiChange, chain: Chain) -> str | None:
         # A newly required request field: flag the call when the site omits it.
         if chain.kind != "http_call":
             return None
-        name = change.new or change.old
-        if not name or _param_used(chain, name):
-            return None
-        return min_confidence(change.confidence, chain.confidence)
+        return _required_param_omitted_confidence(
+            change, chain, supplied=_param_used(chain, change.new or change.old or "")
+        )
     if change.kind not in {"field_removed", "field_renamed", "param_removed", "param_renamed"}:
         return None
     name = change.old or change.new
@@ -257,6 +284,8 @@ def _python_match(
     return_classes: dict[str, set[str]] | None = None,
     surviving: set[str] | None = None,
     methods: dict[str, str] | None = None,
+    before_posparams: dict[str, tuple[str, ...]] | None = None,
+    after_posparams: dict[str, tuple[str, ...]] | None = None,
 ) -> str | None:
     if chain.kind == "webhook":
         return None
@@ -290,16 +319,32 @@ def _python_match(
     how = _method_match(
         chain.sdk_method, change.symbol, change, peers, return_classes, surviving, methods
     )
+    old_order = _posparams_for(change, chain, before_posparams or {})
     if how is None and change.kind == "param_renamed" and "." not in change.symbol:
-        if _param_used(chain, change.old):
+        if _param_supplied(chain, change.old, old_order):
             return min_confidence(change.confidence, chain.confidence)
         return None
     if how is None:
         return None
     base = change.confidence if how == "exact" else min_confidence(change.confidence, "medium")
-    if change.kind in {"param_removed", "param_renamed", "param_added"}:
+    if change.kind == "param_added":
+        # Same idea as HTTP "became required": flag when the call omits it.
+        # *args/**kwargs sites stay on today's keyword-only path (no guess).
+        if not getattr(chain, "bindable", True):
+            name = change.new or change.old
+            if name and not _param_used(chain, name):
+                return None
+            return min_confidence(base, chain.confidence)
+        new_order = _posparams_for(change, chain, after_posparams or {})
+        omitted = _required_param_omitted_confidence(
+            change,
+            chain,
+            supplied=_param_supplied(chain, change.new or change.old or "", new_order),
+        )
+        return None if omitted is None else min_confidence(base, chain.confidence)
+    if change.kind in {"param_removed", "param_renamed"}:
         name = change.old or change.new
-        if name and not _param_used(chain, name):
+        if name and not _param_supplied(chain, name, old_order):
             return None
     return min_confidence(base, chain.confidence)
 
@@ -427,6 +472,44 @@ def _param_used(chain: Chain, name: str) -> bool:
         if param.lower() == wanted:
             return True
     return False
+
+
+def _posparams_for(
+    change: ApiChange,
+    chain: Chain,
+    mapping: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    for key in (change.symbol, chain.sdk_method, change.old):
+        if key and key in mapping:
+            return mapping[key]
+    return ()
+
+
+def _bound_positionals(chain: Chain, order: tuple[str, ...]) -> tuple[str, ...]:
+    count = int(getattr(chain, "positional_count", 0) or 0)
+    if not getattr(chain, "bindable", True) or count <= 0 or not order:
+        return ()
+    return order[:count]
+
+
+def _param_supplied(chain: Chain, name: str, positional_order: tuple[str, ...] = ()) -> bool:
+    """True when the call passes ``name`` as a keyword or a bound positional."""
+    if _param_used(chain, name):
+        return True
+    if not name:
+        return False
+    wanted = name.lower()
+    return any(param.lower() == wanted for param in _bound_positionals(chain, positional_order))
+
+
+def _required_param_omitted_confidence(
+    change: ApiChange, chain: Chain, *, supplied: bool
+) -> str | None:
+    """Shared HTTP/Python rule: a required param_added hits sites that omit it."""
+    name = change.new or change.old
+    if not name or supplied:
+        return None
+    return min_confidence(change.confidence, chain.confidence)
 
 
 def _field_used(chain: Chain, name: str) -> bool:
