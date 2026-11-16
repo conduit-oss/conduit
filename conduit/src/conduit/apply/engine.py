@@ -67,6 +67,10 @@ from conduit.apply.verify import remaining_breaks
 # is no longer flagged. Unit tests inject this; the CLI uses impact re-check.
 SiteClearedCheck = Callable[[Path, ImpactSite, str], bool]
 
+# Max characters stored per prompt message content or raw model reply in a
+# transcript entry. Longer text is truncated so apply.json stays bounded.
+TRANSCRIPT_TEXT_MAX = 8_000
+
 
 @dataclass
 class _RouteState:
@@ -160,6 +164,9 @@ class ApplyReport:
     name_check_retries: int = 0
     #: Exit code of the most recent ``_check`` test run (suite-couldn't-run gate).
     last_exit_code: int | None = None
+    #: Per propose-call transcripts: path, line, attempt, prompt, response, plan,
+    #: model, enable_thinking, and token counts. Additive for apply.json.
+    transcripts: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def preexisting_note(self) -> str:
@@ -179,6 +186,8 @@ class ApplyReport:
         data["summary"]["name_check_retries"] = self.name_check_retries
         if self.model_calls:
             data["model_calls"] = [dict(item) for item in self.model_calls]
+        if self.transcripts:
+            data["transcripts"] = [dict(item) for item in self.transcripts]
         if self.preexisting is not None:
             data["preexisting_failures"] = list(self.preexisting)
             data["preexisting_note"] = self.preexisting_note
@@ -2131,8 +2140,10 @@ def _apply_one(
                 client,
                 pack,
                 config.settings,
+                report,
                 feedback=feedback,
                 max_tokens=min(2048, remaining),
+                attempt=attempt,
             )
             site_tokens += used
             report.tokens_used += used
@@ -2247,21 +2258,69 @@ def _propose(
     client: ModelClient,
     pack: ContextPack,
     settings: TokenFactorySettings,
+    report: ApplyReport,
     *,
     feedback: str,
     max_tokens: int,
+    attempt: int,
 ) -> tuple[str, int]:
-    turns = [
-        ChatMessage(role=role, content=content)
-        for role, content in propose_messages(pack, feedback=feedback)
-    ]
+    messages = propose_messages(pack, feedback=feedback)
+    turns = [ChatMessage(role=role, content=content) for role, content in messages]
     result = client.chat(
         model=settings.model,
         turns=turns,
         max_tokens=max_tokens,
         enable_thinking=settings.enable_thinking,
     )
+    report.transcripts.append(
+        {
+            "path": pack.site.path,
+            "line": pack.site.line,
+            "attempt": attempt,
+            "prompt": [
+                {"role": role, "content": _trim_transcript_text(content)}
+                for role, content in messages
+            ],
+            "response": _trim_transcript_text(result.content),
+            "plan": _plan_from_reply(result.content),
+            "model": settings.model,
+            "enable_thinking": bool(settings.enable_thinking),
+            "prompt_tokens": int(result.prompt_tokens or 0),
+            "completion_tokens": int(result.completion_tokens or 0),
+        }
+    )
     return result.content, result.total_tokens
+
+
+def _trim_transcript_text(text: str, *, limit: int = TRANSCRIPT_TEXT_MAX) -> str:
+    """Keep stored prompt/response text under ``limit`` characters."""
+    raw = text or ""
+    if len(raw) <= limit:
+        return raw
+    marker = f"\n… ({len(raw) - limit} chars omitted)\n"
+    keep = max(0, limit - len(marker))
+    return raw[:keep] + marker
+
+
+def _plan_from_reply(text: str) -> str:
+    """One-line ``plan`` from the model JSON when present; else empty."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    candidate = raw
+    fenced = re.search(r"```(?:json)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidate = fenced.group(1).strip()
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    plan = data.get("plan")
+    if plan is None:
+        return ""
+    return str(plan).strip().splitlines()[0] if str(plan).strip() else ""
 
 
 def _summarize(
