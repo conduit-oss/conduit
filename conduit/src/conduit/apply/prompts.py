@@ -22,7 +22,9 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "already present in this file's imports or function_source. Do not invent "
         "import paths or symbols that are not listed.\n"
         "- Respond with a JSON object only:\n"
-        '  {"function_source": "<full def ...>", "new_imports": ["import ...", ...]}\n'
+        '  {"function_source": "<full def ...>", "new_imports": ["import ...", ...],'
+        ' "plan": "<optional brief intent>"}\n'
+        "- plan is optional: one brief line of intent; omit it if unsure.\n"
         "- function_source must be the complete function definition (def/async def),\n"
         "  not a unified diff and not the whole file.\n"
         "- If function_name is empty, the flagged line is a module-level statement:\n"
