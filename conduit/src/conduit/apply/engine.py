@@ -238,7 +238,7 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
             _apply_batch(selected, config, client, report, stop=stop)
             _fill_why(report)
             return report
-        covered, texts = _one_per_function(config.root, selected)
+        covered, texts, siblings = _one_per_function(config.root, selected)
         import_shifts: list[RemovedImport] = []
         relocated_originals: dict[str, str] = {}
         if config.write and not config.dry_run:
@@ -287,9 +287,25 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
                     why = "line rewritten by an earlier fix in this file"
                     report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=why))
                     continue
-                report.results.append(_apply_one(moved, config, client, report))
+                result = _apply_one(
+                    moved, config, client, report, siblings=siblings.get(id(site), [])
+                )
+                report.results.append(result)
                 _sync_ledger()
                 _checkpoint(config, report)
+                if result.status == SiteStatus.SKIPPED and _survived_method_skip(result.why):
+                    _prompt_promoted_sibling(
+                        site,
+                        covered,
+                        siblings,
+                        texts,
+                        config,
+                        client,
+                        report,
+                        import_shifts=import_shifts,
+                        relocated_originals=relocated_originals,
+                        sync=_sync_ledger,
+                    )
             for site, hit in deferred_imports:
                 report.results.append(
                     _finalize_missing_import(
@@ -385,7 +401,7 @@ def _apply_batch(
         work = replace(config, root=scratch, write=True, test_cmd=None, routes=routes)
         slots: dict[int, int] = {}
         texts_of: dict[int, str] = {}
-        covered, texts = _one_per_function(config.root, selected)
+        covered, texts, siblings = _one_per_function(config.root, selected)
         base = sorted(selected, key=lambda item: not _names_removed_class(item))
         ordered = _dependency_order(config.root, base, covered, routes)
         rank = {id(site): index for index, site in enumerate(base)}
@@ -465,12 +481,53 @@ def _apply_batch(
                     # Not rewritten against a base that is still broken.
                     result = SiteResult(site=site, status=SiteStatus.NEEDS_HUMAN, error=blocked, why=blocked)
                 else:
-                    result = _apply_one(moved, work, client, report, sink=sink) if moved else None
+                    result = (
+                        _apply_one(
+                            moved,
+                            work,
+                            client,
+                            report,
+                            sink=sink,
+                            siblings=siblings.get(id(site), []),
+                        )
+                        if moved
+                        else None
+                    )
                 slots[id(site)] = len(report.results)
                 report.results.append(result or SiteResult(site=site, status=SiteStatus.SKIPPED, why="line rewritten by an earlier fix in this file"))
                 if result is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
                     accepted[id(site)] = sink
                 _checkpoint(config, report)
+                if result is not None and result.status == SiteStatus.SKIPPED and _survived_method_skip(result.why):
+                    # Peek the sibling that will be promoted so batch bookkeeping
+                    # can track its file before the cover is dropped.
+                    peek = next(
+                        (sib for sib in siblings.get(id(site), []) if id(sib) in covered),
+                        None,
+                    )
+                    if peek is not None:
+                        routes.upcoming[id(peek)] = (peek, texts.get(id(peek), ""))
+                        texts_of[id(peek)] = texts.get(id(peek), "")
+                        originals.setdefault(peek.path, _read(config.root / peek.path))
+                        if peek.path not in lines.paths:
+                            lines.paths.append(peek.path)
+                    _prompt_promoted_sibling(
+                        site,
+                        covered,
+                        siblings,
+                        texts,
+                        config,
+                        client,
+                        report,
+                        import_shifts=import_shifts,
+                        relocated_originals=originals,
+                        slots=slots,
+                        accepted=accepted,
+                        routes=routes,
+                        scratch=scratch,
+                    )
+                    # ranks already recorded the covered sibling when it was skipped;
+                    # the replaced cell keeps that rank slot.
             for site, hit in deferred_imports:
                 ranks.append(rank[id(site)])
                 originals.setdefault(site.path, _read(config.root / site.path))
@@ -2000,12 +2057,19 @@ def _names_removed_class(site: ImpactSite) -> bool:
     return site.kind == "removed" and tail[:1].isupper() and tail == site.symbol.rsplit(".", 1)[-1]
 
 
-def _one_per_function(root: Path, sites: list[ImpactSite]) -> tuple[dict[int, str], dict[int, str]]:
+def _one_per_function(
+    root: Path, sites: list[ImpactSite]
+) -> tuple[dict[int, str], dict[int, str], dict[int, list[ImpactSite]]]:
     """The rewrite replaces a whole function and the recheck covers its span,
-    so one site per enclosing function is enough; the rest point at it."""
+    so one site per enclosing function is enough; the rest point at it.
+
+    ``siblings`` maps each lead's id to the other findings in that function so
+    the lead pack can carry their changes and new-release signatures/requires.
+    """
     first: dict[tuple[str, int], ImpactSite] = {}
     covered: dict[int, str] = {}
     texts: dict[int, str] = {}
+    siblings: dict[int, list[ImpactSite]] = {}
     for site in sites:
         if site.via_wrapper:
             continue
@@ -2021,9 +2085,131 @@ def _one_per_function(root: Path, sites: list[ImpactSite]) -> tuple[dict[int, st
         lead = first.setdefault(key, site)
         if lead is not site:
             covered[id(site)] = f"same function as {lead.path}:{lead.line}; covered by that rewrite and its recheck"
+            siblings.setdefault(id(lead), []).append(site)
         elif 0 < site.line <= len(lines):
             texts[id(site)] = lines[site.line - 1].strip()
-    return covered, texts
+    return covered, texts, siblings
+
+
+def _survived_method_skip(why: str) -> bool:
+    """True when ``method_survives_on_relocated_receiver`` skipped the lead."""
+    return "rewrite the constructor, not this call" in (why or "")
+
+
+def _promote_covered_sibling(
+    covered: dict[int, str],
+    siblings: dict[int, list[ImpactSite]],
+    lead: ImpactSite,
+) -> ImpactSite | None:
+    """Drop cover on the first sibling of a survived-method lead so it is prompted."""
+    group = siblings.get(id(lead)) or []
+    for index, sib in enumerate(group):
+        if id(sib) not in covered:
+            continue
+        del covered[id(sib)]
+        rest = group[:index] + group[index + 1 :]
+        siblings[id(sib)] = rest
+        return sib
+    return None
+
+
+def _sibling_rows(siblings: list[ImpactSite]) -> list[dict[str, Any]]:
+    """Release-diff rows for other findings the lead rewrite must also clear."""
+    return [
+        {
+            "line": sib.line,
+            "expr": sib.expr,
+            "change": sib.change,
+            "kind": sib.kind,
+            "symbol": sib.symbol,
+            "old": sib.old_signature,
+            "new": sib.new_signature,
+            "candidates": [dict(item) for item in sib.candidates],
+        }
+        for sib in siblings
+    ]
+
+
+def _prompt_promoted_sibling(
+    lead: ImpactSite,
+    covered: dict[int, str],
+    siblings: dict[int, list[ImpactSite]],
+    texts: dict[int, str],
+    config: ApplyConfig,
+    client: ModelClient | None,
+    report: ApplyReport,
+    *,
+    import_shifts: list[RemovedImport] | None = None,
+    relocated_originals: dict[str, str] | None = None,
+    sync: Callable[[], None] | None = None,
+    slots: dict[int, int] | None = None,
+    accepted: dict[int, dict[str, Any]] | None = None,
+    routes: _RouteState | None = None,
+    scratch: Path | None = None,
+) -> None:
+    """When a method lead is skipped as surviving, prompt the covered constructor."""
+    promoted = _promote_covered_sibling(covered, siblings, lead)
+    if promoted is None:
+        return
+    # Already reported as "covered by lead": replace that cell and apply now.
+    for index, prev in enumerate(report.results):
+        if prev.site is not promoted or prev.status != SiteStatus.SKIPPED:
+            continue
+        root = scratch if scratch is not None else config.root
+        work = replace(config, root=root, write=True, test_cmd=None, routes=routes) if scratch is not None else config
+        hit = _import_hit(promoted, import_shifts or [])
+        if hit is not None:
+            why = _import_shift_why(hit, promoted.change)
+            before = (relocated_originals or {}).get(promoted.path, "")
+            after = _read(root / promoted.path)
+            diff = unified_diff_for(promoted.path, before, after) if before else ""
+            result = SiteResult(
+                site=promoted,
+                status=SiteStatus.NEEDS_HUMAN if hit.missing else SiteStatus.FIXED_UNVERIFIED,
+                why=why,
+                error=why if hit.missing else "",
+                diff=diff,
+            )
+            report.results[index] = result
+            if slots is not None:
+                slots[id(promoted)] = index
+            if accepted is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
+                accepted[id(promoted)] = {
+                    "site": promoted,
+                    "block": (hit.replacement or "").strip(),
+                    "edit": None,
+                    "tokens": 0,
+                    "mechanical_import": True,
+                }
+            if sync:
+                sync()
+            _checkpoint(config, report)
+            return
+        moved = _relocate(root, promoted, texts.get(id(promoted), "")) if (config.write or scratch) else promoted
+        if moved is None:
+            report.results[index] = SiteResult(
+                site=promoted, status=SiteStatus.SKIPPED, why="line rewritten by an earlier fix in this file"
+            )
+            if sync:
+                sync()
+            _checkpoint(config, report)
+            return
+        sink: dict[str, Any] | None = {"site": promoted} if scratch is not None else None
+        if routes is not None:
+            routes.key = id(promoted)
+        result = _apply_one(
+            moved, work, client, report, sink=sink, siblings=siblings.get(id(promoted), [])
+        )
+        report.results[index] = result
+        if slots is not None:
+            slots[id(promoted)] = index
+        if accepted is not None and sink is not None and result.status == SiteStatus.FIXED_UNVERIFIED:
+            accepted[id(promoted)] = sink
+        if sync:
+            sync()
+        _checkpoint(config, report)
+        return
+    # Still ahead in the iteration: cover was dropped so the normal loop prompts it.
 
 
 def _relocate(root: Path, site: ImpactSite, text: str) -> ImpactSite | None:
@@ -2051,6 +2237,7 @@ def _apply_one(
     used: int = 0,
     sink: dict[str, Any] | None = None,
     resolved: list[str] | None = None,
+    siblings: list[ImpactSite] | None = None,
 ) -> SiteResult:
     if site.via_wrapper:
         return SiteResult(
@@ -2062,6 +2249,10 @@ def _apply_one(
         pack = build_context_pack(config.root, site)
     except ContextError as exc:
         return SiteResult(site=site, status=SiteStatus.NEEDS_HUMAN, error=str(exc))
+
+    sibling_sites = list(siblings or [])
+    if sibling_sites:
+        pack.release_diff["sibling_findings"] = _sibling_rows(sibling_sites)
 
     if config.dry_run:
         return SiteResult(
@@ -2097,21 +2288,44 @@ def _apply_one(
             context=pack,
         )
 
-    target = _new_signatures(config, site, [site.symbol])
+    primary = [site.symbol, *[sib.symbol for sib in sibling_sites]]
+    cand_symbols = [c.get("symbol", "") for c in pack.candidates]
+    for sib in sibling_sites:
+        cand_symbols.extend(c.get("symbol", "") for c in sib.candidates)
+    target = _new_signatures(config, site, [*primary, *cand_symbols])
     if target:
         pack.release_diff["new_release_signatures"] = target
-    requires = _required_parameters(config, site, [site.symbol])
-    if not requires:
+    # Per finding (lead then each sibling): own symbol first, else its candidates,
+    # so a sibling's required type is not starved by the lead's `_MAX_REQUIRES`.
+    requires: list[str] = []
+    seen_requires: set[str] = set()
+
+    def _add_requires(symbols: list[str]) -> None:
+        for brief in _required_parameters(config, site, symbols):
+            if brief not in seen_requires:
+                requires.append(brief)
+                seen_requires.add(brief)
+
+    lead_req = _required_parameters(config, site, [site.symbol])
+    if lead_req:
+        _add_requires([site.symbol])
+    else:
         # A removed callable: what each replacement candidate needs, so the first
         # rewrite builds the arguments it takes instead of keeping the old ones.
-        requires = _required_parameters(config, site, [c.get("symbol", "") for c in pack.candidates])
+        _add_requires([c.get("symbol", "") for c in pack.candidates])
+    for sib in sibling_sites:
+        sib_req = _required_parameters(config, site, [sib.symbol])
+        if sib_req:
+            _add_requires([sib.symbol])
+        else:
+            _add_requires([c.get("symbol", "") for c in sib.candidates])
     if requires:
         pack.release_diff["new_release_requires"] = requires
         helpers = _repo_helpers(
             config,
             site,
             (pack.function_start_line, pack.function_end_line or pack.function_start_line),
-            [site.symbol, *[c.get("symbol", "") for c in pack.candidates]],
+            [*primary, *cand_symbols],
         )
         if helpers:
             pack.release_diff["existing_repo_helpers_that_produce_this_type"] = helpers
