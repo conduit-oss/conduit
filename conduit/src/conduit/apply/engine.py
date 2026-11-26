@@ -30,11 +30,23 @@ from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.nonecheck import NONE_CHECK
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.plain import plain_why
-from conduit.apply.prompts import propose_messages, summarize_messages
+from conduit.apply.prompts import (
+    propose_messages,
+    propose_whole_file_messages,
+    summarize_messages,
+    summarize_whole_file_messages,
+)
+from conduit.apply.structural import (
+    group_sites_by_file,
+    qualifies_for_whole_file,
+    site_still_present,
+    whole_file_signatures,
+)
 from conduit.apply.unused import drop_unused_imports
 from conduit.apply.splice import (
     PatchError,
     parse_model_edit,
+    parse_whole_file_edit,
     resolve_line_edits,
     splice_edit_with_span,
     unified_diff_for,
@@ -176,9 +188,14 @@ def apply_sites(sites: list[ImpactSite], config: ApplyConfig) -> ApplyReport:
             _fill_why(report)
             return report
         covered, texts = _one_per_function(config.root, selected)
+        done_ids = _apply_structural_files(
+            selected, config, client, report, covered=covered, texts=texts
+        )
         # Lines that import or construct a removed class go first, so later
         # rechecks resolve calls through the new client instead of the old one.
         for site in sorted(selected, key=lambda item: not _names_removed_class(item)):
+            if id(site) in done_ids:
+                continue
             if id(site) in covered:
                 report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
                 continue
@@ -223,7 +240,25 @@ def _apply_batch(selected: list[ImpactSite], config: ApplyConfig, client: ModelC
         for site in ordered:
             if id(site) not in covered and not site.via_wrapper:
                 routes.upcoming[id(site)] = (site, texts.get(id(site), ""))
+        structural_done = _apply_structural_files(
+            ordered,
+            work,
+            client,
+            report,
+            covered=covered,
+            texts=texts,
+            originals=originals,
+            texts_of=texts_of,
+            slots=slots,
+            accepted=accepted,
+            lines=lines,
+            routes=routes,
+            rank=rank,
+            ranks=ranks,
+        )
         for site in ordered:
+            if id(site) in structural_done:
+                continue
             routes.upcoming.pop(id(site), None)
             ranks.append(rank[id(site)])
             if id(site) in covered:
@@ -741,10 +776,23 @@ def _uncovered_why(record: LineRecord | None, path: str, original: str, block: s
 
 def _rebuild(scratch: Path, originals: dict[str, str], accepted: dict[int, dict[str, Any]], texts: dict[int, str], path: str) -> None:
     """The file as its original plus every accepted edit, re-spliced in order."""
+    whole = next(
+        (
+            sink
+            for sink in accepted.values()
+            if sink.get("whole_file") and sink["site"].path == path and sink.get("patched")
+        ),
+        None,
+    )
+    if whole is not None:
+        _write_file(scratch, path, whole["patched"])
+        return
     _write_file(scratch, path, originals[path])
     for key, sink in list(accepted.items()):
         site = sink["site"]
         if site.path != path:
+            continue
+        if sink.get("whole_file"):
             continue
         moved = _relocate(scratch, site, texts.get(key, ""))
         try:
@@ -1285,6 +1333,329 @@ _FIXED = {
 }
 
 
+def _apply_structural_files(
+    selected: list[ImpactSite],
+    config: ApplyConfig,
+    client: ModelClient | None,
+    report: ApplyReport,
+    *,
+    covered: dict[int, str],
+    texts: dict[int, str],
+    originals: dict[str, str] | None = None,
+    texts_of: dict[int, str] | None = None,
+    slots: dict[int, int] | None = None,
+    accepted: dict[int, dict[str, Any]] | None = None,
+    lines: _Lines | None = None,
+    routes: _RouteState | None = None,
+    rank: dict[int, int] | None = None,
+    ranks: list[int] | None = None,
+) -> set[int]:
+    """Try whole-file rewrites for structural migrations; return site ids handled.
+
+    On check failure the file is left for the normal per-site path.
+    """
+    if config.dry_run or client is None:
+        return set()
+    done: set[int] = set()
+    by_file = group_sites_by_file(selected)
+    for path, file_sites in by_file.items():
+        active = [site for site in file_sites if not site.via_wrapper and id(site) not in covered]
+        if not qualifies_for_whole_file(config.root, active):
+            continue
+        if originals is not None:
+            originals.setdefault(path, _read(config.root / path))
+        results = _apply_whole_file(active, config, client, report, texts=texts)
+        if results is None:
+            continue
+        for site, result, sink in results:
+            done.add(id(site))
+            if routes is not None:
+                routes.upcoming.pop(id(site), None)
+            if rank is not None and ranks is not None:
+                ranks.append(rank[id(site)])
+            if originals is not None and sink.get("original"):
+                originals[path] = sink["original"]
+            if texts_of is not None:
+                texts_of[id(site)] = texts.get(id(site), "")
+            if lines is not None and path not in lines.paths:
+                lines.paths.append(path)
+            if slots is not None:
+                slots[id(site)] = len(report.results)
+            report.results.append(result)
+            if (
+                accepted is not None
+                and result.status in {SiteStatus.FIXED_UNVERIFIED, SiteStatus.FIXED_VERIFIED}
+                and sink
+            ):
+                accepted[id(site)] = sink
+        # Same-function covered siblings of a structural file: report as skipped.
+        for site in file_sites:
+            if id(site) in done or id(site) not in covered:
+                continue
+            done.add(id(site))
+            if routes is not None:
+                routes.upcoming.pop(id(site), None)
+            if rank is not None and ranks is not None:
+                ranks.append(rank[id(site)])
+            if slots is not None:
+                slots[id(site)] = len(report.results)
+            report.results.append(SiteResult(site=site, status=SiteStatus.SKIPPED, why=covered[id(site)]))
+    return done
+
+
+def _apply_whole_file(
+    sites: list[ImpactSite],
+    config: ApplyConfig,
+    client: ModelClient,
+    report: ApplyReport,
+    *,
+    texts: dict[int, str],
+) -> list[tuple[ImpactSite, SiteResult, dict[str, Any]]] | None:
+    """Rewrite one qualifying file in a single model call.
+
+    Returns per-site results on success, or ``None`` to fall back to per-site.
+    """
+    if not sites:
+        return None
+    path = sites[0].path
+    try:
+        original = (config.root / path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    lead = sites[0]
+    site_rows = [
+        {
+            "path": site.path,
+            "line": site.line,
+            "expr": site.expr,
+            "change": site.change,
+            "kind": site.kind,
+            "symbol": site.symbol,
+            "old": site.old_signature,
+            "new": site.new_signature,
+            "candidates": [dict(item) for item in site.candidates],
+        }
+        for site in sites
+    ]
+    signatures = whole_file_signatures(sites)
+    # Enrich with signatures read from the new release when recheck is on.
+    for site in sites:
+        extra = _new_signatures(config, site, [site.symbol, *[c.get("symbol", "") for c in site.candidates]])
+        for symbol, text in extra.items():
+            if not any(row["symbol"] == symbol and row["signature"] == text for row in signatures):
+                signatures.append({"symbol": symbol, "signature": text})
+    feedback = ""
+    last_error = ""
+    site_tokens = 0
+    attempts = 0
+    for attempt in range(1, config.settings.max_attempts + 1):
+        attempts = attempt
+        remaining = config.settings.max_tokens_per_site - site_tokens
+        if remaining <= 0:
+            last_error = "token budget exhausted for whole-file rewrite"
+            break
+        try:
+            edit_text, used = _propose_whole_file(
+                client,
+                file_path=path,
+                file_source=original,
+                sites=site_rows,
+                signatures=signatures,
+                dependency=lead.dependency,
+                from_version=lead.from_version,
+                to_version=lead.to_version,
+                settings=config.settings,
+                feedback=feedback,
+                max_tokens=min(4096, remaining),
+            )
+            site_tokens += used
+            report.tokens_used += used
+            patched = parse_whole_file_edit(edit_text)
+            _check_whole_file_imports(original, patched, sites)
+            diff = unified_diff_for(path, original, patched)
+            # Recheck every site against the full file; any hard failure falls back.
+            per_status: list[tuple[ImpactSite, SiteStatus, str]] = []
+            span = (1, max(1, patched.count("\n") + (0 if patched.endswith("\n") else 1)))
+            for site in sites:
+                try:
+                    _verify_site_cleared(config, site, patched, span)
+                    cleared = True
+                    err = ""
+                except RecheckError as exc:
+                    cleared = False
+                    err = str(exc)
+                except PatchError as exc:
+                    # Impact still flagged or site_cleared rejected: map below.
+                    cleared = False
+                    err = str(exc)
+                if cleared:
+                    status = SiteStatus.FIXED_VERIFIED if config.test_cmd else SiteStatus.FIXED_UNVERIFIED
+                    # Batch path sets test_cmd=None on the scratch config; treat
+                    # unverified until the batch suite runs.
+                    if config.routes is not None:
+                        status = SiteStatus.FIXED_UNVERIFIED
+                    per_status.append((site, status, ""))
+                elif site_still_present(patched, site):
+                    per_status.append((site, SiteStatus.NEEDS_HUMAN, err or "site still flagged after whole-file rewrite"))
+                else:
+                    per_status.append(
+                        (
+                            site,
+                            SiteStatus.ALREADY_FAILING,
+                            err or "line relocated by structural rewrite but site still does not clear",
+                        )
+                    )
+            # File-level gate: if every site still needs human and old exprs remain,
+            # the rewrite did not land — fall back. Mixed/fixed outcomes are kept.
+            if all(status == SiteStatus.NEEDS_HUMAN for _site, status, _why in per_status):
+                last_error = per_status[0][2] or "whole-file rewrite left every site flagged"
+                feedback = last_error
+                continue
+            tests_ok, test_err, _record = _run_tests(config, lead, patched)
+            if not tests_ok:
+                last_error = trim_test_feedback(test_err or "tests failed")
+                feedback = last_error
+                continue
+            why = ""
+            why_budget = config.settings.max_tokens_per_site - site_tokens
+            if why_budget > 0:
+                why, why_tokens = _summarize_whole_file(
+                    client,
+                    file_path=path,
+                    changes=[site.change for site in sites],
+                    diff=diff,
+                    settings=config.settings,
+                    max_tokens=min(128, why_budget),
+                )
+                site_tokens += why_tokens
+                report.tokens_used += why_tokens
+            if config.write:
+                _write_file(config.root, path, patched)
+            out: list[tuple[ImpactSite, SiteResult, dict[str, Any]]] = []
+            for site, status, error in per_status:
+                site_why = why if status in _FIXED else ""
+                block = patched  # whole file is the rewrite unit
+                sink: dict[str, Any] = {
+                    "site": site,
+                    "whole_file": True,
+                    "patched": patched,
+                    "original": original,
+                    "block": block,
+                    "tokens": site_tokens,
+                    "flows": [],
+                }
+                out.append(
+                    (
+                        site,
+                        SiteResult(
+                            site=site,
+                            status=status,
+                            why=site_why,
+                            diff=diff if status in _FIXED or status == SiteStatus.ALREADY_FAILING else "",
+                            attempts=attempts,
+                            error=error,
+                        ),
+                        sink if status in _FIXED else {},
+                    )
+                )
+            return out
+        except PatchError as exc:
+            last_error = str(exc)
+            feedback = last_error
+        except Exception as exc:  # noqa: BLE001 — fall back to per-site
+            last_error = str(exc)
+            feedback = last_error
+    # Exhausted attempts or hard failure: fall back to per-site.
+    _ = last_error
+    return None
+
+
+def _check_whole_file_imports(before: str, after: str, sites: list[ImpactSite]) -> None:
+    """Raise when the rewrite drops a still-used name (import/name check)."""
+    try:
+        old_tree, new_tree = ast.parse(before), ast.parse(after)
+    except SyntaxError as exc:
+        raise PatchError(f"rewritten file does not parse: {exc}") from exc
+    lost = _bound_names(old_tree) - _bound_names(new_tree)
+    if not lost:
+        return
+    uses = _used_names(new_tree)
+    # Names the migration intentionally removes (old SDK symbols / leaves).
+    removable: set[str] = set()
+    for site in sites:
+        for text in (site.expr, site.symbol, site.old_signature):
+            for part in re.split(r"[.\s]+", text or ""):
+                if part.isidentifier():
+                    removable.add(part)
+    dangling = sorted(name for name in lost if name in uses and name not in removable)
+    if dangling:
+        raise PatchError(
+            "whole-file rewrite removed names still used in the file: " + ", ".join(dangling)
+        )
+
+
+def _propose_whole_file(
+    client: ModelClient,
+    *,
+    file_path: str,
+    file_source: str,
+    sites: list[dict],
+    signatures: list[dict[str, str]],
+    dependency: str,
+    from_version: str,
+    to_version: str,
+    settings: TokenFactorySettings,
+    feedback: str,
+    max_tokens: int,
+) -> tuple[str, int]:
+    turns = [
+        ChatMessage(role=role, content=content)
+        for role, content in propose_whole_file_messages(
+            file_path=file_path,
+            file_source=file_source,
+            sites=sites,
+            signatures=signatures,
+            dependency=dependency,
+            from_version=from_version,
+            to_version=to_version,
+            feedback=feedback,
+        )
+    ]
+    result = client.chat(
+        model=settings.model,
+        turns=turns,
+        max_tokens=max_tokens,
+        enable_thinking=settings.enable_thinking,
+    )
+    return result.content, result.total_tokens
+
+
+def _summarize_whole_file(
+    client: ModelClient,
+    *,
+    file_path: str,
+    changes: list[str],
+    diff: str,
+    settings: TokenFactorySettings,
+    max_tokens: int,
+) -> tuple[str, int]:
+    turns = [
+        ChatMessage(role=role, content=content)
+        for role, content in summarize_whole_file_messages(
+            file_path=file_path, changes=changes, diff=diff
+        )
+    ]
+    result = client.chat(
+        model=settings.model_small,
+        turns=turns,
+        max_tokens=max_tokens,
+        enable_thinking=settings.enable_thinking_small,
+    )
+    text = result.content.strip()
+    why = text.splitlines()[0] if text else ""
+    return why, result.total_tokens
+
+
 def _fill_why(report: ApplyReport) -> None:
     """No fixed or needs-human result goes out without a reason, and a type's
     field list is printed once across the whole report.
@@ -1294,7 +1665,7 @@ def _fill_why(report: ApplyReport) -> None:
     listed: dict[str, str] = {}
     for index, result in enumerate(report.results):
         why = result.why
-        if result.status == SiteStatus.NEEDS_HUMAN:
+        if result.status in {SiteStatus.NEEDS_HUMAN, SiteStatus.ALREADY_FAILING}:
             why = plain_why(result.error or result.why, result.site.path) or _change_summary(result)
         elif not why.strip() and result.status in _FIXED:
             why = _change_summary(result)

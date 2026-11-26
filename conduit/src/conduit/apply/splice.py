@@ -26,6 +26,42 @@ class ModelEdit:
     line_edits: tuple[tuple[int, str, str], ...] = ()
 
 
+def parse_whole_file_edit(text: str) -> str:
+    """Parse a whole-file rewrite; return source that ``ast.parse`` accepts."""
+    raw = (text or "").strip()
+    if not raw:
+        raise PatchError("model reply is empty")
+    candidate = raw
+    fenced_json = re.search(r"```(?:json)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+    if fenced_json:
+        candidate = fenced_json.group(1).strip()
+    data = None
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        data = None
+    source = ""
+    if isinstance(data, dict) and "file_source" in data:
+        source = str(data["file_source"])
+    else:
+        blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+        if blocks:
+            source = blocks[0]
+        elif "file_source" not in (data or {}):
+            raise PatchError(
+                "model reply must be JSON with file_source (full file), "
+                "or a fenced python block for the whole file"
+            )
+    source = textwrap.dedent(source.strip("\n") + "\n")
+    if not source.strip():
+        raise PatchError("file_source is empty")
+    try:
+        ast.parse(source)
+    except SyntaxError as exc:
+        raise PatchError(f"rewritten file does not parse: {exc}") from exc
+    return source
+
+
 def parse_model_edit(text: str) -> ModelEdit:
     """Parse ``function_source`` + ``new_imports`` from JSON or fenced blocks."""
     raw = (text or "").strip()
@@ -40,6 +76,11 @@ def parse_model_edit(text: str) -> ModelEdit:
         data = json.loads(candidate)
     except json.JSONDecodeError:
         data = None
+    if isinstance(data, dict) and "file_source" in data and "function_source" not in data:
+        raise PatchError(
+            "model reply has file_source but this site expects function_source; "
+            "whole-file mode should parse via parse_whole_file_edit"
+        )
     if isinstance(data, dict) and "function_source" in data:
         imports = data.get("new_imports") or []
         if isinstance(imports, str):

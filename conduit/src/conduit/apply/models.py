@@ -16,6 +16,10 @@ class SiteStatus(str, Enum):
     #: call passed. A person should look. Never "verified".
     FIXED_NEEDS_REVIEW = "fixed, needs review"
     NEEDS_HUMAN = "needs-human"
+    #: Whole-file structural rewrite removed or relocated this site's line, but
+    #: the site still does not clear recheck — treat as already failing rather
+    #: than a fresh needs-human on the old call shape.
+    ALREADY_FAILING = "already failing"
     DRY_RUN = "dry-run"
     SKIPPED = "skipped"
 
