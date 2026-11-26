@@ -135,3 +135,55 @@ def summarize_messages(pack: ContextPack, diff: str) -> list[tuple[str, str]]:
         f"Diff:\n{diff}\n"
     )
     return [("system", system), ("user", user)]
+
+
+def propose_whole_file_messages(
+    *,
+    file_path: str,
+    file_source: str,
+    sites: list[dict],
+    signatures: list[dict[str, str]],
+    dependency: str = "",
+    from_version: str = "",
+    to_version: str = "",
+    feedback: str = "",
+) -> list[tuple[str, str]]:
+    """One prompt that rewrites an entire file for a structural SDK migration."""
+    system = (
+        "You fix a structural SDK migration in one Python file.\n"
+        "Rules:\n"
+        "- Rewrite the WHOLE file so imports, shared client/setup, error types, and\n"
+        "  every flagged call site are consistent with the new SDK.\n"
+        "- When a module-level entry point becomes a client/instance API, introduce\n"
+        "  one shared client (or equivalent) and reuse it at every call site.\n"
+        "- When an exception or import module moved, update imports and every use.\n"
+        "- Do not leave old module-level calls, old error imports, or mixed styles.\n"
+        "- Respond with a JSON object only:\n"
+        '  {"file_source": "<complete new file contents>"}\n'
+        "- file_source must be the full file, not a diff and not a single function.\n"
+        "- Use only the release evidence and new signatures provided.\n"
+    )
+    user = {
+        "file": file_path,
+        "dependency": dependency,
+        "from_version": from_version,
+        "to_version": to_version,
+        "flagged_sites": sites,
+        "new_sdk_signatures": signatures,
+        "file_source": file_source,
+    }
+    body = (
+        "Structural migration context (JSON):\n"
+        f"{json.dumps(user, indent=2)}\n\n"
+        "Return JSON with file_source that migrates the whole file consistently."
+    )
+    if feedback:
+        body += f"\n\nPrevious attempt failed:\n{feedback}\nRetry with a corrected full file."
+    return [("system", system), ("user", body)]
+
+
+def summarize_whole_file_messages(*, file_path: str, changes: list[str], diff: str) -> list[tuple[str, str]]:
+    system = "Reply with one short sentence explaining why this whole-file rewrite fixes the structural migration."
+    listed = "; ".join(changes[:6]) if changes else "structural SDK migration"
+    user = f"File: {file_path}\nChanges: {listed}\nDiff:\n{diff}\n"
+    return [("system", system), ("user", user)]
