@@ -266,7 +266,7 @@ These calls stay invisible:
 - A cloud service chosen by a variable. It is not tied to an operation.
 - Webhook fields read in a helper in another file.
 
-**Why was my library skipped?** Its package does not show network or database I/O and does not ship a versioned API spec, or your code never builds a client from it. `conduit impact --dep pydantic --path examples/service-clients` exits with an error: pydantic is not an outside service.
+**Why was my library skipped?** `conduit impact` refuses the standard library, this repo's own packages, and common dev-only tooling (pytest, ruff, mypy, and similar). Third-party PyPI dependencies the repo imports are eligible even when the package has no network or database I/O evidence.
 
 **What does `not compared` mean?** The call was seen, but Conduit could not pick two versions, or could not find an API spec at both release tags. The note says which.
 

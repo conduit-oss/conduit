@@ -203,12 +203,14 @@ def test_impact_cli_is_offline(monkeypatch):
     assert any("from_self" in item["change"] for item in payload["impacts"])
     assert any(site["path"] == "db.py" for item in payload["impacts"] for site in item["sites"])
 
-    refused = CliRunner().invoke(
+    # Third-party imports such as pydantic are eligible; refuse only stdlib /
+    # self packages / common dev tooling (covered in test_acmekit_impact).
+    accepted = CliRunner().invoke(
         app,
         ["impact", "--path", str(FIXTURE), "--dep", "pydantic", "--fixtures", str(IMPACT)],
     )
-    assert refused.exit_code == 2
-    assert "not an outside service" in refused.stdout
+    assert accepted.exit_code == 0, accepted.stdout
+    assert "not an outside service" not in accepted.stdout
 
 
 def test_watch_prints_impact_instead_of_a_bare_version_bump():

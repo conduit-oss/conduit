@@ -1,0 +1,12 @@
+{
+  "packages": {
+    "acmekit": {
+      "from": "1.0.0",
+      "to": "2.0.0",
+      "wheels": {
+        "1.0.0": "wheels/acmekit-1.0.0-py3-none-any.whl",
+        "2.0.0": "wheels/acmekit-2.0.0-py3-none-any.whl"
+      }
+    }
+  }
+}
