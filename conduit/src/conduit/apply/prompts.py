@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 
+from conduit.apply.inventory import format_inventory_line
 from conduit.apply.models import ContextPack
 
 
@@ -18,6 +19,8 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "- You may list new import lines if required; do not edit other functions.\n"
         "- Use only the release-diff evidence, new signature/docstring, and candidates "
         "provided (candidates are newer-wheel public symbols that share name tokens).\n"
+        "- When target_sdk_inventory is present, prefer those modules/classes/functions/"
+        "constants for the target SDK; do not invent import paths or names.\n"
         "- Respond with a JSON object only:\n"
         '  {"function_source": "<full def ...>", "new_imports": ["import ...", ...]}\n'
         "- function_source must be the complete function definition (def/async def),\n"
@@ -79,6 +82,13 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
             "  pass a valid argument. Pass those keys.\n"
         )
         user["repo_dict_keys"] = pack.dict_key_hints
+    inventory_line = format_inventory_line(pack.sdk_inventory)
+    if inventory_line:
+        system += (
+            "- target_sdk_inventory lists real public names near this call site from the\n"
+            "  installed target SDK. Prefer them for imports; invented names fail the\n"
+            "  imports check.\n"
+        )
     helpers = same_file_helpers(pack)
     if helpers:
         # Read-only: shows how this function's inputs are shaped.
@@ -86,8 +96,11 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
     body = (
         "Context pack (JSON):\n"
         f"{json.dumps(user, indent=2)}\n\n"
-        "Return JSON with function_source and new_imports that fixes the flagged call site."
     )
+    # Compact one-liner outside the indented JSON so inventory does not balloon tokens.
+    if inventory_line:
+        body += inventory_line + "\n\n"
+    body += "Return JSON with function_source and new_imports that fixes the flagged call site."
     if feedback:
         body += f"\n\nPrevious attempt failed:\n{feedback}\nRetry with a corrected rewrite."
     return [("system", system), ("user", body)]

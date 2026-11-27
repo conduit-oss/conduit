@@ -75,6 +75,10 @@ class ContextPack:
     #: Keys a repo function in the rewrite reads from a dict, when any call there
     #: does. Empty for every other site, and omitted from the prompt then.
     dict_key_hints: list[str] = field(default_factory=list)
+    #: Per-site trimmed public names for the propose prompt (empty → omit section).
+    sdk_inventory: list[str] = field(default_factory=list)
+    #: Full installed-SDK public surface for the import gate (not put in the prompt).
+    sdk_allowlist: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -102,6 +106,7 @@ class ContextPack:
             "new_signature": self.new_signature,
             "new_docstring": self.new_docstring,
             "candidates": list(self.candidates),
+            "sdk_inventory": list(self.sdk_inventory),
         }
 
 
