@@ -18,6 +18,8 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
         "- You may list new import lines if required; do not edit other functions.\n"
         "- Use only the release-diff evidence, new signature/docstring, and candidates "
         "provided (candidates are newer-wheel public symbols that share name tokens).\n"
+        "- When target_sdk_inventory is present, import ONLY modules/classes/functions/"
+        "constants listed there for the target SDK. Do not invent import paths or names.\n"
         "- Respond with a JSON object only:\n"
         '  {"function_source": "<full def ...>", "new_imports": ["import ...", ...]}\n'
         "- function_source must be the complete function definition (def/async def),\n"
@@ -79,6 +81,13 @@ def propose_messages(pack: ContextPack, *, feedback: str = "") -> list[tuple[str
             "  pass a valid argument. Pass those keys.\n"
         )
         user["repo_dict_keys"] = pack.dict_key_hints
+    if pack.sdk_inventory:
+        system += (
+            "- target_sdk_inventory is the installed target SDK's public API (modules,\n"
+            "  classes, functions, constants). Every import from that SDK must use a name\n"
+            "  from this list; unknown names fail the imports check.\n"
+        )
+        user["target_sdk_inventory"] = list(pack.sdk_inventory)
     helpers = same_file_helpers(pack)
     if helpers:
         # Read-only: shows how this function's inputs are shaped.

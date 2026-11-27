@@ -27,6 +27,12 @@ from conduit.apply.context import (
     removed_names,
 )
 from conduit.apply.feedback import trim_test_feedback
+from conduit.apply.inventory import (
+    build_inventory,
+    import_feedback,
+    is_imports_failure,
+    unknown_sdk_imports,
+)
 from conduit.apply.nonecheck import NONE_CHECK
 from conduit.apply.models import ContextPack, ImpactSite, SiteResult, SiteStatus
 from conduit.apply.plain import plain_why
@@ -486,7 +492,8 @@ def _failed_to_load(output: str, path: str) -> bool:
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     if name not in (output or "") and path not in (output or ""):
         return False
-    return any(token in output for token in ("ERROR collecting", "ImportError", "ModuleNotFoundError"))
+    # Same bucket as the inventory imports gate: suite/module load failures.
+    return is_imports_failure(output)
 
 
 def _clear_flakes(config: ApplyConfig, scratch: Path, report: ApplyReport) -> bool:
@@ -812,10 +819,8 @@ def _held_back_imports(
 ) -> list[tuple[str, int, str]]:
     """Needs-human sites whose file still imports a name the change removes, when
     ``output`` is that import failing to load. Each item is ``(path, line, name)``."""
-    load_failure = any(
-        token in output for token in ("ImportError", "ModuleNotFoundError", "cannot import", "ERROR collecting")
-    )
-    if not output or not load_failure:
+    # Imports-stage failures: collection/load errors and inventory-gate feedback.
+    if not output or not is_imports_failure(output):
         return []
     found: list[tuple[str, int, str]] = []
     for result in report.results:
@@ -990,6 +995,7 @@ def _apply_one(
     pack.connected = _connected(config, site, pack)
     pack.removed_name_uses = _with_received_types(config, site, pack.removed_name_uses)
     pack.producer_rewrites = _producer_rewrites(config, pack)
+    pack.sdk_inventory = _sdk_inventory(site, pack)
 
     last_error = ""
     last_diff = ""
@@ -1026,6 +1032,7 @@ def _apply_one(
                     f"rewrite repeats a decorator the function already has ({repeated}); "
                     "give function_source without the existing decorators or list each once"
                 )
+            _reject_unknown_sdk_imports(pack, patched)
             drops: dict[str, Any] = {}
             flows = _verify_site_cleared(config, site, patched, span, drops)
             tests_ok, test_err, record = _run_tests(config, site, patched)
@@ -2230,6 +2237,38 @@ def _with_earlier(message: str, current: list[str], earlier: list[str]) -> str:
     head, sep, tail = message.partition("\nNew release signatures")
     head += "\nEarlier attempts also broke (keep these fixed):\n- " + "\n- ".join(missing)
     return head + sep + tail
+
+
+def _sdk_inventory(site: ImpactSite, pack: ContextPack) -> list[str]:
+    """Installed target-SDK public names for the prompt and import gate (or ``[]``)."""
+    related = [
+        site.symbol,
+        site.expr,
+        site.old_signature,
+        site.new_signature,
+        site.change,
+        *[str(item.get("symbol") or "") for item in pack.candidates],
+    ]
+    try:
+        return build_inventory(site.dependency, related=related)
+    except Exception:  # noqa: BLE001 — empty inventory keeps prior behaviour
+        return []
+
+
+def _reject_unknown_sdk_imports(pack: ContextPack, patched: str) -> None:
+    """Raise ``PatchError`` (imports stage) when the rewrite imports unknown SDK names.
+
+    No-op when ``sdk_inventory`` is empty (package not installed / unavailable).
+    """
+    inventory = pack.sdk_inventory
+    if not inventory:
+        return
+    unknown = unknown_sdk_imports(patched, pack.site.dependency, inventory)
+    if not unknown:
+        return
+    raise PatchError(
+        import_feedback(unknown, inventory, dependency=pack.site.dependency)
+    )
 
 
 def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -> dict[str, str]:

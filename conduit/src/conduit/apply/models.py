@@ -75,6 +75,8 @@ class ContextPack:
     #: Keys a repo function in the rewrite reads from a dict, when any call there
     #: does. Empty for every other site, and omitted from the prompt then.
     dict_key_hints: list[str] = field(default_factory=list)
+    #: Compact public API of the installed target SDK (empty when unavailable).
+    sdk_inventory: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -102,6 +104,7 @@ class ContextPack:
             "new_signature": self.new_signature,
             "new_docstring": self.new_docstring,
             "candidates": list(self.candidates),
+            "sdk_inventory": list(self.sdk_inventory),
         }
 
 
