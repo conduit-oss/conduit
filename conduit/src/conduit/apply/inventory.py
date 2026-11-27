@@ -1,13 +1,14 @@
 """Static public-API inventory of an installed target SDK.
 
-Before a fix prompt, ``build_inventory`` walks the installed package with
-``importlib.util.find_spec`` + AST over source files (no package code is
-executed). The compact name list goes into the propose prompt. After a
-rewrite, ``unknown_sdk_imports`` checks every import from that package
-against the inventory; misses become feedback with ``difflib`` suggestions
-and count as the apply ``imports`` failure stage once retries are exhausted.
+Before a fix prompt, ``build_allowlist`` walks the installed package with
+``importlib.util.find_spec`` + AST (no package code executed). ``build_inventory``
+then trims that surface to names related to the call site (hard cap ~30 names /
+~600 tokens) for the propose prompt. After a rewrite, ``unknown_sdk_imports``
+checks every import from that package against the full allowlist; misses become
+feedback with ``difflib`` suggestions and count as the apply ``imports`` failure
+stage once retries are exhausted.
 
-When the package is not installed, the inventory is empty and callers keep
+When the package is not installed, both lists are empty and callers keep
 existing behaviour (no prompt section, no import gate).
 """
 
@@ -17,13 +18,16 @@ import ast
 import difflib
 import importlib.machinery
 import importlib.util
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
 from conduit.impact.candidates import symbol_tokens
 
-#: Cap for names shown in the prompt / used for matching.
-MAX_INVENTORY = 300
+#: Hard cap for names shown in the propose prompt.
+MAX_INVENTORY = 30
+#: Approximate token budget for the prompt inventory line (~4 chars/token).
+MAX_INVENTORY_TOKENS = 600
 #: How many near-miss suggestions to list per unknown name.
 _MAX_SUGGESTIONS = 3
 #: Distinctive stage token for needs-human / eval bucketing (import failures).
@@ -31,24 +35,26 @@ IMPORTS_STAGE = "imports"
 #: Phrase included in feedback and final errors so retries and reports match.
 IMPORTS_FAILURE = f"{IMPORTS_STAGE}: unknown names from"
 
+_IMPORT_FROM = re.compile(
+    r"^\s*from\s+([\w.]+)\s+import\s+(.+)$", re.MULTILINE
+)
+_IMPORT = re.compile(r"^\s*import\s+([\w.,\s]+)$", re.MULTILINE)
+
 
 def package_root(dependency: str) -> str:
     """Import root for a distribution name (``example-sdk`` → ``example_sdk``)."""
     return (dependency or "").strip().lower().replace("-", "_")
 
 
-def build_inventory(
+def build_allowlist(
     dependency: str,
     *,
-    related: Iterable[str] = (),
-    limit: int = MAX_INVENTORY,
     search_path: Iterable[str | Path] | None = None,
 ) -> list[str]:
-    """Public modules / classes / functions / constants for the installed SDK.
+    """Full public surface of the installed SDK (modules / classes / functions / constants).
 
-    Respects ``__all__`` when present, skips ``_private`` names, and ranks
-    names that share tokens with ``related`` (call-site symbols) first.
-    Returns ``[]`` when the package cannot be found.
+    Respects ``__all__`` when present and skips ``_private``. Returns ``[]`` when
+    the package cannot be found. Intended for the import gate, not the prompt.
     """
     top = package_root(dependency)
     if not top or not top.isidentifier():
@@ -56,22 +62,64 @@ def build_inventory(
     sources = _package_sources(top, search_path=search_path)
     if not sources:
         return []
-    names = _public_names(top, sources)
+    return sorted(_public_names(top, sources))
+
+
+def build_inventory(
+    dependency: str,
+    *,
+    related: Iterable[str] = (),
+    file_imports: str = "",
+    limit: int = MAX_INVENTORY,
+    max_tokens: int = MAX_INVENTORY_TOKENS,
+    search_path: Iterable[str | Path] | None = None,
+    allowlist: Iterable[str] | None = None,
+) -> list[str]:
+    """Per-site trimmed inventory for the propose prompt.
+
+    Keeps names the file already imports from the SDK, the old call's module
+    path / attributes, and target-SDK names in the same submodule or fuzzy-
+    matched to those references. Hard-capped by ``limit`` and ``max_tokens``.
+    """
+    top = package_root(dependency)
+    if not top or not top.isidentifier():
+        return []
+    if allowlist is None:
+        names = set(build_allowlist(dependency, search_path=search_path))
+    else:
+        names = {item for item in allowlist if item}
     if not names:
         return []
-    return _prioritize(names, related, limit=limit)
+    hints = list(related) + _hints_from_imports(file_imports, top)
+    return _select_related(names, hints, top=top, limit=limit, max_tokens=max_tokens)
+
+
+def format_inventory_line(inventory: Iterable[str]) -> str:
+    """One-line prompt fragment; empty string when there is nothing to show."""
+    names = [item for item in inventory if item]
+    if not names:
+        return ""
+    return "target_sdk_inventory: " + ", ".join(names)
+
+
+def inventory_token_estimate(inventory: Iterable[str]) -> int:
+    """Rough token cost of the inventory line (charged at most once per site)."""
+    line = format_inventory_line(inventory)
+    if not line:
+        return 0
+    return max(1, (len(line) + 3) // 4)
 
 
 def unknown_sdk_imports(
     source: str,
     dependency: str,
-    inventory: Iterable[str],
+    allowlist: Iterable[str],
 ) -> list[str]:
-    """Dotted names imported from the target SDK that are not in ``inventory``.
+    """Dotted names imported from the target SDK that are not in ``allowlist``.
 
-    Empty ``inventory`` means the gate is off (package missing): always ``[]``.
+    Empty ``allowlist`` means the gate is off (package missing): always ``[]``.
     """
-    names = {item for item in inventory if item}
+    names = {item for item in allowlist if item}
     top = package_root(dependency)
     if not names or not top:
         return []
@@ -102,7 +150,7 @@ def unknown_sdk_imports(
                     continue
                 dotted = f"{module}.{alias.name}" if module else alias.name
                 # Accept the fully-qualified name, a re-export on the package root,
-                # or the bare leaf when the inventory listed it that way.
+                # or the bare leaf when the allowlist listed it that way.
                 if dotted in names or alias.name in names or f"{top}.{alias.name}" in names:
                     continue
                 add(dotted)
@@ -114,13 +162,18 @@ def import_feedback(
     inventory: Iterable[str],
     *,
     dependency: str,
+    allowlist: Iterable[str] | None = None,
 ) -> str:
     """Retry / needs-human text listing bad names and nearest inventory matches."""
     top = package_root(dependency) or dependency or "the target SDK"
     pool = [item for item in inventory if item]
+    if allowlist:
+        # Prefer prompt inventory, then fill from the full allowlist for suggestions.
+        extra = [item for item in allowlist if item and item not in pool]
+        pool = pool + extra
     lines = [
         f"{IMPORTS_FAILURE} {top}: "
-        "import only names from target_sdk_inventory."
+        "import only names from target_sdk_inventory (or real public names of that SDK)."
     ]
     for name in unknown:
         near = difflib.get_close_matches(name, pool, n=_MAX_SUGGESTIONS, cutoff=0.4)
@@ -128,12 +181,16 @@ def import_feedback(
             leaf = name.rsplit(".", 1)[-1]
             near = difflib.get_close_matches(leaf, pool, n=_MAX_SUGGESTIONS, cutoff=0.4)
             if not near:
-                near = difflib.get_close_matches(
-                    leaf, [item.rsplit(".", 1)[-1] for item in pool], n=_MAX_SUGGESTIONS, cutoff=0.4
+                leaves = [item.rsplit(".", 1)[-1] for item in pool]
+                leaf_hits = difflib.get_close_matches(
+                    leaf, leaves, n=_MAX_SUGGESTIONS, cutoff=0.4
                 )
                 near = [
-                    next((item for item in pool if item.endswith("." + leaf) or item == leaf), leaf)
-                    for leaf in near
+                    next(
+                        (item for item in pool if item.endswith("." + hit) or item == hit),
+                        hit,
+                    )
+                    for hit in leaf_hits
                 ]
         if near:
             lines.append(f"- {name} (did you mean: {', '.join(near)}?)")
@@ -160,6 +217,29 @@ def is_imports_failure(text: str) -> bool:
 
 def _belongs(module: str, top: str) -> bool:
     return module == top or module.startswith(top + ".")
+
+
+def _hints_from_imports(file_imports: str, top: str) -> list[str]:
+    """Dotted SDK names referenced by the file's existing import lines."""
+    if not file_imports or not top:
+        return []
+    out: list[str] = []
+    for match in _IMPORT_FROM.finditer(file_imports):
+        module = match.group(1).strip()
+        if not _belongs(module, top):
+            continue
+        out.append(module)
+        for part in match.group(2).split(","):
+            token = part.strip().split(" as ", 1)[0].strip()
+            if not token or token == "*":
+                continue
+            out.append(f"{module}.{token}")
+    for match in _IMPORT.finditer(file_imports):
+        for part in match.group(1).split(","):
+            token = part.strip().split(" as ", 1)[0].strip()
+            if _belongs(token, top):
+                out.append(token)
+    return out
 
 
 def _package_sources(
@@ -285,16 +365,102 @@ def _module_body(tree: ast.Module):
         yield node
 
 
-def _prioritize(names: set[str], related: Iterable[str], *, limit: int) -> list[str]:
-    hints = [item for item in related if item]
+def _select_related(
+    names: set[str],
+    related: Iterable[str],
+    *,
+    top: str,
+    limit: int,
+    max_tokens: int,
+) -> list[str]:
+    """Keep only names tied to the site's modules / attributes; cap size and tokens."""
+    hints = [item.strip() for item in related if item and str(item).strip()]
+    if not hints:
+        # No site signal: omit the prompt section rather than dumping the SDK.
+        return []
+
+    modules: set[str] = {top}
+    leaves: set[str] = set()
+    exact: set[str] = set()
     hint_tokens: set[str] = set()
     for hint in hints:
+        exact.add(hint)
         hint_tokens |= set(symbol_tokens(hint))
+        parts = [part for part in hint.split(".") if part]
+        if not parts:
+            continue
+        leaves.add(parts[-1])
+        # Module path prefixes (acmekit.client.Client -> acmekit, acmekit.client).
+        if _belongs(parts[0], top) or parts[0] == top:
+            for depth in range(1, len(parts) + 1):
+                prefix = ".".join(parts[:depth])
+                if prefix in names or any(item.startswith(prefix + ".") for item in names):
+                    modules.add(prefix)
+                # Parent modules of a symbol path.
+                if depth < len(parts):
+                    modules.add(prefix)
+        elif len(parts) == 1:
+            leaves.add(parts[0])
+
     scored: list[tuple[int, int, str]] = []
     for name in names:
-        tokens = set(symbol_tokens(name))
-        overlap = len(tokens & hint_tokens) if hint_tokens else 0
-        # Prefer shorter public paths when scores tie (package root first).
-        scored.append((-overlap, name.count("."), name))
+        score = _relatedness(name, top=top, modules=modules, leaves=leaves, exact=exact, hint_tokens=hint_tokens)
+        if score <= 0:
+            continue
+        scored.append((-score, name.count("."), name))
     scored.sort()
-    return [name for _score, _depth, name in scored[: max(0, limit)]]
+
+    out: list[str] = []
+    used_tokens = 0
+    overhead = len("target_sdk_inventory: ")
+    for _score, _depth, name in scored:
+        # +2 for ", " separators after the first name.
+        extra = len(name) + (2 if out else 0)
+        estimate = (overhead + used_tokens + extra + 3) // 4
+        if len(out) >= max(0, limit) or estimate > max_tokens:
+            break
+        out.append(name)
+        used_tokens += extra
+    return out
+
+
+def _relatedness(
+    name: str,
+    *,
+    top: str,
+    modules: set[str],
+    leaves: set[str],
+    exact: set[str],
+    hint_tokens: set[str],
+) -> int:
+    """Higher is more relevant; 0 means drop from the prompt inventory."""
+    if name in exact:
+        return 100
+    leaf = name.rsplit(".", 1)[-1]
+    score = 0
+    # Same submodule / module path the site references.
+    for module in modules:
+        if name == module:
+            score = max(score, 80)
+        elif name.startswith(module + "."):
+            rest = name[len(module) + 1 :]
+            # Direct child of a referenced module beats deep unrelated cousins.
+            score = max(score, 70 if "." not in rest else 50)
+        elif module.startswith(name + ".") and _belongs(name, top):
+            score = max(score, 60)
+    if leaf in leaves:
+        score = max(score, 65)
+    elif leaves:
+        # Fuzzy leaf match (old_call ~ send is weak; Client ~ ClientX is strong).
+        for target in leaves:
+            ratio = difflib.SequenceMatcher(None, leaf.lower(), target.lower()).ratio()
+            if ratio >= 0.6:
+                score = max(score, int(40 * ratio))
+    tokens = set(symbol_tokens(name))
+    overlap = len(tokens & hint_tokens) if hint_tokens else 0
+    if overlap:
+        score = max(score, 20 + 5 * overlap)
+    # Always allow the package root when anything else matched.
+    if name == top and score == 0 and (modules or leaves or exact):
+        return 10
+    return score

@@ -14,8 +14,13 @@ from conduit.apply.engine import ApplyConfig, apply_sites
 from conduit.apply.impact_input import sites_from_payload
 from conduit.apply.inventory import (
     IMPORTS_FAILURE,
+    MAX_INVENTORY,
+    MAX_INVENTORY_TOKENS,
+    build_allowlist,
     build_inventory,
+    format_inventory_line,
     import_feedback,
+    inventory_token_estimate,
     unknown_sdk_imports,
 )
 from conduit.apply.models import ContextPack, ImpactSite, SiteStatus
@@ -82,6 +87,29 @@ def _acmekit(tmp_path: Path) -> Path:
     return root
 
 
+def _big_acmekit(tmp_path: Path, n: int = 500) -> Path:
+    """SDK with hundreds of unrelated public exports to prove the per-site cap."""
+    root = tmp_path / "site-packages"
+    pkg = root / "acmekit"
+    pkg.mkdir(parents=True)
+    exports = [f"Export{i}" for i in range(n)]
+    (pkg / "__init__.py").write_text(
+        "from .client import Client\n"
+        + "\n".join(f"{name} = {i}" for i, name in enumerate(exports))
+        + "\n",
+        encoding="utf-8",
+    )
+    (pkg / "client.py").write_text(
+        "class Client:\n    def send(self, value: int) -> str:\n        return ''\n",
+        encoding="utf-8",
+    )
+    (pkg / "other.py").write_text(
+        "class Unrelated:\n    pass\n\n" + "\n".join(f"def util_{i}():\n    return {i}\n" for i in range(50)),
+        encoding="utf-8",
+    )
+    return root
+
+
 def _repo(tmp_path: Path) -> Path:
     root = tmp_path / "app"
     root.mkdir()
@@ -133,35 +161,8 @@ def _edit(source: str, imports: list[str] | None = None) -> str:
     return json.dumps({"function_source": source, "new_imports": imports or []})
 
 
-def test_inventory_respects_all_and_skips_private(tmp_path: Path):
-    site = _acmekit(tmp_path)
-    names = build_inventory(
-        "acmekit",
-        related=["acmekit.Client.send", "Widget"],
-        search_path=[site],
-    )
-    assert "acmekit" in names
-    assert "acmekit.Client" in names
-    assert "acmekit.Widget" in names
-    assert "acmekit.VERSION" in names
-    assert "acmekit.client" in names
-    assert "acmekit.client.Client" in names
-    assert "acmekit.client.connect" in names
-    assert "acmekit.types.Widget" in names
-    assert all(not name.split(".")[-1].startswith("_") for name in names)
-    assert "acmekit._hidden" not in names
-    assert "acmekit.secret_helper" not in names
-    assert "acmekit._INTERNAL" not in names
-    assert "acmekit.client._private_fn" not in names
-    # __all__ on the package root limits what __init__ exports as public leaves.
-    assert "acmekit.Client" in names
-    assert len(names) <= 300
-
-
-def test_prompt_includes_inventory(tmp_path: Path):
-    site = _acmekit(tmp_path)
-    inventory = build_inventory("acmekit", related=["Client"], search_path=[site])
-    pack = ContextPack(
+def _pack(inventory: list[str], allowlist: list[str] | None = None) -> ContextPack:
+    return ContextPack(
         site=ImpactSite(
             path="mod.py",
             line=2,
@@ -186,20 +187,101 @@ def test_prompt_includes_inventory(tmp_path: Path):
         new_signature="",
         new_docstring="",
         sdk_inventory=inventory,
+        sdk_allowlist=list(allowlist or inventory),
     )
-    turns = propose_messages(pack)
+
+
+def test_inventory_respects_all_and_skips_private(tmp_path: Path):
+    site = _acmekit(tmp_path)
+    allowlist = build_allowlist("acmekit", search_path=[site])
+    assert "acmekit.Client" in allowlist
+    assert "acmekit.Widget" in allowlist
+    assert "acmekit.VERSION" in allowlist
+    assert "acmekit.client.connect" in allowlist
+    assert all(not name.split(".")[-1].startswith("_") for name in allowlist)
+    assert "acmekit._hidden" not in allowlist
+    assert "acmekit.secret_helper" not in allowlist
+    assert "acmekit._INTERNAL" not in allowlist
+    assert "acmekit.client._private_fn" not in allowlist
+
+    names = build_inventory(
+        "acmekit",
+        related=["acmekit.Client.send", "Widget"],
+        search_path=[site],
+        allowlist=allowlist,
+    )
+    assert "acmekit.Client" in names
+    assert len(names) <= MAX_INVENTORY
+    assert inventory_token_estimate(names) <= MAX_INVENTORY_TOKENS
+    # Unrelated type module noise stays out when the site is about Client.send.
+    assert "acmekit.types.Widget" in names or "acmekit.Widget" in names
+
+
+def test_inventory_trimmed_to_relevant_names(tmp_path: Path):
+    site = _acmekit(tmp_path)
+    allowlist = build_allowlist("acmekit", search_path=[site])
+    names = build_inventory(
+        "acmekit",
+        related=["acmekit.client.Client", "old_call"],
+        file_imports="from acmekit.client import Client\n",
+        search_path=[site],
+        allowlist=allowlist,
+    )
+    assert names
+    assert len(names) <= MAX_INVENTORY
+    assert any(name.endswith("Client") or name.endswith(".client") for name in names)
+    # No related hints → omit prompt inventory entirely.
+    assert build_inventory("acmekit", related=[], allowlist=allowlist) == []
+
+
+def test_big_sdk_yields_at_most_30_names(tmp_path: Path):
+    site = _big_acmekit(tmp_path, n=500)
+    allowlist = build_allowlist("acmekit", search_path=[site])
+    assert len(allowlist) >= 500
+    names = build_inventory(
+        "acmekit",
+        related=["acmekit.Client.send", "client.old_call"],
+        search_path=[site],
+        allowlist=allowlist,
+    )
+    assert 1 <= len(names) <= 30
+    assert inventory_token_estimate(names) <= MAX_INVENTORY_TOKENS
+    assert any("Client" in name for name in names)
+    # Mass unrelated constants must not flood the prompt list.
+    export_hits = [name for name in names if name.rsplit(".", 1)[-1].startswith("Export")]
+    assert len(export_hits) < len(names)
+
+
+def test_prompt_includes_compact_inventory(tmp_path: Path):
+    site = _acmekit(tmp_path)
+    inventory = build_inventory(
+        "acmekit", related=["acmekit.Client.send"], search_path=[site]
+    )
+    turns = propose_messages(_pack(inventory))
     system, user = turns[0][1], turns[1][1]
     assert "target_sdk_inventory" in system
-    assert "import ONLY" in system or "import only" in system.lower() or "ONLY" in system
-    assert "target_sdk_inventory" in user
-    assert "acmekit.Client" in user
+    line = format_inventory_line(inventory)
+    assert line
+    assert line in user
+    # Compact one-liner: not pretty-printed inside the indent=2 JSON object.
+    assert '"target_sdk_inventory"' not in user
+    assert "\n  \"target_sdk_inventory\"" not in user
+    # Prompt stays under a fixed bound for this tiny pack + inventory.
+    assert len(user) < 2500
+    assert inventory_token_estimate(inventory) <= MAX_INVENTORY_TOKENS
+
+
+def test_prompt_omits_empty_inventory():
+    turns = propose_messages(_pack([]))
+    user = turns[1][1]
+    assert "target_sdk_inventory" not in user
 
 
 def test_hallucinated_import_triggers_retry_with_suggestions(tmp_path: Path):
     site_pkgs = _acmekit(tmp_path)
     root = _repo(tmp_path)
-    inventory = build_inventory("acmekit", related=["Client", "Widget"], search_path=[site_pkgs])
-    assert inventory
+    allowlist = build_allowlist("acmekit", search_path=[site_pkgs])
+    assert allowlist
     bad = _edit(
         "def broken(client):\n    return FakeClient().send(1)\n",
         imports=["from acmekit import FakeClient"],
@@ -210,8 +292,6 @@ def test_hallucinated_import_triggers_retry_with_suggestions(tmp_path: Path):
     )
     client = FakeModelClient(responses=[bad, good, "uses Client.send"])
 
-    # Inject inventory via a thin wrapper: monkeypatch build path by putting
-    # acmekit on sys.path so find_spec finds it during apply.
     import sys
 
     sys.path.insert(0, str(site_pkgs))
@@ -232,7 +312,6 @@ def test_hallucinated_import_triggers_retry_with_suggestions(tmp_path: Path):
     result = report.results[0]
     assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error, result.why)
     assert len(client.calls) >= 2
-    # The retry prompt is a propose call whose user turn carries import feedback.
     propose_users = [
         turn.content
         for call in client.calls
@@ -243,7 +322,7 @@ def test_hallucinated_import_triggers_retry_with_suggestions(tmp_path: Path):
     feedback = propose_users[0]
     assert IMPORTS_FAILURE in feedback
     assert "FakeClient" in feedback
-    assert "Client" in feedback  # difflib suggestion
+    assert "Client" in feedback
 
 
 def test_valid_imports_pass_with_no_retry(tmp_path: Path):
@@ -273,20 +352,18 @@ def test_valid_imports_pass_with_no_retry(tmp_path: Path):
 
     result = report.results[0]
     assert result.status == SiteStatus.FIXED_VERIFIED, (result.status, result.error)
-    # One propose + one summarize; no import-retry propose.
     assert len(client.calls) == 2
 
 
 def test_missing_package_falls_back(tmp_path: Path):
+    assert build_allowlist("definitely_not_an_installed_sdk_zz") == []
     assert build_inventory("definitely_not_an_installed_sdk_zz", related=["X"]) == []
-    # Gate off: invented imports are not checked when inventory is empty.
     assert unknown_sdk_imports(
         "from definitely_not_an_installed_sdk_zz import Invented\n",
         "definitely_not_an_installed_sdk_zz",
         [],
     ) == []
     root = _repo(tmp_path)
-    # Dependency name that is not installed: apply must not fail the imports gate.
     payload = _payload()
     payload["dependency"] = "missing-sdk-zz"
     payload["impacts"][0]["dependency"] = "missing-sdk-zz"
@@ -312,14 +389,19 @@ def test_missing_package_falls_back(tmp_path: Path):
 
 def test_unknown_sdk_imports_and_feedback_helpers(tmp_path: Path):
     site = _acmekit(tmp_path)
-    inventory = build_inventory("acmekit", search_path=[site])
+    allowlist = build_allowlist("acmekit", search_path=[site])
+    inventory = build_inventory(
+        "acmekit", related=["acmekit.Client"], allowlist=allowlist
+    )
     unknown = unknown_sdk_imports(
         "from acmekit import FakeClient\nfrom acmekit.types import Widget\n",
         "acmekit",
-        inventory,
+        allowlist,
     )
     assert unknown == ["acmekit.FakeClient"]
-    text = import_feedback(unknown, inventory, dependency="acmekit")
+    text = import_feedback(
+        unknown, inventory, dependency="acmekit", allowlist=allowlist
+    )
     assert IMPORTS_FAILURE in text
     assert "FakeClient" in text
     assert "Client" in text or "Widget" in text
@@ -355,3 +437,39 @@ def test_imports_failure_after_retries_exhausted(tmp_path: Path):
     assert IMPORTS_FAILURE in (result.error or "")
     assert "FakeClient" in (result.error or "")
     assert "(imports stage)" in (result.error or "")
+
+
+def test_gate_rejection_survives_token_budget_exhaustion(tmp_path: Path):
+    """A gate miss must remain in the needs-human error when the next loop is out of budget."""
+    site_pkgs = _acmekit(tmp_path)
+    root = _repo(tmp_path)
+    bad = _edit(
+        "def broken(client):\n    return FakeClient().send(1)\n",
+        imports=["from acmekit import FakeClient"],
+    )
+    # First propose burns the tiny budget; the following loop would overwrite last_error
+    # with only "token budget exhausted" unless the gate reason is preserved.
+    client = FakeModelClient(responses=[bad, bad, bad])
+    import sys
+
+    sys.path.insert(0, str(site_pkgs))
+    try:
+        report = apply_sites(
+            sites_from_payload(_payload()),
+            ApplyConfig(
+                root=root,
+                settings=_settings(max_attempts=3, max_tokens_per_site=80),
+                write=True,
+                test_cmd=_EXERCISE,
+                client=client,
+            ),
+        )
+    finally:
+        sys.path.remove(str(site_pkgs))
+
+    result = report.results[0]
+    assert result.status == SiteStatus.NEEDS_HUMAN
+    error = result.error or ""
+    assert IMPORTS_FAILURE in error, error
+    assert "FakeClient" in error
+    assert "token budget exhausted" in error

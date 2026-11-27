@@ -28,8 +28,10 @@ from conduit.apply.context import (
 )
 from conduit.apply.feedback import trim_test_feedback
 from conduit.apply.inventory import (
+    build_allowlist,
     build_inventory,
     import_feedback,
+    inventory_token_estimate,
     is_imports_failure,
     unknown_sdk_imports,
 )
@@ -995,7 +997,9 @@ def _apply_one(
     pack.connected = _connected(config, site, pack)
     pack.removed_name_uses = _with_received_types(config, site, pack.removed_name_uses)
     pack.producer_rewrites = _producer_rewrites(config, pack)
-    pack.sdk_inventory = _sdk_inventory(site, pack)
+    pack.sdk_allowlist, pack.sdk_inventory = _sdk_inventory(site, pack)
+    inv_tokens = inventory_token_estimate(pack.sdk_inventory)
+    inventory_charged = False
 
     last_error = ""
     last_diff = ""
@@ -1008,7 +1012,7 @@ def _apply_one(
         attempts = attempt
         remaining = config.settings.max_tokens_per_site - site_tokens
         if remaining <= 0:
-            last_error = "token budget exhausted for this site"
+            last_error = _budget_exhausted_error(last_error)
             break
         try:
             edit_text, used = _propose(
@@ -1018,7 +1022,13 @@ def _apply_one(
                 feedback=feedback,
                 max_tokens=min(2048, remaining),
             )
-            site_tokens += used
+            # Inventory text repeats on every propose; charge it once against the site budget.
+            charge = used
+            if inv_tokens and inventory_charged:
+                charge = max(1, used - inv_tokens)
+            elif inv_tokens:
+                inventory_charged = True
+            site_tokens += charge
             report.tokens_used += used
             edit = resolve_line_edits(pack, parse_model_edit(edit_text))
             patched, diff, span = splice_edit_with_span(pack, edit)
@@ -2239,8 +2249,11 @@ def _with_earlier(message: str, current: list[str], earlier: list[str]) -> str:
     return head + sep + tail
 
 
-def _sdk_inventory(site: ImpactSite, pack: ContextPack) -> list[str]:
-    """Installed target-SDK public names for the prompt and import gate (or ``[]``)."""
+def _sdk_inventory(site: ImpactSite, pack: ContextPack) -> tuple[list[str], list[str]]:
+    """``(allowlist, trimmed prompt inventory)`` for the installed target SDK.
+
+    Empty allowlist when the package is unavailable (gate off, no prompt section).
+    """
     related = [
         site.symbol,
         site.expr,
@@ -2250,25 +2263,49 @@ def _sdk_inventory(site: ImpactSite, pack: ContextPack) -> list[str]:
         *[str(item.get("symbol") or "") for item in pack.candidates],
     ]
     try:
-        return build_inventory(site.dependency, related=related)
-    except Exception:  # noqa: BLE001 — empty inventory keeps prior behaviour
-        return []
+        allowlist = build_allowlist(site.dependency)
+        inventory = build_inventory(
+            site.dependency,
+            related=related,
+            file_imports=pack.imports,
+            allowlist=allowlist,
+        )
+        return allowlist, inventory
+    except Exception:  # noqa: BLE001 — empty lists keep prior behaviour
+        return [], []
 
 
 def _reject_unknown_sdk_imports(pack: ContextPack, patched: str) -> None:
     """Raise ``PatchError`` (imports stage) when the rewrite imports unknown SDK names.
 
-    No-op when ``sdk_inventory`` is empty (package not installed / unavailable).
+    No-op when ``sdk_allowlist`` is empty (package not installed / unavailable).
     """
-    inventory = pack.sdk_inventory
-    if not inventory:
+    allowlist = pack.sdk_allowlist
+    if not allowlist:
         return
-    unknown = unknown_sdk_imports(patched, pack.site.dependency, inventory)
+    unknown = unknown_sdk_imports(patched, pack.site.dependency, allowlist)
     if not unknown:
         return
     raise PatchError(
-        import_feedback(unknown, inventory, dependency=pack.site.dependency)
+        import_feedback(
+            unknown,
+            pack.sdk_inventory,
+            dependency=pack.site.dependency,
+            allowlist=allowlist,
+        )
     )
+
+
+def _budget_exhausted_error(previous: str) -> str:
+    """Keep a prior gate/recheck reason when the site token budget is spent."""
+    budget = "token budget exhausted for this site"
+    prior = (previous or "").strip()
+    if not prior:
+        return budget
+    if budget in prior:
+        return prior
+    # Imports-stage (and other) findings must survive into needs-human, not be overwritten.
+    return f"{prior}\n{budget}"
 
 
 def _new_signatures(config: ApplyConfig, site: ImpactSite, symbols: list[str]) -> dict[str, str]:
