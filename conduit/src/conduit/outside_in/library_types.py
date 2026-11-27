@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import json
+import time
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -57,6 +58,15 @@ _DEPTH = 8
 # Cap retained distribution ASTs. Each entry can hold hundreds of modules; an
 # unbounded map of "tops" (including mis-resolved names) was the OOM source.
 _MAX_CACHED_DISTS = 8
+#: Bound on nested ``_define`` calls. Alias expansion can mint a new qualname
+#: on every step; without a cap that chain raises RecursionError and impact
+#: exits instead of reporting the diff.
+_MAX_DEFINE_DEPTH = 48
+#: Per top-level type walk: stop and treat the type as unknown once this many
+#: nodes have been charged (cycle or huge SDK surface).
+_MAX_WALK_NODES = 8_000
+#: Wall-clock budget for one eager fact extract over a distribution.
+_MAX_EXTRACT_SECONDS = 2.0
 _FIXTURE_WHEELS = (
     Path(__file__).resolve().parents[3] / "fixtures" / "impact" / "wheels",
     Path(__file__).resolve().parents[3] / "fixtures" / "impact" / "wheels" / "deps",
@@ -143,6 +153,15 @@ class LibraryTypes:
         self._defining: set[str] = set()
         self._ctor_args: dict[tuple[str, str], str] = {}
         self._extracting = False
+        #: Distributions whose modules are on the stack. Evicting one mid-extract
+        #: drops its AST and the next lookup parses it again, which recurses
+        #: until the interpreter raises RecursionError.
+        self._loading: set[str] = set()
+        #: Nested public walk depth. Budget resets only at the outermost call.
+        self._walk_depth = 0
+        self._walk_nodes = 0
+        self._walk_limit = _MAX_WALK_NODES
+        self._walk_deadline = 0.0
 
     def release(self) -> None:
         """Drop parsed ASTs and per-top module maps. Facts stay usable."""
@@ -157,6 +176,10 @@ class LibraryTypes:
         self._ctor_args.clear()
         self._stack.clear()
         self._defining.clear()
+        self._loading.clear()
+        self._walk_depth = 0
+        self._walk_nodes = 0
+        self._walk_deadline = 0.0
 
     def _clear_mod_asts(self, mods: dict[str, _Mod]) -> None:
         for mod in mods.values():
@@ -167,8 +190,15 @@ class LibraryTypes:
             mod.class_ann.clear()
             mod.bindings.clear()
 
-    def _evict_dist(self, top: str) -> None:
-        """Free one distribution's ASTs; allow a later re-parse if needed."""
+    def _evict_dist(self, top: str, *, force: bool = False) -> None:
+        """Free one distribution's ASTs; allow a later re-parse if needed.
+
+        A distribution currently being loaded stays unless ``force`` (the
+        extract just finished and facts are already stored). Dropping it
+        mid-extract makes the next lookup start that extract again.
+        """
+        if top in self._loading and not force:
+            return
         mods = self._dist.pop(top, None)
         if mods:
             self._clear_mod_asts(mods)
@@ -183,7 +213,45 @@ class LibraryTypes:
             self._dist_order.remove(top)
         self._dist_order.append(top)
         while len(self._dist_order) > _MAX_CACHED_DISTS:
-            self._evict_dist(self._dist_order[0])
+            victim = next(
+                (name for name in self._dist_order if name not in self._loading),
+                None,
+            )
+            if victim is None:
+                break
+            before = len(self._dist_order)
+            self._evict_dist(victim)
+            if len(self._dist_order) >= before:
+                break
+
+    def _begin_walk(self, *, nodes: int = _MAX_WALK_NODES, seconds: float | None = None) -> None:
+        """Start a budgeted type walk. Nested walks share the outer budget."""
+        if self._walk_depth == 0:
+            self._walk_nodes = 0
+            self._walk_limit = nodes
+            self._walk_deadline = (time.monotonic() + seconds) if seconds else 0.0
+        self._walk_depth += 1
+
+    def _end_walk(self) -> None:
+        self._walk_depth = max(0, self._walk_depth - 1)
+        if self._walk_depth == 0:
+            self._walk_deadline = 0.0
+
+    def _budget_ok(self) -> bool:
+        if self._walk_depth == 0:
+            return True
+        if self._walk_nodes >= self._walk_limit:
+            return False
+        if self._walk_deadline and time.monotonic() >= self._walk_deadline:
+            return False
+        return True
+
+    def _charge(self) -> bool:
+        """Consume one walk node. False when the budget is exhausted (unknown)."""
+        if self._walk_depth == 0:
+            return True
+        self._walk_nodes += 1
+        return self._budget_ok()
 
     def delegated_calls(self, qualname: str) -> tuple[str, ...]:
         """External calls this function makes, following ``self`` methods.
@@ -242,9 +310,11 @@ class LibraryTypes:
         if cached is not None:
             return cached
         self._stack.add(qualname)
+        self._begin_walk()
         try:
             found = self._call_return(qualname)
         finally:
+            self._end_walk()
             self._stack.discard(qualname)
         self._returns[qualname] = found
         return found
@@ -265,9 +335,11 @@ class LibraryTypes:
         if token in self._stack:
             return ""
         self._stack.add(token)
+        self._begin_walk()
         try:
             found = self._attribute(qualname, name)
         finally:
+            self._end_walk()
             self._stack.discard(token)
         self._attribute_types[key] = found
         return found
@@ -427,6 +499,10 @@ class LibraryTypes:
         qualname = self._resolve_alias(qualname)
         if not qualname or qualname in self._defining:
             return None
+        # Each step can be a brand-new qualname, so the set above never repeats.
+        # Stop and treat the type as unknown instead of overflowing the stack.
+        if len(self._defining) >= _MAX_DEFINE_DEPTH or not self._charge():
+            return None
         self._defining.add(qualname)
         try:
             return self._define_uncached(qualname)
@@ -538,9 +614,24 @@ class LibraryTypes:
             return set()
         return self._annotation_classes(stub, other.returns, owner)
 
-    def _annotation_classes(self, mod: _Mod, node: ast.AST | None, owner: str) -> set[str]:
-        if node is None:
+    def _annotation_classes(
+        self,
+        mod: _Mod,
+        node: ast.AST | None,
+        owner: str,
+        *,
+        depth: int = 0,
+        seen: set[int] | None = None,
+    ) -> set[str]:
+        if node is None or depth > _DEPTH or not self._charge():
             return set()
+        if seen is None:
+            seen = set()
+        # Stable identity within this parse forest — do not re-enter a node.
+        marker = id(node)
+        if marker in seen:
+            return set()
+        seen.add(marker)
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             text = node.value.strip().strip("'\"")
             if text and any(mark in text for mark in "[]|,") :
@@ -549,7 +640,7 @@ class LibraryTypes:
                 except SyntaxError:
                     parsed = None
                 if parsed is not None and not isinstance(parsed, ast.Constant):
-                    return self._annotation_classes(mod, parsed, owner)
+                    return self._annotation_classes(mod, parsed, owner, depth=depth + 1, seen=seen)
             if text and "." not in text:
                 text = mod.bindings.get(text, text)
             return self._named_classes(mod, text)
@@ -559,17 +650,27 @@ class LibraryTypes:
             return self._named_classes(mod, _dotted(mod, node))
         if isinstance(node, ast.Subscript):
             if _typing_wrapper(node.value):
-                return self._annotation_classes(mod, node.slice, owner)
-            found = self._annotation_classes(mod, node.value, owner)
-            return found or self._annotation_classes(mod, node.slice, owner)
+                return self._annotation_classes(
+                    mod, node.slice, owner, depth=depth + 1, seen=seen
+                )
+            found = self._annotation_classes(
+                mod, node.value, owner, depth=depth + 1, seen=seen
+            )
+            return found or self._annotation_classes(
+                mod, node.slice, owner, depth=depth + 1, seen=seen
+            )
         if isinstance(node, ast.Tuple):
             found: set[str] = set()
             for elt in node.elts:
-                found |= self._annotation_classes(mod, elt, owner)
+                found |= self._annotation_classes(
+                    mod, elt, owner, depth=depth + 1, seen=seen
+                )
             return found
         if isinstance(node, ast.BinOp):
-            return self._annotation_classes(mod, node.left, owner) | self._annotation_classes(
-                mod, node.right, owner
+            return self._annotation_classes(
+                mod, node.left, owner, depth=depth + 1, seen=seen
+            ) | self._annotation_classes(
+                mod, node.right, owner, depth=depth + 1, seen=seen
             )
         return set()
 
@@ -592,11 +693,18 @@ class LibraryTypes:
         fn: ast.AST | None,
         owner: str,
         depth: int,
+        seen: set[int] | None = None,
     ) -> set[str]:
-        if expr is None or depth > _DEPTH:
+        if expr is None or depth > _DEPTH or not self._charge():
             return set()
+        if seen is None:
+            seen = set()
+        marker = id(expr)
+        if marker in seen:
+            return set()
+        seen.add(marker)
         if isinstance(expr, ast.Await):
-            return self._expr_classes(mod, expr.value, fn, owner, depth + 1)
+            return self._expr_classes(mod, expr.value, fn, owner, depth + 1, seen)
         if isinstance(expr, ast.Name):
             if expr.id in {"self", "cls"} and owner:
                 return {owner}
@@ -605,7 +713,7 @@ class LibraryTypes:
             if fn is not None:
                 local = _function_assign(fn, expr.id)
                 if local is not None:
-                    return self._expr_classes(mod, local, fn, owner, depth + 1)
+                    return self._expr_classes(mod, local, fn, owner, depth + 1, seen)
             named = self._named_classes(mod, mod.bindings.get(expr.id, expr.id))
             if named or not owner:
                 return named
@@ -618,10 +726,10 @@ class LibraryTypes:
         if isinstance(expr, ast.Call):
             dynamic = _type_call_base(expr)
             if dynamic is not None:
-                return self._expr_classes(mod, dynamic, fn, owner, depth + 1)
+                return self._expr_classes(mod, dynamic, fn, owner, depth + 1, seen)
             if isinstance(expr.func, ast.Name) and expr.func.id in {"self", "cls"} and owner:
                 return {owner}
-            callee = self._expr_classes(mod, expr.func, fn, owner, depth + 1)
+            callee = self._expr_classes(mod, expr.func, fn, owner, depth + 1, seen)
             if callee:
                 self._note_constructor_args(mod, expr, fn, owner, callee)
                 return callee
@@ -647,21 +755,21 @@ class LibraryTypes:
                     continue
                 if not self._keyword_class_ref(mod, keyword.value, fn):
                     continue
-                found = self._expr_classes(mod, keyword.value, fn, owner, depth + 1)
+                found = self._expr_classes(mod, keyword.value, fn, owner, depth + 1, seen)
                 if found:
                     return found
             return set()
         if isinstance(expr, ast.IfExp):
-            return self._expr_classes(mod, expr.body, fn, owner, depth + 1) | self._expr_classes(
-                mod, expr.orelse, fn, owner, depth + 1
+            return self._expr_classes(mod, expr.body, fn, owner, depth + 1, seen) | self._expr_classes(
+                mod, expr.orelse, fn, owner, depth + 1, seen
             )
         if isinstance(expr, ast.Subscript):
             found: set[str] = set()
-            for klass in self._expr_classes(mod, expr.value, fn, owner, depth + 1):
+            for klass in self._expr_classes(mod, expr.value, fn, owner, depth + 1, seen):
                 found |= set(self.call_return(f"{klass}.__getitem__"))
             if not found and fn is not None and isinstance(expr.value, ast.Name):
                 for value in _subscript_assigns(fn, expr.value.id):
-                    found |= self._expr_classes(mod, value, fn, owner, depth + 1)
+                    found |= self._expr_classes(mod, value, fn, owner, depth + 1, seen)
             return found
         return set()
 
@@ -687,7 +795,7 @@ class LibraryTypes:
         return set()
 
     def _owner_param_classes(self, mod: _Mod, owner: str, name: str, depth: int) -> set[str]:
-        if depth > _DEPTH:
+        if depth > _DEPTH or not self._budget_ok():
             return set()
         for method in ("__init__", "__new__"):
             fn = mod.functions.get(f"{owner}.{method}")
@@ -771,6 +879,11 @@ class LibraryTypes:
         top = (top or "").strip()
         if not top:
             return {}
+        # Re-entering the load that is already on the stack (a base or return
+        # type points back at us) must not start a second extract.
+        if top in self._loading:
+            cached = self._dist.get(top)
+            return cached or {}
         if top in self._facts and top not in self._dist:
             # Facts-only hit: no AST modules, queries answer from ``_facts``.
             self._dist[top] = None
@@ -780,6 +893,13 @@ class LibraryTypes:
             return cached
         if top in self._dist:
             return {}
+        self._loading.add(top)
+        try:
+            return self._modules_uncached(top)
+        finally:
+            self._loading.discard(top)
+
+    def _modules_uncached(self, top: str) -> dict[str, _Mod]:
         pin = _TYPED_FROM.get(top) or self._pins.get(top, "")
         from conduit.analysis_cache import cache_enabled
 
@@ -821,13 +941,14 @@ class LibraryTypes:
                 self._facts[top] = facts
                 write_json("libtypes", file_sha256(wheel), facts.to_json())
                 # Facts answer later queries; free the AST forest now.
-                self._evict_dist(top)
+                self._evict_dist(top, force=True)
                 return {}
         return mods
 
     def _extract_facts(self, top: str, mods: dict[str, _Mod]) -> _DistFacts:
         """Walk the parsed distribution once and record answers for the cache."""
         self._extracting = True
+        self._begin_walk(nodes=_MAX_WALK_NODES, seconds=_MAX_EXTRACT_SECONDS)
         try:
             returns: dict[str, list[str]] = {}
             attribute_types: dict[str, str] = {}
@@ -835,17 +956,25 @@ class LibraryTypes:
             init_params: dict[str, list[str]] = {}
             members: dict[str, str] = {}
             for mod in mods.values():
+                if not self._budget_ok():
+                    break
                 for qual in list(mod.functions):
+                    if not self._budget_ok():
+                        break
                     if not _public_qual(qual):
                         continue
                     returns[qual] = list(self.call_return(qual))
                     delegated[qual] = list(self.delegated_calls(qual))
                 for qual in list(mod.classes):
+                    if not self._budget_ok():
+                        break
                     if not _public_qual(qual):
                         continue
                     init_params[qual] = list(self.init_params(qual))
                     returns[qual] = list(self.call_return(qual))
                     for name in self._all_member_names(qual, mods):
+                        if not self._budget_ok():
+                            break
                         if name.startswith("_") and name not in {"__init__", "__getattr__", "__getitem__"}:
                             continue
                         owner = self.member_owner(qual, name)
@@ -862,6 +991,7 @@ class LibraryTypes:
                 members=members,
             )
         finally:
+            self._end_walk()
             self._extracting = False
 
     def _all_member_names(self, qual: str, mods: dict[str, _Mod]) -> list[str]:
@@ -1237,11 +1367,16 @@ def _exact_version(pin: str) -> bool:
 
 
 def _installed_root(top: str) -> Path | None:
+    """Locate an importable distribution without importing its code.
+
+    ``find_spec`` can raise for a broken install or hostile metadata. Impact
+    must degrade to unknown rather than crash the whole run.
+    """
     try:
         import importlib.util
 
         spec = importlib.util.find_spec(top)
-    except (ImportError, ValueError):
+    except Exception:  # noqa: BLE001 — broken or hostile install metadata
         return None
     if spec is None or not spec.origin:
         return None
