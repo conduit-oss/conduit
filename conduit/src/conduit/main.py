@@ -531,20 +531,18 @@ def _impact_body(
     json_out: bool,
     show_callers: bool,
 ) -> None:
+    from conduit.deps.manifests import read_installed
+    from conduit.impact.eligible import impact_dep_allowed
     from conduit.impact.report import format_impacts, impacts_to_dicts
     from conduit.impact.run import collect_impacts
     from conduit.outside_in.bridge import build_service_map
-    from conduit.outside_in.specs import evidence_spec
-
-    from conduit.deps.manifests import read_installed
 
     pins = read_installed(root)
     pinned = (from_version or "").strip() or pins.get(dep.lower()) or ""
-    # The distribution under analysis is the one this repo pins, not whichever
-    # release is newest. A newer release that grew its own I/O does not make
-    # the pinned release a service, and the reverse is true too.
-    spec = evidence_spec(dep, pinned or None)
-    if spec is None or spec.family:
+    # Evidence classification is a hint, not a gate. Accept any third-party
+    # PyPI dependency this repo imports; refuse stdlib, self packages, and
+    # common development-only tooling.
+    if not impact_dep_allowed(dep, root, version=pinned or None):
         console.print(
             f"[red]{dep} is not an outside service.[/red] "
             "Impact covers API clients, database drivers, cloud SDKs, and incoming webhooks."
@@ -560,7 +558,9 @@ def _impact_body(
 
     typed = {dep: pinned} if pinned and installed_version(dep) not in {"", pinned} else {}
     with types_from(typed):
-        service_map, _blast = build_service_map(root)
+        # Pass --dep as the focused service so an unclassified third-party
+        # SDK still lands on the map (evidence remains a hint only).
+        service_map, _blast = build_service_map(root, service=dep)
     impacts, diffed, notes = collect_impacts(
         root,
         service_map,

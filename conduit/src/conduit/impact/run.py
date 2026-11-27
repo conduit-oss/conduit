@@ -229,9 +229,13 @@ def _targets(
         seen.add(package.lower())
         found.append((package, chain.service))
     if wanted and not found:
-        spec = evidence_spec(wanted, root=root)
-        if spec is not None and not spec.family:
-            found.append((spec.package, spec.service_id))
+        # Evidence is a hint. An explicit --dep still runs even when the
+        # wheel shows no I/O — call sites come from the focused service map.
+        if wanted_spec is not None and not wanted_spec.family:
+            found.append((wanted_spec.package, wanted_spec.service_id))
+        else:
+            token = (dep or "").strip()
+            found.append((token, token))
     return found
 
 
